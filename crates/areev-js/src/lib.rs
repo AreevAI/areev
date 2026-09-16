@@ -2417,6 +2417,36 @@ impl Areev {
         })
     }
 
+    /// Score a candidate loop configuration against the recorded past,
+    /// beside the incumbent (`areev loop replay`). `request` is the JSON
+    /// `ReplayRequest`: `{"config": {"<analyzer id>": {...}}, "policy": {...},
+    /// "window": "90d" | "since_ms": n, "step": "per-pass" | "1d"}`; `policy`
+    /// is a path to a host `loop-policy.json` for the incumbent. Reads only;
+    /// the model and external analyzers are reported `not_replayed`. Returns
+    /// the report JSON.
+    #[napi]
+    pub fn loop_replay(
+        &self,
+        request: Option<String>,
+        policy: Option<String>,
+    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let req = areev_loop::replay::ReplayRequest::from_json(request.as_deref().unwrap_or("{}")).map_err(err)?;
+            let mut engine = Engine::with_builtins();
+            if let Some(path) = policy {
+                let s = std::fs::read_to_string(&path)
+                    .map_err(|e| err(format!("policy {path}: {e}")))?;
+                engine = engine.with_policy(areev_loop::Policy::from_json(&s).map_err(err)?);
+            }
+            let (candidate, opts) = req.resolve(now_ms()).map_err(err)?;
+            let sub = BorrowedSubstrate::new(&facade);
+            let res = engine.replay(&sub, &candidate, &opts).map_err(err)?;
+            serde_json::to_string(&res).map_err(err)
+        })
+    }
+
     /// List recommendations. `filter` is optional JSON, e.g. `{"status":
     /// "pending"}`; `{"status":"all"}` clears the filter. JSON list.
     #[napi(ts_return_type = "Promise<string>")]

@@ -197,6 +197,14 @@ pub trait SubstrateRead {
     fn embed(&self, _text: &str) -> Result<Option<Vec<f32>>> {
         Ok(None)
     }
+
+    /// The content address `put_grain(spec)` WOULD assign, computed without
+    /// writing — what lets a rehearsal name the exact grain a live pass
+    /// would have stored. `Ok(None)` when the substrate cannot say (the
+    /// default); a replay then reports findings by dedup key and summary.
+    fn address_of(&self, _spec: &GrainSpec) -> Result<Option<String>> {
+        Ok(None)
+    }
 }
 
 /// The full store protocol the engine binds to: reads (via the supertrait)

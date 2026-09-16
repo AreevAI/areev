@@ -229,12 +229,12 @@ pub struct Engine {
     ground_llm: Option<Box<dyn crate::llm::LlmBackend>>,
 }
 
-struct AnalysisPass {
-    survivors: Vec<Recommendation>,
+pub(crate) struct AnalysisPass {
+    pub(crate) survivors: Vec<Recommendation>,
     proposed: u64,
     deduped: u64,
     analyzers_run: Vec<String>,
-    analyzers_skipped: Vec<AnalyzerSkip>,
+    pub(crate) analyzers_skipped: Vec<AnalyzerSkip>,
     llm_funnel: Option<LlmFunnel>,
 }
 
@@ -285,6 +285,11 @@ impl Engine {
 
     pub fn policy(&self) -> &crate::policy::Policy {
         &self.policy
+    }
+
+    /// Whether an LLM backend is attached (replay reports it as not replayed).
+    pub fn has_llm(&self) -> bool {
+        self.llm.is_some()
     }
 
     /// Register an additional analyzer (the linked-Rust seam).
@@ -453,6 +458,7 @@ impl Engine {
     /// and the live recommendation queue are honored in both modes; only the
     /// production caller proceeds into the mutating Phase 3 below.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn analysis_pass<S: OmsSubstrate>(
         &self,
         sub: &S,
@@ -464,6 +470,40 @@ impl Engine {
         outcome_inputs: &[OutcomeInput],
     ) -> Result<AnalysisPass> {
         let existing = existing_dedup_keys(sub, persisted)?;
+        self.analysis_pass_inner(
+            sub,
+            persisted,
+            &self.policy,
+            opts,
+            external_overrides,
+            analysis_watermark,
+            now_ms,
+            outcome_inputs,
+            &existing,
+            None,
+        )
+    }
+
+    /// The pass itself. `existing` is the set of dedup keys already open
+    /// (production computes it from the stored queue; replay carries its own
+    /// simulated queue). `replay` is `Some(reason)` when the pass is a
+    /// rehearsal: the LLM stage and every analyzer that is not a pure
+    /// function of the grains (external commands, telemetry rollups) are
+    /// skipped with that reason rather than run against the present.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn analysis_pass_inner<S: OmsSubstrate>(
+        &self,
+        sub: &S,
+        persisted: &LoopPersisted,
+        policy: &crate::policy::Policy,
+        opts: &RunOptions,
+        external_overrides: &BTreeMap<String, Map<String, Value>>,
+        analysis_watermark: Option<i64>,
+        now_ms: i64,
+        outcome_inputs: &[OutcomeInput],
+        existing: &BTreeSet<String>,
+        replay: Option<&str>,
+    ) -> Result<AnalysisPass> {
         let mut analyzers_run = Vec::new();
         let mut analyzers_skipped = Vec::new();
         let mut candidates: Vec<Recommendation> = Vec::new();
@@ -472,6 +512,20 @@ impl Engine {
 
         for analyzer in &self.analyzers {
             let m = analyzer.manifest();
+            if let Some(why) = replay {
+                let out_of_process = m.trust_class == crate::manifest::TrustClass::Command;
+                let telemetry_fed = m.requires.contains(&crate::manifest::Capability::Telemetry);
+                if out_of_process || telemetry_fed {
+                    analyzers_skipped.push(AnalyzerSkip {
+                        id: m.id.clone(),
+                        reason: format!(
+                            "not replayed: {}",
+                            if out_of_process { why } else { "telemetry rollups are not time-indexed" }
+                        ),
+                    });
+                    continue;
+                }
+            }
             let cfg = persisted.config.get(&m.id);
             let enabled = cfg.and_then(|c| c.enabled).unwrap_or(m.default_on);
             if !enabled {
@@ -481,7 +535,7 @@ impl Engine {
                 });
                 continue;
             }
-            if self.policy.denies(m.family()) {
+            if policy.denies(m.family()) {
                 analyzers_skipped.push(AnalyzerSkip {
                     id: m.id.clone(),
                     reason: "denied by host policy".into(),
@@ -548,7 +602,7 @@ impl Engine {
         }
 
         let mut funnel = LlmFunnel::default();
-        if self.llm.is_some() {
+        if self.llm.is_some() && replay.is_none() {
             candidates.extend(self.discover(
                 sub,
                 &candidates,
@@ -566,7 +620,7 @@ impl Engine {
             let family = crate::manifest::analyzer_family(&candidate.analyzer);
             let floor = [
                 severity_floor_for(persisted, &candidate.analyzer),
-                self.policy.severity_floor(family),
+                policy.severity_floor(family),
             ]
             .into_iter()
             .flatten()
@@ -590,7 +644,7 @@ impl Engine {
             survivors.push(candidate);
         }
         let deduped = proposed - survivors.len() as u64;
-        if self.llm.is_some() {
+        if self.llm.is_some() && replay.is_none() {
             self.enrich(&mut survivors);
         }
         Ok(AnalysisPass {
@@ -4334,7 +4388,7 @@ fn existing_dedup_keys<S: SubstrateRead>(sub: &S, p: &LoopPersisted) -> Result<B
 /// Two events earn a strike: a reviewer's rejection, and a revert the Verify
 /// gate proposed on a measured regression — both are a verdict that the
 /// finding, as it stands, should not come back on the next pass.
-fn strike_cooldown(p: &mut LoopPersisted, dedup_key: String, now_ms: i64) {
+pub(crate) fn strike_cooldown(p: &mut LoopPersisted, dedup_key: String, now_ms: i64) {
     const BASE_MS: i64 = 7 * 86_400_000;
     const CAP_MS: i64 = 90 * 86_400_000;
     let strikes = p.cooldown_strikes.entry(dedup_key.clone()).or_insert(0);

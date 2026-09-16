@@ -772,6 +772,18 @@ areev loop run  --db agent.db --min-new 20 --min-new-errors 3 --if-stale 6h --qu
 areev loop list --db agent.db --fail-on high --format json                            # CI gate: exit 2 on match
 ```
 
+Tune a threshold against the past before running it live — a candidate
+config replayed through the recorded passes, beside the incumbent, with
+zero writes (`docs/loop.md`, "Replay"):
+
+```bash
+echo '{"config": {"loop.run_outcome/1": {"params": {"min_failure_ratio": 0.3}},
+                  "loop.staleness/1": {"severity_floor": "medium"}}}' > candidate.json
+areev loop replay --db agent.db --config candidate.json --window 90d
+#   findings / approved / rejected / unreviewed / never-proposed / regressed / drifted / held,
+#   per analyzer, incumbent vs candidate; LLM and command findings listed as not replayed
+```
+
 Import history that predates Areev, auto-apply structural curation via a
 policy file, and the multi-agent supervisor pattern each have a runnable
 example under [`../examples/`](../examples/). Auto-apply is off unless a host

@@ -2037,6 +2037,7 @@ impl UiServer {
             ("POST", "/api/loop/apply") => self.loop_apply(body),
             ("POST", "/api/loop/rollback") => self.loop_rollback(body),
             ("POST", "/api/loop/config") => self.loop_config(body),
+            ("POST", "/api/loop/replay") => self.loop_replay(body),
             ("POST", "/api/anon/config") => self.anon_config(body),
             _ => (
                 "404 Not Found",
@@ -2162,6 +2163,27 @@ impl UiServer {
 }
 
 impl UiServer {
+    /// Score a candidate loop configuration against the recorded past
+    /// (`areev loop replay`): a computation, not a write — but token-guarded
+    /// like `/api/loop/config`, because it reads the whole review history
+    /// and runs every analyzer over every step. Body = the candidate plus
+    /// the window (`areev_loop::replay::ReplayRequest`).
+    fn loop_replay(&self, body: &[u8]) -> (&'static str, &'static str, Vec<u8>) {
+        let req = match serde_json::from_slice::<areev_loop::replay::ReplayRequest>(body) {
+            Ok(r) => r,
+            Err(e) => return ok_json(json!({"ok": false, "error": format!("replay request: {e}")})),
+        };
+        let (candidate, opts) = match req.resolve(now_ms()) {
+            Ok(v) => v,
+            Err(e) => return ok_json(json!({"ok": false, "error": e.to_string(), "code": e.code()})),
+        };
+        let sub = BorrowedSubstrate::new(&self.facade);
+        match self.engine().replay(&sub, &candidate, &opts) {
+            Ok(report) => ok_json(json!({"ok": true, "replay": report})),
+            Err(e) => ok_json(json!({"ok": false, "error": e.to_string(), "code": e.code()})),
+        }
+    }
+
     /// Declare or clear a per-namespace anonymization policy from the
     /// console (Connect → Settings). Rides the same write gate as every
     /// console POST (auth + Origin + body cap upstream); the policy itself
@@ -2491,6 +2513,20 @@ mod loop_route_tests {
         let s = server(Some("tok"));
         // Token-less write → 401 (guarded like every POST).
         assert!(s.route("POST", "/api/loop/config", b"{}", None, None).0.starts_with("401"));
+        // Replay is a read, but it is guarded like config: it runs every
+        // analyzer over the whole history on request.
+        assert!(s.route("POST", "/api/loop/replay", b"{}", None, None).0.starts_with("401"));
+        let (status, _ct, body) = s.route("POST", "/api/loop/replay", br#"{"window":"7d","step":"1d"}"#, Some("tok"), None);
+        assert!(status.starts_with("200"), "{status}");
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["ok"], true, "{v}");
+        for key in ["incumbent", "candidate", "steps", "not_replayed", "matching"] {
+            assert!(v["replay"].get(key).is_some(), "replay report lacks {key}: {v}");
+        }
+        assert!(v["replay"]["incumbent"]["total"]["findings"].is_u64(), "{v}");
+        let (_status, _ct, body) = s.route("POST", "/api/loop/replay", br#"{"analyzers": {}}"#, Some("tok"), None);
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["ok"], false, "unknown keys are refused: {v}");
 
         // Read the analyzers; pick one that is on by default.
         let list = s.route("GET", "/api/loop/analyzers", b"", Some("tok"), None);

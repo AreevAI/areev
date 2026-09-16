@@ -82,6 +82,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   restores every member — pinned on the real store, and the reference
   substrate's `retract` now un-supersedes to match. Fifteen analyzers.
 
+- **`areev loop replay` — score a loop configuration against the past**
+  (#257; `docs/loop-proposal.md` §17 rung 1, built). `areev loop replay
+  --config candidate.json [--window 90d | --since MS] [--step per-pass|1d]`
+  steps `now` through the recorded passes (reconstructed from the audit
+  trail) or a fixed stride, runs the deterministic analyzers under the
+  candidate at each step reading only grains created at or before it (a
+  prefix view that also refuses every write by type), carries the state the
+  loop had — the watermark per step, rejection and measured-revert
+  cooldowns, the rehearsal's own queue for dedup — and reports, per
+  analyzer and in total, findings under the candidate beside the
+  **incumbent** (always a row): overlap with recorded decisions (approved /
+  rejected / never reviewed / never proposed), with outcomes (regressed /
+  drifted / held), and queue volume per step. Where the substrate can name a
+  content address without writing (new `SubstrateRead::address_of`; Areev
+  computes it by serializing the grain), each would-be finding names the
+  exact grain a live pass would have stored — the golden identity test pins
+  the queue byte for byte. `origin = llm` and `origin = command` are not
+  replayed and say so; telemetry-fed analyzers too. The CLI prints the
+  op-log length before and after. Same request on `POST /api/loop/replay`
+  (token-guarded), the console Setup view's **Preview** beside each
+  analyzer toggle, and the bindings' `loop_replay` / `loopReplay`. No
+  auto-adoption.
+
 ## [1.8.3] — 2026-09-16
 
 ### Added

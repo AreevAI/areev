@@ -29,7 +29,7 @@ USAGE:
 COMMANDS:
   init     [--template blank|demo|coding-agent] [--ns NS]   seed a backend +
            print the Claude Code hook snippet (never writes your settings)
-  loop     <run|reflect|list|show|approve|reject|apply|rollback|analyzers|policy>
+  loop     <run|reflect|list|show|approve|reject|apply|rollback|analyzers|policy|replay>
            the governed self-improvement loop (deterministic core; optional verified LLM):
            run    [--min-new N --min-new-errors N --if-stale 6h --format json --quiet]
                   [--model provider:name | --llm-cmd 'CMD']   optional LLM reflection
@@ -43,6 +43,9 @@ COMMANDS:
            list   [--status pending|all|applied|...] [--fail-on high]  (exit 2 on match)
            show <hash> | approve/reject/apply/rollback <hash> --because \"...\" [--actor A]
            outcomes  the Verify gate: did applied advice hold, or regress?
+           replay --config FILE [--window 90d | --since MS] [--step per-pass|1d]
+                  score a candidate config against the recorded past, beside the
+                  incumbent — zero writes, prefix-only reads, LLM/command not replayed
            [--policy FILE] grants auto-apply (else $AREEV_LOOP_POLICY); `policy` prints it
   add      <subject> <relation> <object>       store a fact (positional)
            [--subject S --relation R --object O] [--ns NS] [--confidence C]
@@ -6069,7 +6072,7 @@ fn run_audit(
     Ok(())
 }
 
-/// `areev loop <run|list|show|approve|reject|apply|rollback|analyzers|policy|status>`.
+/// `areev loop <run|list|show|approve|reject|apply|rollback|analyzers|policy|status|replay>`.
 fn run_loop(
     m: Areev,
     ns: &str,
@@ -6357,6 +6360,82 @@ fn run_loop(
                     m.default_on,
                     m.title
                 );
+            }
+        }
+        // Replay — score a candidate configuration against the past, beside
+        // the incumbent. Reads only; the op-log length is read before and
+        // after and printed, so "zero writes" is shown, not asserted.
+        "replay" => {
+            use areev_loop::replay::{ReplayOptions, ReplayRequest};
+            let path = flag(flags, "config")
+                .ok_or("usage: areev loop replay --config FILE [--window 90d | --since MS] [--step per-pass|1d] [--format json]")?;
+            let text = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
+            let req = ReplayRequest::from_json(&text).map_err(|e| e.to_string())?;
+            let (candidate, _) = req.resolve(now).map_err(|e| e.to_string())?;
+            let since: Option<i64> = flag(flags, "since")
+                .map(|v| v.parse().map_err(|_| "--since must be epoch milliseconds".to_string()))
+                .transpose()?;
+            let opts = ReplayOptions::from_args(
+                flag(flags, "window").as_deref(),
+                since,
+                flag(flags, "step").as_deref(),
+                Vec::new(),
+                now,
+            )
+            .map_err(|e| e.to_string())?;
+            let ops_before = sub.facade().with_store(|m| m.stats()).map_err(|e| e.to_string())?.ops;
+            let report = engine.replay(&sub, &candidate, &opts).map_err(|e| e.to_string())?;
+            let ops_after = sub.facade().with_store(|m| m.stats()).map_err(|e| e.to_string())?.ops;
+            if ops_after != ops_before {
+                return Err(format!(
+                    "replay wrote to the memory (op-log {ops_before} → {ops_after}) — this is a bug;                      the report is discarded"
+                ));
+            }
+            if json {
+                let mut v = serde_json::to_value(&report).map_err(|e| e.to_string())?;
+                v["oplog_len"] = serde_json::json!({"before": ops_before, "after": ops_after});
+                println!("{}", serde_json::to_string(&v).map_err(|e| e.to_string())?);
+            } else {
+                println!(
+                    "replay: {} step(s) ({}) from {} to {}; op-log {ops_before} → {ops_after} (unchanged)",
+                    report.steps.len(),
+                    report.step,
+                    report.since_ms,
+                    report.until_ms
+                );
+                let row = |name: &str, t: &areev_loop::replay::ReplayTally| {
+                    format!(
+                        "{name:<28} {:>8} {:>9} {:>9} {:>9} {:>9} {:>10} {:>8} {:>6}",
+                        t.findings, t.approved, t.rejected, t.never_reviewed, t.never_proposed, t.regressed, t.drifted, t.held
+                    )
+                };
+                println!(
+                    "{:<28} {:>8} {:>9} {:>9} {:>9} {:>9} {:>10} {:>8} {:>6}",
+                    "", "findings", "approved", "rejected", "unrevwd", "never", "regressed", "drifted", "held"
+                );
+                println!("{}", row("incumbent", &report.incumbent.total));
+                println!("{}", row("candidate", &report.candidate.total));
+                let analyzers: std::collections::BTreeSet<&String> = report
+                    .incumbent
+                    .per_analyzer
+                    .keys()
+                    .chain(report.candidate.per_analyzer.keys())
+                    .collect();
+                for a in analyzers {
+                    let empty = areev_loop::replay::ReplayTally::default();
+                    let i = report.incumbent.per_analyzer.get(a).unwrap_or(&empty);
+                    let c = report.candidate.per_analyzer.get(a).unwrap_or(&empty);
+                    println!("{}", row(&format!("  {a} (incumbent)"), i));
+                    println!("{}", row(&format!("  {a} (candidate)"), c));
+                }
+                println!(
+                    "queue per step — incumbent {:?}, candidate {:?}",
+                    report.incumbent.queue_per_step, report.candidate.queue_per_step
+                );
+                for n in &report.not_replayed {
+                    println!("not replayed: {} — {}", n.what, n.reason);
+                }
+                println!("{}", report.matching);
             }
         }
         // The Verify gate's measured history: did applied advice hold?

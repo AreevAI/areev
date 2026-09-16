@@ -37,6 +37,7 @@ pub mod policy;
 pub mod proc;
 pub mod recommendation;
 pub mod reference;
+pub mod replay;
 pub mod substrate;
 
 #[cfg(test)]

@@ -405,6 +405,16 @@ export declare class Areev {
    */
   loopRun(minNew?: number | undefined | null, minNewErrors?: number | undefined | null, ifStale?: string | undefined | null, model?: string | undefined | null, llmCmd?: string | undefined | null, groundModel?: string | undefined | null, groundCmd?: string | undefined | null, analyzerCmd?: string | undefined | null, fullSweep?: boolean | undefined | null, policy?: string | undefined | null): Promise<string>
   /**
+   * Score a candidate loop configuration against the recorded past,
+   * beside the incumbent (`areev loop replay`). `request` is the JSON
+   * `ReplayRequest`: `{"config": {"<analyzer id>": {...}}, "policy": {...},
+   * "window": "90d" | "since_ms": n, "step": "per-pass" | "1d"}`; `policy`
+   * is a path to a host `loop-policy.json` for the incumbent. Reads only;
+   * the model and external analyzers are reported `not_replayed`. Returns
+   * the report JSON.
+   */
+  loopReplay(request?: string | undefined | null, policy?: string | undefined | null): Promise<unknown>
+  /**
    * List recommendations. `filter` is optional JSON, e.g. `{"status":
    * "pending"}`; `{"status":"all"}` clears the filter. JSON list.
    */
