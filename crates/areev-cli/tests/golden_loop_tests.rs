@@ -802,6 +802,47 @@ fn loop_outcome_high_water_baseline_end_to_end() {
     assert!(summary.contains("eval-peak") && summary.contains("238") && summary.contains("133"), "{summary}");
 }
 
+/// A dip inside the policy's minimum effect size is `held`, and the receipt
+/// records the floor it held under (`tolerance`), so a `held` under a floor
+/// is distinguishable from a `held` at zero on every surface.
+#[test]
+fn loop_outcome_min_effect_end_to_end() {
+    let Some(py) = find_python() else {
+        eprintln!("skipping: no python on PATH");
+        return;
+    };
+    let g = import_loop_golden();
+    let dir = TempDir::new().unwrap();
+    let script = dir.path().join("fake_lesson_llm.py");
+    std::fs::write(&script, FAKE_LESSON_LLM_PY).unwrap();
+    let cmd = format!("{py} {}", script.display());
+    let policy = write_policy(
+        &dir,
+        r#"{"outcome_evalset": {"hash": "adbuy", "field": "passed", "higher_is_better": true,
+             "min_effect": {"count": 5}, "checkpoints": [{"after_runs": 1}]}}"#,
+    );
+    journal_eval_runs(&g.db, &dir, "before", &[("eval-before", 238, T0 - DAY)]);
+    run_json(&g.db, T0, &["--llm-cmd", &cmd, "--policy", &policy]);
+    let rows = list_rows(&g.db, T0, &[]);
+    let lesson = find_rec(&rows, "loop.llm", "residency keeps being asked twice");
+    loop_ok(&g.db, T0, &["approve", &lesson, "--because", "reads fine", "--actor", "user:reviewer"]);
+    loop_ok(&g.db, T0 + HOUR, &["apply", &lesson, "--because", "try it", "--actor", "user:reviewer"]);
+    // Four cases down on 280: inside the floor.
+    journal_eval_runs(&g.db, &dir, "after", &[("eval-after", 234, T0 + 2 * HOUR)]);
+    run_json(&g.db, T0 + 3 * HOUR, &["--policy", &policy]);
+
+    let out = loop_ok(&g.db, T0 + 3 * HOUR, &["outcomes", "--format", "json"]);
+    assert_golden(&loop_golden_dir().join("outcomes-min-effect.json"), &out);
+    let outcomes: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
+    let o = outcomes.iter().find(|o| o["rec_hash"] == lesson.as_str()).expect("measured");
+    assert_eq!((o["verdict"].as_str(), o["tolerance"].as_f64()), (Some("held"), Some(5.0)), "{o}");
+    let rows = list_rows(&g.db, T0 + 3 * HOUR, &[]);
+    assert!(
+        !rows.iter().any(|r| r["analyzer"].as_str().unwrap_or("").contains("outcome_review")),
+        "a dip inside the floor drafts no revert: {rows:?}"
+    );
+}
+
 #[test]
 fn loop_llm_findings_never_auto_apply() {
     let Some(py) = find_python() else {

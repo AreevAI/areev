@@ -597,6 +597,88 @@ fn a_high_water_baseline_catches_the_fall_from_the_peak_and_names_the_run() {
     assert!(text.contains("eval-peak") && text.contains("238") && text.contains("133"), "{text}");
 }
 
+/// One lesson, one evalset, a policy string and a (before, after) pair of
+/// runs — the smallest fixture that exercises the recorded verdict AND the
+/// revert draft under a minimum effect size.
+fn min_effect_verdict(policy_json: &str, before: (u64, u64), after: (u64, u64)) -> (crate::recommendation::OutcomeResult, bool) {
+    use crate::model::Origin;
+    let t = 5_000_000;
+    let scopes = ScopeSet::all();
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("capture", "correction", "vendor missing");
+    let journal = |sub: &mut TestSubstrate, run_id: &str, (passed, failed): (u64, u64), at: i64| {
+        sub.add_fact_at(
+            "agent:harness",
+            "evalset:noisy",
+            "mg:eval_run",
+            &format!(r#"{{"run_id":"{run_id}","passed":{passed},"failed":{failed}}}"#),
+            at,
+        );
+    };
+    journal(&mut sub, "eval-before", before, t - DAY);
+    let llm = MockLlm {
+        discover: format!(
+            r#"{{"recommendations":[{{"summary":"x","target":"entity:test/capture","evidence":["{h1}"],"confidence":0.9,"proposal":{{"kind":"lesson","lesson":"Check the vendor."}}}}]}}"#
+        ),
+        ground: r#"{"results":[{"id":0,"supported":true,"reason":"ok"}]}"#.into(),
+        verify: r#"{"results":[{"id":0,"keep":true,"confidence":0.9,"reason":"ok"}]}"#.into(),
+        enrich: r#"{"notes":[]}"#.into(),
+    };
+    let e = Engine::with_builtins().with_llm(Box::new(llm)).with_policy(Policy::from_json(policy_json).unwrap());
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    let rec = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .find(|r| matches!(r.origin, Origin::Llm { .. }))
+        .unwrap();
+    e.review(&mut sub.inner, &rec.hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "ok", t + 1).unwrap();
+    e.apply(&mut sub.inner, &rec.hash, "user:a", ObserverType::Human, &scopes, "ok", false, t + 2).unwrap();
+    journal(&mut sub, "eval-after", after, t + DAY + 10);
+    e.run(&mut sub.inner, &RunOptions::default(), t + DAY + 20).unwrap();
+    let v = seed3_verdict(&e, &sub, &rec.hash);
+    let reverted = revert_pending(&e, &sub).is_some();
+    (v, reverted)
+}
+
+/// A minimum effect size is a floor under the verdict: a dip inside it is
+/// `held` and records the floor it held under; one past it is `regressed`
+/// and the revert is drafted. Both directions, and the `points` form scaled
+/// by the run total. Measured need: a 359 → 355 dip on 387 trials — within
+/// what one adapter read twice can differ by — used to propose a revert.
+#[test]
+fn a_minimum_effect_size_is_a_floor_under_the_verdict() {
+    let count5 = r#"{"outcome_evalset": {"hash": "noisy", "field": "passed", "higher_is_better": true, "min_effect": {"count": 5}}}"#;
+    let (v, reverted) = min_effect_verdict(count5, (359, 28), (355, 32));
+    assert_eq!((v.verdict.as_str(), v.tolerance, reverted), ("held", 5.0, false), "{v:?}");
+    let (v, reverted) = min_effect_verdict(count5, (359, 28), (353, 34));
+    assert_eq!((v.verdict.as_str(), v.tolerance, reverted), ("regressed", 5.0, true), "{v:?}");
+    // Exactly at the floor is still held: the floor is inclusive.
+    let (v, _) = min_effect_verdict(count5, (359, 28), (354, 33));
+    assert_eq!(v.verdict, "held");
+
+    // Lower is better: `failed` may rise by the floor and no more.
+    let failed5 = r#"{"outcome_evalset": {"hash": "noisy", "field": "failed", "higher_is_better": false, "min_effect": {"count": 5}}}"#;
+    let (v, reverted) = min_effect_verdict(failed5, (359, 28), (355, 32));
+    assert_eq!((v.verdict.as_str(), reverted), ("held", false));
+    let (v, reverted) = min_effect_verdict(failed5, (359, 28), (353, 34));
+    assert_eq!((v.verdict.as_str(), reverted), ("regressed", true));
+
+    // Points: 92.0% → 91.5% of 200 holds under 1.0 point; → 90.5% regresses.
+    let points1 = r#"{"outcome_evalset": {"hash": "noisy", "field": "passed", "higher_is_better": true, "min_effect": {"points": 1.0}}}"#;
+    let (v, reverted) = min_effect_verdict(points1, (184, 16), (183, 17));
+    assert_eq!((v.verdict.as_str(), v.tolerance, reverted), ("held", 2.0, false), "1 point of 200 is 2 cases: {v:?}");
+    let (v, reverted) = min_effect_verdict(points1, (184, 16), (181, 19));
+    assert_eq!((v.verdict.as_str(), reverted), ("regressed", true));
+
+    // No floor: the same 359 → 355 dip is a regression, as it always was,
+    // and the record carries no `tolerance`.
+    let none = r#"{"outcome_evalset": {"hash": "noisy", "field": "passed", "higher_is_better": true}}"#;
+    let (v, reverted) = min_effect_verdict(none, (359, 28), (355, 32));
+    assert_eq!((v.verdict.as_str(), v.tolerance, reverted), ("regressed", 0.0, true));
+    assert!(!serde_json::to_string(&v).unwrap().contains("tolerance"));
+}
+
 #[test]
 fn a_lower_is_better_high_water_mark_is_the_minimum() {
     use crate::model::Origin;

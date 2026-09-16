@@ -118,6 +118,57 @@ impl BaselineKind {
     }
 }
 
+/// The Verify gate's minimum effect size — a **floor, not a significance
+/// test**. A worsening of at most this much is `held`; no p-value, no
+/// interval, and the docs say so (`docs/loop-proposal.md` §18 forbids
+/// invented precision). Exactly one form:
+///
+/// - `{"count": n}` — absolute, in the field's own unit (`passed: 359 →
+///   355` under `count: 5` holds);
+/// - `{"points": p}` — percentage points. For the promoted count fields
+///   (`passed`, `failed`, `total`) it is scaled by the baseline run's
+///   `total`; for `error_rate`, and for any host-written field, it is read
+///   as `p / 100` — a host field under `points` is assumed to be a ratio in
+///   `0..1`, so a count-valued host field wants `count`.
+///
+/// Measured need (`docs/loop.md`): a 359 → 355 dip on 387 trials — within
+/// what one adapter read twice can differ by — proposed a revert.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MinEffect {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub points: Option<f64>,
+}
+
+impl MinEffect {
+    fn validate(&self) -> Result<()> {
+        let bad = |what: &str| Err(Error::InvalidProposal(format!("policy: outcome_evalset.min_effect: {what}")));
+        match (self.count, self.points) {
+            (None, None) => bad("give {\"count\": n} or {\"points\": p}"),
+            (Some(_), Some(_)) => bad("give count or points, not both"),
+            (Some(v), None) | (None, Some(v)) if !(v.is_finite() && v >= 0.0) => {
+                bad("must be a finite number ≥ 0")
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// The tolerance in the field's unit, given the run total the `points`
+    /// form scales a count field by.
+    pub fn resolve(&self, field: &str, total: u64) -> f64 {
+        match (self.count, self.points) {
+            (Some(c), _) => c,
+            (None, Some(p)) => match field {
+                "passed" | "failed" | "total" => p / 100.0 * total as f64,
+                _ => p / 100.0,
+            },
+            (None, None) => 0.0,
+        }
+    }
+}
+
 /// The evalset every LLM-authored, applicable proposal is measured against
 /// after apply (`docs/loop.md`, "Evalset-backed outcomes"). An authored
 /// lesson carries no built-in recurrence metric — nothing errors when a
@@ -155,6 +206,10 @@ pub struct OutcomeEvalset {
     /// opt-in).
     #[serde(default)]
     pub baseline: BaselineKind,
+    /// The minimum effect size a verdict needs to call a regression (default
+    /// none: any drop past floating-point slack is a regression).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_effect: Option<MinEffect>,
 }
 
 fn default_horizons() -> Vec<i64> {
@@ -382,7 +437,12 @@ impl Default for Policy {
 impl Policy {
     /// Parse a policy JSON string. Unknown keys are rejected (fail-closed).
     pub fn from_json(s: &str) -> Result<Self> {
-        serde_json::from_str(s).map_err(|e| Error::InvalidProposal(format!("policy: {e}")))
+        let p: Policy =
+            serde_json::from_str(s).map_err(|e| Error::InvalidProposal(format!("policy: {e}")))?;
+        if let Some(m) = p.outcome_evalset.as_ref().and_then(|e| e.min_effect.as_ref()) {
+            m.validate()?;
+        }
+        Ok(p)
     }
 
     /// Is this analyzer family denied by the host?
@@ -506,6 +566,24 @@ mod tests {
         .expect_err("unknown baseline kind");
         let msg = err.to_string();
         assert!(msg.contains("newest_before_apply") && msg.contains("high_water"), "{msg}");
+    }
+
+    #[test]
+    fn min_effect_is_one_non_negative_number() {
+        let base = |extra: &str| {
+            format!(r#"{{"outcome_evalset": {{"hash": "f", "field": "passed", "higher_is_better": true, "min_effect": {extra}}}}}"#)
+        };
+        let m = Policy::from_json(&base(r#"{"count": 5}"#)).unwrap().outcome_evalset.unwrap().min_effect.unwrap();
+        assert_eq!(m.resolve("passed", 387), 5.0);
+        let m = Policy::from_json(&base(r#"{"points": 1.0}"#)).unwrap().outcome_evalset.unwrap().min_effect.unwrap();
+        assert_eq!(m.resolve("passed", 200), 2.0, "points scale a count field by the run total");
+        assert!((m.resolve("error_rate", 200) - 0.01).abs() < 1e-12, "a ratio field reads points as a fraction");
+        assert!((m.resolve("category_accuracy", 200) - 0.01).abs() < 1e-12, "a host field is assumed a ratio");
+        for bad in [r#"{"count": -1}"#, r#"{"points": "1"}"#, r#"{}"#, r#"{"count": 1, "points": 1}"#, r#"{"count": null}"#, r#"{"width": 2}"#] {
+            assert!(Policy::from_json(&base(bad)).is_err(), "{bad} must be a policy error");
+        }
+        // Absent → zero: today's verdicts.
+        assert!(Policy::from_json(&base("null")).unwrap().outcome_evalset.unwrap().min_effect.is_none());
     }
 
     #[test]

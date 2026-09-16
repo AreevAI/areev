@@ -317,17 +317,27 @@ pub struct MetricSnapshot {
 
 /// The one regression rule.
 ///
-/// The verdict is computed in two places — once by the engine for the recorded
-/// `OutcomeResult`, once by `outcome_review` when it drafts the revert — and
-/// the two silently disagreeing would either revert a change that held or sit
-/// on one that regressed. So both call this.
-pub fn is_regression(baseline: f64, current: f64, higher_is_better: bool) -> bool {
-    /// Minimum worsening to call a regression (avoids noise at n=1).
+/// The verdict is computed in three places — by the engine for the recorded
+/// `OutcomeResult`, by `outcome_review` when it drafts the revert, and by
+/// `areev eval run --tolerance` when it re-accepts a model swap — and any two
+/// silently disagreeing would either revert a change that held or sit on one
+/// that regressed. So all of them call this.
+///
+/// `tolerance` is the policy's minimum effect size in the metric's own unit
+/// (`OutcomeEvalset::min_effect`, or `--tolerance` in percentage points of
+/// the pass rate): a worsening of at most that much is not a regression. It
+/// is a **floor, not a significance test** — no p-value, no interval; a host
+/// that needs statistics has the run counts to compute them. Zero is the
+/// pre-policy behaviour: any drop is a regression. `EPSILON` is only
+/// floating-point equality slack, so a value read twice that differs in the
+/// last bit does not flip the verdict; it is not a noise floor.
+pub fn is_regression(baseline: f64, current: f64, higher_is_better: bool, tolerance: f64) -> bool {
     const EPSILON: f64 = 1e-9;
+    let tolerance = if tolerance.is_finite() && tolerance > 0.0 { tolerance } else { 0.0 };
     if higher_is_better {
-        current < baseline - EPSILON
+        current < baseline - tolerance - EPSILON
     } else {
-        current > baseline + EPSILON
+        current > baseline + tolerance + EPSILON
     }
 }
 
@@ -354,6 +364,10 @@ impl MetricSnapshot {
     pub fn horizons(&self) -> Vec<i64> {
         self.schedule().iter().filter_map(Checkpoint::as_ms).collect()
     }
+}
+
+fn is_zero(x: &f64) -> bool {
+    *x == 0.0
 }
 
 /// A measured outcome for an applied recommendation at one checkpoint — the
@@ -383,6 +397,12 @@ pub struct OutcomeResult {
     /// opportunity the marginal comparison cannot see.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub best_before: Option<f64>,
+    /// The minimum effect size the verdict was made under, in the metric's
+    /// unit (`OutcomeEvalset::min_effect`, resolved at measure time). Absent
+    /// when zero, so a `held` under a floor is distinguishable from a `held`
+    /// at zero and a record without one reads as before.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub tolerance: f64,
     /// Which checkpoint this measurement is for (ms after apply). Zero for a
     /// checkpoint counted in runs or grains — see `checkpoint`.
     #[serde(default)]
@@ -853,6 +873,31 @@ impl Recommendation {
 
 #[cfg(test)]
 mod tests {
+    /// The gate and `areev eval run --tolerance` call this one function, so
+    /// the boundary is the same for both readers by construction: a drop of
+    /// exactly the tolerance holds, a hair past it regresses, and a tolerance
+    /// that is not a positive finite number is zero.
+    #[test]
+    fn the_regression_rule_holds_at_the_tolerance_and_regresses_past_it() {
+        use super::is_regression;
+        // Percentage points, the way `eval run --tolerance` reads it.
+        assert!(!is_regression(100.0, 0.0, true, 100.0), "a 100-point drop under a 100-point tolerance is accepted");
+        assert!(is_regression(100.0, 0.0, true, 99.9));
+        assert!(!is_regression(92.0, 91.5, true, 1.0));
+        assert!(is_regression(92.0, 90.5, true, 1.0));
+        // Counts, the way the gate reads `min_effect.count`.
+        assert!(!is_regression(359.0, 355.0, true, 5.0));
+        assert!(!is_regression(359.0, 354.0, true, 5.0), "exactly at the floor holds");
+        assert!(is_regression(359.0, 353.0, true, 5.0));
+        assert!(!is_regression(28.0, 33.0, false, 5.0));
+        assert!(is_regression(28.0, 34.0, false, 5.0));
+        // Zero is the pre-policy rule; garbage is zero, never a wider floor.
+        assert!(is_regression(359.0, 355.0, true, 0.0));
+        assert!(is_regression(359.0, 355.0, true, -5.0));
+        assert!(is_regression(359.0, 355.0, true, f64::NAN));
+        assert!(!is_regression(1.0, 1.0, true, 0.0), "equal is never a regression");
+    }
+
     use super::*;
     use serde_json::json;
 

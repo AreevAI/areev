@@ -31,6 +31,9 @@ pub struct OutcomeInput {
     pub baseline_run_id: Option<String>,
     /// The best value before the apply (`OutcomeResult::best_before`).
     pub best_before: Option<f64>,
+    /// The minimum effect size the engine judged under, in the metric's unit
+    /// — passed through so the revert draft applies the SAME floor.
+    pub tolerance: f64,
 }
 
 /// The context handed to `analyze`. Read-only by construction.

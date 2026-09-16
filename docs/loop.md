@@ -623,11 +623,24 @@ the one kind of change a human approves from prose alone.
 A revert's identity is the recommendation it retracts: two lessons on one
 entity that both regress get two reverts (a deterministic finding's dedup
 key is analyzer + target + action, and keyed that way the second revert was
-dropped as a duplicate of the first until 2026-09-06). And the verdict has
-**no noise floor**: any drop past `1e-9` is a regression, so a 359 → 355
+dropped as a duplicate of the first until 2026-09-06). And by default the
+verdict has **no noise floor**: any drop is a regression, so a 359 → 355
 dip on 387 trials — within what one adapter read twice can differ by —
-proposes a revert. That is a limit, stated here; a policy-level minimum
-effect size is not implemented.
+proposes a revert. The policy can set a **minimum effect size**,
+`outcome_evalset.min_effect`: `{"count": 5}` (absolute, in the field's own
+unit) or `{"points": 1.0}` (percentage points — scaled by the baseline run's
+`total` for `passed`/`failed`/`total`, read as `p/100` for `error_rate` and
+for a host-written field, which `points` assumes is a ratio in `0..1`; a
+count-valued host field wants `count`). A worsening of at most the floor is
+`held`, and the receipt records the floor it held under (`tolerance`), so a
+`held` under a floor is distinguishable from a `held` at zero. Name it for
+what it is: a **floor, not a significance test** — no p-value, no interval;
+a builder who needs statistics has the run counts to compute them. The
+floor is resolved once from the policy and travels with the measurement, so
+the recorded verdict and `outcome_review`'s revert draft cannot disagree on
+it, and `areev eval run --baseline RUN --tolerance N` (model-swap
+re-acceptance) reads the same `is_regression` — one reader of "did it get
+worse" for both edges.
 
 No scheduler is implied: run `areev eval run` from cron or CI exactly as you run
 `areev loop run`; outcomes only ever **read** what it journaled. The apply gate
@@ -753,7 +766,9 @@ host policy file — `areev loop --policy loop-policy.json` (or
   "discover_objective": "review_queue",
   "outcome_evalset": {
     "hash": "<evalset hash>", "field": "passed", "higher_is_better": true,
-    "checkpoints": [{ "after_runs": 1 }, { "after_ms": 604800000 }]
+    "checkpoints": [{ "after_runs": 1 }, { "after_ms": 604800000 }],
+    "baseline": "newest_before_apply",
+    "min_effect": { "count": 5 }
   },
   "evidence_attribution": "named",
   "cadence": { "every_events": 10 },
@@ -847,7 +862,10 @@ compares against: `newest_before_apply` (default — the marginal question,
 never blames a rule for an earlier rule's drop) or `high_water` (the best
 run before the apply — catches a fall from the peak, at the cost of
 charging the whole fall to the last apply; see "What the gate does not
-catch"). It exists because an authored lesson carries no recurrence metric —
+catch"). `min_effect` is the verdict's floor — `{"count": n}` in the
+field's unit or `{"points": p}` of the pass rate — below which a dip is
+`held` (default none: any drop regresses; see "Evalset-backed outcomes").
+It exists because an authored lesson carries no recurrence metric —
 nothing errors when a lesson is merely useless or quietly harmful — so
 without it the Verify gate had nothing to re-measure for exactly the
 proposals a reviewer was least able to judge from the text. No run
