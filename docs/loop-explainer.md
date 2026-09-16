@@ -488,8 +488,9 @@ MCP / HTTP parity on the full lifecycle incl. rollback + outcomes · precision
 8. **Migrate onto the OMS `0x0C` recommendation grain** — the native type now
    exists (OMS 1.5); moving the live queue onto it is a data migration.
 9. **The tuning seam** — `areev corpus` already exports a governed, step-labeled
-   training set and `areev run shadow` / `areev eval` already grade a candidate
-   against recorded history. What is missing is `areev tune --cmd ...`, which
+   training set and `areev eval` already grades a candidate against a pinned
+   evalset (`areev run shadow` replays journaled runs for consistency; it
+   takes no candidate — item 1). What is missing is `areev tune --cmd ...`, which
    hands that corpus to the **host's** trainer and takes back an adapter
    reference registered as a grain (base model + adapter + quantization pinned as
    one unit), so promotion runs through the four gates a memory edit already
