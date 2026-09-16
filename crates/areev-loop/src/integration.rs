@@ -498,6 +498,158 @@ fn a_run_journaled_before_the_apply_is_the_lessons_baseline() {
     );
 }
 
+/// The marginal comparison is blind to a fall from the peak by construction.
+/// Measured (`crates/areev-bench/ADBUY.md`, seed 3): 35 → 238 → 128 before
+/// the apply, 133 after it. Against the newest run before the apply (128)
+/// that is `held`, correctly by its own definition; against the best run
+/// before it (238) it is the regression the operator wanted caught. The
+/// choice is policy (`outcome_evalset.baseline`), the receipt names the run
+/// it compared against either way, and `best_before` rides on the marginal
+/// verdict too so the lost opportunity is visible even when nothing reverts.
+fn seed3_fixture(policy_json: &str) -> (Engine, TestSubstrate, String) {
+    use crate::model::Origin;
+    let t = 5_000_000;
+    let scopes = ScopeSet::all();
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("capture", "correction", "vendor missing");
+    let journal = |sub: &mut TestSubstrate, run_id: &str, passed: u64, at: i64| {
+        sub.add_fact_at(
+            "agent:harness",
+            "evalset:adbuy",
+            "mg:eval_run",
+            &format!(r#"{{"run_id":"{run_id}","passed":{passed},"failed":{}}}"#, 280 - passed),
+            at,
+        );
+    };
+    journal(&mut sub, "eval-day-one", 35, t - 3 * DAY);
+    journal(&mut sub, "eval-peak", 238, t - 2 * DAY);
+    journal(&mut sub, "eval-fallen", 128, t - DAY);
+    let llm = MockLlm {
+        discover: format!(
+            r#"{{"recommendations":[{{"summary":"invoice numbers are being dropped","target":"entity:test/capture","evidence":["{h1}"],"confidence":0.9,"proposal":{{"kind":"lesson","lesson":"Copy the invoice number exactly as printed."}}}}]}}"#
+        ),
+        ground: r#"{"results":[{"id":0,"supported":true,"reason":"ok"}]}"#.into(),
+        verify: r#"{"results":[{"id":0,"keep":true,"confidence":0.9,"reason":"ok"}]}"#.into(),
+        enrich: r#"{"notes":[]}"#.into(),
+    };
+    let e = Engine::with_builtins()
+        .with_llm(Box::new(llm))
+        .with_policy(Policy::from_json(policy_json).unwrap());
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    let rec = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .find(|r| matches!(r.origin, Origin::Llm { .. }))
+        .expect("the lesson is proposed");
+    e.review(&mut sub.inner, &rec.hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "reads fine", t + 1)
+        .unwrap();
+    e.apply(&mut sub.inner, &rec.hash, "user:a", ObserverType::Human, &scopes, "apply the lesson", false, t + 2)
+        .unwrap();
+    journal(&mut sub, "eval-after", 133, t + DAY + 10);
+    e.run(&mut sub.inner, &RunOptions::default(), t + DAY + 20).unwrap();
+    (e, sub, rec.hash)
+}
+
+fn seed3_verdict(e: &Engine, sub: &TestSubstrate, hash: &str) -> crate::recommendation::OutcomeResult {
+    let verdicts: Vec<_> = e
+        .outcomes(&sub.inner)
+        .unwrap()
+        .into_iter()
+        .filter(|o| o.rec_hash == hash)
+        .collect();
+    assert_eq!(verdicts.len(), 1, "one checkpoint measured");
+    verdicts.into_iter().next().unwrap()
+}
+
+fn revert_pending(e: &Engine, sub: &TestSubstrate) -> Option<Recommendation> {
+    e.recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .find(|r| r.analyzer.starts_with("loop.outcome_review"))
+}
+
+#[test]
+fn the_default_baseline_is_the_newest_run_before_the_apply_and_names_the_peak_it_cannot_see() {
+    let (e, sub, hash) = seed3_fixture(
+        r#"{"outcome_evalset": {"hash": "adbuy", "field": "passed", "higher_is_better": true}}"#,
+    );
+    let v = seed3_verdict(&e, &sub, &hash);
+    assert_eq!((v.baseline, v.current, v.verdict.as_str()), (128.0, 133.0, "held"));
+    assert_eq!(v.baseline_kind, "newest_before_apply");
+    assert_eq!(v.baseline_run_id.as_deref(), Some("eval-fallen"));
+    assert_eq!(v.best_before, Some(238.0), "the peak rides on the receipt even though it is not the baseline");
+    assert!(revert_pending(&e, &sub).is_none(), "held proposes nothing");
+}
+
+#[test]
+fn a_high_water_baseline_catches_the_fall_from_the_peak_and_names_the_run() {
+    let (e, sub, hash) = seed3_fixture(
+        r#"{"outcome_evalset": {"hash": "adbuy", "field": "passed", "higher_is_better": true, "baseline": "high_water"}}"#,
+    );
+    let v = seed3_verdict(&e, &sub, &hash);
+    assert_eq!((v.baseline, v.current, v.verdict.as_str()), (238.0, 133.0, "regressed"));
+    assert_eq!(v.baseline_kind, "high_water");
+    assert_eq!(v.baseline_run_id.as_deref(), Some("eval-peak"));
+    assert_eq!(v.best_before, Some(238.0));
+    let revert = revert_pending(&e, &sub).expect("the revert is drafted");
+    let text = revert.summary.render();
+    assert!(text.contains("eval-peak") && text.contains("238") && text.contains("133"), "{text}");
+}
+
+#[test]
+fn a_lower_is_better_high_water_mark_is_the_minimum() {
+    use crate::model::Origin;
+    let t = 5_000_000;
+    let scopes = ScopeSet::all();
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("capture", "correction", "vendor missing");
+    // error_rate = failed / total: 0.10, then 0.03 (the best), then 0.07.
+    let journal = |sub: &mut TestSubstrate, run_id: &str, failed: u64, at: i64| {
+        sub.add_fact_at(
+            "agent:harness",
+            "evalset:adbuy",
+            "mg:eval_run",
+            &format!(r#"{{"run_id":"{run_id}","passed":{},"failed":{failed}}}"#, 100 - failed),
+            at,
+        );
+    };
+    journal(&mut sub, "eval-1", 10, t - 3 * DAY);
+    journal(&mut sub, "eval-best", 3, t - 2 * DAY);
+    journal(&mut sub, "eval-3", 7, t - DAY);
+    let llm = MockLlm {
+        discover: format!(
+            r#"{{"recommendations":[{{"summary":"x","target":"entity:test/capture","evidence":["{h1}"],"confidence":0.9,"proposal":{{"kind":"lesson","lesson":"Check the vendor."}}}}]}}"#
+        ),
+        ground: r#"{"results":[{"id":0,"supported":true,"reason":"ok"}]}"#.into(),
+        verify: r#"{"results":[{"id":0,"keep":true,"confidence":0.9,"reason":"ok"}]}"#.into(),
+        enrich: r#"{"notes":[]}"#.into(),
+    };
+    let policy = Policy::from_json(
+        r#"{"outcome_evalset": {"hash": "adbuy", "field": "error_rate", "higher_is_better": false, "baseline": "high_water"}}"#,
+    )
+    .unwrap();
+    let e = Engine::with_builtins().with_llm(Box::new(llm)).with_policy(policy);
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    let rec = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .find(|r| matches!(r.origin, Origin::Llm { .. }))
+        .unwrap();
+    e.review(&mut sub.inner, &rec.hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "ok", t + 1).unwrap();
+    e.apply(&mut sub.inner, &rec.hash, "user:a", ObserverType::Human, &scopes, "ok", false, t + 2).unwrap();
+    // After: 0.05 — better than the newest run before the apply (0.07),
+    // worse than the best (0.03).
+    journal(&mut sub, "eval-after", 5, t + DAY + 10);
+    e.run(&mut sub.inner, &RunOptions::default(), t + DAY + 20).unwrap();
+    let v = seed3_verdict(&e, &sub, &rec.hash);
+    assert_eq!(v.baseline_run_id.as_deref(), Some("eval-best"), "min, not max, when lower is better");
+    assert!((v.baseline - 0.03).abs() < 1e-9 && (v.current - 0.05).abs() < 1e-9);
+    assert_eq!(v.verdict, "regressed");
+    assert_eq!(v.best_before, Some(v.baseline));
+}
+
 /// An LLM-authored lesson carries no recurrence metric — nothing errors when
 /// a lesson is merely useless — so `Policy::outcome_evalset` gives every
 /// applicable authored proposal the host's evalset as its metric: baseline
@@ -3669,6 +3821,26 @@ mod evalset_outcome {
 
     fn measure(sub: &TestSubstrate, m: &MetricSnapshot, since: i64) -> Option<f64> {
         crate::engine::measure_metric(&sub.inner, m, since).unwrap()
+    }
+
+    /// No run journaled before the apply → both baseline choices fall back to
+    /// the number the proposal froze, and the receipt says so: `snapshot`,
+    /// no run named, no peak. Neither mode invents a run.
+    #[test]
+    fn without_a_run_before_the_apply_both_baseline_kinds_are_the_snapshot() {
+        use crate::policy::BaselineKind;
+        let mut sub = TestSubstrate::new();
+        // The only run is AFTER the apply (at 5_000).
+        journal_run(&mut sub, "eval-after", 6_000, serde_json::json!({"category_accuracy": 0.9}));
+        let m = snapshot("category_accuracy", 0.71, true);
+        for kind in [BaselineKind::NewestBeforeApply, BaselineKind::HighWater] {
+            let b = crate::engine::baseline_at_apply(&sub.inner, &m, 5_000, kind).unwrap();
+            assert_eq!((b.value, b.kind, b.run_id.clone(), b.best_before), (0.71, "snapshot", None, None), "{kind:?}");
+        }
+        // A metric that is not evalset-backed is always the snapshot.
+        let m = MetricSnapshot { metric: "contradiction_recurrence".into(), ..snapshot("x", 0.0, false) };
+        let b = crate::engine::baseline_at_apply(&sub.inner, &m, 5_000, BaselineKind::HighWater).unwrap();
+        assert_eq!((b.value, b.kind), (0.0, "snapshot"));
     }
 
     #[test]

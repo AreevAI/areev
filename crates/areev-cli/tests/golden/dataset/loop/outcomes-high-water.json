@@ -1,0 +1,1 @@
+[{"rec_hash":"b23c02e2b99583e0b76dd4a8c35bd36dc55105b41f7592469428c2fd13e1f28f","metric":"evalset:adbuy:passed","baseline":238.0,"current":133.0,"verdict":"regressed","baseline_kind":"high_water","baseline_run_id":"eval-peak","best_before":238.0,"horizon_ms":0,"checkpoint":{"after_runs":1},"measured_at_ms":1768446000000}]

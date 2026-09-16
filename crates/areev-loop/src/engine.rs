@@ -358,7 +358,7 @@ impl Engine {
         // Verify gate). Records a measured outcome per due recommendation —
         // and, under policy, asks the gate's second question: does each
         // applied recommendation's PREMISE still stand?
-        let mut outcome_inputs = measure_outcomes(sub, &mut persisted, now_ms)?;
+        let mut outcome_inputs = measure_outcomes(sub, &mut persisted, &self.policy, now_ms)?;
         if self.policy.premise_drift {
             outcome_inputs.extend(detect_premise_drift(sub, &mut persisted, now_ms)?);
         }
@@ -1983,6 +1983,7 @@ pub struct LlmMetrics {
 fn measure_outcomes<S: OmsSubstrate>(
     sub: &S,
     p: &mut LoopPersisted,
+    policy: &crate::policy::Policy,
     now_ms: i64,
 ) -> Result<Vec<OutcomeInput>> {
     // Collect all due (recommendation, checkpoint) pairs first. A checkpoint
@@ -2008,7 +2009,8 @@ fn measure_outcomes<S: OmsSubstrate>(
         let Some(current) = measure_metric(sub, metric, applied.applied_at_ms)? else {
             continue; // metric kind not yet re-measurable
         };
-        let baseline = baseline_at_apply(sub, metric, applied.applied_at_ms)?;
+        let base = baseline_at_apply(sub, metric, applied.applied_at_ms, baseline_kind_for(policy, metric))?;
+        let baseline = base.value;
         let regressed = crate::recommendation::is_regression(
             baseline,
             current,
@@ -2021,6 +2023,9 @@ fn measure_outcomes<S: OmsSubstrate>(
                 baseline,
                 current,
                 verdict: if regressed { "regressed" } else { "held" }.into(),
+                baseline_kind: base.kind.into(),
+                baseline_run_id: base.run_id.clone(),
+                best_before: base.best_before,
                 // A time checkpoint speaks through `horizon_ms`, as it always
                 // did; the other units carry themselves.
                 horizon_ms: checkpoint.as_ms().unwrap_or(0),
@@ -2038,6 +2043,9 @@ fn measure_outcomes<S: OmsSubstrate>(
                 current,
                 unit: metric.unit.clone(),
                 higher_is_better: metric.higher_is_better,
+                baseline_kind: base.kind.into(),
+                baseline_run_id: base.run_id,
+                best_before: base.best_before,
             });
         }
     }
@@ -2071,30 +2079,90 @@ fn checkpoint_due<S: SubstrateRead>(
     })
 }
 
-/// The number a verdict compares against: for an evalset metric, the newest
-/// run journaled BEFORE the apply when there is one, else the snapshot the
-/// proposal froze. "Did applying it help" is a question about the state of
-/// the world at the apply, not at the proposal — and a deployment that
-/// measures once, at day one, and then approves its twentieth rule would
-/// otherwise read a rule that cost twenty points as `held` against a
-/// baseline the first nineteen had already left far behind. Found on a real
-/// corpus (`crates/areev-bench/CURVE.md`: a rule that contradicted an earlier
-/// one took the agent from 86% to 66% and measured as held against 26%).
-/// With nothing journaled between proposal and apply the two are the same
-/// run, so no verdict recorded before this changes.
-fn baseline_at_apply<S: SubstrateRead>(
+/// The number a verdict compares against, and where it came from.
+pub(crate) struct BaselineRead {
+    pub value: f64,
+    /// `newest_before_apply`, `high_water` or `snapshot` — see
+    /// `OutcomeResult::baseline_kind`.
+    pub kind: &'static str,
+    pub run_id: Option<String>,
+    pub best_before: Option<f64>,
+}
+
+/// The host's baseline choice applies to the evalset it names; any other
+/// evalset-backed metric keeps the marginal comparison.
+fn baseline_kind_for(
+    policy: &crate::policy::Policy,
+    metric: &crate::recommendation::MetricSnapshot,
+) -> crate::policy::BaselineKind {
+    match (policy.outcome_evalset.as_ref(), crate::eval::parse_evalset_metric(&metric.metric)) {
+        (Some(e), Some((hash, _))) if e.hash == hash => e.baseline,
+        _ => crate::policy::BaselineKind::default(),
+    }
+}
+
+/// The number a verdict compares against: for an evalset metric, a run
+/// journaled BEFORE the apply when there is one — the newest by default, the
+/// best under `high_water` — else the snapshot the proposal froze. "Did
+/// applying it help" is a question about the state of the world at the
+/// apply, not at the proposal — and a deployment that measures once, at day
+/// one, and then approves its twentieth rule would otherwise read a rule
+/// that cost twenty points as `held` against a baseline the first nineteen
+/// had already left far behind. Found on a real corpus
+/// (`crates/areev-bench/CURVE.md`: a rule that contradicted an earlier one
+/// took the agent from 86% to 66% and measured as held against 26%). With
+/// nothing journaled between proposal and apply the two are the same run,
+/// so no verdict recorded before this changes.
+///
+/// `best_before` is read regardless of the choice: the marginal verdict is
+/// blind to a fall from the peak by construction (`ADBUY.md`, seed 3: 35 →
+/// 238 → 128 → 133 reads `held` against 35), so the receipt carries the
+/// peak beside the baseline even when it is not the baseline.
+pub(crate) fn baseline_at_apply<S: SubstrateRead>(
     sub: &S,
     metric: &crate::recommendation::MetricSnapshot,
     applied_at_ms: i64,
-) -> Result<f64> {
+    kind: crate::policy::BaselineKind,
+) -> Result<BaselineRead> {
+    use crate::policy::BaselineKind;
     if let Some((evalset, field)) = crate::eval::parse_evalset_metric(&metric.metric) {
-        if let Some(run) = crate::eval::newest_eval_run_before(sub, evalset, applied_at_ms)? {
-            if let Some(v) = crate::eval::run_value(&run, field) {
-                return Ok(v);
-            }
+        // Oldest first, the field read through the one reader every consumer
+        // uses; a run whose summary lacks the field is not a candidate.
+        let before: Vec<(String, f64)> = crate::eval::eval_runs(sub, evalset, None)?
+            .into_iter()
+            .filter(|r| r.recorded_ms < applied_at_ms)
+            .filter_map(|r| crate::eval::run_value(&r, field).map(|v| (r.run_id, v)))
+            .collect();
+        if let Some((newest_id, newest)) = before.last() {
+            // The first run to attain the best value is the high-water mark:
+            // a later tie did not raise it.
+            let (best_id, best) = before
+                .iter()
+                .fold(None::<&(String, f64)>, |acc, r| match acc {
+                    None => Some(r),
+                    Some(b) => {
+                        let better = if metric.higher_is_better { r.1 > b.1 } else { r.1 < b.1 };
+                        Some(if better { r } else { b })
+                    }
+                })
+                .expect("non-empty");
+            return Ok(match kind {
+                BaselineKind::NewestBeforeApply => BaselineRead {
+                    value: *newest,
+                    kind: kind.as_str(),
+                    run_id: Some(newest_id.clone()),
+                    best_before: Some(*best),
+                },
+                BaselineKind::HighWater => BaselineRead {
+                    value: *best,
+                    kind: kind.as_str(),
+                    run_id: Some(best_id.clone()),
+                    best_before: Some(*best),
+                },
+            });
         }
     }
-    Ok(metric.baseline)
+    Ok(BaselineRead { value: metric.baseline, kind: "snapshot", run_id: None, best_before: None })
 }
 
 /// Typed re-measurement for the fixed set of metric kinds the engine knows.
@@ -3483,6 +3551,9 @@ fn detect_premise_drift<S: OmsSubstrate>(
                     baseline: 0.0,
                     current: moved as f64,
                     verdict: "drifted".into(),
+                    baseline_kind: "snapshot".into(),
+                    baseline_run_id: None,
+                    best_before: None,
                     horizon_ms: 0,
                     checkpoint: None,
                     measured_at_ms: now_ms,
@@ -3497,6 +3568,9 @@ fn detect_premise_drift<S: OmsSubstrate>(
             current: moved as f64,
             unit: "superseded premises".into(),
             higher_is_better: false,
+            baseline_kind: "snapshot".into(),
+            baseline_run_id: None,
+            best_before: None,
         });
     }
     Ok(out)

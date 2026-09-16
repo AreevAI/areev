@@ -82,6 +82,42 @@ pub enum EvidenceAttribution {
     Anonymous,
 }
 
+/// Which run journaled before the apply an evalset verdict compares
+/// against (`docs/loop.md`, "Evalset-backed outcomes").
+///
+/// `newest_before_apply` is the marginal question — did THIS apply make the
+/// agent worse than it was the moment before — and it is the default because
+/// it never proposes reverting a rule for a drop an earlier rule caused.
+/// `high_water` asks the question an operator actually has — is the agent
+/// worse than the best it has been — and it is a policy choice, not the
+/// default, because on a noisy evalset (or a deployment that does not
+/// journal a run between applies) it attributes the whole fall from the
+/// peak to whichever rule was applied last. That confounding is the trade;
+/// measured need: on the ad-buy corpus (`crates/areev-bench/ADBUY.md`, seed
+/// 3) an agent that reached 238 of 280 and then fell to 128 measured `held`
+/// against the day-one run of 35, because day one was the only run before
+/// the apply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BaselineKind {
+    /// The newest run journaled strictly before the apply.
+    #[default]
+    NewestBeforeApply,
+    /// The best run journaled strictly before the apply — max for a
+    /// higher-is-better field, min otherwise.
+    HighWater,
+}
+
+impl BaselineKind {
+    /// The spelling the receipt records in `OutcomeResult::baseline_kind`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BaselineKind::NewestBeforeApply => "newest_before_apply",
+            BaselineKind::HighWater => "high_water",
+        }
+    }
+}
+
 /// The evalset every LLM-authored, applicable proposal is measured against
 /// after apply (`docs/loop.md`, "Evalset-backed outcomes"). An authored
 /// lesson carries no built-in recurrence metric — nothing errors when a
@@ -114,6 +150,11 @@ pub struct OutcomeEvalset {
     /// default) means `horizons_ms`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub checkpoints: Vec<Checkpoint>,
+    /// Which run before the apply the verdict compares against (default
+    /// `newest_before_apply`; see [`BaselineKind`] for why `high_water` is
+    /// opt-in).
+    #[serde(default)]
+    pub baseline: BaselineKind,
 }
 
 fn default_horizons() -> Vec<i64> {
@@ -445,6 +486,26 @@ mod tests {
             Policy::from_json(r#"{"discover_objective": "eager"}"#).is_err(),
             "an unknown objective must not load as the default"
         );
+    }
+
+    #[test]
+    fn outcome_evalset_baseline_is_a_named_choice() {
+        let p = Policy::from_json(
+            r#"{"outcome_evalset": {"hash": "f", "field": "passed", "higher_is_better": true, "baseline": "high_water"}}"#,
+        )
+        .unwrap();
+        assert_eq!(p.outcome_evalset.unwrap().baseline, BaselineKind::HighWater);
+        // Absent → the marginal comparison every existing verdict was made under.
+        let p = Policy::from_json(r#"{"outcome_evalset": {"hash": "f", "field": "passed", "higher_is_better": true}}"#).unwrap();
+        assert_eq!(p.outcome_evalset.unwrap().baseline, BaselineKind::NewestBeforeApply);
+        // A misspelling is a policy error that names the two accepted values,
+        // never a silent fall-through to the default.
+        let err = Policy::from_json(
+            r#"{"outcome_evalset": {"hash": "f", "field": "passed", "higher_is_better": true, "baseline": "best_ever"}}"#,
+        )
+        .expect_err("unknown baseline kind");
+        let msg = err.to_string();
+        assert!(msg.contains("newest_before_apply") && msg.contains("high_water"), "{msg}");
     }
 
     #[test]

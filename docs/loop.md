@@ -457,7 +457,9 @@ db.apply_recommendation(hash, because="…", gating_run="eval-…")  # a gated
 #   and an ungated attempt refuses BEFORE the approval lands
 db.dismiss_recommendation(hash, "…")           # audited reject
 db.rollback_recommendation(hash, because="…")  # retract what an apply created
-db.loop_outcomes()                           # the Verify gate's held/regressed record
+db.loop_outcomes()   # the Verify gate's held/regressed record; each row names
+#   the run it compared against (`baseline_kind`, `baseline_run_id`) and, on an
+#   evalset metric, `best_before` — the peak before the apply
 # The tuning seam for hosts that train in-process (the CLI stays the paved road):
 db.record_corpus_export(selector, destination, source_hashes=json.dumps([...]))
 db.record_adapter(reply_json, manifest_hash, evalset_hash)
@@ -530,7 +532,20 @@ areev loop outcomes --db agent.db
 #   a6f8133  tool_error_recurrence  @1d    baseline 0 → current 0  [held]
 #   a6f8133  tool_error_recurrence  @7d    baseline 0 → current 0  [held]
 #   a6f8133  tool_error_recurrence  @30d   baseline 0 → current 2  [regressed]  ← late recurrence caught; revert proposed
+#   3c91e0a  evalset:9f…:passed     @1 run baseline 128 → current 133  [held]  baseline=newest_before_apply (eval-1041)  best_before 238
 ```
+
+The last row is an evalset-backed verdict: it names the run it compared
+against (`baseline_run_id`, and `baseline_kind` says which rule picked it)
+and carries `best_before`, the best value the field reached on any run
+before the apply. That column is advisory and always present for an evalset
+metric: a `held` against 128 with a `best_before` of 238 is the lost
+opportunity the marginal comparison cannot see, shown so a reviewer sees it
+even when no revert is proposed. The JSON form (`--format json`,
+`GET /api/loop/outcomes`, `loop_outcomes()` in the bindings) carries the
+same three fields; a verdict on a metric that is not evalset-backed, or made
+with no run before the apply, says `baseline_kind: "snapshot"` — the number
+the proposal froze — and names no run.
 
 The re-measurement is a typed read over subsequent history (no LLM, no
 guessing), recorded as a file-truth so it syncs and accumulates. That is the
@@ -590,7 +605,18 @@ removed. The proposal freezes the newest run of its day as the snapshot;
 the verdict reads the newest run before the apply when one exists, so a
 deployment that measures before each apply judges each rule against the
 state it changed, and one that measured only on day one judges every rule
-against day one (below).
+against day one (below). That is the default, `"baseline":
+"newest_before_apply"`. The policy may instead say `"baseline":
+"high_water"`: the baseline is then the **best** run journaled before the
+apply (max for a higher-is-better field, min otherwise), so an agent that
+fell from its own peak reads `regressed` even when the run just before the
+apply was already down. It is a choice and not the default because it
+confounds: on a noisy evalset, or in a deployment that does not journal a
+run between applies, the whole fall from the peak is charged to whichever
+rule was applied last, and the revert it proposes may retract a rule that
+did nothing wrong. A revert applied under either baseline earns the same
+doubling cooldown. Either way the receipt names the run it compared against
+and carries `best_before`, so the peak is visible on a `held` as well.
 That is the whole "verify the change improved, otherwise revert" arc, on
 the one kind of change a human approves from prose alone.
 
@@ -631,9 +657,13 @@ per-rule marginal measurement is now what the verdict does *when the host
 journals a run before each apply* (`crates/areev-bench/CURVE.md`, seed 1: a
 rule that contradicted an earlier one took the agent from 86% to 66% and
 measured as `held` against day one's 26% until the checkpoint reads were
-journaled onto the timeline). A high-water mark carried forward is not
-implemented; a deployment that does not measure between applies still sees
-a rising-then-falling agent as a rising one.
+journaled onto the timeline). A high-water mark carried forward is now a
+policy choice, `outcome_evalset.baseline: "high_water"` — off by default,
+because it charges the whole fall from the peak to the last rule applied,
+which on a noisy evalset proposes reverts of rules that did not cause the
+drop; a deployment that does not measure between applies and does not opt
+in still sees a rising-then-falling agent as a rising one, though the
+receipt now shows the peak (`best_before`) beside the `held`.
 
 **Dedup is by content, not by meaning.** `authored_dedup_key` fingerprints
 the proposal text, so it collapses a rule proposed twice verbatim. It cannot
@@ -812,7 +842,12 @@ apply, at the **checkpoints** the host sets — `horizons_ms` (default 1d /
 benchmark or CI harness wants `[{"after_runs": 1}]` — measure at the next
 graded run, however soon — because a schedule counted in days is inert on a
 deployment that finishes in minutes: on PAST-Bench the day-long default fired
-zero verdicts across 78 governed runs. It exists because an authored lesson carries no recurrence metric —
+zero verdicts across 78 governed runs. `baseline` picks the run the verdict
+compares against: `newest_before_apply` (default — the marginal question,
+never blames a rule for an earlier rule's drop) or `high_water` (the best
+run before the apply — catches a fall from the peak, at the cost of
+charging the whole fall to the last apply; see "What the gate does not
+catch"). It exists because an authored lesson carries no recurrence metric —
 nothing errors when a lesson is merely useless or quietly harmful — so
 without it the Verify gate had nothing to re-measure for exactly the
 proposals a reviewer was least able to judge from the text. No run

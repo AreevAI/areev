@@ -25,6 +25,12 @@ pub struct OutcomeInput {
     /// Carried from the metric snapshot so the analyzer applies the SAME
     /// direction the engine did — see `recommendation::is_regression`.
     pub higher_is_better: bool,
+    /// Where `baseline` came from (`OutcomeResult::baseline_kind`).
+    pub baseline_kind: String,
+    /// The evalset run `baseline` was read from, when it was read from one.
+    pub baseline_run_id: Option<String>,
+    /// The best value before the apply (`OutcomeResult::best_before`).
+    pub best_before: Option<f64>,
 }
 
 /// The context handed to `analyze`. Read-only by construction.

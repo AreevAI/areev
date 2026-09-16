@@ -110,18 +110,6 @@ pub fn newest_eval_run<S: SubstrateRead + ?Sized>(
     Ok(eval_runs(sub, evalset_hash, since_ms)?.pop())
 }
 
-/// The newest recorded run of `evalset_hash` strictly before `before_ms` —
-/// the state of the world when something was about to be applied.
-pub fn newest_eval_run_before<S: SubstrateRead + ?Sized>(
-    sub: &S,
-    evalset_hash: &str,
-    before_ms: i64,
-) -> Result<Option<EvalRun>> {
-    Ok(eval_runs(sub, evalset_hash, None)?
-        .into_iter()
-        .rfind(|r| r.recorded_ms < before_ms))
-}
-
 /// The value a metric field takes on one run. `failed`/`passed`/`total` are
 /// promoted so a metric can be written against any evalset without the host
 /// having to add fields; `error_rate` is derived (undefined, not zero, when

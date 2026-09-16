@@ -217,6 +217,15 @@ not have — a per-rule marginal measurement, or a high-water mark carried
 forward as the comparison point instead of the baseline. The second is
 cheap, and this run is the case for building it.
 
+*Built, 2026-09-16:* the high-water mark is a policy switch,
+`outcome_evalset.baseline: "high_water"` (`docs/loop.md`, "Evalset-backed
+outcomes"), off by default because it charges the whole fall from the peak
+to the last rule applied. The engine test
+`a_high_water_baseline_catches_the_fall_from_the_peak_and_names_the_run`
+replays this seed's sequence (35 → 238 → 128 before the apply, 133 after)
+and proposes the revert against the 238 run; under the default the same
+sequence still reads `held`, now with `best_before: 238` on the receipt.
+
 ### The planted-regression leg on this corpus
 
 Seeds 1 and 2 passed every check: rules `held` at 45→224 and 43→233, the
