@@ -87,6 +87,19 @@ fn builtin_template(id: &str) -> Option<&'static str> {
         "outcome.regression_high_water" => {
             "Applied recommendation regressed against the best run before the apply ({baseline_run}): {metric} moved {baseline} → {current}"
         }
+        // A regression that also breached the cost bound: the revert names
+        // the cost delta so the reviewer sees both halves of the damage.
+        "outcome.regression_costlier" => {
+            "Applied recommendation regressed: {metric} moved {baseline} → {current}, and {cost_field} rose {cost_baseline} → {cost_current} (bound ×{cost_ratio})"
+        }
+        "outcome.regression_high_water_costlier" => {
+            "Applied recommendation regressed against the best run before the apply ({baseline_run}): {metric} moved {baseline} → {current}, and {cost_field} rose {cost_baseline} → {cost_current} (bound ×{cost_ratio})"
+        }
+        // Quality held, cost did not: advisory only — a cost/quality trade
+        // is a human decision, so this is a Flag, never a revert draft.
+        "outcome.held_costlier" => {
+            "Applied recommendation held ({metric} {baseline} → {current}) but {cost_field} rose {cost_baseline} → {cost_current}, past ×{cost_ratio} of the baseline run ({baseline_run} → {current_run}) — a cost/quality trade to decide"
+        }
         "outcome.premise_drift" => {
             "{current} of the grains this recommendation cited have since been superseded by a different value or retracted — its premise moved; revert it"
         }
@@ -370,6 +383,28 @@ fn is_zero(x: &f64) -> bool {
     *x == 0.0
 }
 
+/// What a checkpoint read of the policy's cost bound, beside the quality
+/// verdict. `status` is `within`, `breached`, or `not_measurable` (the
+/// field was absent or malformed on either run — then `baseline`/`current`
+/// carry whichever side did measure, or nothing). Present on a record only
+/// when the policy set a bound.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CostRead {
+    pub field: String,
+    pub max_increase_ratio: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current: Option<f64>,
+    pub status: String,
+}
+
+impl CostRead {
+    pub fn breached(&self) -> bool {
+        self.status == "breached"
+    }
+}
+
 /// A measured outcome for an applied recommendation at one checkpoint — the
 /// Verify gate's output. `held` = the metric did not regress at this horizon;
 /// `regressed` = it got worse (a revert is proposed). A recommendation
@@ -403,6 +438,14 @@ pub struct OutcomeResult {
     /// at zero and a record without one reads as before.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub tolerance: f64,
+    /// The evalset run `current` was read from, when it was read from one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_run_id: Option<String>,
+    /// The cost bound's reading at this checkpoint, when the policy set one.
+    /// A quality `held` with a breached bound records the verdict
+    /// `held_costlier`; `regressed` dominates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<CostRead>,
     /// Which checkpoint this measurement is for (ms after apply). Zero for a
     /// checkpoint counted in runs or grains — see `checkpoint`.
     #[serde(default)]

@@ -42,6 +42,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   two readers of "did it get worse" cannot drift; a `--tolerance` that is
   not a number ≥ 0 is now refused instead of silently read as zero.
 
+- **The Verify gate sees what a lesson costs, not only what it scores**
+  (#259). `areev eval run` journals `effects` (executor calls) and `wall_ms`
+  on every run, and `input_tokens`/`output_tokens` from the provider's usage
+  on the `--model` path; `run_value` promotes `effects`, `tokens`, `usd`,
+  `wall_ms` and `cost_per_pass` (undefined, not zero, when nothing passed),
+  read fail-closed like `passed`/`failed` — a string or float makes the cost
+  not measurable, never zero. A cost key the summary omits is read from the
+  runtime's `run_outcome` Observation for the same run id, so an evalset run
+  that is also an `areev run` run quotes one spend to the gate and to the
+  `run_outcome` analyzer. `outcome_evalset.cost: {"field": "tokens",
+  "max_increase_ratio": 1.5}` reads that column beside the quality field:
+  quality held but cost past the bound records the new verdict
+  `held_costlier` and `outcome_review` emits an advisory Flag citing both
+  runs — never a revert, a cost/quality trade is a human decision;
+  `regressed` dominates, and a revert on a run that also breached the bound
+  names the cost delta. `areev loop outcomes`, `/api/loop/outcomes`, the
+  bindings and the console card show both columns. The receipts bench
+  harness writes the cost keys; `tau2`, `appworld` and PAST-Bench do not
+  carry usage per record and are unchanged.
+
 ## [1.8.3] — 2026-09-16
 
 ### Added

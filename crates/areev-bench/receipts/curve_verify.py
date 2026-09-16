@@ -148,7 +148,7 @@ def main():
         _, heldout = dataset.split_for(profile, dataset.load(args.dataset), args.seed, args.experience, args.eval, holdout="unseen")
         with open(os.path.join(args.workdir, "eval.jsonl"), "w", encoding="utf-8") as jf:
             trials_r, usage_r = evalrun.run_arm("R", profile, after, heldout, agent_argv, jf)
-        s_r = evalrun.journal_eval_run(db, evalset, "eval-r", trials_r, note="after the measured reverts", at_ms=t_pass + 2 * HOUR)
+        s_r = evalrun.journal_eval_run(db, evalset, "eval-r", trials_r, note="after the measured reverts", at_ms=t_pass + 2 * HOUR, usage=usage_r)
         final = journaled[-1]
         report["steps"].append({"step": "measure-R", "summary": s_r, "usage": usage_r, "final_before_revert": final})
         check("R recovers past the final read", s_r["exact"] > final["exact"], "final %d -> R %d exact of %d" % (final["exact"], s_r["exact"], s_r["total"]))

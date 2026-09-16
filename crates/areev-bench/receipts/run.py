@@ -127,7 +127,7 @@ def main():
         mem.with_memory(db_path, mem.REVIEWER, lambda db: None)
         trials, usage = evalrun.run_arm("A0", profile, "", heldout, agent_argv)
         summary = evalrun.journal_eval_run(db_path, evalset, "eval-a0", trials,
-                                           note="day-one agent, no lessons")
+                                           note="day-one agent, no lessons", usage=usage)
         with open(os.path.join(args.workdir, "a0.trials.json"), "w", encoding="utf-8") as fh:
             json.dump(trials, fh, indent=1)
         with open(os.path.join(args.workdir, "a0.summary.json"), "w") as fh:

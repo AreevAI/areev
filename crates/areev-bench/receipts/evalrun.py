@@ -144,25 +144,35 @@ def run_arm(name, profile, lessons, rows, agent_argv, journal=None, verbose=True
     return trials, usage_tot
 
 
-def summary_of(trials):
+def summary_of(trials, usage=None):
     exact = sum(t["exact"] for t in trials)
     semantic = sum(t["semantic"] for t in trials)
-    return {"passed": exact, "failed": len(trials) - exact, "total": len(trials),
-            "exact": exact, "semantic": semantic}
+    out = {"passed": exact, "failed": len(trials) - exact, "total": len(trials),
+           "exact": exact, "semantic": semantic}
+    # What the pass cost, beside what it scored (`docs/loop.md`, "Evalset-
+    # backed outcomes"): integer keys the Verify gate's cost bound reads
+    # fail-closed, so RESULTS.md can quote cost per pass next to accuracy.
+    # One model call per trial is one effect.
+    if usage is not None:
+        out["effects"] = len(trials)
+        out["input_tokens"] = int(usage.get("prompt_tokens") or 0)
+        out["output_tokens"] = int(usage.get("completion_tokens") or 0)
+    return out
 
 
-def journal_eval_run(db_path, evalset, run_id, trials, note=None, at_ms=None):
+def journal_eval_run(db_path, evalset, run_id, trials, note=None, at_ms=None, usage=None):
     """Record a held-out pass as an evalset run the loop can measure against.
 
     `passed` is the exact-match count, so the promoted `passed`/`failed`
-    fields and the named `exact` field agree; `semantic` rides beside them.
+    fields and the named `exact` field agree; `semantic` rides beside them,
+    and `usage` (the pass's summed provider usage) becomes the cost keys.
     Written under the reviewer, in the harness namespace, into the PRIMARY
     memory (never an arm's copy) — the memory whose lessons it is evidence
     about. `at_ms` pins the grain's timestamp onto a simulated timeline
     (regress.py): the engine reads runs journaled AFTER an apply, so a pass
     taken "a day later" on the engine's clock must be stamped a day later.
     """
-    summary = {"run_id": run_id, **summary_of(trials)}
+    summary = {"run_id": run_id, **summary_of(trials, usage)}
     if note:
         summary["note"] = note
 

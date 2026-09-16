@@ -148,7 +148,7 @@ def main():
         usage[arm] = u
         if arm in journal_as:
             journaled[arm] = evalrun.journal_eval_run(
-                args.journal_into or learned, evalset, journal_as[arm], t)
+                args.journal_into or learned, evalset, journal_as[arm], t, usage=u)
             print("  journaled arm %s as %s: %s" % (arm, journal_as[arm], json.dumps(journaled[arm])))
 
     with open(os.path.join(args.workdir, "trials.json"), "w", encoding="utf-8") as fh:

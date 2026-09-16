@@ -720,10 +720,21 @@ else:
 /// importer — the same grain `areev eval run` writes, with `created_at` on
 /// the loop's simulated clock instead of the wall clock.
 fn journal_eval_runs(db: &str, dir: &TempDir, name: &str, runs: &[(&str, u64, i64)]) {
+    let rows: Vec<(&str, u64, i64, serde_json::Value)> =
+        runs.iter().map(|(r, p, at)| (*r, *p, *at, serde_json::json!({}))).collect();
+    journal_eval_runs_with(db, dir, name, &rows);
+}
+
+/// The same, with extra summary keys (the cost keys `areev eval run` writes).
+fn journal_eval_runs_with(db: &str, dir: &TempDir, name: &str, runs: &[(&str, u64, i64, serde_json::Value)]) {
     let path = dir.path().join(format!("{name}.jsonl"));
     let mut f = std::fs::File::create(&path).unwrap();
-    for (run_id, passed, at) in runs {
-        let summary = format!(r#"{{"run_id":"{run_id}","passed":{passed},"failed":{}}}"#, 280 - passed);
+    for (run_id, passed, at, extra) in runs {
+        let mut summary = serde_json::json!({"run_id": run_id, "passed": passed, "failed": 280 - passed});
+        for (k, v) in extra.as_object().unwrap() {
+            summary[k] = v.clone();
+        }
+        let summary = summary.to_string();
         writeln!(
             f,
             r#"{{"subject":"evalset:adbuy","relation":"mg:eval_run","object":{},"created_at":{at}}}"#,
@@ -841,6 +852,68 @@ fn loop_outcome_min_effect_end_to_end() {
         !rows.iter().any(|r| r["analyzer"].as_str().unwrap_or("").contains("outcome_review")),
         "a dip inside the floor drafts no revert: {rows:?}"
     );
+}
+
+/// Under a cost bound the receipt has two columns: the score held (102 of
+/// 280 → 104) and the tokens breached ×1.5, so the verdict is
+/// `held_costlier`, the JSON carries the `cost` read with both runs' figures,
+/// the text shows the cost column, and the queue holds one advisory Flag
+/// citing both runs — no revert.
+#[test]
+fn loop_outcome_cost_bound_end_to_end() {
+    let Some(py) = find_python() else {
+        eprintln!("skipping: no python on PATH");
+        return;
+    };
+    let g = import_loop_golden();
+    let dir = TempDir::new().unwrap();
+    let script = dir.path().join("fake_lesson_llm.py");
+    std::fs::write(&script, FAKE_LESSON_LLM_PY).unwrap();
+    let cmd = format!("{py} {}", script.display());
+    let policy = write_policy(
+        &dir,
+        r#"{"outcome_evalset": {"hash": "adbuy", "field": "passed", "higher_is_better": true,
+             "cost": {"field": "tokens", "max_increase_ratio": 1.5},
+             "checkpoints": [{"after_runs": 1}]}}"#,
+    );
+    journal_eval_runs_with(&g.db, &dir, "before", &[
+        ("eval-before", 102, T0 - DAY, serde_json::json!({"effects": 280, "input_tokens": 800, "output_tokens": 200, "wall_ms": 4000})),
+    ]);
+    run_json(&g.db, T0, &["--llm-cmd", &cmd, "--policy", &policy]);
+    let rows = list_rows(&g.db, T0, &[]);
+    let lesson = find_rec(&rows, "loop.llm", "residency keeps being asked twice");
+    loop_ok(&g.db, T0, &["approve", &lesson, "--because", "reads fine", "--actor", "user:reviewer"]);
+    loop_ok(&g.db, T0 + HOUR, &["apply", &lesson, "--because", "try it", "--actor", "user:reviewer"]);
+    journal_eval_runs_with(&g.db, &dir, "after", &[
+        ("eval-after", 104, T0 + 2 * HOUR, serde_json::json!({"effects": 840, "input_tokens": 1300, "output_tokens": 300, "wall_ms": 12000})),
+    ]);
+    run_json(&g.db, T0 + 3 * HOUR, &["--policy", &policy]);
+
+    let out = loop_ok(&g.db, T0 + 3 * HOUR, &["outcomes", "--format", "json"]);
+    assert_golden(&loop_golden_dir().join("outcomes-cost.json"), &out);
+    let outcomes: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
+    let o = outcomes.iter().find(|o| o["rec_hash"] == lesson.as_str()).expect("measured");
+    assert_eq!(o["verdict"], "held_costlier", "{o}");
+    assert_eq!(o["current_run_id"], "eval-after");
+    assert_eq!(o["cost"]["field"], "tokens");
+    assert_eq!(o["cost"]["baseline"], 1000.0);
+    assert_eq!(o["cost"]["current"], 1600.0);
+    assert_eq!(o["cost"]["status"], "breached");
+    let text = loop_ok(&g.db, T0 + 3 * HOUR, &["outcomes"]);
+    assert!(text.contains("[held_costlier]") && text.contains("cost tokens 1000 → 1600 ×1.60 [breached, bound ×1.5]"), "{text}");
+
+    let rows = list_rows(&g.db, T0 + 3 * HOUR, &[]);
+    let flags: Vec<_> = rows
+        .iter()
+        .filter(|r| r["analyzer"].as_str().unwrap_or("").contains("outcome_review"))
+        .collect();
+    assert_eq!(flags.len(), 1, "one advisory finding: {rows:?}");
+    // The listing carries severity, not the action kind: an advisory Flag
+    // is medium, a revert is high — and the summary says which it is.
+    assert_eq!(flags[0]["severity"], "medium", "{}", flags[0]);
+    let summary = flags[0]["summary"].as_str().unwrap_or("");
+    assert!(summary.contains("held") && !summary.contains("regressed"), "{summary}");
+    assert!(summary.contains("eval-before") && summary.contains("eval-after") && summary.contains("1600"), "{summary}");
 }
 
 #[test]

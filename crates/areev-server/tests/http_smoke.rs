@@ -146,6 +146,31 @@ fn console_run_honors_attached_loop_policy() {
 /// the native HTTP Basic prompt (any username, password = token); scripts via
 /// `Authorization: Bearer`. Missing/wrong credentials get a 401 that carries a
 /// `WWW-Authenticate: Basic` challenge so the browser prompts.
+/// `GET /api/loop/outcomes` is the Verify gate's record as JSON: `{ok,
+/// outcomes: [...]}`, each row the engine's `OutcomeResult` verbatim — the
+/// quality pair, the run it compared against, and (under a cost bound) the
+/// cost read. Pinned on an empty memory so the envelope cannot drift, and
+/// the row shape is pinned by the CLI golden (`outcomes-cost.json`), which
+/// serializes the same struct.
+#[test]
+fn loop_outcomes_route_returns_the_gate_record() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("ui.db");
+    let m = Areev::open(db.to_str().unwrap()).unwrap();
+    let facade = AreevFacade::with_session(m, Some("caller".into()), None);
+    let server = UiServer::new(facade, "ui.db".into()).with_auth("t".to_string());
+    let listener = UiServer::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    std::thread::spawn(move || server.serve(listener));
+
+    let resp = req(&addr, "GET /api/loop/outcomes HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    assert!(resp.contains("200 OK"), "{resp}");
+    let body = &resp[resp.find("\r\n\r\n").unwrap() + 4..];
+    let v: serde_json::Value = serde_json::from_str(body).unwrap();
+    assert_eq!(v["ok"], true, "{v}");
+    assert_eq!(v["outcomes"], serde_json::json!([]), "{v}");
+}
+
 #[test]
 fn console_auth_guards_every_request() {
     use std::io::Read as _;

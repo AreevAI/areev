@@ -63,7 +63,8 @@ impl Analyzer for OutcomeReview {
                 input.higher_is_better,
                 input.tolerance,
             );
-            if !regressed {
+            let costlier = input.cost.as_ref().is_some_and(|c| c.breached());
+            if !regressed && !costlier {
                 continue;
             }
             let mut args = Map::new();
@@ -73,28 +74,67 @@ impl Analyzer for OutcomeReview {
             if let Some(run) = &input.baseline_run_id {
                 args.insert("baseline_run".into(), json!(run));
             }
+            if let Some(run) = &input.current_run_id {
+                args.insert("current_run".into(), json!(run));
+            }
             if let Some(best) = input.best_before {
                 args.insert("best_before".into(), json!(round4(best)));
             }
             if input.tolerance > 0.0 {
                 args.insert("tolerance".into(), json!(round4(input.tolerance)));
             }
+            if let Some(c) = input.cost.as_ref().filter(|c| c.breached()) {
+                args.insert("cost_field".into(), json!(c.field));
+                args.insert("cost_baseline".into(), json!(c.baseline.map(round4)));
+                args.insert("cost_current".into(), json!(c.current.map(round4)));
+                args.insert("cost_ratio".into(), json!(c.max_increase_ratio));
+            }
+
+            if !regressed {
+                // Quality held, cost did not: advisory. A cost/quality trade
+                // is a human decision, so this is a Flag citing both runs —
+                // never a revert draft.
+                let mut data = Map::new();
+                data.insert("cost_of".into(), json!(input.rec_hash));
+                data.insert("metric".into(), json!(input.metric));
+                if let Some(c) = &input.cost {
+                    data.insert("cost".into(), serde_json::to_value(c).unwrap_or_default());
+                }
+                drafts.push(
+                    RecDraft::new(
+                        input.target_ref.clone(),
+                        ActionKind::Flag,
+                        Summary::new("outcome.held_costlier", args),
+                        Proposal::Data { data },
+                    )
+                    .severity(Severity::Medium)
+                    .evidence(vec![input.rec_hash.clone()]),
+                );
+                continue;
+            }
 
             let mut data = Map::new();
             data.insert("revert_of".into(), json!(input.rec_hash));
             data.insert("metric".into(), json!(input.metric));
+            if let Some(c) = input.cost.as_ref().filter(|c| c.breached()) {
+                data.insert("cost".into(), serde_json::to_value(c).unwrap_or_default());
+            }
 
             // The gate asks two questions of an applied recommendation: did
             // its metric hold, and does its premise still stand. The engine
             // feeds both here as inputs; the summary says which one failed.
             let key = if input.metric == crate::engine::PREMISE_DRIFT_METRIC {
                 "outcome.premise_drift"
-            } else if input.baseline_kind == "high_water" {
+            } else {
                 // Drafted against the peak: the summary names both figures so
                 // the reviewer judges whether this rule owns the whole fall.
-                "outcome.regression_high_water"
-            } else {
-                "outcome.regression"
+                // A breached cost bound rides on the revert as a second clause.
+                match (input.baseline_kind == "high_water", costlier) {
+                    (false, false) => "outcome.regression",
+                    (true, false) => "outcome.regression_high_water",
+                    (false, true) => "outcome.regression_costlier",
+                    (true, true) => "outcome.regression_high_water_costlier",
+                }
             };
             drafts.push(
                 RecDraft::new(
@@ -135,6 +175,18 @@ mod tests {
             baseline_run_id: None,
             best_before: None,
             tolerance: 0.0,
+            current_run_id: None,
+            cost: None,
+        }
+    }
+
+    fn breached(field: &str, baseline: f64, current: f64, ratio: f64) -> crate::recommendation::CostRead {
+        crate::recommendation::CostRead {
+            field: field.into(),
+            max_increase_ratio: ratio,
+            baseline: Some(baseline),
+            current: Some(current),
+            status: "breached".into(),
         }
     }
 
@@ -207,6 +259,69 @@ mod tests {
         assert_eq!(drafts.len(), 1, "only the dip past the floor reverts");
         assert_eq!(drafts[0].evidence, vec!["ref-2".to_string()]);
         assert_eq!(drafts[0].summary.args["tolerance"], 5.0);
+    }
+
+    /// Quality held, cost breached: one advisory Flag citing both runs, and
+    /// no revert — the trade is the reviewer's to make.
+    #[test]
+    fn a_breached_cost_bound_under_a_held_score_is_a_flag_not_a_revert() {
+        let mut sub = TestSubstrate::new();
+        sub.set_outcome_inputs(vec![OutcomeInput {
+            baseline_run_id: Some("eval-before".into()),
+            current_run_id: Some("eval-after".into()),
+            cost: Some(breached("tokens", 1000.0, 1600.0, 1.5)),
+            ..rising(100.0, 102.0)
+        }]);
+        let drafts = sub.analyze(&OutcomeReview::new(), 10_000);
+        assert_eq!(drafts.len(), 1);
+        assert_eq!(drafts[0].action_kind, ActionKind::Flag);
+        assert_eq!(drafts[0].severity, Severity::Medium);
+        let text = drafts[0].summary.render();
+        assert!(text.contains("eval-before") && text.contains("eval-after"), "cites both runs: {text}");
+        assert!(text.contains("1000") && text.contains("1600") && text.contains("1.5"), "{text}");
+        assert_eq!(drafts[0].proposal, Proposal::Data { data: {
+            let mut m = Map::new();
+            m.insert("cost_of".into(), json!("ref-1"));
+            m.insert("metric".into(), json!("evalset:abc123:category_accuracy"));
+            m.insert("cost".into(), serde_json::to_value(breached("tokens", 1000.0, 1600.0, 1.5)).unwrap());
+            m
+        }});
+    }
+
+    /// Quality regressed AND cost breached: one revert (regressed dominates),
+    /// whose summary names the cost delta.
+    #[test]
+    fn a_regression_that_also_cost_more_is_one_revert_naming_both() {
+        let mut sub = TestSubstrate::new();
+        sub.set_outcome_inputs(vec![OutcomeInput {
+            cost: Some(breached("tokens", 1000.0, 1600.0, 1.5)),
+            ..rising(100.0, 90.0)
+        }]);
+        let drafts = sub.analyze(&OutcomeReview::new(), 10_000);
+        assert_eq!(drafts.len(), 1, "one verdict, one draft");
+        assert_eq!(drafts[0].action_kind, ActionKind::Revert);
+        let text = drafts[0].summary.render();
+        assert!(text.contains("regressed") && text.contains("tokens") && text.contains("1600"), "{text}");
+    }
+
+    /// A cost read that is within the bound, or not measurable, changes
+    /// nothing: held stays silent, regressed stays a plain revert.
+    #[test]
+    fn a_cost_within_bound_or_not_measurable_leaves_the_verdict_alone() {
+        let within = crate::recommendation::CostRead { status: "within".into(), ..breached("tokens", 1000.0, 1200.0, 1.5) };
+        let unmeasurable = crate::recommendation::CostRead {
+            status: "not_measurable".into(), baseline: Some(1000.0), current: None, ..breached("tokens", 0.0, 0.0, 1.5)
+        };
+        let mut sub = TestSubstrate::new();
+        sub.set_outcome_inputs(vec![
+            OutcomeInput { cost: Some(within.clone()), ..rising(100.0, 102.0) },
+            OutcomeInput { cost: Some(unmeasurable.clone()), rec_hash: "ref-2".into(), ..rising(100.0, 102.0) },
+            OutcomeInput { cost: Some(unmeasurable), rec_hash: "ref-3".into(), ..rising(100.0, 90.0) },
+        ]);
+        let drafts = sub.analyze(&OutcomeReview::new(), 10_000);
+        assert_eq!(drafts.len(), 1);
+        assert_eq!(drafts[0].evidence, vec!["ref-3".to_string()]);
+        assert_eq!(drafts[0].summary.template_id, "outcome.regression");
     }
 
     #[test]

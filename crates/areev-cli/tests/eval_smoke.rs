@@ -151,6 +151,26 @@ fn a_gate_run_records_its_result_and_fails_the_command_when_a_case_fails() {
     assert_eq!(rows[1]["case"], "does-not");
     assert_eq!(rows[1]["ok"], false);
 
+    // What the run cost rides beside what it scored: one effect per case the
+    // tool command ran, and the wall time they took — integers, so the Verify
+    // gate's cost bound can read them fail-closed. No model, no tokens.
+    assert_eq!(report["effects"], 2, "{report}");
+    assert!(report["wall_ms"].as_u64().is_some(), "{report}");
+    assert!(report["input_tokens"].is_null() && report["output_tokens"].is_null(), "{report}");
+    let (ok, out, err) = areev(&[
+        "cal", r#"RECALL facts WHERE relation = "mg:eval_run""#, "--db", &db, "--ns", "agent:harness",
+    ]);
+    assert!(ok, "{err}");
+    let recalled: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let summary: serde_json::Value = recalled["grains"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|g| serde_json::from_str(g["fields"]["object"].as_str()?).ok())
+        .expect("the mg:eval_run Fact carries the summary");
+    assert_eq!(summary["effects"], 2, "{summary}");
+    assert!(summary["wall_ms"].as_u64().is_some(), "{summary}");
+
     // The gate is evidence, not just an exit code: every case is journaled
     // under the run id, so `run-trace` can show what the gate actually saw.
     let (ok, out, err) = areev(&["run-trace", "--db", &db, "--ns", "agent:harness", "--run-id", &run_id]);
@@ -384,6 +404,19 @@ fn a_model_grades_the_gate_through_an_openai_compatible_endpoint() {
         out.contains("openai-compat:fake-adapter"),
         "the summary must record the graded model: {out}"
     );
+    // …and what the model path spent: the provider's usage summed over the
+    // cases (10 + 2 per canned reply, two cases), beside the effects count.
+    let recalled: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let summary: serde_json::Value = recalled["grains"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|g| serde_json::from_str(g["fields"]["object"].as_str()?).ok())
+        .unwrap();
+    assert_eq!(summary["input_tokens"], 20, "{summary}");
+    assert_eq!(summary["output_tokens"], 4, "{summary}");
+    assert_eq!(summary["effects"], 2, "{summary}");
+    assert_eq!(report["input_tokens"], 20, "{report}");
 }
 
 #[test]
