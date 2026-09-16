@@ -2009,7 +2009,14 @@ fn measure_outcomes<S: OmsSubstrate>(
         let Some(current) = measure_metric(sub, metric, applied.applied_at_ms)? else {
             continue; // metric kind not yet re-measurable
         };
-        let base = baseline_at_apply(sub, metric, applied.applied_at_ms, baseline_kind_for(policy, metric))?;
+        let bound = cost_bound_for(policy, metric);
+        let base = baseline_at_apply(
+            sub,
+            metric,
+            applied.applied_at_ms,
+            baseline_kind_for(policy, metric),
+            bound.map(|b| b.field.as_str()),
+        )?;
         let baseline = base.value;
         // The floor is resolved ONCE here and travels with the input, so the
         // recorded verdict and the revert draft cannot disagree on it.
@@ -2020,17 +2027,32 @@ fn measure_outcomes<S: OmsSubstrate>(
             metric.higher_is_better,
             tolerance,
         );
+        // The run `current` came from, and the cost bound's reading on it.
+        // The quality verdict never depends on the cost: `regressed`
+        // dominates, a breached bound under a held score is `held_costlier`,
+        // and a cost that is not measurable leaves the verdict alone.
+        let (current_run_id, cost) = current_run_and_cost(sub, metric, applied.applied_at_ms, bound, &base)?;
+        let costlier = cost.as_ref().is_some_and(|c| c.breached());
+        let verdict = if regressed {
+            "regressed"
+        } else if costlier {
+            "held_costlier"
+        } else {
+            "held"
+        };
         p.outcomes.entry(rec_hash.clone()).or_default().push(
             crate::recommendation::OutcomeResult {
                 rec_hash: rec_hash.clone(),
                 metric: metric.metric.clone(),
                 baseline,
                 current,
-                verdict: if regressed { "regressed" } else { "held" }.into(),
+                verdict: verdict.into(),
                 baseline_kind: base.kind.into(),
                 baseline_run_id: base.run_id.clone(),
                 best_before: base.best_before,
                 tolerance,
+                current_run_id: current_run_id.clone(),
+                cost: cost.clone(),
                 // A time checkpoint speaks through `horizon_ms`, as it always
                 // did; the other units carry themselves.
                 horizon_ms: checkpoint.as_ms().unwrap_or(0),
@@ -2039,7 +2061,7 @@ fn measure_outcomes<S: OmsSubstrate>(
             },
         );
         p.measured.entry(rec_hash.clone()).or_default().push(checkpoint);
-        if regressed {
+        if regressed || costlier {
             out.push(OutcomeInput {
                 rec_hash,
                 target_ref: applied.target_ref.clone(),
@@ -2052,10 +2074,59 @@ fn measure_outcomes<S: OmsSubstrate>(
                 baseline_run_id: base.run_id,
                 best_before: base.best_before,
                 tolerance,
+                current_run_id,
+                cost,
             });
         }
     }
     Ok(out)
+}
+
+/// The policy's cost bound, for the evalset the policy names.
+fn cost_bound_for<'p>(
+    policy: &'p crate::policy::Policy,
+    metric: &crate::recommendation::MetricSnapshot,
+) -> Option<&'p crate::policy::CostBound> {
+    match (policy.outcome_evalset.as_ref(), crate::eval::parse_evalset_metric(&metric.metric)) {
+        (Some(e), Some((hash, _))) if e.hash == hash => e.cost.as_ref(),
+        _ => None,
+    }
+}
+
+/// For an evalset metric: the run the current value was read from (the
+/// same lookup `measure_metric` made — one reader, one run), and the cost
+/// bound's reading of it against the baseline run. `not_measurable` when
+/// either side lacks the field or carries it malformed; the figures that
+/// did measure still ride on the record.
+fn current_run_and_cost<S: SubstrateRead>(
+    sub: &S,
+    metric: &crate::recommendation::MetricSnapshot,
+    applied_at_ms: i64,
+    bound: Option<&crate::policy::CostBound>,
+    base: &BaselineRead,
+) -> Result<(Option<String>, Option<crate::recommendation::CostRead>)> {
+    let Some((evalset, _)) = crate::eval::parse_evalset_metric(&metric.metric) else {
+        return Ok((None, None));
+    };
+    let Some(run) = crate::eval::newest_eval_run(sub, evalset, Some(applied_at_ms))? else {
+        return Ok((None, None));
+    };
+    let cost = bound.map(|b| {
+        let current = crate::eval::run_value(&run, &b.field);
+        let status = match (base.cost, current) {
+            (Some(bl), Some(cur)) if cur > bl * b.max_increase_ratio + 1e-9 => "breached",
+            (Some(_), Some(_)) => "within",
+            _ => "not_measurable",
+        };
+        crate::recommendation::CostRead {
+            field: b.field.clone(),
+            max_increase_ratio: b.max_increase_ratio,
+            baseline: base.cost,
+            current,
+            status: status.into(),
+        }
+    });
+    Ok((Some(run.run_id), cost))
 }
 
 /// The policy's minimum effect size in the metric's unit, for the evalset
@@ -2113,6 +2184,9 @@ pub(crate) struct BaselineRead {
     pub best_before: Option<f64>,
     /// Cases the baseline run graded, when it was a run.
     pub total: Option<u64>,
+    /// The policy's cost field on the baseline run, when both exist and it
+    /// is measurable there.
+    pub cost: Option<f64>,
 }
 
 /// The host's baseline choice applies to the evalset it names; any other
@@ -2149,22 +2223,23 @@ pub(crate) fn baseline_at_apply<S: SubstrateRead>(
     metric: &crate::recommendation::MetricSnapshot,
     applied_at_ms: i64,
     kind: crate::policy::BaselineKind,
+    cost_field: Option<&str>,
 ) -> Result<BaselineRead> {
     use crate::policy::BaselineKind;
     if let Some((evalset, field)) = crate::eval::parse_evalset_metric(&metric.metric) {
         // Oldest first, the field read through the one reader every consumer
         // uses; a run whose summary lacks the field is not a candidate.
-        let before: Vec<(String, f64, u64)> = crate::eval::eval_runs(sub, evalset, None)?
+        let before: Vec<(crate::eval::EvalRun, f64)> = crate::eval::eval_runs(sub, evalset, None)?
             .into_iter()
             .filter(|r| r.recorded_ms < applied_at_ms)
-            .filter_map(|r| crate::eval::run_value(&r, field).map(|v| (r.run_id.clone(), v, r.total())))
+            .filter_map(|r| crate::eval::run_value(&r, field).map(|v| (r, v)))
             .collect();
         if let Some(newest) = before.last() {
             // The first run to attain the best value is the high-water mark:
             // a later tie did not raise it.
             let best = before
                 .iter()
-                .fold(None::<&(String, f64, u64)>, |acc, r| match acc {
+                .fold(None::<&(crate::eval::EvalRun, f64)>, |acc, r| match acc {
                     None => Some(r),
                     Some(b) => {
                         let better = if metric.higher_is_better { r.1 > b.1 } else { r.1 < b.1 };
@@ -2179,13 +2254,14 @@ pub(crate) fn baseline_at_apply<S: SubstrateRead>(
             return Ok(BaselineRead {
                 value: pick.1,
                 kind: kind.as_str(),
-                run_id: Some(pick.0.clone()),
+                run_id: Some(pick.0.run_id.clone()),
                 best_before: Some(best.1),
-                total: Some(pick.2),
+                total: Some(pick.0.total()),
+                cost: cost_field.and_then(|f| crate::eval::run_value(&pick.0, f)),
             });
         }
     }
-    Ok(BaselineRead { value: metric.baseline, kind: "snapshot", run_id: None, best_before: None, total: None })
+    Ok(BaselineRead { value: metric.baseline, kind: "snapshot", run_id: None, best_before: None, total: None, cost: None })
 }
 
 /// Typed re-measurement for the fixed set of metric kinds the engine knows.
@@ -3578,6 +3654,8 @@ fn detect_premise_drift<S: OmsSubstrate>(
                     baseline_run_id: None,
                     best_before: None,
                     tolerance: 0.0,
+                    current_run_id: None,
+                    cost: None,
                     horizon_ms: 0,
                     checkpoint: None,
                     measured_at_ms: now_ms,
@@ -3596,6 +3674,8 @@ fn detect_premise_drift<S: OmsSubstrate>(
             baseline_run_id: None,
             best_before: None,
             tolerance: 0.0,
+            current_run_id: None,
+            cost: None,
         });
     }
     Ok(out)

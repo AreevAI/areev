@@ -34,6 +34,12 @@ pub struct OutcomeInput {
     /// The minimum effect size the engine judged under, in the metric's unit
     /// — passed through so the revert draft applies the SAME floor.
     pub tolerance: f64,
+    /// The evalset run `current` was read from, when it was read from one.
+    pub current_run_id: Option<String>,
+    /// The cost bound's reading, when the policy set one
+    /// (`OutcomeResult::cost`). A breached bound with quality held is the
+    /// advisory-Flag case; with quality regressed it rides on the revert.
+    pub cost: Option<crate::recommendation::CostRead>,
 }
 
 /// The context handed to `analyze`. Read-only by construction.

@@ -459,7 +459,8 @@ db.dismiss_recommendation(hash, "…")           # audited reject
 db.rollback_recommendation(hash, because="…")  # retract what an apply created
 db.loop_outcomes()   # the Verify gate's held/regressed record; each row names
 #   the run it compared against (`baseline_kind`, `baseline_run_id`) and, on an
-#   evalset metric, `best_before` — the peak before the apply
+#   evalset metric, `best_before` — the peak before the apply — plus, under a
+#   policy cost bound, the `cost` read and the `held_costlier` verdict
 # The tuning seam for hosts that train in-process (the CLI stays the paved road):
 db.record_corpus_export(selector, destination, source_hashes=json.dumps([...]))
 db.record_adapter(reply_json, manifest_hash, evalset_hash)
@@ -533,6 +534,7 @@ areev loop outcomes --db agent.db
 #   a6f8133  tool_error_recurrence  @7d    baseline 0 → current 0  [held]
 #   a6f8133  tool_error_recurrence  @30d   baseline 0 → current 2  [regressed]  ← late recurrence caught; revert proposed
 #   3c91e0a  evalset:9f…:passed     @1 run baseline 128 → current 133  [held]  baseline=newest_before_apply (eval-1041)  best_before 238
+#   7d20b4c  evalset:9f…:passed     @1 run baseline 102 → current 104  [held_costlier]  baseline=newest_before_apply (eval-1042)  best_before 102  cost tokens 1000 → 1600 ×1.60 [breached, bound ×1.5]
 ```
 
 The last row is an evalset-backed verdict: it names the run it compared
@@ -545,7 +547,10 @@ even when no revert is proposed. The JSON form (`--format json`,
 `GET /api/loop/outcomes`, `loop_outcomes()` in the bindings) carries the
 same three fields; a verdict on a metric that is not evalset-backed, or made
 with no run before the apply, says `baseline_kind: "snapshot"` — the number
-the proposal froze — and names no run.
+the proposal froze — and names no run. Under a policy cost bound the row
+also carries `cost` (`field`, `baseline`, `current`, `max_increase_ratio`,
+`status` ∈ `within` / `breached` / `not_measurable`) and `current_run_id`;
+`held_costlier` is the verdict when the score held and the cost did not.
 
 The re-measurement is a typed read over subsequent history (no LLM, no
 guessing), recorded as a file-truth so it syncs and accumulates. That is the
@@ -571,16 +576,30 @@ recommendation may carry a metric naming one:
 metric = "evalset:<EVALSET_HASH>:<field>"
 ```
 
-`<field>` is read from the summary `areev eval run` journals. Four names are
-promoted and work against any evalset — `passed`, `failed`, `total`,
-`error_rate` (`failed/total`) — and anything else is read from the summary your
-harness wrote, e.g. `evalset:abc123:category_accuracy`. **A harness that
-journals its own runs must write `passed` and `failed` as integer counts**
-(`1`/`0` for a single graded task): the reader is fail-closed and drops a
-summary whose counts are missing or non-integer — a boolean `passed` is not a
-count — so a run journaled that way is invisible to the gate and no metric
-ever attaches. Measured: one benchmark harness did exactly this for three
-runs and recorded zero verdicts (`crates/areev-bench/PERSIST.md` §11 #24).
+`<field>` is read from the summary `areev eval run` journals. Four quality
+names are promoted and work against any evalset — `passed`, `failed`,
+`total`, `error_rate` (`failed/total`) — and five **cost** names beside them
+— `effects` (executor calls the cases made), `tokens` (`input_tokens +
+output_tokens`), `usd` (`usd_micros / 1e6`), `wall_ms`, and the derived
+`cost_per_pass` (`usd / passed`, undefined when nothing passed — never a
+division by zero, never zero); anything else is read from the summary your
+harness wrote, e.g. `evalset:abc123:category_accuracy`. `areev eval run`
+writes `effects` and `wall_ms` on every run and `input_tokens` /
+`output_tokens` on the `--model` path from the provider's reported usage.
+**A harness that journals its own runs must write `passed` and `failed` as
+integer counts** (`1`/`0` for a single graded task): the reader is
+fail-closed and drops a summary whose counts are missing or non-integer — a
+boolean `passed` is not a count — so a run journaled that way is invisible
+to the gate and no metric ever attaches. Measured: one benchmark harness did
+exactly this for three runs and recorded zero verdicts
+(`crates/areev-bench/PERSIST.md` §11 #24). The cost keys read the same way:
+a summary that carries `input_tokens: "1200"` (a string) makes `tokens`
+*not measurable* on that run — never zero. A cost key the summary does not
+carry at all is read from the runtime: a harness that journals its evalset
+run under the run id `areev run` executed writes no cost keys, and the gate
+takes `spent_*` from that run's terminal `run_outcome` Observation — the
+same grain the `run_outcome` analyzer attributes spend from, so a run that
+is both quotes one number to both readers.
 
 **State the direction.** The built-in metrics are recurrence counts where lower
 is better; an accuracy is the opposite. `MetricSnapshot.higher_is_better` says
@@ -617,6 +636,22 @@ rule was applied last, and the revert it proposes may retract a rule that
 did nothing wrong. A revert applied under either baseline earns the same
 doubling cooldown. Either way the receipt names the run it compared against
 and carries `best_before`, so the peak is visible on a `held` as well.
+
+**A cost bound beside the quality metric.** `"cost": {"field": "tokens",
+"max_increase_ratio": 1.5}` on `outcome_evalset` reads a second column at
+every checkpoint: the cost field on the baseline run and on the run after
+the apply. The quality verdict is unchanged by it. When the score held but
+the cost exceeded the bound, the checkpoint records **`held_costlier`** and
+`outcome_review` emits an **advisory Flag** citing both runs — never a
+revert draft, because a cost/quality trade is a human decision; a lesson
+like *"exhaust every page of `search_customers` before acting"* can raise
+accuracy two points while tripling tool calls, and until this it measured
+`held`. `regressed` dominates — one verdict per checkpoint — and a revert
+drafted on a run that also breached the bound names the cost delta. A cost
+that is not measurable on either run (absent or malformed key) leaves the
+verdict alone and says `not_measurable` on the record. `areev loop
+outcomes`, `GET /api/loop/outcomes` and the console card show the quality
+column and the cost column with the delta.
 That is the whole "verify the change improved, otherwise revert" arc, on
 the one kind of change a human approves from prose alone.
 
@@ -768,7 +803,8 @@ host policy file — `areev loop --policy loop-policy.json` (or
     "hash": "<evalset hash>", "field": "passed", "higher_is_better": true,
     "checkpoints": [{ "after_runs": 1 }, { "after_ms": 604800000 }],
     "baseline": "newest_before_apply",
-    "min_effect": { "count": 5 }
+    "min_effect": { "count": 5 },
+    "cost": { "field": "tokens", "max_increase_ratio": 1.5 }
   },
   "evidence_attribution": "named",
   "cadence": { "every_events": 10 },
@@ -865,6 +901,10 @@ charging the whole fall to the last apply; see "What the gate does not
 catch"). `min_effect` is the verdict's floor — `{"count": n}` in the
 field's unit or `{"points": p}` of the pass rate — below which a dip is
 `held` (default none: any drop regresses; see "Evalset-backed outcomes").
+`cost` reads a cost field (`effects`, `tokens`, `usd`, `wall_ms`,
+`cost_per_pass`, or a harness key) beside the quality field and records
+`held_costlier` with an advisory Flag when the score held but the cost rose
+past `max_increase_ratio` × the baseline run's (default none).
 It exists because an authored lesson carries no recurrence metric —
 nothing errors when a lesson is merely useless or quietly harmful — so
 without it the Verify gate had nothing to re-measure for exactly the

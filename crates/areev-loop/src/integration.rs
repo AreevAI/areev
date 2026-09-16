@@ -679,6 +679,212 @@ fn a_minimum_effect_size_is_a_floor_under_the_verdict() {
     assert!(!serde_json::to_string(&v).unwrap().contains("tolerance"));
 }
 
+/// The cost fixture: one lesson under a cost bound, a baseline run and an
+/// after run whose summaries carry the given extra keys. Returns the
+/// verdict and the pending outcome_review drafts (action kinds).
+fn cost_verdict(
+    policy_json: &str,
+    before: (u64, serde_json::Value),
+    after: (u64, serde_json::Value),
+) -> (crate::recommendation::OutcomeResult, Vec<Recommendation>, TestSubstrate) {
+    use crate::model::Origin;
+    let t = 5_000_000;
+    let scopes = ScopeSet::all();
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("capture", "correction", "vendor missing");
+    let journal = |sub: &mut TestSubstrate, run_id: &str, passed: u64, extra: &serde_json::Value, at: i64| {
+        let mut summary = serde_json::json!({"run_id": run_id, "passed": passed, "failed": 200 - passed});
+        for (k, v) in extra.as_object().unwrap() {
+            summary[k] = v.clone();
+        }
+        sub.add_fact_at("agent:harness", "evalset:paged", "mg:eval_run", &summary.to_string(), at);
+    };
+    journal(&mut sub, "eval-before", before.0, &before.1, t - DAY);
+    let llm = MockLlm {
+        discover: format!(
+            r#"{{"recommendations":[{{"summary":"x","target":"entity:test/capture","evidence":["{h1}"],"confidence":0.9,"proposal":{{"kind":"lesson","lesson":"Exhaust every page of search_customers before acting."}}}}]}}"#
+        ),
+        ground: r#"{"results":[{"id":0,"supported":true,"reason":"ok"}]}"#.into(),
+        verify: r#"{"results":[{"id":0,"keep":true,"confidence":0.9,"reason":"ok"}]}"#.into(),
+        enrich: r#"{"notes":[]}"#.into(),
+    };
+    let e = Engine::with_builtins().with_llm(Box::new(llm)).with_policy(Policy::from_json(policy_json).unwrap());
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    let rec = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .find(|r| matches!(r.origin, Origin::Llm { .. }))
+        .unwrap();
+    e.review(&mut sub.inner, &rec.hash, Decision::Approve, "user:a", ObserverType::Human, &scopes, "ok", t + 1).unwrap();
+    e.apply(&mut sub.inner, &rec.hash, "user:a", ObserverType::Human, &scopes, "ok", false, t + 2).unwrap();
+    journal(&mut sub, "eval-after", after.0, &after.1, t + DAY + 10);
+    e.run(&mut sub.inner, &RunOptions::default(), t + DAY + 20).unwrap();
+    let v = seed3_verdict(&e, &sub, &rec.hash);
+    let drafts: Vec<Recommendation> = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.analyzer.starts_with("loop.outcome_review"))
+        .collect();
+    (v, drafts, sub)
+}
+
+const COST_POLICY: &str = r#"{"outcome_evalset": {"hash": "paged", "field": "passed", "higher_is_better": true,
+    "cost": {"field": "tokens", "max_increase_ratio": 1.5}}}"#;
+
+/// A lesson that raises the score two points while blowing past the cost
+/// bound is `held_costlier`: the quality verdict is unchanged, the record
+/// carries both columns, and `outcome_review` emits one advisory Flag
+/// citing both runs — never a revert draft.
+#[test]
+fn quality_held_but_cost_breached_is_held_costlier_and_an_advisory_flag() {
+    let (v, drafts, _) = cost_verdict(
+        COST_POLICY,
+        (100, serde_json::json!({"input_tokens": 800, "output_tokens": 200})),
+        (102, serde_json::json!({"input_tokens": 1300, "output_tokens": 300})),
+    );
+    assert_eq!(v.verdict, "held_costlier", "{v:?}");
+    let c = v.cost.as_ref().expect("the cost read rides on the record");
+    assert_eq!((c.field.as_str(), c.baseline, c.current, c.status.as_str()), ("tokens", Some(1000.0), Some(1600.0), "breached"));
+    assert_eq!(v.current_run_id.as_deref(), Some("eval-after"));
+    assert_eq!(drafts.len(), 1);
+    assert_eq!(drafts[0].action_kind, crate::model::ActionKind::Flag, "a cost/quality trade is advisory");
+    let text = drafts[0].summary.render();
+    assert!(text.contains("eval-before") && text.contains("eval-after") && text.contains("1600"), "{text}");
+}
+
+/// Quality regressed AND cost breached: one verdict (`regressed`), one
+/// revert, and the revert names the cost delta.
+#[test]
+fn a_regression_dominates_a_cost_breach_and_the_revert_names_both() {
+    let (v, drafts, _) = cost_verdict(
+        COST_POLICY,
+        (100, serde_json::json!({"input_tokens": 800, "output_tokens": 200})),
+        (90, serde_json::json!({"input_tokens": 1300, "output_tokens": 300})),
+    );
+    assert_eq!(v.verdict, "regressed");
+    assert_eq!(v.cost.as_ref().map(|c| c.status.as_str()), Some("breached"));
+    assert_eq!(drafts.len(), 1, "one verdict per checkpoint, one draft");
+    assert_eq!(drafts[0].action_kind, crate::model::ActionKind::Revert);
+    let text = drafts[0].summary.render();
+    assert!(text.contains("tokens") && text.contains("1000") && text.contains("1600"), "{text}");
+}
+
+/// A malformed cost key on either run makes the cost NOT measurable — the
+/// quality verdict still records, no figure is invented, no Flag is raised.
+#[test]
+fn a_malformed_cost_key_is_not_measurable_and_the_quality_verdict_still_records() {
+    let (v, drafts, _) = cost_verdict(
+        COST_POLICY,
+        (100, serde_json::json!({"input_tokens": 800, "output_tokens": 200})),
+        (102, serde_json::json!({"input_tokens": "1300", "output_tokens": 300})),
+    );
+    assert_eq!(v.verdict, "held");
+    let c = v.cost.as_ref().unwrap();
+    assert_eq!((c.status.as_str(), c.baseline, c.current), ("not_measurable", Some(1000.0), None));
+    assert!(drafts.is_empty());
+    // Missing entirely on the baseline run: the same.
+    let (v, drafts, _) = cost_verdict(
+        COST_POLICY,
+        (100, serde_json::json!({})),
+        (102, serde_json::json!({"input_tokens": 1300, "output_tokens": 300})),
+    );
+    assert_eq!((v.verdict.as_str(), v.cost.as_ref().unwrap().status.as_str()), ("held", "not_measurable"));
+    assert!(drafts.is_empty());
+    // Within the bound: plain held, the figures on the record.
+    let (v, drafts, _) = cost_verdict(
+        COST_POLICY,
+        (100, serde_json::json!({"input_tokens": 800, "output_tokens": 200})),
+        (102, serde_json::json!({"input_tokens": 1000, "output_tokens": 400})),
+    );
+    assert_eq!((v.verdict.as_str(), v.cost.as_ref().unwrap().status.as_str()), ("held", "within"));
+    assert!(drafts.is_empty());
+    // No bound in the policy: no cost read at all, and no `cost` key.
+    let (v, _, _) = cost_verdict(
+        r#"{"outcome_evalset": {"hash": "paged", "field": "passed", "higher_is_better": true}}"#,
+        (100, serde_json::json!({"input_tokens": 800, "output_tokens": 200})),
+        (102, serde_json::json!({"input_tokens": 1300, "output_tokens": 300})),
+    );
+    assert!(v.cost.is_none());
+    assert!(!serde_json::to_string(&v).unwrap().contains("\"cost\""));
+}
+
+/// `cost_per_pass` is undefined when nothing passed — not a division by
+/// zero, not zero, and not a verdict: the cost is simply not measurable.
+#[test]
+fn cost_per_pass_is_undefined_when_nothing_passed() {
+    let policy = r#"{"outcome_evalset": {"hash": "paged", "field": "passed", "higher_is_better": true,
+        "cost": {"field": "cost_per_pass", "max_increase_ratio": 1.5}}}"#;
+    let (v, drafts, _) = cost_verdict(
+        policy,
+        (100, serde_json::json!({"usd_micros": 2_000_000})),
+        (0, serde_json::json!({"usd_micros": 2_000_000})),
+    );
+    assert_eq!(v.verdict, "regressed", "the score fell to zero");
+    let c = v.cost.as_ref().unwrap();
+    assert_eq!((c.status.as_str(), c.baseline, c.current), ("not_measurable", Some(0.02), None));
+    assert_eq!(drafts.len(), 1);
+    assert_eq!(drafts[0].summary.template_id, "outcome.regression", "no cost clause on an unmeasurable cost");
+}
+
+/// One number, two readers. A harness that journals an evalset run under
+/// the run id `areev run` executed writes no cost keys; the gate reads the
+/// runtime's `run_outcome` Observation for that run id, which is the same
+/// record the `run_outcome` analyzer attributes spend from.
+#[test]
+fn an_eval_run_that_is_an_areev_run_quotes_the_runtime_spend_to_both_readers() {
+    let policy = r#"{"outcome_evalset": {"hash": "paged", "field": "passed", "higher_is_better": true,
+        "cost": {"field": "usd", "max_increase_ratio": 1.5}}}"#;
+    let (v, drafts, sub) = cost_verdict(
+        policy,
+        (100, serde_json::json!({"usd_micros": 1_000_000})),
+        (102, serde_json::json!({})),
+    );
+    // Without the Observation the after run has no cost.
+    assert_eq!(v.cost.as_ref().unwrap().status, "not_measurable");
+    assert!(drafts.is_empty());
+
+    // Now the runtime's own record for that run id exists.
+    let mut sub = sub;
+    sub.put_observation(
+        "agent:harness",
+        &[
+            ("observation_kind", serde_json::json!("run_outcome")),
+            ("run_id", serde_json::json!("eval-after")),
+            ("plan_hash", serde_json::json!("plan1234")),
+            ("object", serde_json::json!("completed")),
+            ("spent_input_tokens", serde_json::json!(700)),
+            ("spent_output_tokens", serde_json::json!(300)),
+            ("spent_usd_micros", serde_json::json!(2_000_000)),
+            ("spent_wall_ms", serde_json::json!(9_000)),
+            ("spent_supersteps", serde_json::json!(4)),
+        ],
+    );
+    let runs = crate::eval::eval_runs(&sub.inner, "paged", None).unwrap();
+    let after = runs.iter().find(|r| r.run_id == "eval-after").unwrap();
+    assert_eq!(crate::eval::run_value(after, "usd"), Some(2.0), "the gate reads the runtime's figure");
+    assert_eq!(crate::eval::run_value(after, "tokens"), Some(1000.0));
+    // …and `run_outcome` attributes the same USD from the same grain.
+    let mut sub2 = TestSubstrate::new();
+    for _ in 0..3 {
+        sub2.put_observation(
+            "agent:harness",
+            &[
+                ("observation_kind", serde_json::json!("run_outcome")),
+                ("run_id", serde_json::json!("eval-after")),
+                ("plan_hash", serde_json::json!("plan1234")),
+                ("object", serde_json::json!("completed")),
+                ("spent_usd_micros", serde_json::json!(2_000_000)),
+            ],
+        );
+    }
+    let a = crate::analyzers::run_outcome::RunOutcome::new();
+    let drafts = sub2.analyze_with(&a, 10_000, &[("min_usd_micros", serde_json::json!(1))]);
+    let cost = drafts.iter().find(|d| d.summary.template_id == "run.cost").expect("run_outcome attributes the spend");
+    assert_eq!(cost.summary.args["usd"], "6.00", "three runs × the same $2.00 the gate read");
+}
+
 #[test]
 fn a_lower_is_better_high_water_mark_is_the_minimum() {
     use crate::model::Origin;
@@ -3916,12 +4122,12 @@ mod evalset_outcome {
         journal_run(&mut sub, "eval-after", 6_000, serde_json::json!({"category_accuracy": 0.9}));
         let m = snapshot("category_accuracy", 0.71, true);
         for kind in [BaselineKind::NewestBeforeApply, BaselineKind::HighWater] {
-            let b = crate::engine::baseline_at_apply(&sub.inner, &m, 5_000, kind).unwrap();
+            let b = crate::engine::baseline_at_apply(&sub.inner, &m, 5_000, kind, None).unwrap();
             assert_eq!((b.value, b.kind, b.run_id.clone(), b.best_before), (0.71, "snapshot", None, None), "{kind:?}");
         }
         // A metric that is not evalset-backed is always the snapshot.
         let m = MetricSnapshot { metric: "contradiction_recurrence".into(), ..snapshot("x", 0.0, false) };
-        let b = crate::engine::baseline_at_apply(&sub.inner, &m, 5_000, BaselineKind::HighWater).unwrap();
+        let b = crate::engine::baseline_at_apply(&sub.inner, &m, 5_000, BaselineKind::HighWater, None).unwrap();
         assert_eq!((b.value, b.kind), (0.0, "snapshot"));
     }
 

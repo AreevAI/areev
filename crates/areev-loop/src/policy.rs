@@ -169,6 +169,38 @@ impl MinEffect {
     }
 }
 
+/// A cost bound beside the quality metric. The verdict on the quality
+/// field is unchanged; when quality held but `field` on the run after the
+/// apply exceeds `max_increase_ratio` × its value on the baseline run, the
+/// checkpoint records `held_costlier` and `outcome_review` emits an
+/// advisory Flag citing both runs — never a revert draft, because a
+/// cost/quality trade is a human decision. `regressed` dominates: one
+/// verdict per checkpoint. `field` is one of the promoted cost fields
+/// (`effects`, `tokens`, `usd`, `wall_ms`, `cost_per_pass`) or any integer
+/// key the harness writes; a run on which it is not measurable records no
+/// cost figures, and the quality verdict still records.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CostBound {
+    pub field: String,
+    /// Current may be at most this many times the baseline (`1.0` = no
+    /// increase at all); finite and > 0.
+    pub max_increase_ratio: f64,
+}
+
+impl CostBound {
+    fn validate(&self) -> Result<()> {
+        let bad = |what: &str| Err(Error::InvalidProposal(format!("policy: outcome_evalset.cost: {what}")));
+        if self.field.trim().is_empty() {
+            return bad("field must name a cost field (effects, tokens, usd, wall_ms, cost_per_pass, or a harness key)");
+        }
+        if !(self.max_increase_ratio.is_finite() && self.max_increase_ratio > 0.0) {
+            return bad("max_increase_ratio must be a finite number > 0");
+        }
+        Ok(())
+    }
+}
+
 /// The evalset every LLM-authored, applicable proposal is measured against
 /// after apply (`docs/loop.md`, "Evalset-backed outcomes"). An authored
 /// lesson carries no built-in recurrence metric — nothing errors when a
@@ -210,6 +242,9 @@ pub struct OutcomeEvalset {
     /// none: any drop past floating-point slack is a regression).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_effect: Option<MinEffect>,
+    /// A cost bound read beside the quality field (default none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<CostBound>,
 }
 
 fn default_horizons() -> Vec<i64> {
@@ -442,6 +477,9 @@ impl Policy {
         if let Some(m) = p.outcome_evalset.as_ref().and_then(|e| e.min_effect.as_ref()) {
             m.validate()?;
         }
+        if let Some(c) = p.outcome_evalset.as_ref().and_then(|e| e.cost.as_ref()) {
+            c.validate()?;
+        }
         Ok(p)
     }
 
@@ -566,6 +604,27 @@ mod tests {
         .expect_err("unknown baseline kind");
         let msg = err.to_string();
         assert!(msg.contains("newest_before_apply") && msg.contains("high_water"), "{msg}");
+    }
+
+    #[test]
+    fn cost_bound_needs_a_field_and_a_positive_ratio() {
+        let base = |extra: &str| {
+            format!(r#"{{"outcome_evalset": {{"hash": "f", "field": "passed", "higher_is_better": true, "cost": {extra}}}}}"#)
+        };
+        let c = Policy::from_json(&base(r#"{"field": "tokens", "max_increase_ratio": 1.5}"#))
+            .unwrap().outcome_evalset.unwrap().cost.unwrap();
+        assert_eq!((c.field.as_str(), c.max_increase_ratio), ("tokens", 1.5));
+        for bad in [
+            r#"{"field": "tokens"}"#,
+            r#"{"max_increase_ratio": 1.5}"#,
+            r#"{"field": "", "max_increase_ratio": 1.5}"#,
+            r#"{"field": "tokens", "max_increase_ratio": 0}"#,
+            r#"{"field": "tokens", "max_increase_ratio": -1}"#,
+            r#"{"field": "tokens", "max_increase_ratio": "1.5"}"#,
+            r#"{"field": "tokens", "max_increase_ratio": 1.5, "hard": true}"#,
+        ] {
+            assert!(Policy::from_json(&base(bad)).is_err(), "{bad} must be a policy error");
+        }
     }
 
     #[test]

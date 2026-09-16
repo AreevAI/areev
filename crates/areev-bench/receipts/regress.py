@@ -215,7 +215,7 @@ def main():
     # 3. Measure under it.
     trials_h, usage_h = evalrun.run_arm("H", profile, lessons_h, heldout, agent_argv, journal)
     sum_h = evalrun.journal_eval_run(db, evalset, "eval-h", trials_h, note="harmful lesson applied",
-                                     at_ms=t_h + 2 * HOUR)
+                                     at_ms=t_h + 2 * HOUR, usage=usage_h)
     report["steps"].append({"step": "measure-H", "summary": sum_h, "usage": usage_h})
 
     # 4. A day later: regressed → revert proposed → approved → applied.
@@ -244,7 +244,7 @@ def main():
     # 5. Measure again: back to B.
     trials_r, usage_r = evalrun.run_arm("R", profile, lessons_r, heldout, agent_argv, journal)
     sum_r = evalrun.journal_eval_run(db, evalset, "eval-r", trials_r, note="harmful lesson reverted",
-                                     at_ms=t_r + 2 * HOUR)
+                                     at_ms=t_r + 2 * HOUR, usage=usage_r)
     report["steps"].append({"step": "measure-R", "summary": sum_r, "usage": usage_r})
     check("R recovers past H", sum_r["exact"] > sum_h["exact"],
           "H %d → R %d exact" % (sum_h["exact"], sum_r["exact"]))

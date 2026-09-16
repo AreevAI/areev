@@ -4799,14 +4799,28 @@ fn run_eval(
                 }
             }
             let (mut passed, mut failed) = (0u64, 0u64);
+            // What the run cost, beside what it scored (`docs/loop.md`,
+            // "Evalset-backed outcomes"): every case is one executor call
+            // (an effect), timed; the model path also sums the provider's
+            // reported usage. Journaled as integer keys the Verify gate's
+            // cost bound reads fail-closed.
+            let (mut effects, mut wall_ms) = (0u64, 0u64);
+            let (mut input_tokens, mut output_tokens) = (0u64, 0u64);
             let mut rows = Vec::new();
             for case in &cases {
                 let cname = case.get("name").and_then(|v| v.as_str()).unwrap_or("case");
                 let input = case.get("input").cloned().unwrap_or(serde_json::json!({}));
                 let expect = case.get("expect").cloned().unwrap_or(serde_json::json!({}));
+                let started = std::time::Instant::now();
                 let (ok, got) = match &llm {
                     Some(llm) => {
-                        run_eval_case_model(llm.as_ref(), &input, &expect, llm_max_tokens)
+                        let (ok, got, usage) =
+                            run_eval_case_model(llm.as_ref(), &input, &expect, llm_max_tokens);
+                        if let Some((i, o)) = usage {
+                            input_tokens += i;
+                            output_tokens += o;
+                        }
+                        (ok, got)
                     }
                     None => run_eval_case(
                         cmd.as_deref().unwrap_or_default(),
@@ -4816,6 +4830,8 @@ fn run_eval(
                         &expect,
                     ),
                 };
+                effects += 1;
+                wall_ms += started.elapsed().as_millis() as u64;
                 if ok { passed += 1 } else { failed += 1 };
                 // Each case is journaled — the gate run is inspectable with
                 // `areev run-trace --run-id <eval id>` like any other run.
@@ -4844,9 +4860,12 @@ fn run_eval(
             // WHICH served model was judged is part of the evidence.
             let mut summary = serde_json::json!({
                 "run_id": run_id, "passed": passed, "failed": failed,
+                "effects": effects, "wall_ms": wall_ms,
             });
             if let Some(spec) = &model {
                 summary["model"] = serde_json::json!(spec);
+                summary["input_tokens"] = serde_json::json!(input_tokens);
+                summary["output_tokens"] = serde_json::json!(output_tokens);
             }
             let mut fact = areev_core::types::Fact::new(
                 &format!("evalset:{evalset_hex}"),
@@ -4933,6 +4952,9 @@ fn run_eval(
                 serde_json::to_string_pretty(&serde_json::json!({
                     "evalset": evalset_hex, "run_id": run_id,
                     "passed": passed, "failed": failed, "cases": rows,
+                    "effects": effects, "wall_ms": wall_ms,
+                    "input_tokens": model.as_ref().map(|_| input_tokens),
+                    "output_tokens": model.as_ref().map(|_| output_tokens),
                     "reacceptance": reacceptance,
                 }))
                 .unwrap()
@@ -5064,19 +5086,20 @@ fn eval_model_messages(
 
 /// Run one case against the model behind the ToolCallLlm seam: no tools,
 /// temperature 0.0, the response text scored by the same matcher as a
-/// tool-cmd case's stdout.
+/// tool-cmd case's stdout. Returns (passed, output text, (input, output)
+/// tokens the provider reported).
 fn run_eval_case_model(
     llm: &dyn areev_llm::ToolCallLlm,
     input: &serde_json::Value,
     expect: &serde_json::Value,
     max_tokens: u32,
-) -> (bool, String) {
+) -> (bool, String, Option<(u64, u64)>) {
     use areev_llm::{ToolCallRequest, ToolChoice};
     // Prevalidated before the run started; a failure here is still a case
     // failure rather than a panic.
     let (system, messages) = match eval_model_messages(input) {
         Ok(v) => v,
-        Err(e) => return (false, e),
+        Err(e) => return (false, e, None),
     };
     let req = ToolCallRequest {
         system,
@@ -5088,10 +5111,11 @@ fn run_eval_case_model(
     };
     match llm.call(&req) {
         Ok(resp) => {
+            let usage = (resp.usage.input_tokens, resp.usage.output_tokens);
             let text = resp.text.unwrap_or_default().trim().to_string();
-            (eval_expect_matches(expect, &text), text)
+            (eval_expect_matches(expect, &text), text, Some(usage))
         }
-        Err(e) => (false, format!("model call failed: {}", e.message)),
+        Err(e) => (false, format!("model call failed: {}", e.message), None),
     }
 }
 
@@ -6361,6 +6385,20 @@ fn run_loop(
                     }
                     if let Some(best) = o.best_before {
                         line.push_str(&format!("  best_before {best}"));
+                    }
+                    // The cost column, when the policy set a bound: both
+                    // figures and the delta, or an honest "not measurable".
+                    if let Some(c) = &o.cost {
+                        match (c.baseline, c.current) {
+                            (Some(b), Some(cur)) => {
+                                let ratio = if b > 0.0 { format!(" ×{:.2}", cur / b) } else { String::new() };
+                                line.push_str(&format!(
+                                    "  cost {} {b} → {cur}{ratio} [{}, bound ×{}]",
+                                    c.field, c.status, c.max_increase_ratio
+                                ));
+                            }
+                            _ => line.push_str(&format!("  cost {} not measurable", c.field)),
+                        }
                     }
                     println!("{line}");
                 }

@@ -3270,8 +3270,11 @@ async function renderOutcomes(parent) {
   for (const o of list) {
     const row = el('div', 'srow');
     const good = o.verdict !== 'regressed';
+    /* `held_costlier`: the score held but the policy's cost bound did not —
+       advisory, so the dot is a warning, not a failure. */
+    const costlier = o.verdict === 'held_costlier';
     const dot = el('span'); dot.style.cssText = 'width:6px;height:6px;border-radius:3px;flex-shrink:0;background:'
-      + (good ? 'var(--ok)' : 'var(--danger)');
+      + (!good ? 'var(--danger)' : costlier ? 'var(--warn)' : 'var(--ok)');
     row.appendChild(dot);
     const hz = o.horizon_ms % 86400000 === 0 ? (o.horizon_ms / 86400000) + ' days' : (o.horizon_ms / 3600000) + ' hours';
     /* The receipt names what it compared against: the run before the apply
@@ -3284,9 +3287,18 @@ async function renderOutcomes(parent) {
     const ref = against ? against + (o.baseline_run_id ? ', ' + o.baseline_run_id : '') + ')' : '';
     const best = o.best_before != null && o.best_before !== o.baseline
       ? ' · best before the change: ' + o.best_before : '';
+    /* The cost column, when the policy set a bound: both figures and the
+       delta, or an honest "not measurable" — never a zero. */
+    const c = o.cost;
+    const cost = !c ? ''
+      : (c.baseline != null && c.current != null)
+        ? ' · ' + c.field + ' ' + c.baseline + ' → ' + c.current
+          + (c.baseline > 0 ? ' (×' + (c.current / c.baseline).toFixed(2) + ', bound ×' + c.max_increase_ratio + ')' : '')
+        : ' · ' + c.field + ' not measurable';
     row.appendChild(el('span', 't', cap(String(o.metric || '').replace(/_/g, ' '))
-      + ' went from ' + o.baseline + ref + ' to ' + o.current + ' after ' + hz + best));
-    const v = el('span', 'w', o.verdict); v.style.color = good ? 'var(--ok)' : 'var(--danger)';
+      + ' went from ' + o.baseline + ref + ' to ' + o.current + ' after ' + hz + best + cost));
+    const v = el('span', 'w', o.verdict.replace('_', ', '));
+    v.style.color = !good ? 'var(--danger)' : costlier ? 'var(--warn)' : 'var(--ok)';
     row.appendChild(v);
     host.appendChild(row);
   }
