@@ -63,6 +63,7 @@ Apply *instead of* superseding the default resolution.
 
 - Per-request (sub-run) routing — the unit of canary is the run, because
   the run is the unit of replay and audit.
-- Traffic mirroring/shadowing live requests — the §8 shadow evaluator
-  already replays journaled runs against candidates with zero dispatches;
-  canary is for the effects shadow cannot exercise.
+- Traffic mirroring/shadowing live requests — `areev run shadow` replays
+  journaled runs with zero dispatches (today for consistency under the run's
+  own manifest; replay under a candidate plan is a roadmap item, not shipped);
+  canary is for the effects a replay cannot exercise.
