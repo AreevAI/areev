@@ -6,6 +6,11 @@
 //!
 //! One facade for the whole bench (the embedded backend is single-writer per
 //! file); a fresh `BorrowedSubstrate` per engine call.
+//!
+//! The memory it opens is a **file path or a DSN** ([`BenchDb`]) — the rule
+//! the Python tracks have followed since 1.8.0 (#200), brought here so the one
+//! track with no external dataset can be pointed at a provisioned Postgres
+//! schema (#250).
 
 use super::{Ledger, LedgerEntry, TaskRunRecord};
 use areev_cal::AreevFacade;
@@ -20,6 +25,119 @@ use areev_loop_adapter::BorrowedSubstrate;
 use areev_store::Areev;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+
+/// The out-of-band spelling of `--db`, shared with the Python harnesses
+/// (`receipts/memory.py::bench_db`) so one exported variable points every
+/// track at the same memory.
+pub const BENCH_DB_ENV: &str = "AREEV_BENCH_DB";
+
+/// The memory a selfimprove bench opens: the workdir's `bench.db`, or the
+/// Postgres schema a `--db` / `$AREEV_BENCH_DB` DSN names (#250).
+///
+/// Two variants rather than one string because the difference is not
+/// cosmetic: a file is created, refused when it already exists, and can be
+/// COPIED (`selfimprove_learn`'s per-pass arms); a schema is provisioned out
+/// of band, judged empty by what it holds, and cannot be copied at all. The
+/// bench tells them apart exactly once, here, and never re-derives it with
+/// `Path` arithmetic on a DSN.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BenchDb {
+    /// A memory file — `<workdir>/bench.db` unless an override named another.
+    File(PathBuf),
+    /// A `postgres://…?schema=…` DSN, handed to the store verbatim so its
+    /// `sslmode`/`provision`/`pool` parameters keep meaning what they mean.
+    Postgres(String),
+}
+
+impl BenchDb {
+    /// The published default: the memory lives beside the run's artifacts.
+    pub fn in_workdir(dir: &Path) -> BenchDb {
+        BenchDb::File(dir.join("bench.db"))
+    }
+
+    /// Resolve for a workdir: an explicit `--db` wins, then `$AREEV_BENCH_DB`,
+    /// then the workdir file. With neither set, every published file-backed
+    /// run is byte-for-byte the run it always was.
+    pub fn resolve(dir: &Path, flag: Option<&str>) -> BenchDb {
+        Self::resolve_from(dir, flag, std::env::var(BENCH_DB_ENV).ok().as_deref())
+    }
+
+    /// [`BenchDb::resolve`] with the environment passed IN. The decision is a
+    /// pure function of its three inputs, so the tests below never mutate
+    /// process-wide state a parallel test could observe (`areev-testing`:
+    /// determinism rules).
+    pub fn resolve_from(dir: &Path, flag: Option<&str>, env: Option<&str>) -> BenchDb {
+        match flag.or(env).map(str::trim).filter(|s| !s.is_empty()) {
+            Some(loc) if areev_store::is_pg_dsn(loc) => BenchDb::Postgres(loc.to_string()),
+            Some(loc) => BenchDb::File(PathBuf::from(loc)),
+            None => Self::in_workdir(dir),
+        }
+    }
+
+    /// Whether this memory is a Postgres schema rather than a file.
+    pub fn is_postgres(&self) -> bool {
+        matches!(self, BenchDb::Postgres(_))
+    }
+
+    /// Safe to print, log, or write into a report: a DSN loses its password.
+    /// A file path is returned unchanged. Mirrors `memory.py::redact`.
+    pub fn redacted(&self) -> String {
+        match self {
+            BenchDb::File(p) => p.display().to_string(),
+            BenchDb::Postgres(dsn) => redact_dsn(dsn),
+        }
+    }
+}
+
+/// `scheme://user:secret@host/…` → `scheme://user:***@host/…`; anything
+/// without userinfo is returned unchanged. Hand-rolled because the bench
+/// tree carries no regex dependency and this is the whole of the rule.
+fn redact_dsn(dsn: &str) -> String {
+    let Some((scheme, rest)) = dsn.split_once("://") else { return dsn.to_string() };
+    // Userinfo, if any, lives in the AUTHORITY — before the first '/'.
+    let authority_end = rest.find('/').unwrap_or(rest.len());
+    let Some(at) = rest[..authority_end].find('@') else { return dsn.to_string() };
+    let Some((user, _secret)) = rest[..at].split_once(':') else { return dsn.to_string() };
+    format!("{scheme}://{user}:***@{}", &rest[at + 1..])
+}
+
+/// Open the store behind a [`BenchDb`]. The DSN goes to the store verbatim
+/// apart from the `?schema=` split the postgres backend's own API asks for,
+/// so `provision`, `sslmode` and `pool` keep deciding what they decide.
+#[cfg(feature = "postgres")]
+fn open_store(db: &BenchDb) -> Result<Areev, String> {
+    match db {
+        BenchDb::File(path) => open_file_store(path),
+        BenchDb::Postgres(dsn) => {
+            let (url, schema) =
+                areev_store::pg::split_schema_url(dsn).map_err(|e| e.to_string())?;
+            Areev::open_postgres(&url, &schema)
+                .map_err(|e| format!("open {}: {e}", db.redacted()))
+        }
+    }
+}
+
+/// Without the `postgres` feature the DSN is REFUSED, never quietly treated
+/// as a file name: a bench that wrote `postgres://…` into the workdir and
+/// reported a clean run would be the worst of both answers.
+#[cfg(not(feature = "postgres"))]
+fn open_store(db: &BenchDb) -> Result<Areev, String> {
+    match db {
+        BenchDb::File(path) => open_file_store(path),
+        BenchDb::Postgres(dsn) => Err(format!(
+            "{} names the postgres backend, and this binary was built without it — \
+             rebuild with `cargo run -p areev-bench --features postgres ...`",
+            redact_dsn(dsn)
+        )),
+    }
+}
+
+fn open_file_store(path: &Path) -> Result<Areev, String> {
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| format!("memory path is not UTF-8: {}", path.display()))?;
+    Areev::open(path_str).map_err(|e| format!("open {path_str}: {e}"))
+}
 
 /// BECAUSE recorded on the approve and apply of an executable lesson.
 const BECAUSE_APPLY: &str = "bench: recurring failure evidence";
@@ -277,56 +395,79 @@ pub struct Memory {
     ns: String,
     runner: String,
     reviewer: String,
-    db_path: PathBuf,
+    db: BenchDb,
 }
 
 impl Memory {
-    /// Fresh memory file at `dir/bench.db`, session namespace `bench`.
-    /// Refuses a pre-existing file: lessons left over from an earlier run
-    /// would silently poison A0 (the "ignorant by construction" state).
-    pub fn create(dir: &Path) -> Result<Memory, String> {
-        std::fs::create_dir_all(dir)
-            .map_err(|e| format!("create workdir {}: {e}", dir.display()))?;
-        let db_path = dir.join("bench.db");
-        if db_path.exists() {
-            return Err(format!(
-                "{} already exists — a stale memory would corrupt A0; use a fresh \
-                 --workdir or delete it",
-                db_path.display()
-            ));
+    /// An EMPTY memory to capture experience into, session namespace `bench`.
+    ///
+    /// "Empty" is checked against whichever thing the locator names, because
+    /// the two backends make the same guarantee in different currencies: a
+    /// pre-existing FILE is refused outright, a provisioned SCHEMA is refused
+    /// when it already holds grains. Either way, lessons left over from an
+    /// earlier run would silently poison A0 — the "ignorant by construction"
+    /// state the whole A/B/A/B claim rests on.
+    ///
+    /// The schema itself is never created here: a DSN is opened exactly as
+    /// given, so `?provision=never` against a role holding no `CREATE` works
+    /// the way it does for the Python harnesses (#250).
+    pub fn create(db: &BenchDb) -> Result<Memory, String> {
+        if let BenchDb::File(path) = db {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("create workdir {}: {e}", parent.display()))?;
+            }
+            if path.exists() {
+                return Err(format!(
+                    "{} already exists — a stale memory would corrupt A0; use a fresh \
+                     --workdir or delete it",
+                    path.display()
+                ));
+            }
         }
-        Self::attach(db_path)
+        let mem = Self::attach(db)?;
+        if db.is_postgres() {
+            let grains = mem
+                .facade
+                .with_store(|m| m.count())
+                .map_err(|e| format!("count {}: {e}", db.redacted()))?;
+            if grains > 0 {
+                return Err(format!(
+                    "{} already holds {grains} grain(s) — a stale memory would corrupt \
+                     A0; provision a fresh schema and point --db at it",
+                    db.redacted()
+                ));
+            }
+        }
+        Ok(mem)
     }
 
-    /// Re-open the memory an earlier phase left at `dir/bench.db` — for the
-    /// instruments that measure a learn pass over captured experience
-    /// without re-running the experience (`selfimprove_learn`). Refuses an
-    /// absent file: a fresh memory here would run the loop over nothing and
-    /// report a clean null.
-    pub fn open(dir: &Path) -> Result<Memory, String> {
-        let db_path = dir.join("bench.db");
-        if !db_path.exists() {
-            return Err(format!(
-                "{} does not exist — capture experience first (selfimprove_aba \
-                 --stop-after experience)",
-                db_path.display()
-            ));
+    /// Re-open the memory an earlier phase captured — for the instruments
+    /// that measure a learn pass over captured experience without re-running
+    /// the experience (`selfimprove_learn`). Refuses an absent file: a fresh
+    /// memory here would run the loop over nothing and report a clean null.
+    pub fn open(db: &BenchDb) -> Result<Memory, String> {
+        if let BenchDb::File(path) = db {
+            if !path.exists() {
+                return Err(format!(
+                    "{} does not exist — capture experience first (selfimprove_aba \
+                     --stop-after experience)",
+                    path.display()
+                ));
+            }
         }
-        Self::attach(db_path)
+        Self::attach(db)
     }
 
-    fn attach(db_path: PathBuf) -> Result<Memory, String> {
-        let path_str = db_path
-            .to_str()
-            .ok_or_else(|| format!("workdir path is not UTF-8: {}", db_path.display()))?;
-        let store = Areev::open(path_str).map_err(|e| format!("open {path_str}: {e}"))?;
+    fn attach(db: &BenchDb) -> Result<Memory, String> {
+        let store = open_store(db)?;
         let facade = AreevFacade::with_session(store, Some("bench".to_string()), None);
         Ok(Memory {
             facade,
             ns: "bench".to_string(),
             runner: "agent:bench-runner".to_string(),
             reviewer: "user:bench-reviewer".to_string(),
-            db_path,
+            db: db.clone(),
         })
     }
 
@@ -340,9 +481,9 @@ impl Memory {
         &self.reviewer
     }
 
-    /// The memory file every phase reads and writes.
-    pub fn db_path(&self) -> &Path {
-        &self.db_path
+    /// The memory every phase reads and writes — a file or a schema.
+    pub fn db(&self) -> &BenchDb {
+        &self.db
     }
 
     /// Record every tool call of one experience task (thread = task id, so
@@ -819,7 +960,7 @@ mod tests {
     #[test]
     fn record_task_writes_an_episode_fact_carrying_no_diagnosis() {
         let dir = TempDir::new().unwrap();
-        let mem = Memory::create(dir.path()).unwrap();
+        let mem = Memory::create(&BenchDb::in_workdir(dir.path())).unwrap();
         let mut rec = failing_task("refund", "rate_limited", 1);
         rec.task_id = "exp-0007".to_string();
         rec.success = false;
@@ -854,7 +995,7 @@ mod tests {
     #[test]
     fn silent_rule_lesson_travels_from_episodes_to_the_prompt() {
         let dir = TempDir::new().unwrap();
-        let mem = Memory::create(dir.path()).unwrap();
+        let mem = Memory::create(&BenchDb::in_workdir(dir.path())).unwrap();
         // Four closures that cancelled and filed no case — R7's shape, and
         // NOT one error between them.
         for i in 0..4 {
@@ -1000,7 +1141,7 @@ mod tests {
     #[test]
     fn lesson_apply_rollback_reapply_drives_the_prompt() {
         let dir = TempDir::new().unwrap();
-        let mem = Memory::create(dir.path()).unwrap();
+        let mem = Memory::create(&BenchDb::in_workdir(dir.path())).unwrap();
         // 6 identical failures + 1 success: over tool_failure's min_count=3
         // and min_rate=0.4 gates.
         mem.record_task(&failing_task("refund", "approval_required", 6))
@@ -1061,7 +1202,7 @@ mod tests {
     #[test]
     fn destructive_recommendations_are_rejected_not_applied() {
         let dir = TempDir::new().unwrap();
-        let mem = Memory::create(dir.path()).unwrap();
+        let mem = Memory::create(&BenchDb::in_workdir(dir.path())).unwrap();
         // A fact whose declared valid_to elapsed → staleness proposes FORGET.
         // Pinned created_at: determinism rule (never the wall clock when the
         // value decides behavior).
@@ -1155,7 +1296,7 @@ mod tests {
     #[test]
     fn mock_llm_lesson_lifecycle_under_the_arm_switch() {
         let dir = TempDir::new().unwrap();
-        let mem = Memory::create(dir.path()).unwrap();
+        let mem = Memory::create(&BenchDb::in_workdir(dir.path())).unwrap();
         mem.record_task(&failing_task("stripe_refund", "approval_required", 4)).unwrap();
 
         // Arm OFF: the authored lesson survives the gates but is ledgered
@@ -1206,7 +1347,7 @@ mod tests {
     #[test]
     fn experience_grains_round_trip_the_recorded_calls() {
         let dir = TempDir::new().unwrap();
-        let mem = Memory::create(dir.path()).unwrap();
+        let mem = Memory::create(&BenchDb::in_workdir(dir.path())).unwrap();
         assert!(
             mem.experience_grains().unwrap().is_empty(),
             "no experience yet ⇒ the arms have nothing to offer"
@@ -1256,7 +1397,7 @@ mod tests {
     #[test]
     fn experience_grains_never_carry_a_lesson() {
         let dir = TempDir::new().unwrap();
-        let mem = Memory::create(dir.path()).unwrap();
+        let mem = Memory::create(&BenchDb::in_workdir(dir.path())).unwrap();
         mem.record_task(&failing_task("refund", "approval_required", 6))
             .unwrap();
         let before = mem.experience_grains().unwrap();
@@ -1277,12 +1418,72 @@ mod tests {
     #[test]
     fn create_refuses_a_preexisting_memory_file() {
         let dir = TempDir::new().unwrap();
-        let first = Memory::create(dir.path()).unwrap();
+        let first = Memory::create(&BenchDb::in_workdir(dir.path())).unwrap();
         drop(first);
-        let err = match Memory::create(dir.path()) {
+        let err = match Memory::create(&BenchDb::in_workdir(dir.path())) {
             Ok(_) => panic!("second create over the same workdir must refuse"),
             Err(e) => e,
         };
         assert!(err.contains("already exists"), "{err}");
+    }
+
+    /// The override ladder (#250), as a pure function so no test touches the
+    /// process environment: `--db` beats `$AREEV_BENCH_DB` beats the workdir.
+    #[test]
+    fn the_locator_ladder_is_flag_then_env_then_workdir() {
+        let dir = Path::new("/tmp/aba");
+        let dsn = "postgres://h/db?schema=mem_x&provision=never";
+
+        assert_eq!(
+            BenchDb::resolve_from(dir, None, None),
+            BenchDb::File(PathBuf::from("/tmp/aba/bench.db")),
+            "unset, every published file-backed run is what it always was"
+        );
+        assert_eq!(
+            BenchDb::resolve_from(dir, None, Some(dsn)),
+            BenchDb::Postgres(dsn.to_string())
+        );
+        assert_eq!(
+            BenchDb::resolve_from(dir, Some(dsn), Some("postgres://h/db?schema=ignored")),
+            BenchDb::Postgres(dsn.to_string()),
+            "the flag wins"
+        );
+        // A non-DSN override is a file path, exactly as in memory.py.
+        assert_eq!(
+            BenchDb::resolve_from(dir, Some("/elsewhere/mem.db"), None),
+            BenchDb::File(PathBuf::from("/elsewhere/mem.db"))
+        );
+        // An exported-but-empty variable is not an override — that is how a
+        // shell spells "unset" often enough to matter.
+        assert_eq!(
+            BenchDb::resolve_from(dir, None, Some("   ")),
+            BenchDb::File(PathBuf::from("/tmp/aba/bench.db"))
+        );
+        // `postgresql://` is the same backend under its other spelling.
+        assert!(BenchDb::resolve_from(dir, Some("postgresql://h/db"), None).is_postgres());
+    }
+
+    /// A report travels; a password must not travel with it.
+    #[test]
+    fn a_dsn_is_redacted_and_a_path_is_not() {
+        assert_eq!(
+            BenchDb::Postgres("postgres://bench:s3cr3t@db.example:5432/areev?schema=mem_x".into())
+                .redacted(),
+            "postgres://bench:***@db.example:5432/areev?schema=mem_x"
+        );
+        // No userinfo, nothing to hide.
+        assert_eq!(
+            BenchDb::Postgres("postgres://db.example/areev?schema=mem_x".into()).redacted(),
+            "postgres://db.example/areev?schema=mem_x"
+        );
+        // A `@` in the PATH must not be mistaken for userinfo.
+        assert_eq!(
+            BenchDb::Postgres("postgres://db.example/areev@1?schema=x".into()).redacted(),
+            "postgres://db.example/areev@1?schema=x"
+        );
+        assert_eq!(
+            BenchDb::File(PathBuf::from("/tmp/aba/bench.db")).redacted(),
+            "/tmp/aba/bench.db"
+        );
     }
 }

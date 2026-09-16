@@ -26,7 +26,7 @@
 use areev_bench::selfimprove::context::{
     AllProvider, ContextProvider, ExperienceGrain, LlmProvider, SteelProvider,
 };
-use areev_bench::selfimprove::memory::{LearnOutcome, Memory};
+use areev_bench::selfimprove::memory::{BenchDb, LearnOutcome, Memory};
 use areev_bench::selfimprove::{agent, env};
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -171,7 +171,7 @@ fn ledger_lines(ledger: &areev_bench::selfimprove::Ledger) -> Vec<String> {
 /// rollback → re-apply, pinning what is learned and the prompt bytes it makes.
 fn section_governed_pipeline(out: &mut String) {
     let dir = tempfile::TempDir::new().expect("tempdir");
-    let mem = Memory::create(dir.path()).expect("memory");
+    let mem = Memory::create(&BenchDb::in_workdir(dir.path())).expect("memory");
     capture_experience(&mem, 1, 40);
 
     out.push_str("## GOVERNED PIPELINE (mock agent, seed 1, 40 experience tasks)\n");
@@ -346,7 +346,7 @@ fn known_defect_even_odd_seed_pairs_collide() {
 #[test]
 fn re_apply_restores_the_same_prompt_bytes() {
     let dir = tempfile::TempDir::new().expect("tempdir");
-    let mem = Memory::create(dir.path()).expect("memory");
+    let mem = Memory::create(&BenchDb::in_workdir(dir.path())).expect("memory");
     capture_experience(&mem, 1, 40);
 
     let LearnOutcome { applied: applied1, .. } =

@@ -42,7 +42,9 @@
 //! one thread.
 
 use areev_bench::selfimprove::context::{ContextProvider, ExperienceGrain};
-use areev_bench::selfimprove::memory::{LearnConfig, LearnOutcome, LessonArms, Memory, MockLoopLlm};
+use areev_bench::selfimprove::memory::{
+    BenchDb, LearnConfig, LearnOutcome, LessonArms, Memory, MockLoopLlm,
+};
 use areev_loop::policy::DiscoverObjective;
 use areev_loop::{CommandLlm, LlmBackend};
 use areev_bench::selfimprove::{agent, context, env, report::Reporter};
@@ -64,6 +66,10 @@ const KNOWN_ARMS: [&str; 4] = ["m-steel", "m-all", "m-llm", "m-cmd"];
 
 struct Args {
     workdir: PathBuf,
+    /// The memory to run against: a file path or a `postgres://…?schema=…`
+    /// DSN. `None` falls through to `$AREEV_BENCH_DB`, then `workdir/bench.db`
+    /// — so an unset environment reproduces every published run exactly.
+    db: Option<String>,
     seed: u64,
     experience: usize,
     eval: usize,
@@ -146,6 +152,7 @@ fn die(msg: &str) -> ! {
 fn usage() -> ! {
     eprintln!(
         "usage: selfimprove_aba --workdir PATH (--mock | --agent-cmd 'CMD')\n\
+         \x20                       [--db PATH|postgres://…?schema=…]\n\
          \x20                       [--seed N] [--experience N] [--eval N]\n\
          \x20                       [--llm-cmd 'CMD' | --mock-llm] [--ground-cmd 'CMD']\n\
          \x20                       [--llm-lessons] [--no-analyzer-lessons] [--learner]\n\
@@ -184,6 +191,7 @@ fn parse_arms(value: &str) -> Vec<String> {
 fn parse_args() -> Args {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut workdir: Option<PathBuf> = None;
+    let mut db: Option<String> = None;
     let mut seed: u64 = 1;
     let mut experience: usize = 150;
     let mut eval: usize = 60;
@@ -234,6 +242,7 @@ fn parse_args() -> Args {
                 let Some(value) = argv.get(i + 1) else { usage() };
                 match flag {
                     "--workdir" => workdir = Some(PathBuf::from(value)),
+                    "--db" => db = Some(value.clone()),
                     "--stop-after" => stop_after = Some(value.clone()),
                     "--seed" => seed = value.parse().unwrap_or_else(|_| usage()),
                     "--experience" => experience = value.parse().unwrap_or_else(|_| usage()),
@@ -311,6 +320,7 @@ fn parse_args() -> Args {
     }
     Args {
         workdir,
+        db,
         seed,
         experience,
         eval,
@@ -921,7 +931,15 @@ fn check_shape(
 
 fn main() {
     let args = parse_args();
-    let mem = Memory::create(&args.workdir).unwrap_or_else(|e| die(&e));
+    // The memory and the ARTIFACTS are two different places. `--workdir`
+    // always holds the transcripts and the report; `--db` (or
+    // `$AREEV_BENCH_DB`) moves only the memory, so pointing the bench at a
+    // Cloud-provisioned schema leaves no `bench.db` behind at all (#250).
+    let db = BenchDb::resolve(&args.workdir, args.db.as_deref());
+    let mem = Memory::create(&db).unwrap_or_else(|e| die(&e));
+    if db.is_postgres() {
+        eprintln!("memory: {} (postgres)", db.redacted());
+    }
     let reporter = Reporter::new(&args.workdir)
         .unwrap_or_else(|e| die(&format!("reporter: {e}")));
 
@@ -965,7 +983,7 @@ fn main() {
         eprintln!(
             "stopped after experience: {} tasks captured in {}",
             exp_tasks.len(),
-            mem.db_path().display()
+            mem.db().redacted()
         );
         return;
     }
@@ -1094,7 +1112,11 @@ fn main() {
     let config = json!({
         "bench": "selfimprove_aba",
         "workdir": args.workdir.display().to_string(),
-        "db": mem.db_path().display().to_string(),
+        // Redacted, because the report is an artifact meant to travel: a DSN
+        // that reached a published run directory with its password in it
+        // would be a credential leak wearing the word "evidence".
+        "db": mem.db().redacted(),
+        "db_backend": if mem.db().is_postgres() { "postgres" } else { "file" },
         "seed": args.seed,
         "experience": args.experience,
         "eval": args.eval,
@@ -1142,6 +1164,7 @@ mod tests {
     fn mock_args(workers: usize) -> Args {
         Args {
             workdir: PathBuf::new(),
+            db: None,
             seed: 7,
             experience: 0,
             eval: 6,

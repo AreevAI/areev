@@ -19,7 +19,9 @@
 //! that is the A/B/A/B bench's job, and this instrument exists so that bench
 //! is run on a learner that reliably produces something to measure.
 
-use areev_bench::selfimprove::memory::{LearnConfig, LearnOutcome, LessonArms, Memory, MockLoopLlm};
+use areev_bench::selfimprove::memory::{
+    BenchDb, LearnConfig, LearnOutcome, LessonArms, Memory, MockLoopLlm, BENCH_DB_ENV,
+};
 use areev_loop::policy::DiscoverObjective;
 use areev_loop::{CommandLlm, LlmBackend};
 use serde_json::{json, Value};
@@ -189,6 +191,22 @@ fn backends(args: &Args, pass: usize) -> (LoopBackend, LoopBackend) {
 
 fn main() {
     let args = parse_args();
+    // This instrument's whole method is "one fresh COPY of the captured
+    // memory per pass", and the thing it copies is the capture in --workdir.
+    // An override names a memory it cannot use — a schema cannot be copied at
+    // all — so it is refused rather than ignored: running every pass against
+    // the workdir file while the operator believed otherwise is how a run gets
+    // labelled as something it never was
+    // (`crates/areev-bench/CLAUDE.md`, "A memory is a file path or a DSN").
+    let resolved = BenchDb::resolve(&args.workdir, None);
+    if resolved != BenchDb::in_workdir(&args.workdir) {
+        die(&format!(
+            "${BENCH_DB_ENV} names {}, but this instrument learns over one fresh COPY of \
+             the capture in --workdir, one per pass (and a postgres schema cannot be copied \
+             at all). Unset it, or point --workdir at the capture",
+            resolved.redacted()
+        ));
+    }
     if !args.workdir.join("bench.db").exists() {
         die(&format!(
             "{} has no bench.db — run `selfimprove_aba --workdir {} ... --stop-after experience` first",
@@ -235,7 +253,7 @@ fn main() {
         let (llm, ground) = backends(&args, pass);
         let outcome: LearnOutcome = {
             // Scoped so the handle is released before the next pass copies.
-            let mem = Memory::open(&pass_dir).unwrap_or_else(|e| die(&e));
+            let mem = Memory::open(&BenchDb::in_workdir(&pass_dir)).unwrap_or_else(|e| die(&e));
             mem.learn_with(llm, ground, cfg, BASE_MS + HOUR_MS)
                 .unwrap_or_else(|e| die(&format!("pass {pass}: {e}")))
         };

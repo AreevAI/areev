@@ -152,7 +152,14 @@ pub fn render_any(action: &Tool, provider: ProviderKind) -> Result<Value> {
 /// to satisfy name-regex constraints (Anthropic/OpenAI forbid dots).
 /// Identity preserved via the grain's `tool_name` field; the invoker
 /// reverse-maps on the return path.
-pub(crate) fn normalize_tool_name(name: &str) -> String {
+///
+/// **Public because the reverse map needs the same spelling.** A model that
+/// was offered `receipt_prepare` calls `receipt_prepare`, and whoever reads
+/// that call back has to recognise it as the Definition `receipt.prepare` —
+/// the runtime's abstract nodes (`areev_run_core`) and the tool-calling
+/// adapters (`areev_llm`) both do exactly that. A second, private copy of
+/// this one-liner in either crate is how the two halves drift apart.
+pub fn normalize_tool_name(name: &str) -> String {
     name.replace('.', "_")
 }
 

@@ -44,8 +44,9 @@ use crate::plan::PlanGraph;
 use crate::state::{EdgeRes, FoldInFlight, NodeState, PendingAsk, Phase, SchedulerState};
 use crate::types::{
     Ask, Budgets, Command, DecisionRecord, EdgeOutcome, EffectKind, EffectOutcome, EventIn,
-    FailCause, JournalKey, NodeExecutor, RunOutcome,
+    FailCause, JournalKey, NodeExecutor, OfferedTool, RunOutcome,
 };
+use areev_core::format::tool_schema::normalize_tool_name;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -537,6 +538,33 @@ fn settle_send_task(st: &mut SchedulerState, path: &str, result: Value) {
     }
 }
 
+/// Fold a model-supplied tool name back onto the **canonical** `tool_name` of
+/// the Definition it was offered as.
+///
+/// Anthropic and OpenAI forbid `.` in a tool name, so a pinned Definition
+/// called `receipt.prepare` reaches the model as `receipt_prepare`
+/// ([`normalize_tool_name`]) — and the model, correctly, calls back with what
+/// it was given. Without this fold every call to a dotted tool from inside an
+/// abstract node read as an unknown tool and failed the node after one
+/// corrective re-prompt the model could not possibly satisfy.
+///
+/// Exact match wins, so a plan whose offered set contains BOTH `a.b` and `a_b`
+/// still resolves `a_b` to the tool that is literally named that, and an
+/// ambiguous normalized match resolves to nothing rather than to a guess — the
+/// caller then treats it as unknown and re-prompts, which is the honest answer.
+/// A name matching neither form is returned unchanged, for the same reason: the
+/// unknown-tool path owns that decision, not this function.
+fn canonical_tool_name(offered: &[OfferedTool], called: &str) -> String {
+    if offered.iter().any(|t| t.tool_name == called) {
+        return called.to_string();
+    }
+    let mut hits = offered.iter().filter(|t| normalize_tool_name(&t.tool_name) == called);
+    match (hits.next(), hits.next()) {
+        (Some(t), None) => t.tool_name.clone(),
+        _ => called.to_string(),
+    }
+}
+
 /// A model turn resolved: end the loop, request tools, or re-prompt.
 fn handle_llm_outcome(
     env: &StepEnv<'_>,
@@ -616,11 +644,16 @@ fn handle_llm_outcome(
                                 .and_then(|v| v.as_str())
                                 .unwrap_or_default()
                                 .to_string(),
-                            tool_name: c
-                                .get("name")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or_default()
-                                .to_string(),
+                            // The model answers with the name it was
+                            // OFFERED, which for a dotted Definition is the
+                            // normalized spelling. Canonicalize here, once,
+                            // so the unknown-tool check, the argument
+                            // validator and the dispatch below all see the
+                            // Definition's own `tool_name`.
+                            tool_name: canonical_tool_name(
+                                tools,
+                                c.get("name").and_then(|v| v.as_str()).unwrap_or_default(),
+                            ),
                             arguments: c.get("arguments").cloned().unwrap_or(Value::Null),
                         })
                         .collect()
@@ -630,6 +663,8 @@ fn handle_llm_outcome(
             // Unknown tool names: ONE corrective re-prompt, then the node
             // fails `ExecutorError` (§6.11) — the model must choose among
             // what was offered, and a model that cannot is not looped on.
+            // `canonical_tool_name` already folded the offered spelling back,
+            // so what survives here matches NEITHER form.
             let unknown: Vec<String> = calls
                 .iter()
                 .map(|c| c.tool_name.clone())
@@ -653,11 +688,17 @@ fn handle_llm_outcome(
                 }
                 let Some(flow) = st.abstract_flows.get_mut(&flow_id) else { return };
                 flow.unknown_strikes += 1;
+                // The list names the tools the way the MODEL was offered
+                // them: it has to emit one of these, and handing it a dotted
+                // name its own provider forbids is a correction that cannot
+                // be obeyed. Both spellings are accepted on the way back.
+                let choices: Vec<String> =
+                    offered.iter().map(|n| normalize_tool_name(n)).collect();
                 flow.messages.push(serde_json::json!({
                     "role": "user",
                     "content": format!(
                         "Unknown tool(s) {:?}; choose among: {:?}",
-                        unknown, offered
+                        unknown, choices
                     ),
                 }));
                 flow.need = Some(crate::state::FlowNeed::NextTurn);

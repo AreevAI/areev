@@ -1022,6 +1022,14 @@ areev run start --workflow <WF> --run-id r1 --input '{}' \
   Definitions. Tool arguments are validated against the pinned schemas —
   strictly, with one re-prompt on violation; an unknown tool name gets one
   re-prompt, then fails the node.
+- **A Definition with a dot in its name is callable.** Anthropic and OpenAI
+  forbid `.` in a tool name, so `receipt.prepare` is offered to the model as
+  `receipt_prepare` — and a call to *either* spelling resolves to the pinned
+  Definition, dispatches under its canonical name, and journals under it
+  (#251). Exact match wins, so a plan offering both `a.b` and `a_b` still runs
+  the one that is literally named what the model called. Only a name matching
+  neither form is unknown; the correction lists the tools the way the model
+  was shown them. Nothing about naming a tool is a plan-authoring constraint.
 - A tool failure inside the loop is **model-visible** (the model can react),
   never scheduler-retried behind its back.
 - Every model turn and every tool call is journaled with token usage, so
