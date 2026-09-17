@@ -350,10 +350,18 @@ impl RunManifest {
     /// derived, not stored, so the manifest stays minimal and the offer is
     /// deterministic from it.
     pub fn executors(&self) -> Vec<NodeExecutor> {
+        // ONE OFFER PER DEFINITION, however many nodes bind it. `pinned` holds one
+        // entry per plan node, so a Definition bound to two nodes — the ordinary
+        // shape for a terminal step reached from two branches — appeared twice in
+        // the offer, and every provider refuses a tools list with a repeated name
+        // ("tools: Tool names must be unique", HTTP 400 on the whole request; #270).
+        // First occurrence wins, so the offer's order stays that of the plan.
+        let mut seen = std::collections::HashSet::new();
         let offered: Vec<areev_run_core::OfferedTool> = self
             .pinned
             .iter()
             .filter(|p| p.executor == "host")
+            .filter(|p| seen.insert(p.tool_name.clone()))
             .map(|p| areev_run_core::OfferedTool {
                 tool_name: p.tool_name.clone(),
                 tool_hash: p.tool_hash.clone(),
@@ -725,6 +733,61 @@ mod tests {
             llm_context_tokens: None,
             reducers: BTreeMap::new(),
             fork_of: None,
+        }
+    }
+
+    fn host_pin(node: &str, tool: &str) -> PinnedTool {
+        PinnedTool {
+            node: node.into(),
+            tool_hash: format!("hash-{tool}"),
+            tool_name: tool.into(),
+            executor: "host".into(),
+            executor_uri: None,
+            runtime: None,
+            runtime_limits: None,
+            capabilities: None,
+        }
+    }
+
+    /// One Definition bound to two nodes is offered to an abstract node ONCE (#270):
+    /// a repeated name in a tools list is a 400 on the whole model request at every
+    /// provider. Each bound node still executes its own binding.
+    #[test]
+    fn a_definition_bound_to_two_nodes_is_offered_once() {
+        let mut m = bare();
+        m.pinned = vec![
+            host_pin("parse", "parse_attachments"),
+            PinnedTool {
+                node: "extract".into(),
+                tool_hash: String::new(),
+                tool_name: "extract".into(),
+                executor: "abstract".into(),
+                executor_uri: None,
+                runtime: None,
+                runtime_limits: None,
+                capabilities: None,
+            },
+            host_pin("reply_done", "reply_email"),
+            host_pin("reply_rejected", "reply_email"),
+        ];
+        let executors = m.executors();
+        assert_eq!(executors.len(), 4);
+        match &executors[1] {
+            NodeExecutor::Abstract { tools } => {
+                let names: Vec<&str> = tools.iter().map(|t| t.tool_name.as_str()).collect();
+                assert_eq!(names, vec!["parse_attachments", "reply_email"]);
+                assert_eq!(tools[1].tool_hash, "hash-reply_email");
+            }
+            other => panic!("expected the abstract node's offer, got {other:?}"),
+        }
+        for (i, node) in [(2usize, "reply_done"), (3, "reply_rejected")] {
+            match &executors[i] {
+                NodeExecutor::Host { tool_name, tool_hash } => {
+                    assert_eq!(tool_name, "reply_email", "{node} runs its own binding");
+                    assert_eq!(tool_hash, "hash-reply_email");
+                }
+                other => panic!("{node}: expected a host executor, got {other:?}"),
+            }
         }
     }
 

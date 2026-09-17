@@ -6,6 +6,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **An abstract node is offered each Definition once, however many nodes bind
+  it** (#270). `RunManifest::executors` built the offer from the pinned list,
+  which holds one entry per plan node, so a Definition bound to two nodes — the
+  ordinary shape for a terminal step reached from two branches — reached the
+  model twice, and every provider refuses a tools list with a repeated name
+  (`tools: Tool names must be unique`, HTTP 400 on the whole request, reported
+  as `Failed { node: "<abstract node>", detail: "ExecutorError: … HTTP 400" }`).
+  The offer now holds the first occurrence of each name, in plan order; each
+  bound node still executes its own binding. Measured on Areev Cloud's
+  `invoice-to-accounting` pack (Core's own example), whose every job failed at
+  `extract_rows` on 1.8.3. PR #271 landed only the `docs/run.md` wording of
+  this; 1.8.4 shipped without the code, which is why this entry is here and
+  not there.
+
 ## [1.8.4] — 2026-09-17
 
 ### Added
