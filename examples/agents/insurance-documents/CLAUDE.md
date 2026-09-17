@@ -53,7 +53,12 @@ protects that point.
    so `run_input()` resolves world/knowledge/head/deductible and the exposure
    walk and pins them into the run's input. That is also why `trace` can
    prove what each determination was made against. Never add a memory read
-   to `tool_main()`.
+   to `tool_main()`. The driver-free alternative is a plan-declared read
+   (`reads` in `docs/run.md`) — the runtime answers it and journals it, and
+   `crates/areev-run/tests/memory_read_tests.rs` asserts this example's
+   fixture that way from inside a run. The example keeps the driver path on
+   purpose (the exposure aggregate is arithmetic over a walk); do not move
+   its reads onto the plan without re-pinning `out/workflow.hash`.
 7. **A host tool exiting non-zero does NOT raise from `run_start`.** The
    session comes back `{"finished": "Failed { node: …, detail: … }"}`. Only
    a run that never started raises. `intake()` reads `finished` and

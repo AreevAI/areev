@@ -293,17 +293,17 @@ impl ShadowCtx<'_> {
         runs: &[(String, String)],
         candidate: &PlanCandidate,
     ) -> Result<ShadowPlanReport, RunError> {
-        let (plan, cand_hash, is_draft, draft_reducers) = match candidate {
+        let (plan, cand_hash, is_draft, draft_fields) = match candidate {
             PlanCandidate::Hash(h) => (self.load_plan_graph(h)?, *h, false, None),
             PlanCandidate::Body(fields) => {
                 let wf = workflow_from_body(fields)?;
                 let plan = PlanGraph::build(&wf)?;
-                // The address the draft WOULD have — what `resolve` looks
-                // up (and misses, harmlessly) and what the report names.
+                // The address the draft WOULD have — what the report names.
+                // It is not in the store, so resolution reads the draft's
+                // own fields (`reducers`, `reads`) instead of looking it up.
                 let (_, h) = areev_core::format::serialize::serialize_grain(&wf)
                     .map_err(|e| RunError::InvalidPlan { why: e.to_string() })?;
-                let reducers = fields.get("reducers").and_then(Value::as_object).cloned();
-                (plan, h, true, reducers)
+                (plan, h, true, Some(fields))
             }
         };
         let mut report = ShadowPlanReport {
@@ -317,7 +317,7 @@ impl ShadowCtx<'_> {
             writes: 0,
         };
         for (run_id, ns) in runs {
-            let row = self.shadow_one(run_id, ns, &plan, &cand_hash, draft_reducers.as_ref())?;
+            let row = self.shadow_one(run_id, ns, &plan, &cand_hash, draft_fields)?;
             let t = &mut report.totals;
             t.runs += 1;
             match row.verdict.as_str() {
@@ -366,7 +366,7 @@ impl ShadowCtx<'_> {
         ns: &str,
         plan: &PlanGraph,
         cand_hash: &Hash,
-        draft_reducers: Option<&Map<String, Value>>,
+        draft_fields: Option<&Map<String, Value>>,
     ) -> Result<ShadowPlanRun, RunError> {
         let incumbent = self.facade.with_store(|m| RunManifest::load(m, run_id))?;
         let view = self
@@ -381,8 +381,21 @@ impl ShadowCtx<'_> {
         // `llm_available` is true unconditionally — nothing is dispatched,
         // and an abstract node's turns are answered from the journal like
         // any other effect.
-        let mut manifest = self.facade.with_store(|m| {
-            RunManifest::resolve(
+        let mut manifest = self.facade.with_store(|m| match draft_fields {
+            Some(fields) => RunManifest::resolve_with_fields(
+                m,
+                ns,
+                run_id,
+                cand_hash,
+                Some(fields),
+                plan,
+                self.principal,
+                incumbent.budgets,
+                incumbent.ask_ttl_sec,
+                incumbent.input.clone(),
+                true,
+            ),
+            None => RunManifest::resolve(
                 m,
                 ns,
                 run_id,
@@ -393,24 +406,12 @@ impl ShadowCtx<'_> {
                 incumbent.ask_ttl_sec,
                 incumbent.input.clone(),
                 true,
-            )
+            ),
         })?;
         manifest.llm_max_tokens = incumbent.llm_max_tokens;
         manifest.max_effects_per_attempt = incumbent.max_effects_per_attempt;
         manifest.llm_tool_result_chars = incumbent.llm_tool_result_chars;
         manifest.llm_context_tokens = incumbent.llm_context_tokens;
-        if let Some(table) = draft_reducers {
-            manifest.reducers.clear();
-            for (key, name) in table {
-                let Some(name) = name.as_str() else {
-                    return Err(RunError::InvalidPlan { why: format!("reducer for state key '{key}' is not a string") });
-                };
-                if !crate::reducers::is_builtin(name) {
-                    return Err(RunError::InvalidPlan { why: format!("unknown reducer '{name}' for state key '{key}'") });
-                }
-                manifest.reducers.insert(key.clone(), name.to_string());
-            }
-        }
         let executors = manifest.executors();
         let arg_schemas = arg_schemas_for(self.facade, &manifest)?;
         let validate_args = make_validate_args(&arg_schemas);

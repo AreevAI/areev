@@ -257,12 +257,18 @@ peril list — because the temporal story is the point, not insurance depth.
 3. **Closing a window beats deleting a fact.** Cancellation, expiry and
    supersession are all *edits* in most systems. Here they are new grains,
    and the old one stays answerable at the dates it applied to.
-4. **The as-of read belongs to the driver, not the tool.** A `--tool-cmd`
+4. **The as-of read never belongs to the tool.** A `--tool-cmd`
    subprocess must never open the memory the runtime is holding, so this
    desk resolves every memory-shaped question *before* the run starts and
    pins the answer into the run's input. The payoff is not just correctness:
    it means the journal records the picture each determination was made
-   against, so it is reproducible after the file has moved on.
+   against, so it is reproducible after the file has moved on. A host with no
+   driver step — a queue worker that only calls `run start` — declares the
+   reads on the plan instead ([`reads`](../../../docs/run.md#reading-the-runs-own-memory-reads)):
+   the runtime answers `entity_at`/`related` itself, with the same JSON, and
+   journals each read with its axis, instant and grain hash. This desk keeps
+   the driver path because its exposure aggregate is arithmetic over a walk,
+   which a declaration deliberately cannot express.
 5. **A precedent can carry an underwriter's signature without becoming the
    agent's.** The auto-issued determination names the person whose ruling it
    applied, and the ask it skipped is the one that person already answered.

@@ -126,3 +126,68 @@ def test_run_cancel_and_fork(db):
     db.run_cancel("py-2", because="operator abort")
     finished = json.loads(db.run_resume("py-2"))
     assert "Canceled" in finished.get("finished", ""), finished
+
+
+def _ms(date):
+    import datetime as dt
+    d = dt.datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=dt.timezone.utc)
+    return int(d.timestamp() * 1000)
+
+
+def test_a_plan_declared_read_puts_db_entity_at_into_run_state(tmp_path):
+    """#255: a run reads its own memory with no tool holding a handle. The
+    plan declares the read; the runtime answers it; the host tool downstream
+    receives, in merged state, byte-for-byte what `db.entity_at` returns —
+    including the honest `{"found": false}` of a backdated fact on the
+    knowledge axis."""
+    db = areev.Areev(str(tmp_path / "desk.db"), ns="org.uw", actor="user:desk")
+    policies = "org.uw.policies"
+    issued, eff, recv = _ms("2026-01-01"), _ms("2026-05-01"), _ms("2026-06-15")
+    old = db.add("fact", json.dumps({
+        "subject": "POL-4471", "relation": "mg:coverage_limit", "object": "500000",
+        "valid_from": issued, "created_at": issued}), ns=policies)
+    db.supersede(old, "fact", json.dumps({
+        "subject": "POL-4471", "relation": "mg:coverage_limit", "object": "500000",
+        "valid_from": issued, "valid_to": eff, "created_at": issued}), ns=policies)
+    db.add("fact", json.dumps({
+        "subject": "POL-4471", "relation": "mg:coverage_limit", "object": "750000",
+        "valid_from": eff, "created_at": recv}), ns=policies)
+
+    assess = db.add("tool", json.dumps({
+        "tool_name": "assess", "kind": "definition",
+        "tool_description": "reads the cover out of state", "created_at": 500}))
+
+    def read(axis, at_from):
+        return {"op": "entity_at", "ns": policies, "subject_from": "/policy_id",
+                "relation": "mg:coverage_limit", "at_from": at_from, "axis": axis}
+
+    wf = db.add("workflow", json.dumps({
+        "nodes": ["world_at_loss", "known_on_may20", "assess"],
+        "edges": [{"src": "world_at_loss", "dst": "known_on_may20"},
+                  {"src": "known_on_may20", "dst": "assess"}],
+        "bindings": {"assess": assess},
+        "reads": {"world_at_loss": read("world", "/date_of_loss"),
+                  "known_on_may20": read("knowledge", "/asked_on")},
+        "created_at": 501,
+    }))
+    seen = tmp_path / "assess-stdin.json"
+    session = json.loads(db.run_start(
+        wf, "claim-8801",
+        input_json=json.dumps({"policy_id": "POL-4471", "date_of_loss": "2026-03-18",
+                               "asked_on": "2026-05-20"}),
+        tool_cmd="cat > %s; printf '{}'" % seen,
+    ))
+    assert session.get("finished") == "Completed", session
+
+    state = json.loads(seen.read_text())
+    assert state["world_at_loss"] == json.loads(db.entity_at(
+        "POL-4471", "mg:coverage_limit", _ms("2026-03-18"), axis="world", ns=policies))
+    assert state["world_at_loss"]["grain"]["fields"]["object"] == "500000"
+    assert state["known_on_may20"] == json.loads(db.entity_at(
+        "POL-4471", "mg:coverage_limit", _ms("2026-05-20"), axis="knowledge", ns=policies))
+    assert state["known_on_may20"] == {"found": False}
+
+    pinned = {p["node"]: p for p in json.loads(db.run_inspect("claim-8801"))["pinned"]}
+    assert pinned["world_at_loss"]["executor"] == "memory"
+    assert pinned["world_at_loss"]["read"]["axis"] == "world"
+    assert json.loads(db.run_verify("claim-8801"))["verified"] is True

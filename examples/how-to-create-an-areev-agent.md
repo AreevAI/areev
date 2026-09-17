@@ -37,7 +37,7 @@ deployment, testing — lives in [`agents/docs/`](agents/docs/). Canonical refer
 | Layer | Made of | Authored with |
 |---|---|---|
 | **Capabilities** | Tool Definition grains: schema, executor kind, locked params, capability declarations — and, for code-carrying tools, `executor_uri` naming the code blob by content address | `ADD tool` / `db.add("tool", …)` |
-| **Procedure** | Workflow grains: nodes, edges (`cond`, `max_cycles`), bindings, retries, reducers | `ADD workflow` (CAL) or JSON `add` |
+| **Procedure** | Workflow grains: nodes, edges (`cond`, `max_cycles`), bindings, retries, reducers, `reads` | `ADD workflow` (CAL) or JSON `add` |
 | **Activation** | Trigger grains pointing **at** a plan by hash — cron, watch, webhook, composite; no daemon, evaluation is a command | `areev trigger add --workflow <hash>` |
 | **Execution** | `areev run` — journaled, budgeted, HITL-gated, verifiable | CLI / MCP `areev_run_*` / bindings |
 | **Knowledge** | Fact / Event / State grains the tools read and write | `record_tool_call`, `remember`, `ADD` |
@@ -314,8 +314,8 @@ How much the LLM decides is expressed in the plan, node by node:
    needs more must be split.
 4. **`$send` fan-out** — a node's result spawns tasks at runtime: dynamic
    width the plan didn't enumerate, joined by declared reducers. A target is
-   a host tool node or an abstract node (never a gate, a subgraph, or the
-   spawner), and an abstract target gets one LLM loop per task. A reducer's
+   a host tool node, an abstract node or a memory read (never a gate, a
+   subgraph, or the spawner), and an abstract target gets one LLM loop per task. A reducer's
    value is a **bare string** — `lww` (the default), `append`, `sum`, `max`,
    `min` — and it is read at *run start*, never validated on the write path,
    so a mistyped reducer name stores cleanly and then refuses every run.
@@ -326,7 +326,14 @@ How much the LLM decides is expressed in the plan, node by node:
    started, however deep the gate sits. There is no depth limit and no
    self-reference guard, though: a self-binding plan recurses until the stack
    ends.
-6. **Dynamic planning** — the agent authors the Workflow grain itself. See §7.
+6. **Memory reads** — declare a node in the plan's `reads` and the runtime
+   answers it from the memory the run is holding: an as-of `entity_at` ("what
+   was true / known about this subject at that date") or a `related` walk, with
+   the subject and instant taken from state by JSON pointer. The answer is
+   exactly what `db.entity_at` / `db.related` return, journaled with its axis,
+   instant and grain hash. This is how a run asks its own memory a question
+   without any tool opening it — [`docs/run.md`](../docs/run.md#reading-the-runs-own-memory-reads).
+7. **Dynamic planning** — the agent authors the Workflow grain itself. See §7.
 
 **One structural rule underneath all of them: a plan needs a dead end.**
 Terminal nodes are the ones with **no outgoing edges**, and a run ends by
@@ -391,8 +398,9 @@ cannot author a working agent**; a binding or MCP is required somewhere in
 the pipeline.
 
 On top of that, CAL's graph syntax cannot express bounded cycles
-(`max_cycles`) or reducers, and its `* N` means per-node *retries*, not a
-cycle bound. Generate plans that need either via JSON `add`.
+(`max_cycles`), reducers or memory `reads`, and its `* N` means per-node
+*retries*, not a cycle bound. Generate plans that need any of them via JSON
+`add`.
 
 ---
 

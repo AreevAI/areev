@@ -1227,8 +1227,8 @@ fn dispatch_send_task(
 }
 
 /// Allocate the next attempt for a Ready node and emit its first effect —
-/// a Host/Subgraph dispatch, a Client ask, or an abstract node's opening
-/// LLM turn.
+/// a Host/Subgraph/MemoryRead dispatch, a Client ask, or an abstract node's
+/// opening LLM turn.
 fn dispatch_node(env: &StepEnv<'_>, st: &mut SchedulerState, i: usize, out: &mut Vec<Command>) {
     st.attempt[i] += 1;
     let executor = env.executors[i].clone();
@@ -1269,7 +1269,9 @@ fn dispatch_node(env: &StepEnv<'_>, st: &mut SchedulerState, i: usize, out: &mut
         clock_ms: clock,
     });
     match &executor {
-        NodeExecutor::Host { .. } | NodeExecutor::Subgraph { .. } => {
+        NodeExecutor::Host { .. }
+        | NodeExecutor::Subgraph { .. }
+        | NodeExecutor::MemoryRead { .. } => {
             st.node_state[i] = NodeState::Dispatched;
             out.push(Command::Dispatch { key, executor, input });
         }
@@ -1815,14 +1817,21 @@ fn apply_spawns(
                 fail(st, spawner, format!("$send targets unknown node '{target_name}'"));
                 return;
             };
+            // A declared memory read is a legal target: a fan-out of as-of
+            // reads (one per policy in an aggregate) resolves each task's
+            // pointers against that task's own input.
             if !matches!(
                 env.executors[target],
-                NodeExecutor::Host { .. } | NodeExecutor::Abstract { .. }
+                NodeExecutor::Host { .. }
+                    | NodeExecutor::Abstract { .. }
+                    | NodeExecutor::MemoryRead { .. }
             ) {
                 fail(
                     st,
                     spawner,
-                    format!("$send target '{target_name}' is not a Host tool or abstract node"),
+                    format!(
+                        "$send target '{target_name}' is not a Host tool, abstract node or memory read"
+                    ),
                 );
                 return;
             }

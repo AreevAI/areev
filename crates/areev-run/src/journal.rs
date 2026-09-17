@@ -74,6 +74,11 @@ fn base_tool(
         NodeExecutor::Subgraph { workflow_hash } => {
             (workflow_hash.clone(), "mg:subgraph".to_string(), ExecutorKind::Host)
         }
+        // A declared memory read journals under `mg:<op>` (`mg:entity_at`,
+        // `mg:related`); what it read rides the result's `read` field.
+        NodeExecutor::MemoryRead { op, .. } => {
+            (String::new(), format!("mg:{op}"), ExecutorKind::Host)
+        }
     };
     let mut t = Tool::new(&tool_name)
         .tool_call_id(&key.tool_call_id())
@@ -125,6 +130,53 @@ pub fn write_result(
     clock_ms: u64,
     principal: &str,
 ) -> Result<Hash> {
+    let mut t =
+        result_tool(ns, run_id, plan_hash, key, executor, outcome, superstep, clock_ms, principal);
+    m.supersede(intent, &mut t)
+}
+
+/// [`write_result`] plus, for a declared memory read (#255), what was read —
+/// namespace, operands, axis and instant as RESOLVED, and the grain hash —
+/// under `read`. The result content alone is the answer; the record is what
+/// makes a determination made against it reproducible after the file has
+/// moved on. `None` writes exactly what [`write_result`] does.
+#[allow(clippy::too_many_arguments)]
+pub fn write_result_with_read(
+    m: &mut Areev,
+    ns: &str,
+    run_id: &str,
+    plan_hash: &Hash,
+    intent: &Hash,
+    key: &JournalKey,
+    executor: &NodeExecutor,
+    outcome: &EffectOutcome,
+    record: Option<&Value>,
+    superstep: u64,
+    clock_ms: u64,
+    principal: &str,
+) -> Result<Hash> {
+    let mut t =
+        result_tool(ns, run_id, plan_hash, key, executor, outcome, superstep, clock_ms, principal);
+    if let Some(record) = record {
+        t.common
+            .extra_fields
+            .insert(crate::memread::READ_RECORD_FIELD.into(), record.clone());
+    }
+    m.supersede(intent, &mut t)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn result_tool(
+    ns: &str,
+    run_id: &str,
+    plan_hash: &Hash,
+    key: &JournalKey,
+    executor: &NodeExecutor,
+    outcome: &EffectOutcome,
+    superstep: u64,
+    clock_ms: u64,
+    principal: &str,
+) -> Tool {
     let mut t = base_tool(key, executor, ns, plan_hash, clock_ms, principal);
     key_extras(&mut t, key, superstep, run_id);
     match outcome {
@@ -163,7 +215,7 @@ pub fn write_result(
             t.failure_detail = Some(detail.clone());
         }
     }
-    m.supersede(intent, &mut t)
+    t
 }
 
 /// Record a transcript fold's SUMMARY as a Tier-2 Observation in the harness
