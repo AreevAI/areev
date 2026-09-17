@@ -961,6 +961,27 @@ impl Pool {
                     NodeExecutor::Abstract { .. } => {
                         ("mg:llm".to_string(), String::new())
                     }
+                    // A declared memory read is the RUNTIME's read (#255):
+                    // the driver answers it from the store before anything
+                    // reaches this pool. One arriving here is a driver bug,
+                    // and handing it to the host executor would let a tool
+                    // forge the answer — so it fails without touching
+                    // `executor` at all.
+                    NodeExecutor::MemoryRead { .. } => {
+                        let detail = "a declared memory read reached the tool pool — the \
+                                      runtime answers it, never a tool"
+                            .to_string();
+                        let outcome = EffectOutcome::Failed {
+                            journal_bytes: detail.len() as u64,
+                            cause: FailCause::Unknown,
+                            detail,
+                        };
+                        let done = DispatchDone { key: job.key, executor: job.executor, outcome };
+                        if done_tx.send(done).is_err() {
+                            return;
+                        }
+                        continue;
+                    }
                 };
                 // A panicking executor is a FAILED EFFECT, never a dead
                 // worker: a worker that dies would leave the pool half-alive

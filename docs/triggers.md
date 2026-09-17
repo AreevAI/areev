@@ -190,7 +190,10 @@ warns at declaration and is ignored at run (`CAL-W006`).
 On the PostgreSQL tier the lock constraint disappears (reads never block), so
 tools *can* query the memory mid-run — `--context-query` remains useful there
 for the auditability of the declaration and for plans that must stay portable
-back to the embedded tier. See [run.md](run.md#backend-divergence-reading-the-memory-mid-run-85).
+back to the embedded tier. A read that belongs to the *plan* rather than the
+trigger — an as-of `entity_at` or a `related` walk, whichever host starts the
+run — is a declared [`reads`](run.md#reading-the-runs-own-memory-reads) entry,
+which the runtime answers mid-run on every tier. See [run.md](run.md#backend-divergence-reading-the-memory-mid-run-85).
 
 ## The connector contract
 

@@ -6,6 +6,38 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **A run can read its own memory: plan-declared `reads`** (#255). A Workflow
+  grain's `reads` field names, per node, an `entity_at` (`subject`, `relation`,
+  `at`, `axis`) or a `related` walk against the run's own namespace or a dotted
+  descendant; the subject, start and instant may come from state by JSON
+  pointer (`subject_from`, `at_from`, `start_from`), everything else is a
+  literal on the plan. The runtime answers that node itself on the driver thread
+  and merges `{into: …}` — byte-identical to `db.entity_at` / `db.related` —
+  into state, so a host that only calls `run start`/`resume` no longer has to
+  pre-resolve as-of reads in a driver step it does not have. No tool ever holds
+  a handle: a read is never offered to a model, never handed to `--tool-cmd`, a
+  native blob or a `wasm32-areev-io` module, and the executor pool refuses one
+  outright. Each read is an ordinary journaled effect (`mg:entity_at` /
+  `mg:related`) whose result carries a `read` record — namespace, resolved
+  operands, axis, instant and grain hash — so `verify` and `shadow` answer it
+  from the journal after the file has moved on. Malformed declarations
+  (including unknown keys) refuse at start with `RUN-E019`; a namespace outside
+  the run's, or one the session cannot `read`, with `RUN-E012`. `run inspect`
+  prints each frozen declaration under `read`; the console draws read steps as
+  "Memory read" and opens such plans view-only. `docs/run.md`, "Reading the
+  run's own memory".
+
+### Fixed
+
+- **`shadow` of a draft plan honours the draft's own fields.** A candidate
+  body (`--plan-file`, a loop-drafted `plan_revision`) is not in the store, and
+  resolution read `reducers` from the store alone, patching them in afterwards;
+  anything else the body declared was invisible to the rehearsal. Resolution now
+  takes the body's fields directly (`RunManifest::resolve_with_fields`), so a
+  draft's `reads` rehearse as reads rather than as LLM steps out of support.
+
 ## [1.8.5] — 2026-09-17
 
 ### Fixed

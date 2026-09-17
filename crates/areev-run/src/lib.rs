@@ -23,6 +23,7 @@ pub mod executor;
 pub mod journal;
 pub mod lease;
 pub mod manifest;
+pub mod memread;
 pub mod otel;
 pub mod reducers;
 pub mod runner;

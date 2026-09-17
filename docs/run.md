@@ -123,10 +123,101 @@ What each piece means:
   `lww` (the default for undeclared keys), `append`, `sum`, `max`, `min`.
   They are law-tested for batching invariance, which is what makes fan-out
   results order-independent.
+- **`reads`** — node → a declared read of the run's **own memory**
+  (`entity_at` or `related`). The runtime answers that node itself, from the
+  file it already holds; no tool is involved. See
+  [Reading the run's own memory](#reading-the-runs-own-memory-reads).
 
 Plan validation runs at load: unreachable nodes (`RUN-E003`), unresolvable
 bindings (`RUN-E004`), malformed conditions (`RUN-E005`), unbounded cycles
 (`RUN-E002`), structural shape (`RUN-E019`).
+
+### Reading the run's own memory (`reads`)
+
+A tool must never open the memory its own run is holding — on the embedded
+tier the file lock refuses it outright ([below](#backend-divergence-reading-the-memory-mid-run-85)),
+and on every tier a tool holding a handle can read anything. So an as-of read
+used to happen in the *driver*, before `run start`, pinned into the input. A
+host that only calls `run start`/`resume` — a queue worker — has nowhere to
+do that. Declare the read on the plan instead, and the runtime answers it:
+
+```python
+wf = db.add("workflow", json.dumps({
+    "nodes": ["extract", "cover_at_loss", "known_at_notice", "assess"],
+    "edges": [{"src": "extract", "dst": "cover_at_loss"},
+              {"src": "cover_at_loss", "dst": "known_at_notice"},
+              {"src": "known_at_notice", "dst": "assess"}],
+    "bindings": {"extract": extract, "assess": assess},
+    "reads": {
+        # what cover was IN FORCE on the date of loss (world clock)
+        "cover_at_loss": {"op": "entity_at", "ns": "org.uw.policies",
+                          "subject_from": "/policy_id", "relation": "mg:coverage_limit",
+                          "at_from": "/date_of_loss", "axis": "world"},
+        # what the desk KNEW when the notice arrived (knowledge clock)
+        "known_at_notice": {"op": "entity_at", "ns": "org.uw.policies",
+                            "subject_from": "/policy_id", "relation": "mg:coverage_limit",
+                            "at_from": "/received_at", "axis": "knowledge",
+                            "into": "cover_known"},
+    },
+}), ns="org.uw")
+```
+
+`assess` then finds, in its merged state, `cover_at_loss` and `cover_known`
+holding **exactly** what `db.entity_at(subject, relation, at, axis=…)` returns
+— `{"found": true, "grain": {…}}`, or `{"found": false}` when nothing was on
+that clock at that instant (a backdated fact, asked about before it was
+received, is the honest miss). `"op": "related"` returns `db.related`'s
+`{"start", "reached"}` the same way.
+
+| Key | `entity_at` | `related` | |
+|---|---|---|---|
+| `op` | `"entity_at"` | `"related"` | required |
+| `ns` | ✓ | ✓ | the run's namespace or a dotted descendant; default the run's |
+| `into` | ✓ | ✓ | the state key the answer lands under; default the node id |
+| `subject` / `subject_from` | ✓ | | exactly one: a literal, or a JSON pointer into the node's input |
+| `relation` | ✓ | | literal |
+| `at` / `at_from` | ✓ | | exactly one; epoch ms or an ISO-8601 date/timestamp (UTC) |
+| `axis` | ✓ | | `world` (default) or `knowledge` |
+| `start` / `start_from` | | ✓ | exactly one, as `subject` |
+| `relations` | | ✓ | a list, or a comma-separated string |
+| `direction`, `depth`, `limit` | | ✓ | `out`/`in`/`both` (default `out`), 1–4 (default 2), 1–512 (default 64) |
+
+Only the subject, the start and the instant may come from state; the
+relation, the axis, the namespace and the walk's shape are literals on the
+plan, so a reviewer reads exactly what a run may see. Pointers resolve against
+the node's input — the merged state for a node, the task's own input for a
+[`$send`](#fan-out-send) task, so one read node can fan out across many
+subjects (pair it with an `append` reducer on its `into` key).
+
+The rules, each enforced rather than advised:
+
+- **Refused at start, naming the node** — an unknown key (`axsi` does not
+  quietly read the world axis), a missing or doubled operand, a node that both
+  binds a tool and declares a read (`RUN-E019`); a namespace outside the run's
+  own, or one the session holds no `read` grant on (`RUN-E012`). Grants are
+  checked again at each read, because a resume need not run under the session
+  that started it.
+- **It is the runtime's read, not a tool's.** The driver performs it on its
+  own thread. It is never offered to an abstract node's model, never handed to
+  `--tool-cmd`, a native blob or a `wasm32-areev-io` module, and the executor
+  pool refuses one outright if it ever arrives there.
+- **Journaled like every effect.** An intent before, a result after — named
+  `mg:entity_at` / `mg:related` — whose `read` field records what was read *as
+  resolved*: `{op, ns, subject, relation, at, axis, grain}` (the grain's hash,
+  or `null` for a miss). `run-trace` shows it, and `verify` and `shadow` answer
+  it from the journal, so a determination stays reproducible after the file has
+  moved on. `run inspect` prints each read's frozen declaration under `read`.
+- **Failures fail the node, never a guess.** A pointer that lands on nothing,
+  or on the wrong type, is `schema_validation_failed` and is not retried (the
+  same state fails the same way); a store error is `executor_error` and obeys
+  the node's `retries`.
+- **Reads go through the store's egress boundary**, exactly as `db.entity_at`
+  does, so an `egress` anonymization policy on the target namespace applies.
+
+Plans with `reads` are authored through the generic JSON `add` (like
+`max_cycles` and `reducers`); CAL `ADD workflow` has no syntax for them, and
+the console opens such a plan view-only rather than let a resave turn every
+read into an abstract LLM step.
 
 ### The condition grammar (frozen)
 
@@ -694,16 +785,20 @@ streaming.
 ### Backend divergence: reading the memory mid-run (#85)
 
 Whether a **tool subprocess** can read the memory its own run holds depends on
-the storage tier, and it silently decides whether an agent design is portable:
+the storage tier, and it silently decides whether an agent design is portable.
+The door that works on **every** tier, with no tool holding a handle, is a
+[declared read](#reading-the-runs-own-memory-reads) on the plan — the runtime
+answers `entity_at` / `related` itself:
 
 - **Embedded (Turso file)**: no — the file lock is exclusive, so even a pure
   `RECALL` from inside a tool is refused (`STO-E001`). Use the doors that
-  exist: `areev blob get` reads CAS attachments lock-free, a **capability
-  tool** reads them with `areev::blob_get` through the broker (#106, above),
-  and a **trigger's `--context-query`** has the evaluator assemble a saved
-  query's result into the run input before the run starts
-  ([triggers](triggers.md)). All three are lock-free by construction, which is
-  why they work while the run holds the file.
+  exist: a plan's **`reads`** have the runtime answer as-of reads and graph
+  walks itself, `areev blob get` reads CAS attachments lock-free, a
+  **capability tool** reads them with `areev::blob_get` through the broker
+  (#106, above), and a **trigger's `--context-query`** has the evaluator
+  assemble a saved query's result into the run input before the run starts
+  ([triggers](triggers.md)). None of them opens the file from a tool, which is
+  why they work while the run holds it.
 - **PostgreSQL (server tier)**: yes — any number of handles may hold the same
   schema and reads never block (MVCC), so a tool may open the memory and
   query it mid-run. If your production target is Postgres, tools can read
@@ -1526,8 +1621,8 @@ registry is [`ERROR_CODES.md`](../ERROR_CODES.md).
   on it. Anthropic reports the same condition in prose, which the seam refuses
   to parse; it is covered by the derived 200k ceiling instead. A streaming turn
   keeps status-as-error and is proactive-only.
-- Subgraphs run inline on the driver thread, so parallel subgraph siblings
-  serialize.
+- Subgraphs and declared memory reads run inline on the driver thread, so
+  parallel siblings of either kind serialize.
 - The condition grammar is frozen; there is no expression language beyond
   it, deliberately.
 - One memory = one writer: while a driver holds the file, another process

@@ -2189,6 +2189,38 @@ two together are the roadmap item `docs/loop-explainer.md` §16 listed first;
 `docs/run.md` "Verify and shadow" and `docs/loop.md` "Replay" are the
 references.
 
+### A run reads its own memory through the plan, never through a tool
+
+**Decision (2026-09-17, #255):** a Workflow grain may declare `reads` — per
+node, an `entity_at` or a `related` against the run's own namespace or a
+dotted descendant — and the **driver** answers that node from the store it
+already holds. The alternatives were rejected on the same invariant from two
+sides. Letting a tool open the memory breaks one-memory-one-writer on the
+embedded tier and, on every tier, turns "a tool may read" into "a tool may
+read anything"; a host-served read *seam* a tool could call has the second
+problem with extra steps, and a `wasm32-areev-io` module would inherit it.
+Pre-resolving in the host before `run start` (what
+`examples/agents/insurance-documents` does) needs a driver step a queue worker
+does not have, and hides the read from the plan a reviewer approves.
+
+So the read is data on the plan and an effect in the journal. Only the
+subject, the start and the instant may come from state (JSON pointers);
+relation, axis, namespace and walk shape are literals, and unknown keys are
+refused, so what a run can see is exactly what its plan says. The scheduler
+knows it as `NodeExecutor::MemoryRead` — a distinct variant rather than a Host
+tool with a reserved name, so a missed interception fails closed (the executor
+pool refuses the variant) instead of routing the read to `--tool-cmd` where a
+tool could forge the answer. Journaling it like any effect is what keeps the
+replay contract whole: `verify` and `shadow` answer the read from its result
+grain, whose `read` record names the resolved operands and the grain hash, so
+a determination made against a file that has since moved on stays
+reproducible without re-reading it. The payload is byte-identical to the
+bindings' `entity_at`/`related`, because a plan node should read what a driver
+would have pinned. Deliberately two typed operations, not a query language:
+anything richer is a saved query and a trigger's `--context-query`, or a new
+operation with its own decision. `docs/run.md` "Reading the run's own memory"
+is the reference.
+
 ### Portability and provenance over lock-in
 
 Grains are content-addressed, immutable, and hash-linked; authenticity is a

@@ -739,6 +739,32 @@ or it writes corrupt records — and it is deliberately narrow:
   value-derived tokens replay identically (`RUN-E023` refuses the rest at
   start).
 
+### What a run may read of its own memory
+
+A host command never receives a handle on the memory its run is holding —
+on the embedded tier the file lock refuses it, and a handle would be a licence
+to read everything. A plan that needs an as-of read or a graph walk declares it
+(`reads`, [run.md](run.md#reading-the-runs-own-memory-reads)), and the runtime
+performs it:
+
+- **Scope is on the plan, not the tool.** A read targets the run's own
+  namespace or a dotted descendant of it — never a parent or a sibling, so
+  `org.uw` cannot read `org.other` or the governance namespaces — and the
+  operation, relation, axis and namespace are
+  literals a reviewer reads. Only the subject, the start and the instant come
+  from run state.
+- **Grants apply twice.** The session must hold `read` on the target namespace
+  when the run starts (`RUN-E012` otherwise, before any manifest is written)
+  and again at each read, because a resume need not run under the starting
+  session.
+- **No tool can invoke it.** The read is a distinct executor kind that the
+  driver answers on its own thread; the executor pool refuses it rather than
+  hand it to `--tool-cmd`, a native blob or a `wasm32-areev-io` module, and it
+  is never offered to a model as a tool.
+- **It crosses the store's egress boundary** like any binding read, so an
+  `egress` anonymization policy on the target namespace applies to what lands
+  in run state — and therefore to what downstream host tools receive.
+
 ### Credentials a host command never holds
 
 `areev run`'s `--credential` / `--allow-host` / `--tool-egress` and the trigger

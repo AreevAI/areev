@@ -18,7 +18,8 @@ nodes:    Vec<String>              // ids double as labels; nodes[0] IS the entr
 edges:    Vec<WorkflowEdge>        // { src, dst, cond: Option<String>, max_cycles: Option<u32> }
 bindings: HashMap<node, hash>      // node → Tool Definition (or another Workflow = subgraph)
 retries:  HashMap<node, u32>       // n = re-attempts AFTER the first failure
-+ extra fields: name (human label), reducers {state_key: lww|append|sum|max|min}
++ extra fields: name (human label), reducers {state_key: lww|append|sum|max|min},
+                reads {node: {op: entity_at|related, ns, into, subject[_from], …}}
 ```
 
 Semantics that are easy to miss:
@@ -66,7 +67,12 @@ running run. Four executor shapes fall out of what a node binds:
   deterministic child id);
 - no binding but a Definition named like the node ⇒ that definition;
 - neither ⇒ **abstract** — the node label itself is the LLM instruction
-  (needs a configured backend, else `RUN-E006`).
+  (needs a configured backend, else `RUN-E006`);
+- a `reads` entry (checked FIRST; the node must bind nothing) ⇒ **memory** —
+  the driver answers an `entity_at`/`related` against the run's own namespace
+  (or a dotted descendant) itself, journaled as `mg:entity_at`/`mg:related`
+  with a `read` record. The only way a run reads its memory without a tool
+  holding a handle (#255, `docs/run.md` "Reading the run's own memory").
 
 `reducers` is validated here too: an unknown reducer name fails at run
 start, not at first merge.
@@ -93,13 +99,13 @@ grain instead.
 
 **Generic add (JSON)** — bindings' `db.add("workflow", json)`, MCP
 `areev_add`, Rust builders — is the only surface that authors **everything**:
-`max_cycles` (bounded loops), `reducers`, `retries` directly. Canonical
+`max_cycles` (bounded loops), `reducers`, `reads`, `retries` directly. Canonical
 example: `docs/run.md` "Authoring a plan".
 
 **Console Workflows tab** — node/edge editing over `/api/cal`; it draws
 triggers and run status but structurally cannot save them into the plan.
-Plans with bounded cycles or retries open **view-only** there (no surface
-syntax for either), and closing a cycle in an editable plan is refused
+Plans with bounded cycles, retries or `reads` open **view-only** there (no
+surface syntax for any of them), and closing a cycle in an editable plan is refused
 rather than saved unbounded.
 
 ## 4. Running

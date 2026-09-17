@@ -134,6 +134,7 @@ fn executor_kind_of(executor: &areev_run_core::NodeExecutor) -> &'static str {
         Client { .. } => "client",
         Abstract { .. } => "abstract",
         Subgraph { .. } => "subgraph",
+        MemoryRead { .. } => "memory",
     }
 }
 
@@ -493,6 +494,25 @@ impl Runner {
             .map_err(|e| RunError::Unauthorized { what: e.to_string() })
     }
 
+    /// A declared memory read (#255) needs `read` on its namespace. Checked
+    /// before the run exists, so a plan asking for a namespace the session
+    /// cannot see refuses at start instead of failing a node mid-run — and
+    /// checked again at every read, since a resume need not share the
+    /// starting session's grants.
+    fn check_read_grants(&self, manifest: &RunManifest) -> Result<(), RunError> {
+        let authz = self.facade.authz();
+        for p in &manifest.pinned {
+            let Some(ns) = p.read.as_ref().and_then(|r| r.get("ns")).and_then(|n| n.as_str())
+            else {
+                continue;
+            };
+            authz.check(areev_core::authz::Verb::Read, ns).map_err(|e| RunError::Unauthorized {
+                what: format!("node '{}' declares a read of '{ns}': {e}", p.node),
+            })?;
+        }
+        Ok(())
+    }
+
     fn load_plan(&self, plan_hash: &Hash) -> Result<PlanGraph, RunError> {
         let wf = self
             .facade
@@ -608,6 +628,7 @@ impl Runner {
                 }
             }
         }
+        self.check_read_grants(&manifest)?;
         self.facade
             .with_store(|m| manifest.persist_in_namespace(m, &self.ns))
             .map_err(err_run)?;
@@ -882,6 +903,7 @@ impl Runner {
                     )
                     .map(|m| m.with_limits(opts, llm_window))
                 })?;
+                self.check_read_grants(&manifest)?;
                 let mut fresh = SchedulerState::new(new_run_id, &plan);
                 // The Start bootstrap, applied here so the seed checkpoint
                 // is immediately resumable (§ Start: entry activates).
@@ -1568,29 +1590,43 @@ impl Runner {
                             wave.push((key, Some(outcome.clone())));
                             continue;
                         }
-                        // Subgraphs run INLINE on the driver thread — the
-                        // child needs the store, which pool workers never
-                        // touch. Parallel subgraph siblings therefore
-                        // serialize (documented v1 bound).
-                        if let areev_run_core::NodeExecutor::Subgraph { workflow_hash } =
-                            &executor
-                        {
-                            let outcome = self.run_subgraph_effect(
-                                &run_id,
-                                &key,
-                                workflow_hash,
-                                &input,
-                                opts,
-                            );
+                        // Subgraphs and declared memory reads run INLINE on
+                        // the driver thread — both need the store, which pool
+                        // workers never touch. Parallel siblings therefore
+                        // serialize (documented v1 bound). A read is the
+                        // runtime's own act (#255): no tool, no subprocess,
+                        // no handle leaves this thread.
+                        let inline = match &executor {
+                            areev_run_core::NodeExecutor::Subgraph { workflow_hash } => Some((
+                                self.run_subgraph_effect(
+                                    &run_id,
+                                    &key,
+                                    workflow_hash,
+                                    &input,
+                                    opts,
+                                ),
+                                None,
+                            )),
+                            areev_run_core::NodeExecutor::MemoryRead { spec, .. } => {
+                                let read =
+                                    crate::memread::execute(&self.facade, &self.ns, spec, &input);
+                                Some((read.outcome, read.record))
+                            }
+                            _ => None,
+                        };
+                        if let Some((outcome, record)) = inline {
                             let intent = intents.get(&key).copied().ok_or_else(|| {
                                 RunError::Storage {
-                                    detail: "subgraph dispatch without intent".into(),
+                                    detail: format!(
+                                        "{} dispatch without intent",
+                                        executor_kind_of(&executor)
+                                    ),
                                 }
                             })?;
                             let now = self.clock.now_ms();
                             self.facade
                                 .with_store(|m| {
-                                    journal::write_result(
+                                    journal::write_result_with_read(
                                         m,
                                         &self.ns,
                                         &run_id,
@@ -1599,6 +1635,7 @@ impl Runner {
                                         &key,
                                         &executor,
                                         &outcome,
+                                        record.as_ref(),
                                         st.superstep,
                                         now,
                                         &self.principal,
@@ -2340,6 +2377,9 @@ impl Runner {
                     }
                     if let Some(caps) = &p.capabilities {
                         row_obj.insert("capabilities".into(), caps.clone());
+                    }
+                    if let Some(read) = &p.read {
+                        row_obj.insert("read".into(), read.clone());
                     }
                     row
                 })

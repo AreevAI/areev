@@ -4160,7 +4160,10 @@ const Graph = (() => {
    cycle (`max_cycles`) or whose nodes carry a retry count opens
    view-only — `ADD workflow`'s `* N` populates `retries`, not
    `max_cycles`, and has no way to re-emit either on a resave, so editing
-   one through the console would silently unbound its loop. */
+   one through the console would silently unbound its loop. A plan that
+   declares memory `reads` (#255) opens view-only for the same reason: CAL
+   has no syntax for them, and a resave would turn each read step into an
+   abstract LLM step. */
 function workflowGrains() { return wfRows().filter(g => g.type === 'workflow' && isCurrent(g)); }
 function toolDefs() { return wfRows().filter(g => g.type === 'tool' && (g.fields || {}).kind === 'definition' && isCurrent(g)); }
 function wfLabel(g) {
@@ -4174,9 +4177,14 @@ function wfIsCalEditable(g) {
   const edges = Array.isArray(f.edges) ? f.edges : [];
   if (edges.some(e => e.max_cycles != null)) return false;
   if (f.retries && Object.keys(f.retries).length) return false;
+  if (f.reads && Object.keys(f.reads).length) return false;
   return true;
 }
-function wfNodeExecutor(bindings, nodeId) {
+/* `reads` wins over `bindings`: the runtime refuses a node that declares both,
+   and a read step is answered by the runtime itself — never a tool, never a
+   model — so it must not draw as either. */
+function wfNodeExecutor(bindings, nodeId, reads) {
+  if (reads && reads[nodeId]) return { kind: 'memory', tool: null, hash: null, read: reads[nodeId] };
   const raw = bindings ? bindings[nodeId] : null;
   if (!raw) return { kind: 'abstract', tool: null, hash: null };
   const hash = String(raw).replace(/^sha256:/, '');
@@ -4186,12 +4194,17 @@ function wfNodeExecutor(bindings, nodeId) {
   const ek = (target.fields || {}).executor_kind;
   return { kind: ek === 'client' ? 'client' : 'host', tool: target, hash };
 }
-const WF_KIND_LABEL = { host: 'Host tool', client: 'Human approval', abstract: 'Abstract (LLM step)', subgraph: 'Subgraph (another plan)' };
+const WF_KIND_LABEL = { host: 'Host tool', client: 'Human approval', abstract: 'Abstract (LLM step)', subgraph: 'Subgraph (another plan)', memory: 'Memory read' };
 /* The second line on a node's card — what actually runs, not just what
    kind it is, so reading the graph tells you what each step does without
    opening the inspector for every one. */
 function wfNodeSubtitle(ex) {
   if (ex.kind === 'abstract') return 'Abstract (LLM step)';
+  if (ex.kind === 'memory') {
+    const r = ex.read || {};
+    const what = r.op === 'related' ? [].concat(r.relations || []).join(', ') : r.relation;
+    return 'Memory read · ' + (what || r.op || '?');
+  }
   const toolName = ex.tool ? ((ex.tool.fields || {}).tool_name || shortHash(ex.hash)) : (ex.hash ? shortHash(ex.hash) : '?');
   const label = ex.kind === 'client' ? 'Human approval' : ex.kind === 'subgraph' ? 'Subgraph' : 'Host tool';
   return label + ' · ' + toolName;
@@ -4262,6 +4275,7 @@ function wfOpen(hash) {
       max_cycles: e.max_cycles != null ? e.max_cycles : null,
     })),
     bindings: Object.assign({}, f.bindings || {}),
+    reads: Object.assign({}, f.reads || {}),
   };
   WF_PICK = null;
   WFGraph.resetOverrides();
@@ -4270,7 +4284,7 @@ function wfOpen(hash) {
 function wfNew() {
   if (WF_NS) { toast('Switch back to "' + boundNamespace() + '" to create a plan — a save always writes there'); return; }
   WF_SEL = null; WF_LOCKED = false;
-  WF_DRAFT = { name: '', nodes: ['start'], edges: [], bindings: {} };
+  WF_DRAFT = { name: '', nodes: ['start'], edges: [], bindings: {}, reads: {} };
   WF_PICK = { kind: 'node', id: 'start' };
   WFGraph.resetOverrides();
   renderWorkflows();
@@ -4391,7 +4405,7 @@ function renderInspect() {
   }
   if (WF_PICK.kind === 'node') {
     const id = WF_PICK.id;
-    const ex = wfNodeExecutor(WF_DRAFT.bindings, id);
+    const ex = wfNodeExecutor(WF_DRAFT.bindings, id, WF_DRAFT.reads);
     const badge = el('span', 'wf-badge', WF_KIND_LABEL[ex.kind]);
     badge.style.cssText = 'background:var(--well);color:' + WFGraph.kindColor(ex.kind);
     box.appendChild(badge);
@@ -4422,6 +4436,8 @@ function renderInspect() {
     nameField.appendChild(nameInput);
     box.appendChild(nameField);
 
+    // A read step binds nothing: say what it reads instead of offering a tool.
+    if (ex.kind === 'memory') wfReadRows(box, ex.read || {});
     const bindField = el('div', 'wf-field');
     bindField.appendChild(el('span', 'tiny', 'Runs as'));
     const sel = document.createElement('select'); sel.disabled = WF_LOCKED;
@@ -4452,7 +4468,7 @@ function renderInspect() {
     bindField.appendChild(styledSelect(sel));
     if (ex.tool && (ex.tool.fields || {}).tool_description) bindField.appendChild(el('span', 'tiny', ex.tool.fields.tool_description));
     if (ex.kind === 'subgraph') bindField.appendChild(el('span', 'tiny', 'Bound to another plan — runs as a child run.'));
-    box.appendChild(bindField);
+    if (ex.kind !== 'memory') box.appendChild(bindField);
 
     const orig = WF_SEL && wfByHash()[WF_SEL] ? (wfByHash()[WF_SEL].fields || {}).retries : null;
     if (orig && orig[id] != null) box.appendChild(el('span', 'tiny', 'Retries on failure: ' + orig[id] + ' (read-only here)'));
@@ -4552,9 +4568,9 @@ function wfLockReason() {
   if (WF_NS) return 'Browsing "' + WF_NS + '" — switch back to "' + boundNamespace()
     + '" (this console\'s own namespace) to edit or save. A save always writes there.';
   const g = WF_SEL && wfByHash()[WF_SEL];
-  if (g && !wfIsCalEditable(g)) return 'This plan has a bounded-cycle edge or a per-node retry count — '
-    + 'CAL can visualize both but has no syntax yet to author them through ADD workflow. Open for viewing '
-    + 'only; edit this one via the Rust or Python API.';
+  if (g && !wfIsCalEditable(g)) return 'This plan has a bounded-cycle edge, a per-node retry count or a declared '
+    + 'memory read — CAL can visualize them but has no syntax to author them through ADD workflow. Open for '
+    + 'viewing only; edit this one via the Rust or Python API.';
   return '';
 }
 /* Which run the canvas is showing, and the switch to change it. In the header
@@ -4746,6 +4762,37 @@ function trgSubtitle(f) {
   const bits = [String(f.kind || 'interval')];
   if (f.enabled === false) bits.push('disabled');
   return bits.join(' · ');
+}
+
+/* A memory read step (#255), in words. The runtime answers it from the
+   memory itself — no tool, no model — so there is nothing to bind and nothing
+   to pick; what a reviewer needs is WHAT it reads, and which parts come from
+   the run's state rather than the plan. */
+function wfReadRows(box, r) {
+  const row = (k, v, mono) => {
+    if (v == null || v === '') return;
+    const d = el('div', 'wf-ro');
+    d.appendChild(el('span', 'k', k));
+    d.appendChild(el('span', 'v' + (mono ? ' mono' : ''), String(v)));
+    box.appendChild(d);
+  };
+  const operand = (lit, from) => from != null ? 'from the run, at ' + from : lit;
+  if (r.op === 'related') {
+    row('Reads', 'What is linked to ' + operand(r.start, r.start_from));
+    row('Through', [].concat(r.relations || []).join(', ') + ' · ' + (r.direction || 'out')
+      + ', up to ' + (r.depth || 2) + ((r.depth || 2) === 1 ? ' hop' : ' hops'), true);
+  } else {
+    row('Reads', r.axis === 'knowledge' ? 'What was known at the time' : 'What was true at the time');
+    row('About', operand(r.subject, r.subject_from));
+    row('Relation', r.relation, true);
+    const at = r.at != null ? new Date(Number(r.at)).toISOString() : null;
+    row('As of', r.at_from != null ? operand(null, r.at_from)
+      : (at && at.endsWith('T00:00:00.000Z') ? at.slice(0, 10) : at));
+  }
+  row('Namespace', r.ns, true);
+  row('Lands in state as', r.into, true);
+  const note = el('span', 'tiny', 'Answered by the runtime from this memory — no tool or model holds it.');
+  box.appendChild(note);
 }
 
 /* The inspector for a trigger node. Every row is read-only text — no inputs,
@@ -5045,10 +5092,10 @@ const WFGraph = (() => {
 
   function recolor() {
     colors = { host: cssVar('--accent'), client: cssVar('--warn'), abstract: cssVar('--cat-project'),
-      subgraph: cssVar('--hash'), line: cssVar('--line2'), ink: cssVar('--ink'), dim: cssVar('--dim'),
+      subgraph: cssVar('--hash'), memory: cssVar('--muted'), line: cssVar('--line2'), ink: cssVar('--ink'), dim: cssVar('--dim'),
       faint: cssVar('--faint'), surface: cssVar('--surface'), well: cssVar('--well'),
       /* a trigger is armed, not a step — green reads as "live", and it is the
-         one hue the four node kinds do not already use */
+         one hue the five node kinds do not already use */
       trg: cssVar('--ok'), ok: cssVar('--ok'), warn: cssVar('--warn'),
       danger: cssVar('--danger'), ghost: cssVar('--ghost') };
   }
@@ -5099,7 +5146,7 @@ const WFGraph = (() => {
     if (ctx) {
       const draftB = draft ? draft.bindings : {};
       for (const n of nodes) {
-        const ex = wfNodeExecutor(draftB, n.id);
+        const ex = wfNodeExecutor(draftB, n.id, draft ? draft.reads : null);
         ctx.font = '600 13.5px ' + cssVar('--sans');
         const w1 = ctx.measureText(clip(n.id, 24)).width;
         ctx.font = '11.5px ' + cssVar('--sans');
@@ -5320,7 +5367,7 @@ const WFGraph = (() => {
       }
     }
     for (const n of nodes) {
-      const ex = wfNodeExecutor(WF_DRAFT ? WF_DRAFT.bindings : {}, n.id);
+      const ex = wfNodeExecutor(WF_DRAFT ? WF_DRAFT.bindings : {}, n.id, WF_DRAFT ? WF_DRAFT.reads : null);
       /* The run overlay. A step with no row in this run was never reached, so
          it is dimmed rather than tinted — an absence, not an outcome. */
       const st = WF_STEPS ? (WF_STEPS.get(n.id) || null) : null;
@@ -5405,7 +5452,7 @@ const WFGraph = (() => {
       host.appendChild(s);
     };
     for (const [k, label] of [['host', 'Host tool'], ['client', 'Human approval'],
-      ['abstract', 'Abstract (LLM)'], ['subgraph', 'Subgraph']]) add(colors[k], label);
+      ['abstract', 'Abstract (LLM)'], ['subgraph', 'Subgraph'], ['memory', 'Memory read']]) add(colors[k], label);
     if (trgNodes.length) add(colors.trg, 'Trigger', true);
     /* Only while an overlay is on: a key for colours that aren't on screen is
        just clutter, and this legend has to stay readable at one or two lines. */

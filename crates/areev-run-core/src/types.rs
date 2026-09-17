@@ -216,6 +216,12 @@ pub enum NodeExecutor {
     /// linked by `parent_task_id`, and its final context becomes this
     /// node's result.
     Subgraph { workflow_hash: String },
+    /// A declared read of the run's own memory (#255): the plan's `reads`
+    /// entry for this node, frozen by the manifest. The DRIVER answers it
+    /// from the store it already holds — never a tool, never the pool — so
+    /// the scheduler only has to treat it as an effect with a result.
+    /// `op` is `entity_at` | `related`; `spec` is the normalized declaration.
+    MemoryRead { op: String, spec: Value },
 }
 
 /// Commands the driver must perform, in order.

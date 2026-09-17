@@ -188,6 +188,40 @@ evidence. Responding and resuming are separate acts.
   plain call). The §6.10 check: journals identical with no/normal/slow
   subscriber.
 
+## Declared memory reads (`memread.rs`, #255)
+
+A plan's `reads` field makes a node a `memory` executor the DRIVER answers:
+`entity_at` or `related` against the run's namespace or a dotted descendant.
+The shape of the rules, and why each one is load-bearing:
+
+- **Its own `NodeExecutor::MemoryRead` variant, not a Host tool with a
+  reserved name.** The driver intercepts it at `Command::Dispatch` beside
+  subgraphs (both need the store). If an interception is ever missed, the
+  POOL refuses the variant as a failed effect without consulting `executor` —
+  a Host-shaped read would instead reach `--tool-cmd`, and a tool could forge
+  the answer. `executors()` maps a `memory` pin to `MemoryRead` even when its
+  `read` is missing, for the same reason. Never offered to an abstract node
+  (the offer filters `executor == "host"`).
+- **Everything is validated at resolve** (`parse_reads`): unknown keys refuse
+  (`axsi` must not silently read the world axis), exactly one of literal /
+  `*_from` pointer, `into` not `$`-reserved, `depth`/`limit` refused past the
+  store's clamps rather than clamped. Scope → `RUN-E012`, shape → `RUN-E019`.
+  `Runner::start` and fork migration additionally check `read` grants before
+  the run exists; `execute` re-checks scope and grants at every read.
+- **The payload is the bindings' JSON** (`{"found", "grain"}` /
+  `{"start", "reached"}`) merged under `into`; the resolved operands + grain
+  hash ride the RESULT grain as `read` (`write_result_with_read`). The
+  result grain is the replay answer, so verify/shadow never re-read.
+- **Operand failures are `SchemaValidationFailed`** (not retryable for a Tool
+  effect: same state, same failure); store errors `ExecutorError` (node
+  `retries` apply); scope/grant refusals `Unknown`. A miss is a COMPLETED
+  `{"found": false}`.
+- **Draft plans resolve with their own fields.** `resolve_with_fields` exists
+  because `shadow` of a body that is not in the store used to read `reducers`
+  from the store only; a draft's `reads` would have rehearsed as LLM steps.
+- Tests: `tests/memory_read_tests.rs` replays the insurance example's
+  backdated-endorsement fixture from inside a run on both axes.
+
 ## Telemetry (`stream.rs` + `otel.rs`)
 
 **The event is the only channel.** The §6.10 observer runs on the bus's own

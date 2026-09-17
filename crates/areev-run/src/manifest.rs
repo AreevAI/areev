@@ -65,6 +65,12 @@ pub struct PinnedTool {
     /// so existing manifests serialize byte-identically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<serde_json::Value>,
+    /// A declared memory read (#255): the plan's normalized `reads` entry for
+    /// this node, frozen at start so a superseded plan cannot change what a
+    /// running run reads. Present exactly when `executor` is `memory`; absent
+    /// for every other pin, so existing manifests serialize byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read: Option<serde_json::Value>,
 }
 
 /// The manifest, as serialized into the run-config State grain.
@@ -157,6 +163,8 @@ const CHARS_PER_TOKEN: u64 = 4;
 
 impl RunManifest {
     /// Freeze resolutions for every node (V3 + V7):
+    /// - **Read** (a `reads` declaration, #255): a `memory` executor the
+    ///   driver answers from the store; the node must bind nothing.
     /// - **Bound** (a `bindings` hash): must resolve to a Tool Definition.
     /// - **Named** (no binding): a Definition head whose `tool_name` equals
     ///   the node id, found via the definition catalogue.
@@ -176,14 +184,76 @@ impl RunManifest {
         input: serde_json::Value,
         llm_available: bool,
     ) -> std::result::Result<RunManifest, RunError> {
-        // Where the plan itself lives. Read once, used only when a node fails
-        // to resolve: a plan run in a namespace that is not its own is the
+        let fields: Option<serde_json::Map<String, serde_json::Value>> =
+            m.get(plan_hash).ok().map(|g| g.fields.into_iter().collect());
+        Self::resolve_with_fields(
+            m,
+            ns,
+            run_id,
+            plan_hash,
+            fields.as_ref(),
+            plan,
+            principal,
+            budgets,
+            ask_ttl_sec,
+            input,
+            llm_available,
+        )
+    }
+
+    /// [`resolve`](Self::resolve) against plan fields the caller already
+    /// holds — a DRAFT body that is not in the store (`shadow --plan-file`, a
+    /// loop-drafted `plan_revision`). The graph alone does not say how a run
+    /// executes: `reducers` decide merges and `reads` decide which nodes the
+    /// runtime answers, so a rehearsal that resolved the graph without them
+    /// would rehearse a different plan. `None` = no plan fields at all.
+    #[allow(clippy::too_many_arguments)]
+    pub fn resolve_with_fields(
+        m: &mut Areev,
+        ns: &str,
+        run_id: &str,
+        plan_hash: &Hash,
+        fields: Option<&serde_json::Map<String, serde_json::Value>>,
+        plan: &PlanGraph,
+        principal: &str,
+        budgets: BudgetsSpec,
+        ask_ttl_sec: Option<i64>,
+        input: serde_json::Value,
+        llm_available: bool,
+    ) -> std::result::Result<RunManifest, RunError> {
+        // Where the plan itself lives. Used only when a node fails to
+        // resolve: a plan run in a namespace that is not its own is the
         // misroute #230 reported, and the plan grain is the one thing that
         // knows where its Definitions were authored.
-        let plan_ns =
-            m.get(plan_hash).ok().and_then(|g| g.get_str("namespace").map(str::to_string));
+        let plan_ns = fields
+            .and_then(|f| f.get("namespace"))
+            .and_then(|n| n.as_str())
+            .map(str::to_string);
+        // Declared memory reads (#255), validated in full before any node
+        // resolves: a read answered by the runtime binds nothing, and a
+        // malformed or out-of-scope declaration refuses the run here.
+        let mut reads = crate::memread::parse_reads(
+            fields.and_then(|f| f.get(crate::memread::READS_FIELD)),
+            plan,
+            ns,
+        )?;
         let mut pinned = Vec::with_capacity(plan.nodes.len());
         for (i, node) in plan.nodes.iter().enumerate() {
+            if let Some(spec) = reads.remove(node) {
+                let op = spec.get("op").and_then(|o| o.as_str()).unwrap_or_default();
+                pinned.push(PinnedTool {
+                    node: node.clone(),
+                    tool_hash: String::new(),
+                    tool_name: format!("mg:{op}"),
+                    executor: crate::memread::MEMORY_EXECUTOR.into(),
+                    executor_uri: None,
+                    runtime: None,
+                    runtime_limits: None,
+                    capabilities: None,
+                    read: Some(spec),
+                });
+                continue;
+            }
             let resolved = match &plan.bindings[i] {
                 Some(hash_str) => {
                     let h = Hash::from_hex(hash_str).map_err(|_| RunError::UnresolvedRef {
@@ -203,6 +273,7 @@ impl RunManifest {
                             runtime: None,
                             runtime_limits: None,
                             capabilities: None,
+                            read: None,
                         }
                     } else {
                         pin_from_definition(node, &h, &g)?
@@ -246,6 +317,7 @@ impl RunManifest {
                             runtime: None,
                             runtime_limits: None,
                             capabilities: None,
+                            read: None,
                         },
                         None => return Err(RunError::NoToolLlm { node: node.clone() }),
                     }
@@ -256,8 +328,8 @@ impl RunManifest {
         // Reducer table (§6.5): declared on the Workflow grain, validated
         // here — an unknown name fails at run start, not at first merge.
         let mut reducers: BTreeMap<String, String> = BTreeMap::new();
-        if let Ok(wf_grain) = m.get(plan_hash) {
-            if let Some(table) = wf_grain.fields.get("reducers").and_then(|v| v.as_object()) {
+        if let Some(fields) = fields {
+            if let Some(table) = fields.get("reducers").and_then(|v| v.as_object()) {
                 for (key, name) in table {
                     let Some(name) = name.as_str() else {
                         return Err(RunError::InvalidPlan {
@@ -375,6 +447,16 @@ impl RunManifest {
                     tool_name: p.tool_name.clone(),
                 },
                 "subgraph" => NodeExecutor::Subgraph { workflow_hash: p.tool_hash.clone() },
+                // Never Host, even for a pin whose declaration went missing:
+                // a read that fell through to `--tool-cmd` would let a tool
+                // answer it (#255). A malformed spec fails at execution.
+                crate::memread::MEMORY_EXECUTOR => {
+                    let spec = p.read.clone().unwrap_or(serde_json::Value::Null);
+                    NodeExecutor::MemoryRead {
+                        op: spec.get("op").and_then(|o| o.as_str()).unwrap_or_default().to_string(),
+                        spec,
+                    }
+                }
                 "abstract" => NodeExecutor::Abstract { tools: offered.clone() },
                 _ => NodeExecutor::Host {
                     tool_hash: p.tool_hash.clone(),
@@ -617,6 +699,7 @@ pub fn pin_from_definition(
         runtime,
         runtime_limits,
         capabilities,
+        read: None,
     })
 }
 
@@ -696,14 +779,16 @@ pub fn abstract_nodes(
     ns: &str,
     plan_hash: &Hash,
 ) -> std::result::Result<Vec<String>, String> {
-    let wf = m
-        .get(plan_hash)
-        .map_err(|e| format!("{e}"))?
-        .to_workflow()
-        .map_err(|e| format!("{e}"))?;
+    let grain = m.get(plan_hash).map_err(|e| format!("{e}"))?;
+    let wf = grain.to_workflow().map_err(|e| format!("{e}"))?;
     let plan = PlanGraph::build(&wf).map_err(|e| e.to_string())?;
+    // A declared memory read (#255) is answered by the runtime, never a model.
+    let reads = grain.fields.get(crate::memread::READS_FIELD).and_then(|r| r.as_object());
     let mut out = Vec::new();
     for (i, node) in plan.nodes.iter().enumerate() {
+        if reads.is_some_and(|r| r.contains_key(node)) {
+            continue;
+        }
         if plan.bindings[i].is_none() && find_definition_by_name(m, ns, node).is_none() {
             out.push(node.clone());
         }
@@ -746,6 +831,7 @@ mod tests {
             runtime: None,
             runtime_limits: None,
             capabilities: None,
+            read: None,
         }
     }
 
@@ -766,6 +852,7 @@ mod tests {
                 runtime: None,
                 runtime_limits: None,
                 capabilities: None,
+                read: None,
             },
             host_pin("reply_done", "reply_email"),
             host_pin("reply_rejected", "reply_email"),
@@ -789,6 +876,46 @@ mod tests {
                 other => panic!("{node}: expected a host executor, got {other:?}"),
             }
         }
+    }
+
+    /// A declared memory read (#255) is the runtime's: never in an abstract
+    /// node's offer, and never a Host executor — not even for a pin whose
+    /// declaration went missing, which would otherwise route the read to
+    /// `--tool-cmd` and let a tool answer it.
+    #[test]
+    fn a_memory_read_is_never_offered_and_never_host() {
+        let spec = json!({"op": "entity_at", "ns": "ops", "into": "cover", "subject": "s",
+                          "relation": "p", "at": 1, "axis": "world"});
+        let read_pin = |read: Option<serde_json::Value>| PinnedTool {
+            node: "cover".into(),
+            tool_hash: String::new(),
+            tool_name: "mg:entity_at".into(),
+            executor: "memory".into(),
+            executor_uri: None,
+            runtime: None,
+            runtime_limits: None,
+            capabilities: None,
+            read,
+        };
+        let mut m = bare();
+        m.pinned = vec![
+            host_pin("parse", "parse_attachments"),
+            read_pin(Some(spec.clone())),
+            PinnedTool { executor: "abstract".into(), ..host_pin("decide", "decide") },
+        ];
+        let executors = m.executors();
+        assert_eq!(executors[1], NodeExecutor::MemoryRead { op: "entity_at".into(), spec });
+        let NodeExecutor::Abstract { tools } = &executors[2] else { panic!("{executors:?}") };
+        let offered: Vec<&str> = tools.iter().map(|t| t.tool_name.as_str()).collect();
+        assert_eq!(offered, vec!["parse_attachments"], "a read is never offered to a model");
+
+        m.pinned = vec![read_pin(None)];
+        assert!(
+            matches!(m.executors()[0], NodeExecutor::MemoryRead { .. }),
+            "a memory pin without its declaration still never becomes Host"
+        );
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(!json.contains("\"read\""), "an absent read does not reach the wire: {json}");
     }
 
     /// The whole reason `max_effects_per_attempt` is an `Option` carrying

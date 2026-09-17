@@ -151,6 +151,10 @@ journaled events back, assert the same commands come out.
   NEVER `attempt`: the driver derives the child run id from the attempt, so
   bumping it would forward the answer into a brand-new child — and holding
   the attempt still is also what keeps a park off the retry budget.
+- **Memory reads** (#255): `NodeExecutor::MemoryRead { op, spec }` dispatches
+  exactly like Host (WriteIntent + Dispatch, `EffectKind::Tool`, same retry
+  table) and is a legal `$send` target; the scheduler never interprets `spec`.
+  The driver answers it from the store — see `areev-run/CLAUDE.md`.
 - **Reducers**: injected via `StepEnv.reduce` (the driver freezes the table
   in the manifest); merge order is static results by node index, then Send
   results by task path.
