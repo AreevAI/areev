@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.8.5] — 2026-09-17
+
 ### Fixed
 
 - **An abstract node is offered each Definition once, however many nodes bind
@@ -3811,7 +3813,8 @@ ecosystem adapters, and the enterprise plane.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.8.4...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.8.5...HEAD
+[1.8.5]: https://github.com/AreevAI/areev/compare/v1.8.4...v1.8.5
 [1.8.4]: https://github.com/AreevAI/areev/compare/v1.8.3...v1.8.4
 [1.8.3]: https://github.com/AreevAI/areev/compare/v1.8.2...v1.8.3
 [1.8.2]: https://github.com/AreevAI/areev/compare/v1.8.1...v1.8.2
