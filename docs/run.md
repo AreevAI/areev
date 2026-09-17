@@ -1062,7 +1062,11 @@ areev run start --workflow <WF> --run-id r1 --input '{}' \
   node is unaffected either way: a binding is a content address, so it
   resolves from any namespace at all.
 - The tools *offered* to the model are exactly the manifest's pinned host
-  Definitions. Tool arguments are validated against the pinned schemas —
+  Definitions, **each once, however many nodes bind it** — a Definition bound
+  to two nodes (a terminal step reached from two branches) is one offered tool,
+  first occurrence in plan order, because every provider refuses a tools list
+  with a repeated name (#270). De-duplicating the offer changes nothing about
+  which executor a bound node runs. Tool arguments are validated against the pinned schemas —
   strictly, with one re-prompt on violation; an unknown tool name gets one
   re-prompt, then fails the node.
 - **A Definition with a dot in its name is callable.** Anthropic and OpenAI
