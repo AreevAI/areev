@@ -1,17 +1,17 @@
 {
-  "version": "1.8.4",
+  "version": "1.8.5",
   "crates": 17,
   "rust": {
     "files": 314,
-    "physical_lines": 214291,
-    "source_code": 101317,
-    "test_code": 60648,
-    "unit_test_code": 28062,
+    "physical_lines": 214354,
+    "source_code": 101319,
+    "test_code": 60698,
+    "unit_test_code": 28112,
     "integration_test_code": 32586,
     "example_code": 669,
-    "test_functions": 2864,
+    "test_functions": 2865,
     "test_ratio": 0.6,
-    "test_share": 37.4
+    "test_share": 37.5
   },
   "per_crate": [
     {
@@ -41,10 +41,10 @@
     {
       "name": "areev-run",
       "files": 25,
-      "physical": 19443,
-      "source_code": 7066,
-      "test_code": 7253,
-      "tests": 213
+      "physical": 19506,
+      "source_code": 7068,
+      "test_code": 7303,
+      "tests": 214
     },
     {
       "name": "areev-cli",
@@ -153,7 +153,7 @@
   ],
   "docs": {
     "files": 64,
-    "lines": 32074
+    "lines": 32093
   },
   "error_codes": 103,
   "bindings": {
