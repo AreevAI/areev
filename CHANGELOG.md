@@ -4159,7 +4159,8 @@ ecosystem adapters, and the enterprise plane.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.8.5...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.9.0...HEAD
+[1.9.0]: https://github.com/AreevAI/areev/compare/v1.8.5...v1.9.0
 [1.8.5]: https://github.com/AreevAI/areev/compare/v1.8.4...v1.8.5
 [1.8.4]: https://github.com/AreevAI/areev/compare/v1.8.3...v1.8.4
 [1.8.3]: https://github.com/AreevAI/areev/compare/v1.8.2...v1.8.3
