@@ -1,0 +1,42 @@
+TITLE
+
+Knowledge graphs tell an agent what is true. Context graphs show how it got there.
+
+BODY
+
+While building AI agents, I kept running into a limitation: storing facts and relationships is not enough once an agent starts making decisions and taking actions.
+
+A knowledge graph might represent:
+
+Customer -> owns -> Account
+
+But an agent may also need to know:
+
+- When was this relationship true?
+- Where did the information come from?
+- What event changed it?
+- What did the agent know when it made a decision?
+- What action followed, and what was the outcome?
+
+That is the distinction I am using for a context graph: knowledge connected to time, evidence, decisions, actions, and history.
+
+It lets you ask more than "What is true?"
+
+You can also ask:
+
+- Why did the agent do this?
+- What changed between these two runs?
+- What context was available at that moment?
+- Can we reconstruct the path to this outcome?
+
+We are exploring this approach in Areev, an open-source project for durable and traceable agent context:
+
+https://github.com/AreevAI/areev
+
+I would genuinely like feedback from people building agents: is "context graph" a useful distinction, or would you describe this differently?
+
+If the project looks useful, a GitHub star would also help us a lot.
+
+UPLOAD ORDER
+
+Upload the numbered PNG files from 01 through 10 as one Reddit image-gallery post.

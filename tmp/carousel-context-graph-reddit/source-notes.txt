@@ -1,0 +1,11 @@
+Reddit export recommendation used for this package:
+
+- 1080 x 1350 px (4:5 portrait), PNG.
+- All ten gallery pages use the same dimensions.
+- Each image is kept comfortably below Reddit's 20 MB upload limit.
+
+Sources:
+- https://www.business.reddit.com/learning-hub/articles/reddit-image-ad-specs
+- https://redditinc.com/news/introducing-reddit-image-galleries
+- https://developers.reddit.com/docs/capabilities/server/media-uploads
+- https://support.reddithelp.com/hc/en-us/articles/15484546290068-Community-settings
