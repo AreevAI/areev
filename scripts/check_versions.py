@@ -14,6 +14,19 @@ The sandbox is checked because it is a security boundary shipped beside the
 engine it bounds: a sandbox built from a different tree than the `areev` it
 enforces limits for is the pairing the image and the release exist to prevent.
 
+The THREE lockfiles are checked too, because a lockfile records the version of
+the package it locks and every one of them is consumed with `--locked`:
+
+    Cargo.lock                     `cargo build --workspace --locked` (msrv job)
+    crates/areev-js/Cargo.lock     `cargo metadata --locked` (node job), release-npm
+    areev-sandbox/Cargo.lock       the Dockerfile and every release-cli matrix leg
+
+`--locked` rejects the tree before compiling anything, so a stale lockfile
+surfaces as a failed IMAGE or a failed RELEASE rather than a failed test — six
+minutes into a Docker build, naming the lockfile rather than the version you
+changed. Checking them here turns that into a one-second local failure. 1.9.0
+hit exactly this on areev-sandbox.
+
 Both drift modes have shipped before, and both are silent:
 
   * a workspace-only bump leaves pyproject/package.json on the released
@@ -84,6 +97,26 @@ def sandbox_cargo_version() -> str:
     return m.group(1)
 
 
+def lock_version(rel: str, package: str) -> str | None:
+    """The version a lockfile records for its OWN package.
+
+    `None` when the file is absent (nothing to drift) — never a hard exit, so
+    a checkout without one still reports the sites it can.
+    """
+    path = REPO / rel
+    if not path.exists():
+        return None
+    txt = path.read_text(encoding="utf-8")
+    m = re.search(
+        r'^\[\[package\]\]\nname = "%s"\nversion = "([^"]+)"' % re.escape(package),
+        txt,
+        re.M,
+    )
+    if not m:
+        sys.exit(f"could not find the {package!r} package entry in {rel}")
+    return m.group(1)
+
+
 def js_index_versions() -> set[str]:
     """Every version literal napi baked into the generated loader."""
     idx = REPO / "crates/areev-js/index.js"
@@ -116,6 +149,18 @@ def main() -> int:
         "crates/areev-js/Cargo.toml": js_cargo_version(),
         "areev-sandbox/Cargo.toml": sandbox_cargo_version(),
     }
+    # The lockfiles pin the Cargo versions, so they never carry a preview
+    # suffix — they are compared against `want` unconditionally.
+    locks = {
+        rel: got
+        for rel, pkg in (
+            ("Cargo.lock", "areev"),
+            ("crates/areev-js/Cargo.lock", "areev-js"),
+            ("areev-sandbox/Cargo.lock", "areev-sandbox"),
+        )
+        if (got := lock_version(rel, pkg)) is not None
+    }
+    checks.update(locks)
 
     preview = None
     if args.preview:
@@ -127,7 +172,18 @@ def main() -> int:
     for where, got in checks.items():
         expect = preview if preview and where in published else want
         if got != expect:
-            problems.append(f"{where}: {got!r} != {expect!r}")
+            hint = ""
+            if where in locks:
+                where_dir = {
+                    "Cargo.lock": ".",
+                    "crates/areev-js/Cargo.lock": "crates/areev-js",
+                    "areev-sandbox/Cargo.lock": "areev-sandbox",
+                }[where]
+                hint = (
+                    f" — refresh it: (cd {where_dir} && cargo metadata "
+                    "--format-version 1 >/dev/null)"
+                )
+            problems.append(f"{where}: {got!r} != {expect!r}{hint}")
     if args.preview and preview is None:
         problems.append(
             "--preview: both published sites must carry the SAME "
