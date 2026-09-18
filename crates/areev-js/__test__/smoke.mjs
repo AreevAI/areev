@@ -1249,8 +1249,8 @@ test('triggerAdd refuses a declaration that could never fire', async () => {
     () => m.triggerAdd(JSON.stringify({ kind: 'schedule', workflow: wf, cron: 'not a cron' }), 'x'),
   )
 
-  // Cron is UTC only; a non-UTC zone is refused rather than mishandled across
-  // a DST boundary.
+  // An UNKNOWN zone name is refused in every build (#297). A typo must
+  // never fall back to UTC and fire at the wrong hour while looking correct.
   await assert.rejects(
     () =>
       m.triggerAdd(
@@ -1258,14 +1258,28 @@ test('triggerAdd refuses a declaration that could never fire', async () => {
           kind: 'schedule',
           workflow: wf,
           cron: '0 3 * * *',
-          config: { 'int:timezone': 'Asia/Kolkata' },
+          config: { 'int:timezone': 'Mars/Olympus' },
         }),
         'x',
       ),
     /TRG-E006|timezone/,
   )
 
-  // …and the same expression in UTC is accepted.
+  // A real IANA zone is ACCEPTED since 1.9.0 — this build carries the zone
+  // data (the `tz` feature is on for the binding), which is what lets a firm
+  // declare its own close in its own time.
+  const tz = await m.triggerAdd(
+    JSON.stringify({
+      kind: 'schedule',
+      workflow: wf,
+      cron: '0 3 * * *',
+      config: { 'int:timezone': 'Asia/Kolkata' },
+    }),
+    'india close',
+  )
+  assert.equal(tz.length, HEX64)
+
+  // …and so is the same expression in UTC.
   const ok = await m.triggerAdd(
     JSON.stringify({
       kind: 'schedule',
@@ -1277,8 +1291,8 @@ test('triggerAdd refuses a declaration that could never fire', async () => {
   )
   assert.equal(ok.length, HEX64)
 
-  // Nothing was stored for either refusal.
-  assert.equal(JSON.parse(await m.triggerList()).length, 1)
+  // Nothing was stored for either refusal — two accepted, no more.
+  assert.equal(JSON.parse(await m.triggerList()).length, 2)
   m.close()
 })
 
@@ -1547,10 +1561,13 @@ test('add("trigger", …) refuses a declaration that can never fire (#67)', asyn
   const wf = '4c'.repeat(32)
 
   // The reporter's exact shape: `timezone` at top level, not under `config`.
+  // Since #297 the check it must reach is "is this a zone?", not "is this
+  // UTC?" — so an unknown name is what proves the field did not vanish into
+  // extra_fields.
   await assert.rejects(
     () => m.add('trigger', JSON.stringify({
       name: 'probe-tz', kind: 'schedule', workflow: wf,
-      cron: '0 9 * * *', timezone: 'Asia/Kolkata', enabled: true,
+      cron: '0 9 * * *', timezone: 'Mars/Olympus', enabled: true,
     })),
     /TRG-E006/,
     'a top-level timezone must reach the check, not vanish into extra_fields',
@@ -1560,7 +1577,7 @@ test('add("trigger", …) refuses a declaration that can never fire (#67)', asyn
   await assert.rejects(
     () => m.add('trigger', JSON.stringify({
       kind: 'schedule', workflow: wf, cron: '0 9 * * *',
-      config: { 'int:timezone': 'Asia/Kolkata' },
+      config: { 'int:timezone': 'Mars/Olympus' },
     })), /TRG-E006/)
   await assert.rejects(
     () => m.add('trigger', JSON.stringify({ kind: 'schedule', workflow: wf, cron: 'not a cron' })),

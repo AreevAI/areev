@@ -309,6 +309,88 @@ fn entity_at_world_axis_filters_validity() {
 }
 
 #[test]
+fn entity_at_world_axis_prefers_the_latest_valid_from_whatever_the_write_order() {
+    // #305: two OPEN-ENDED windows both contain every T after the later
+    // start, so the answer used to be whichever was written last — a
+    // system-time tie-break on a world-time question. Backfills from a CRM's
+    // field history arrive in no particular order, which is exactly this.
+    let (mut m, _d) = open_mem();
+    let mut loi = fact("ns", "deal:1", "stage", "LOI"); // later state, written FIRST
+    loi.common.valid_from = Some(2_000);
+    m.add(&loi).unwrap();
+    let mut eval = fact("ns", "deal:1", "stage", "Evaluating"); // earlier state, backfilled SECOND
+    eval.common.valid_from = Some(1_000);
+    m.add(&eval).unwrap();
+    let at = |m: &mut Areev, t| {
+        m.entity_at("ns", "deal:1", "stage", t, Axis::World)
+            .unwrap()
+            .unwrap()
+            .get_str("object")
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(at(&mut m, 1_500), "Evaluating");
+    assert_eq!(at(&mut m, 3_000), "LOI");
+}
+
+#[test]
+fn entity_at_world_axis_is_write_order_independent() {
+    // The mirror of the case above, written in date order, must give the
+    // same two answers — that is what "write order independent" means.
+    let (mut m, _d) = open_mem();
+    let mut eval = fact("ns", "deal:2", "stage", "Evaluating");
+    eval.common.valid_from = Some(1_000);
+    m.add(&eval).unwrap();
+    let mut loi = fact("ns", "deal:2", "stage", "LOI");
+    loi.common.valid_from = Some(2_000);
+    m.add(&loi).unwrap();
+    let at = |m: &mut Areev, t| {
+        m.entity_at("ns", "deal:2", "stage", t, Axis::World)
+            .unwrap()
+            .unwrap()
+            .get_str("object")
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(at(&mut m, 1_500), "Evaluating");
+    assert_eq!(at(&mut m, 3_000), "LOI");
+}
+
+#[test]
+fn entity_at_world_axis_falls_back_to_write_order_on_a_tie() {
+    // Equal `valid_from` values, and an undated grain added after a dated
+    // one: both fall through to newest-written, which is 1.8.5's answer.
+    let (mut m, _d) = open_mem();
+    let mut a = fact("ns", "deal:3", "stage", "A");
+    a.common.valid_from = Some(1_000);
+    m.add(&a).unwrap();
+    let mut b = fact("ns", "deal:3", "stage", "B");
+    b.common.valid_from = Some(1_000);
+    m.add(&b).unwrap();
+    assert_eq!(
+        m.entity_at("ns", "deal:3", "stage", 5_000, Axis::World)
+            .unwrap()
+            .unwrap()
+            .get_str("object"),
+        Some("B")
+    );
+
+    let (mut m2, _d2) = open_mem();
+    let mut dated = fact("ns", "deal:4", "stage", "Dated");
+    dated.common.valid_from = Some(1_000);
+    m2.add(&dated).unwrap();
+    // No `valid_from`: ranked by `created_at`, which is now — so it wins.
+    m2.add(&fact("ns", "deal:4", "stage", "Undated")).unwrap();
+    assert_eq!(
+        m2.entity_at("ns", "deal:4", "stage", areev_core::time::now_ms(), Axis::World)
+            .unwrap()
+            .unwrap()
+            .get_str("object"),
+        Some("Undated")
+    );
+}
+
+#[test]
 fn reopen_preserves_state_and_counters() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("mem.db");
@@ -513,4 +595,425 @@ fn chain_root_refuses_a_chain_longer_than_the_bound_instead_of_looping() {
         "expected SupersessionChainTooDeep, got {err:?}"
     );
     assert!(err.to_string().starts_with("STO-E006"));
+}
+
+#[test]
+fn reindex_backfills_osp_rows_for_a_relation_declared_after_the_grains(
+) {
+    // #310: `osp` rows are written on the add path only when the relation is
+    // already in the file's `entity_relations`. A relation declared after
+    // years of history was therefore invisible to every reverse walk, and
+    // nothing backfilled it — the re-stamp only warned.
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("rel.db");
+    let path = path.to_str().unwrap();
+    {
+        let mut m = Areev::open(path).unwrap();
+        m.add(&fact("ns", "x", "advises", "y")).unwrap();
+        // Not declared at write time: the reverse walk finds nothing.
+        assert!(m
+            .related("ns", "y", &["advises"], Direction::In, 1, 16)
+            .unwrap()
+            .is_empty());
+    }
+    let mut rels = areev_store::AreevOptions::default().entity_relations;
+    rels.insert("advises".to_string());
+    let mut m = Areev::open_with(
+        path,
+        areev_store::AreevOptions {
+            entity_relations: rels.clone(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    // The re-stamp warns, and now names the fix.
+    let warned = m
+        .open_warnings()
+        .iter()
+        .any(|w| w.contains("areev reindex"));
+    assert!(warned, "re-stamp must name the fix: {:?}", m.open_warnings());
+    // Still empty: the declaration alone does not index history.
+    assert!(m
+        .related("ns", "y", &["advises"], Direction::In, 1, 16)
+        .unwrap()
+        .is_empty());
+
+    m.rebuild_link_indexes().unwrap();
+    let back = m
+        .related("ns", "y", &["advises"], Direction::In, 1, 16)
+        .unwrap();
+    assert_eq!(back.len(), 1, "reverse walk must reach x after a reindex");
+
+    // Idempotent: a second rebuild must not stack duplicate rows.
+    m.rebuild_link_indexes().unwrap();
+    let back2 = m
+        .related("ns", "y", &["advises"], Direction::In, 1, 16)
+        .unwrap();
+    assert_eq!(back2.len(), 1);
+}
+
+#[test]
+fn reindex_withdraws_osp_rows_when_a_relation_leaves_the_declared_set() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("rel2.db");
+    let path = path.to_str().unwrap();
+    let mut rels = areev_store::AreevOptions::default().entity_relations;
+    rels.insert("advises".to_string());
+    {
+        let mut m = Areev::open_with(
+            path,
+            areev_store::AreevOptions {
+                entity_relations: rels,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        m.add(&fact("ns", "x", "advises", "y")).unwrap();
+        assert_eq!(
+            m.related("ns", "y", &["advises"], Direction::In, 1, 16)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+    // Reopen with the default set (no "advises") and reindex: the rows go.
+    let mut m = Areev::open_with(path, areev_store::AreevOptions::default()).unwrap();
+    m.rebuild_link_indexes().unwrap();
+    assert!(m
+        .related("ns", "y", &["advises"], Direction::In, 1, 16)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn reindexed_osp_rows_carry_the_supersession_state() {
+    // A superseded triple's replayed reverse row must land with `cur = 0`,
+    // or a rebuild resurrects it into a heads-only reverse walk.
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("rel3.db");
+    let path = path.to_str().unwrap();
+    let mut rels = areev_store::AreevOptions::default().entity_relations;
+    rels.insert("advises".to_string());
+    let mut m = Areev::open_with(
+        path,
+        areev_store::AreevOptions {
+            entity_relations: rels,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let h = m.add(&fact("ns", "x", "advises", "y")).unwrap();
+    let mut next = fact("ns", "x", "advises", "z");
+    m.supersede(&h, &mut next).unwrap();
+    let before = m
+        .related("ns", "y", &["advises"], Direction::In, 1, 16)
+        .unwrap();
+    m.rebuild_link_indexes().unwrap();
+    let after = m
+        .related("ns", "y", &["advises"], Direction::In, 1, 16)
+        .unwrap();
+    assert_eq!(before.len(), after.len(), "rebuild must not resurrect a superseded edge");
+}
+
+#[test]
+fn related_scoped_walks_across_a_granted_namespace_set() {
+    // #303: a walk is not composable from per-namespace calls — the frontier,
+    // `seen`, depth and cap are shared state.
+    let mut rels = areev_store::AreevOptions::default().entity_relations;
+    rels.insert("advises".to_string());
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("scope.db");
+    let mut m = Areev::open_with(
+        path.to_str().unwrap(),
+        areev_store::AreevOptions { entity_relations: rels, ..Default::default() },
+    )
+    .unwrap();
+    m.add(&fact("n1", "a", "advises", "b")).unwrap();
+    m.add(&fact("n2", "b", "advises", "c")).unwrap();
+
+    let one = |m: &mut Areev, ns: &str| {
+        m.related(ns, "a", &["advises"], Direction::Out, 4, 64).unwrap()
+    };
+    assert_eq!(one(&mut m, "n1"), vec!["b".to_string()]);
+
+    let both = m
+        .related_scoped(
+            &["n1".to_string(), "n2".to_string()],
+            "a",
+            &["advises"],
+            Direction::Out,
+            4,
+            64,
+        )
+        .unwrap();
+    assert_eq!(both, vec!["b".to_string(), "c".to_string()]);
+
+    // A namespace the caller was not granted simply is not in the set, and
+    // the walk stops where its edges stop.
+    let partial = m
+        .related_scoped(
+            &["n1".to_string(), "n3".to_string()],
+            "a",
+            &["advises"],
+            Direction::Out,
+            4,
+            64,
+        )
+        .unwrap();
+    assert_eq!(partial, vec!["b".to_string()]);
+
+    // One element is exactly `related`.
+    assert_eq!(
+        m.related_scoped(&["n1".to_string()], "a", &["advises"], Direction::Out, 4, 64)
+            .unwrap(),
+        one(&mut m, "n1")
+    );
+    // A pattern is refused, as on every point read.
+    assert!(m
+        .related_scoped(
+            &["n1".to_string(), "n.*".to_string()],
+            "a",
+            &["advises"],
+            Direction::Out,
+            4,
+            64
+        )
+        .is_err());
+}
+
+#[test]
+fn entity_at_scoped_answers_each_namespace_independently() {
+    let (mut m, _d) = open_mem();
+    let mut a = fact("n1", "deal:1", "stage", "LOI");
+    a.common.valid_from = Some(1_000);
+    m.add(&a).unwrap();
+    let mut b = fact("n2", "deal:1", "stage", "Closed");
+    b.common.valid_from = Some(1_000);
+    m.add(&b).unwrap();
+
+    let got = m
+        .entity_at_scoped(
+            &["n1".to_string(), "n2".to_string()],
+            "deal:1",
+            "stage",
+            5_000,
+            Axis::World,
+        )
+        .unwrap();
+    assert_eq!(got.len(), 2);
+    assert_eq!(got[0].0, "n1");
+    assert_eq!(got[0].1.get_str("object"), Some("LOI"));
+    assert_eq!(got[1].0, "n2");
+    assert_eq!(got[1].1.get_str("object"), Some("Closed"));
+
+    // Each entry equals the per-namespace answer — no precedence invented.
+    for (ns, g) in &got {
+        let solo = m
+            .entity_at(ns, "deal:1", "stage", 5_000, Axis::World)
+            .unwrap()
+            .unwrap();
+        assert_eq!(solo.get_str("object"), g.get_str("object"));
+    }
+}
+
+#[test]
+fn add_batch_embeds_once_for_the_whole_batch_as_documents() {
+    // #290: N grains used to mean N sequential model calls (and, with
+    // CommandEmbed, N process spawns).
+    use areev_store::{EmbedBackend, EmbedInput};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct Calls {
+        batches: Vec<(usize, EmbedInput)>,
+        singles: usize,
+    }
+    struct Recorder(Arc<Mutex<Calls>>);
+    impl EmbedBackend for Recorder {
+        fn dim(&self) -> usize {
+            4
+        }
+        fn embed(&self, _t: &str) -> areev_core::Result<Vec<f32>> {
+            self.0.lock().unwrap().singles += 1;
+            Ok(vec![0.1, 0.2, 0.3, 0.4])
+        }
+        fn embed_batch(
+            &self,
+            texts: &[&str],
+            input: EmbedInput,
+        ) -> areev_core::Result<Vec<Vec<f32>>> {
+            self.0.lock().unwrap().batches.push((texts.len(), input));
+            Ok(texts.iter().map(|_| vec![0.1, 0.2, 0.3, 0.4]).collect())
+        }
+        fn model(&self) -> &str {
+            "recorder"
+        }
+    }
+
+    let calls = Arc::new(Mutex::new(Calls::default()));
+    let dir = TempDir::new().unwrap();
+    let mut m = Areev::open(dir.path().join("e.db").to_str().unwrap()).unwrap();
+    m.set_embedder(Box::new(Recorder(calls.clone())));
+
+    let grains: Vec<Fact> = (0..50)
+        .map(|i| fact("ns", &format!("s{i}"), "rel", &format!("o{i}")))
+        .collect();
+    let refs: Vec<&dyn areev_store::AddableDyn> =
+        grains.iter().map(|g| g as &dyn areev_store::AddableDyn).collect();
+    m.add_batch(&refs).unwrap();
+
+    let c = calls.lock().unwrap();
+    assert_eq!(c.batches.len(), 1, "exactly one batch call: {:?}", c.batches);
+    assert_eq!(c.batches[0], (50, EmbedInput::Document));
+    assert_eq!(c.singles, 0, "no per-grain embed calls remain");
+}
+
+#[test]
+fn a_recall_query_is_embedded_as_a_query() {
+    use areev_store::{EmbedBackend, EmbedInput};
+    use std::sync::{Arc, Mutex};
+    struct Sided(Arc<Mutex<Vec<EmbedInput>>>);
+    impl EmbedBackend for Sided {
+        fn dim(&self) -> usize {
+            4
+        }
+        fn embed(&self, _t: &str) -> areev_core::Result<Vec<f32>> {
+            Ok(vec![0.1, 0.2, 0.3, 0.4])
+        }
+        fn embed_as(&self, _t: &str, input: EmbedInput) -> areev_core::Result<Vec<f32>> {
+            self.0.lock().unwrap().push(input);
+            Ok(vec![0.1, 0.2, 0.3, 0.4])
+        }
+        fn model(&self) -> &str {
+            "sided"
+        }
+    }
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let dir = TempDir::new().unwrap();
+    let mut m = Areev::open(dir.path().join("q.db").to_str().unwrap()).unwrap();
+    m.set_embedder(Box::new(Sided(seen.clone())));
+    m.add(&fact("ns", "alice", "prefers", "tea")).unwrap();
+    seen.lock().unwrap().clear();
+    let _ = m.recall_hybrid("ns", None, None, Some("tea"), 5, None).unwrap();
+    let got = seen.lock().unwrap().clone();
+    assert!(
+        got.contains(&EmbedInput::Query),
+        "the search side must be embedded as a query, got {got:?}"
+    );
+    assert!(!got.contains(&EmbedInput::Document));
+}
+
+#[test]
+fn a_backend_with_only_dim_and_embed_still_works() {
+    // The defaulted methods must keep every existing backend behaving
+    // exactly as before.
+    use areev_store::EmbedBackend;
+    struct Minimal;
+    impl EmbedBackend for Minimal {
+        fn dim(&self) -> usize {
+            3
+        }
+        fn embed(&self, _t: &str) -> areev_core::Result<Vec<f32>> {
+            Ok(vec![1.0, 0.0, 0.0])
+        }
+    }
+    let dir = TempDir::new().unwrap();
+    let mut m = Areev::open(dir.path().join("min.db").to_str().unwrap()).unwrap();
+    m.set_embedder(Box::new(Minimal));
+    m.add(&fact("ns", "a", "b", "c")).unwrap();
+    assert_eq!(m.recall("ns", "a", None, 5).unwrap().len(), 1);
+}
+
+#[test]
+fn a_wrong_dimension_from_the_batch_writes_nothing() {
+    use areev_store::{EmbedBackend, EmbedInput};
+    struct Bad;
+    impl EmbedBackend for Bad {
+        fn dim(&self) -> usize {
+            4
+        }
+        fn embed(&self, _t: &str) -> areev_core::Result<Vec<f32>> {
+            Ok(vec![0.0; 4])
+        }
+        fn embed_batch(
+            &self,
+            texts: &[&str],
+            _i: EmbedInput,
+        ) -> areev_core::Result<Vec<Vec<f32>>> {
+            // One dimension short.
+            Ok(texts.iter().map(|_| vec![0.0; 3]).collect())
+        }
+    }
+    let dir = TempDir::new().unwrap();
+    let mut m = Areev::open(dir.path().join("bad.db").to_str().unwrap()).unwrap();
+    m.set_embedder(Box::new(Bad));
+    let err = m.add(&fact("ns", "a", "b", "c")).unwrap_err();
+    assert!(err.to_string().contains("dims"), "got {err}");
+    assert_eq!(m.recall("ns", "a", None, 5).unwrap().len(), 0, "nothing written");
+}
+
+#[test]
+fn changes_since_scoped_attributes_and_filters_by_namespace() {
+    // #307: without an `ns` on the op-log row, a per-namespace projector had
+    // to read every operation in the memory and resolve every hash — and
+    // could never attribute a tombstone at all, because its grain is gone.
+    let (mut m, _d) = open_mem();
+    let a1 = m.add(&fact("a", "alice", "prefers", "tea")).unwrap();
+    let b1 = m.add(&fact("b", "bob", "prefers", "chai")).unwrap();
+    let mut a2 = fact("a", "alice", "prefers", "coffee");
+    m.supersede(&a1, &mut a2).unwrap();
+    m.forget(&b1).unwrap();
+
+    let all = m.changes_since(0, 100).unwrap();
+    // add(a1), add(a2)+supersede(a2), add(b1), forget(b1).
+    assert_eq!(all.len(), 5, "the unscoped feed is unchanged");
+
+    let only_a = m.changes_since_scoped(0, &["a".to_string()], 100).unwrap();
+    assert_eq!(only_a.len(), 3);
+    assert!(only_a.iter().all(|o| o.ns.as_deref() == Some("a")));
+    assert!(only_a.windows(2).all(|w| w[0].op_seq < w[1].op_seq), "in order");
+
+    let only_b = m.changes_since_scoped(0, &["b".to_string()], 100).unwrap();
+    assert_eq!(only_b.len(), 2);
+    // The tombstone IS attributable, which is the whole point.
+    let tomb = only_b.iter().find(|o| o.op == OP_FORGET).expect("tombstone");
+    assert_eq!(tomb.ns.as_deref(), Some("b"));
+
+    // `op_seq` stays the memory-wide sequence, so a scoped cursor is still
+    // comparable with `head_op_seq`.
+    assert!(only_a.last().unwrap().op_seq <= m.head_op_seq().unwrap());
+}
+
+#[test]
+fn changes_since_scoped_pages_with_a_cursor() {
+    let (mut m, _d) = open_mem();
+    for i in 0..10 {
+        m.add(&fact("a", &format!("s{i}"), "r", "o")).unwrap();
+        m.add(&fact("b", &format!("t{i}"), "r", "o")).unwrap();
+    }
+    let mut cursor = 0i64;
+    let mut seen = Vec::new();
+    loop {
+        let page = m.changes_since_scoped(cursor, &["a".to_string()], 3).unwrap();
+        if page.is_empty() {
+            break;
+        }
+        cursor = page.last().unwrap().op_seq;
+        seen.extend(page);
+    }
+    assert_eq!(seen.len(), 10, "interleaved writes to b do not disturb paging");
+    assert!(seen.windows(2).all(|w| w[0].op_seq < w[1].op_seq));
+}
+
+#[test]
+fn changes_since_scoped_refuses_a_pattern_and_handles_unknown_namespaces() {
+    let (mut m, _d) = open_mem();
+    m.add(&fact("a", "alice", "prefers", "tea")).unwrap();
+    assert!(m.changes_since_scoped(0, &["a.*".to_string()], 10).is_err());
+    assert!(m
+        .changes_since_scoped(0, &["never-written".to_string()], 10)
+        .unwrap()
+        .is_empty());
+    // An empty list is the unscoped feed.
+    assert_eq!(m.changes_since_scoped(0, &[], 10).unwrap().len(), 1);
 }

@@ -61,7 +61,8 @@ pub use manifest::{
 pub use model::{ActionKind, GrainRecord, Origin, Severity, TargetRef};
 pub use policy::{AutoApplyGrant, Policy, TelemetryMode};
 pub use recommendation::{
-    dedup_key, validate_code_rules, AuditRecord, GatingEvidence, MetricSnapshot, ObserverType,
+    dedup_key, normalize_scope, validate_code_rules, AuditRecord, GatingEvidence, MetricSnapshot,
+    ObserverType,
     OutcomeResult, Proposal, RecDraft, RecStatus, Recommendation, Summary,
 };
 pub use reference::ReferenceSubstrate;

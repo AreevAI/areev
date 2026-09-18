@@ -77,6 +77,39 @@ fn golden_checksummed_ids() {
 }
 
 #[test]
+fn golden_us_identifiers() {
+    // #281: structure-validated US taxpayer IDs and the cue-gated ABA
+    // routing number. The dashed SSN also matches the phone shape; the
+    // overlap tiebreak must hand the span to the validated category.
+    assert_detects("SSN 123-45-6789 on file", "us_ssn", "123-45-6789");
+    assert_detects("social security number 123456789", "us_ssn", "123456789");
+    assert_detects("ITIN 912-70-1234 filed", "us_itin", "912-70-1234");
+    assert_detects("routing number 021000021 for the wire", "aba_routing", "021000021");
+    // Near misses.
+    assert_clean("EBITDA 123456789 last year");
+    assert_clean("ref 021000022 is not a routing number");
+    // A real NANP phone stays a phone.
+    assert_detects("call (212) 555-0142 today", "phone", "(212) 555-0142");
+}
+
+#[test]
+fn an_ssn_shaped_span_is_still_redacted_by_a_phone_only_policy() {
+    // A policy that redacts `phone` and allows everything else must keep
+    // redacting `123-45-6789` after the #281 upgrade: the SSN detection is
+    // additive, so when `phone` is the severe action it wins the overlap.
+    let policy: AnonPolicy = serde_json::from_str(
+        r#"{"default_action":"allow","categories":{"phone":"redact"}}"#,
+    )
+    .unwrap();
+    let out = anonymize("call 123-45-6789", &policy, &[], None).unwrap();
+    assert!(
+        !out.text.contains("123-45-6789"),
+        "phone-redacting policy must still cover the span: {:?}",
+        out.text
+    );
+}
+
+#[test]
 fn golden_secrets() {
     assert_detects("key sk-abc123DEF456ghi789JKL0 leaked", "secret", "sk-abc123DEF456ghi789JKL0");
     assert_detects("aws AKIAIOSFODNN7EXAMPLE used", "secret", "AKIAIOSFODNN7EXAMPLE");

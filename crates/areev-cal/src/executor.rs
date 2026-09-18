@@ -243,7 +243,16 @@ pub enum CalResultPayload {
     /// Result of `REMEMBER` — the captured Event's hash.
     Remembered { hash: String },
     /// Result of `ENTITY … AT` — the as-of grain, or null.
-    EntityAt { grain: Option<serde_json::Value>, axis: String, at_ms: i64 },
+    EntityAt {
+        grain: Option<serde_json::Value>,
+        axis: String,
+        at_ms: i64,
+        /// One `{"namespace", "grain"}` row per named namespace when the
+        /// statement carried `WHERE namespace IN (…)` (#303). Absent for the
+        /// single-namespace form, whose shape is unchanged.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        grains: Vec<serde_json::Value>,
+    },
     /// Result of `RUN TRACE` — what a run recorded and produced.
     RunTrace { run_id: String, trace: serde_json::Value },
     /// Result of `RUNS TOUCHING` — run ids, most recent first.
@@ -1459,7 +1468,19 @@ impl CalExecutor {
                             found: hash.clone(),
                             span: forget.span,
                         })?;
-                        match store.cal_delete(&h, forget.reason.as_deref()) {
+                        // #278: `WITH override_hold` takes the audited
+                        // override path, which requires `admin` on the
+                        // namespace in addition to `delete`, and a BECAUSE
+                        // the parser has already made mandatory.
+                        let done = if forget.override_hold {
+                            store.cal_delete_overriding(
+                                &h,
+                                forget.reason.as_deref().unwrap_or_default(),
+                            )
+                        } else {
+                            store.cal_delete(&h, forget.reason.as_deref())
+                        };
+                        match done {
                             Ok(()) => Ok(CalResultPayload::Forgotten {
                                 target: format!("hash:{hash}"),
                                 count: 1,
@@ -1480,7 +1501,16 @@ impl CalExecutor {
                                 return Err(CalError::MissingReason { span: forget.span });
                             }
                         };
-                        match store.cal_forget_user(user_id, forget.text_mentions, because) {
+                        let done = if forget.override_hold {
+                            store.cal_forget_user_overriding(
+                                user_id,
+                                forget.text_mentions,
+                                because,
+                            )
+                        } else {
+                            store.cal_forget_user(user_id, forget.text_mentions, because)
+                        };
+                        match done {
                             Ok(proof) => Ok(CalResultPayload::Forgotten {
                                 target: format!("subject:{user_id}"),
                                 count: proof.count,
@@ -1669,12 +1699,46 @@ impl CalExecutor {
             // session's grants.
             CalStatement::EntityAt(ea) => {
                 let axis = ea.axis.clone().unwrap_or_else(|| "world".to_string());
-                match store.cal_entity_at(&ea.subject, &ea.relation, ea.at_ms, &axis) {
-                    Ok(grain) => Ok(CalResultPayload::EntityAt { grain, axis, at_ms: ea.at_ms }),
-                    Err(e) => Ok(CalResultPayload::Unsupported {
-                        statement: "entity_at".into(),
-                        message: format!("ENTITY AT failed: {e}"),
+                if ea.namespaces.is_empty() {
+                    return match store.cal_entity_at(&ea.subject, &ea.relation, ea.at_ms, &axis) {
+                        Ok(grain) => Ok(CalResultPayload::EntityAt {
+                            grain,
+                            axis,
+                            at_ms: ea.at_ms,
+                            grains: Vec::new(),
+                        }),
+                        Err(e) => Ok(CalResultPayload::Unsupported {
+                            statement: "entity_at".into(),
+                            message: format!("ENTITY AT failed: {e}"),
+                        }),
+                    };
+                }
+                match store.cal_entity_at_scoped(
+                    &ea.namespaces,
+                    &ea.subject,
+                    &ea.relation,
+                    ea.at_ms,
+                    &axis,
+                ) {
+                    Ok(rows) => Ok(CalResultPayload::EntityAt {
+                        grain: None,
+                        axis,
+                        at_ms: ea.at_ms,
+                        grains: rows
+                            .into_iter()
+                            .map(|(ns, grain)| serde_json::json!({"namespace": ns, "grain": grain}))
+                            .collect(),
                     }),
+                    Err(e) => {
+                        let detail = e.to_string();
+                        if detail.contains("AUT-E") {
+                            return Err(CalError::NotAuthorized { detail, span: ea.span });
+                        }
+                        Ok(CalResultPayload::Unsupported {
+                            statement: "entity_at".into(),
+                            message: format!("ENTITY AT failed: {e}"),
+                        })
+                    }
                 }
             }
             CalStatement::RunTrace(rt) => {
@@ -1709,10 +1773,22 @@ impl CalExecutor {
                 })?;
                 match store.cal_derived_from(&h) {
                     Ok(grains) => Ok(CalResultPayload::DerivedFrom { hash: df.hash.clone(), grains }),
-                    Err(e) => Ok(CalResultPayload::Unsupported {
-                        statement: "derived_from".into(),
-                        message: format!("DERIVED FROM failed: {e}"),
-                    }),
+                    Err(e) => {
+                        let detail = e.to_string();
+                        // An authorization refusal is neither an unsupported
+                        // statement nor a store fault (#304). Reported as
+                        // `Unsupported` it read as "this build cannot do
+                        // DERIVED FROM", and a caller could not tell a refused
+                        // read from an empty one — which is the difference
+                        // between "you may not ask" and "nothing was derived".
+                        if detail.contains("AUT-E") {
+                            return Err(CalError::NotAuthorized { detail, span: df.span });
+                        }
+                        Ok(CalResultPayload::Unsupported {
+                            statement: "derived_from".into(),
+                            message: format!("DERIVED FROM failed: {e}"),
+                        })
+                    }
                 }
             }
             CalStatement::Merge(mg) => {
@@ -1748,7 +1824,8 @@ impl CalExecutor {
                     .map(str::trim)
                     .filter(|r| !r.is_empty())
                     .collect();
-                match store.cal_related(
+                match store.cal_related_scoped(
+                    &rel.namespaces,
                     &rel.start,
                     &relations,
                     rel.direction.as_deref().unwrap_or("out"),
@@ -1759,10 +1836,16 @@ impl CalExecutor {
                         start: rel.start.clone(),
                         entities,
                     }),
-                    Err(e) => Ok(CalResultPayload::Unsupported {
-                        statement: "related".into(),
-                        message: format!("RELATED failed: {e}"),
-                    }),
+                    Err(e) => {
+                        let detail = e.to_string();
+                        if detail.contains("AUT-E") {
+                            return Err(CalError::NotAuthorized { detail, span: rel.span });
+                        }
+                        Ok(CalResultPayload::Unsupported {
+                            statement: "related".into(),
+                            message: format!("RELATED failed: {e}"),
+                        })
+                    }
                 }
             }
             CalStatement::Novelty(nv) => {

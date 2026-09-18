@@ -336,7 +336,7 @@ pub struct SkillAuthoring {
     pub min_steps: u32,
 }
 
-fn default_true() -> bool {
+pub(crate) fn default_true() -> bool {
     true
 }
 fn default_min_steps() -> u32 {
@@ -555,6 +555,15 @@ pub struct Policy {
     /// supersession (consolidation) is not drift.
     #[serde(default = "default_true")]
     pub premise_drift: bool,
+    /// Whether EVERY cited grain must have moved before the engine withdraws
+    /// an open recommendation (#317), or any one is enough.
+    ///
+    /// `true` (the default, `"all"`) because a finding derived from six
+    /// grains of which one changed is weakened, not baseless — deciding that
+    /// is a reviewer's job. `false` is `"any"`, for hosts that want the
+    /// stricter sweep.
+    #[serde(default = "crate::policy::default_true")]
+    pub premise_drift_open_all: bool,
     /// What to do with an authored lesson that near-duplicates a live one on
     /// the same entity (default `flag`: queue it, marked).
     #[serde(default, skip_serializing_if = "is_default_near_duplicate")]
@@ -588,6 +597,7 @@ impl Default for Policy {
             min_evidence: 1,
             plans: PlanAuthoring::default(),
             premise_drift: true,
+            premise_drift_open_all: true,
             near_duplicate: NearDuplicateMode::default(),
             plan_replay: None,
         }

@@ -145,6 +145,17 @@ Pg-only multi-writer race cases); extend it whenever store semantics change.
   object-anchored mirror of an anchored `recall_hybrid` ("what points at X"),
   and is what makes `WITH multi_hop` follow reverse edges — so it inherits the
   same entity-relations restriction.
+
+  **Declaring a relation entity-valued AFTER the grains exist is supported
+  since 1.9.0** (#310): `rebuild_link_indexes` (`areev reindex`) replays every
+  `(s,p,o)` triple's reverse row — inserting it when the relation is declared
+  now, REMOVING it when the relation has left the set — so the index matches
+  the declaration rather than the declaration that happened to be live at
+  write time. Before, nothing backfilled them: a read-write open with a
+  different set re-stamped and warned, and the facts written earlier stayed
+  invisible to every reverse walk with no error anywhere. The re-stamp
+  warning now names the fix. On Postgres every writer must still open with
+  the same set, or each one re-stamps the other's declaration.
 - **Subject anchors**: a grain carrying a `subject` but NOT a full `(s,p,o)`
   triple (an Event about a message id, an Observation about an entity) still
   gets one `triples` row — `(ns, s, NULL, NULL, seq, cur)`. Relation and object
@@ -267,6 +278,46 @@ Pg-only multi-writer race cases); extend it whenever store semantics change.
   the same event arriving via import becomes a **fork** instead.
 - Unknown terms short-circuit to empty results, never errors.
 - HLC = `now_ms() << 16`, monotone, restored from `MAX(hlc)` on open.
+
+## Legal holds bind every deletion path (#278)
+
+A `hold:<ns>` meta row refuses EVERY destruction in that namespace, not only
+the age-based sweep it used to guard. The guard lives at the store's choke
+points — `Areev::forget` (`forget_maybe_overriding`) and `forget_subject`'s
+identity selector — so CAL, MCP, the bindings, the console, the memory tool's
+`delete`/`rename`, the mem0 importer and the loop's rollback all inherit it
+without knowing about holds; `pg::drop_postgres_schema` reads the rows before
+`DROP SCHEMA … CASCADE`. `STO-E009`, and a refusal erases NOTHING — not even
+a partial pass.
+
+**Placement is the load-bearing part.** `hold_for_ns_on(db, ns)` reads
+straight off the connection so it runs INSIDE the caller's transaction, after
+`reserve_write`. A pre-flight check outside the transaction would lose the
+race on Postgres to a hold placed by a second handle between the check and the
+delete — and the grains the hold was placed to preserve would be gone. That is
+also why the case list covers it on both backends: the embedded backend is
+single-writer and cannot exhibit the bug.
+
+Three rules that are decisions rather than mechanics:
+
+- **The override is a second decision with an author.** `forget_overriding` /
+  `forget_subject_overriding` take a `HoldOverride { authority, because }`
+  (both mandatory, refused empty at construction) and RETURN the
+  `HoldRecord` they overrode, so the caller's Tier-2 record can name it. The
+  CAL facade additionally requires `admin` on the namespace on top of
+  `erase`/`delete`. An override does not release the hold.
+- **Replication converges; it does not re-decide.** `forget_replicated` is
+  bundle replay's private door into the tombstone path: a follower under its
+  own hold still applies the leader's tombstone and the import counts it in
+  `ImportStats::forgets_under_hold`. Aborting would diverge the replica from
+  its leader permanently.
+- **`hold:` rows replicate and survive a PITR restore** — the one meta prefix
+  a point-in-time import does NOT skip, because a hold is a present-day stop
+  on destruction rather than a historical fact, and a restore that came back
+  unheld is the failure a hold exists to prevent.
+
+Conformance: `cases/legal_hold.rs`, both backends; store tests:
+`tests/retention_floor_hold_tests.rs`.
 
 ## Forks / heads / merge (the "grains as git" model)
 
@@ -454,17 +505,20 @@ these same calls — there is no separate segment abstraction in this crate.
 
 **Registry meta segment (`MGB2`)**: when the file carries replicable meta
 rows (`REPLICABLE_META_PREFIXES` = `qry:`/`tpl:`/`retention:`/
-`retention_floor:`/`anon:`), the bundle is v2 — magic `MGB2`, then
+`retention_floor:`/`anon:`/`hold:`), the bundle is v2 — magic `MGB2`, then
 `meta_len(u32)·meta_json`, then the op records; registry-free bundles stay
 byte-identical MGB1 (older builds refuse MGB2 loudly at the magic check).
 Export strips `last_run_at` (usage never replicates); import merges
 latest-wins on `updated_at` for `qry:`/`tpl:` (preserving local
 `last_run_at`), write-if-absent for retention and anon rows (sync never swaps a live
 policy; an applied `anon:` row re-arms the live handle's egress gate), applies nothing outside the allowlist (a crafted bundle cannot
-touch `text_index`/`min_reader_version`), and skips the segment entirely on
-a PITR import (meta rows have no HLC). Counted in
+touch `text_index`/`min_reader_version`), and skips the segment on a PITR
+import EXCEPT `hold:` rows (#279 — a legal hold is a present-day stop on
+destruction, not a historical fact, and a restore that came back unheld is
+the failure a hold exists to prevent; over-holding is the safe direction).
+Counted in
 `ImportStats::meta_applied/meta_skipped`. Conformance:
-`cases/meta_registry.rs`, both backends.
+`cases/meta_registry.rs` and `cases/legal_hold.rs`, both backends.
 
 ## Grain attestation (`attest.rs`)
 

@@ -17,12 +17,25 @@ keywords = ["ai-agents", "workflow", "runtime", "deterministic", "areev"]
 categories = ["development-tools"]
 
 [dependencies]
-areev-core = { path = "../areev-core", version = "1.8.3" }
-areev-store = { path = "../areev-store", version = "1.8.3" }
-areev-cal = { path = "../areev-cal", version = "1.8.3" }
-areev-run-core = { path = "../areev-run-core", version = "1.8.3" }
+areev-core = { path = "../areev-core", version = "1.9.0" }
+areev-store = { path = "../areev-store", version = "1.9.0" }
+areev-cal = { path = "../areev-cal", version = "1.9.0" }
+areev-run-core = { path = "../areev-run-core", version = "1.9.0" }
 # The ToolCallLlm seam for abstract nodes (§6.2/§6.11).
-areev-llm = { path = "../areev-llm", version = "1.8.3" }
+#
+# `default-features = false` (#289): this crate names only seam TYPES
+# (`ToolCallLlm`, `ToolCallRequest`, `ChatMessage`, …) and never calls the
+# provider factory. Cargo unifies features across a dependency graph, so
+# leaving the defaults on here compiled the openai, anthropic and ollama
+# factory arms into every crate downstream of the runtime — areev-mcp,
+# areev-trigger, areev-server — and a host that declared areev-llm with
+# `default-features = false` got all three anyway. The feature flags exist so
+# a regulated build can state which model endpoints its artifact can REACH;
+# that statement was not true through this edge.
+#
+# The hosts that DO call the factory (areev-cli, areev-py, areev-js,
+# areev-bench) depend on areev-llm directly and keep their defaults.
+areev-llm = { path = "../areev-llm", version = "1.9.0", default-features = false }
 # The egress broker's outbound leg (moved here from areev-trigger, which
 # depends on this crate and so could not share it).
 ureq = "3"

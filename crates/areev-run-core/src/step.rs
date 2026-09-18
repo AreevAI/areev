@@ -633,6 +633,12 @@ fn handle_llm_outcome(
                 flow.last_prompt_tokens = *input_tokens;
             }
             let text = result.get("text").and_then(|t| t.as_str()).map(str::to_string);
+            // The provider's own content blocks for this turn (#284), carried
+            // straight through: the scheduler never inspects them, it only
+            // has to keep them so the adapter can echo the turn back
+            // unchanged on the next dispatch. Absent for every provider that
+            // has none, so the transcript is byte-identical to 1.8.5 there.
+            let provider_content = result.get("provider_content").cloned();
             let calls: Vec<crate::state::PendingToolCall> = result
                 .get("tool_calls")
                 .and_then(|c| c.as_array())
@@ -755,7 +761,7 @@ fn handle_llm_outcome(
             }
             // Tool round: the assistant entry is journal-derived, so the
             // transcript is replay-stable.
-            flow.messages.push(serde_json::json!({
+            let mut entry = serde_json::json!({
                 "role": "assistant",
                 "text": text,
                 "tool_calls": calls.iter().map(|c| serde_json::json!({
@@ -763,7 +769,11 @@ fn handle_llm_outcome(
                     "name": c.tool_name,
                     "arguments": c.arguments,
                 })).collect::<Vec<_>>(),
-            }));
+            });
+            if let Some(pc) = provider_content {
+                entry["provider_content"] = pc;
+            }
+            flow.messages.push(entry);
             flow.round_results.clear();
             flow.need = Some(crate::state::FlowNeed::Tools(calls));
         }
@@ -1129,6 +1139,11 @@ fn progress_idle(env: &StepEnv<'_>, st: &mut SchedulerState, out: &mut Vec<Comma
         ),
         (BudgetAxis::Usd, st.spent.usd_micros, env.budgets.max_usd_micros),
         (BudgetAxis::Storage, st.spent.storage_bytes, env.budgets.max_storage_bytes),
+        // #295. The effects axis is derived, not counted: `journal_grains`
+        // is an intent plus a result per settled effect, so halving it is
+        // the count with no new state to diverge an existing checkpoint.
+        (BudgetAxis::Effects, st.spent.journal_grains / 2, env.budgets.max_effects),
+        (BudgetAxis::ToolCalls, st.spent.tool_calls, env.budgets.max_tool_calls),
     ];
     for (axis, spent, max) in axes {
         if let Some(max) = max {
@@ -1275,7 +1290,7 @@ fn dispatch_node(env: &StepEnv<'_>, st: &mut SchedulerState, i: usize, out: &mut
             st.node_state[i] = NodeState::Dispatched;
             out.push(Command::Dispatch { key, executor, input });
         }
-        NodeExecutor::Client { tool_name, .. } => {
+        NodeExecutor::Client { tool_name, approval, .. } => {
             st.node_state[i] = NodeState::AwaitingClient;
             let ask = Ask {
                 tool_call_id: key.tool_call_id(),
@@ -1285,10 +1300,15 @@ fn dispatch_node(env: &StepEnv<'_>, st: &mut SchedulerState, i: usize, out: &mut
                 expires_at_sec: env
                     .ask_ttl_sec
                     .map(|ttl| (st.clock_ms / 1000) as i64 + ttl),
-                // v1: every Client ask is an approval boundary (§6.6);
-                // responder ≠ triggering principal is enforced by the
-                // driver on respond.
-                approval: true,
+                // Read from the pinned executor (#294) rather than hard-coded
+                // true. An approval boundary is still the default and still
+                // what an unannotated Definition means; a `confirmation` is
+                // an explicit, host-opted-in declaration that the run's own
+                // initiator may answer this one — so a reversible write can
+                // be self-confirmed in ONE run, with one journal and one
+                // `verify`, instead of a prepare run plus a commit run and a
+                // product-side ledger joining them.
+                approval: *approval,
             };
             st.pending_asks
                 .insert(ask.tool_call_id.clone(), PendingAsk { key, node_idx: i, ask });
@@ -1490,6 +1510,22 @@ fn dispatch_flow_tool(
         }
         return;
     }
+    // Run-level tool-call ceiling (#295), checked per dispatch the way the
+    // token reservation is. Exhaustion is a resumable BUDGET stop, never a
+    // node failure: the undispatched call survives as the flow's `need`, so
+    // `run fork` under a raised cap continues exactly here.
+    if let Some(max) = env.budgets.max_tool_calls {
+        if st.spent.tool_calls >= max {
+            st.exhausted = Some(crate::error::BudgetAxis::ToolCalls);
+            if let Some(flow) = st.abstract_flows.get_mut(&flow_id) {
+                match &mut flow.need {
+                    Some(crate::state::FlowNeed::Tools(calls)) => calls.push(call),
+                    other => *other = Some(crate::state::FlowNeed::Tools(vec![call])),
+                }
+            }
+            return;
+        }
+    }
     let Some(flow) = st.abstract_flows.get_mut(&flow_id) else { return };
     if flow.next_effect_seq >= env.max_effects_per_attempt {
         fail_abstract(env, st, i, path, "llm loop exceeded max_effects_per_attempt");
@@ -1526,6 +1562,11 @@ fn dispatch_flow_tool(
         tool_hash: tool.tool_hash.clone(),
         tool_name: tool.tool_name.clone(),
     };
+    // Counted only when a cap is set (#295), so a run with no cap keeps a
+    // byte-identical `Spent` and `verify` of an existing run is untouched.
+    if env.budgets.max_tool_calls.is_some() {
+        st.spent.tool_calls += 1;
+    }
     let clock = st.clock_ms;
     let superstep = st.superstep;
     if let Phase::Open { outstanding, .. } = &mut st.phase {

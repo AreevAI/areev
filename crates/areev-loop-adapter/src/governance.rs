@@ -25,6 +25,34 @@ pub struct LoopGovernance {
 }
 
 impl LoopGovernance {
+    /// The scopes a session holds over ONE recommendation (#312).
+    ///
+    /// Resolved from the recommendation's stamped `scope`, so a reviewer who
+    /// may not read the namespace a finding was derived from cannot review,
+    /// apply or roll it back either. A recommendation the caller does not
+    /// cover answers NOT FOUND rather than "not authorized": naming it would
+    /// disclose that a finding exists in a namespace they cannot see.
+    fn scopes_over(
+        &self,
+        facade: &areev_cal::AreevFacade,
+        sub: &mut crate::BorrowedSubstrate<'_>,
+        rec_hash: &str,
+    ) -> Result<areev_loop::ScopeSet> {
+        let authz = facade.authz();
+        let scope = self
+            .engine()
+            .recommendations(sub, None)
+            .ok()
+            .and_then(|recs| recs.into_iter().find(|r| r.hash == rec_hash))
+            .map(|r| r.scope)
+            .unwrap_or_default();
+        if !crate::covers_rec(&authz, &scope) {
+            return Err(Self::wrap(areev_loop::Error::NotFound(rec_hash.into())));
+        }
+        Ok(crate::scopes_for_rec(&authz, &scope))
+    }
+
+
     pub fn new() -> Self {
         LoopGovernance { policy: None }
     }
@@ -105,6 +133,7 @@ impl GovernanceHost for LoopGovernance {
         serde_json::to_value(&res).map_err(|e| AreevError::Internal(e.to_string()))
     }
 
+
     fn review(
         &self,
         store: &dyn CalStoreFacade,
@@ -114,9 +143,9 @@ impl GovernanceHost for LoopGovernance {
     ) -> Result<()> {
         let facade = self.facade(store)?;
         let actor = facade.authz().principal().to_string();
-        let scopes = crate::scopes_for(&facade.authz());
         let observer = crate::observer_for_principal(&actor);
         let mut sub = crate::BorrowedSubstrate::new(facade);
+        let scopes = self.scopes_over(facade, &mut sub, rec_hash)?;
         let d = match decision {
             ReviewDecision::Approve => Decision::Approve,
             ReviewDecision::Reject => Decision::Reject,
@@ -136,7 +165,6 @@ impl GovernanceHost for LoopGovernance {
         let facade = self.facade(store)?;
         let authz = facade.authz();
         let actor = authz.principal().to_string();
-        let scopes = crate::scopes_for(&authz);
         let observer = crate::observer_for_principal(&actor);
         // The two-key rule, verb-shaped: a destructive apply needs
         // `loop.apply` (in scopes) AND the session's own destruction verbs —
@@ -147,6 +175,7 @@ impl GovernanceHost for LoopGovernance {
             && (authz.allows(areev_core::authz::Verb::Delete, "*")
                 || authz.allows(areev_core::authz::Verb::Erase, "*"));
         let mut sub = crate::BorrowedSubstrate::new(facade);
+        let scopes = self.scopes_over(facade, &mut sub, rec_hash)?;
         let applied = self
             .engine()
             .apply(
@@ -166,9 +195,9 @@ impl GovernanceHost for LoopGovernance {
     fn rollback(&self, store: &dyn CalStoreFacade, rec_hash: &str, because: &str) -> Result<()> {
         let facade = self.facade(store)?;
         let actor = facade.authz().principal().to_string();
-        let scopes = crate::scopes_for(&facade.authz());
         let observer = crate::observer_for_principal(&actor);
         let mut sub = crate::BorrowedSubstrate::new(facade);
+        let scopes = self.scopes_over(facade, &mut sub, rec_hash)?;
         self.engine()
             .rollback(&mut sub, rec_hash, &actor, observer, &scopes, because, crate::now_ms())
             .map_err(Self::wrap)
@@ -181,6 +210,7 @@ impl GovernanceHost for LoopGovernance {
         facade
             .authz()
             .check(areev_core::authz::Verb::Read, areev_loop::LOOP_NS)?;
+        let authz = facade.authz();
         let sub = crate::BorrowedSubstrate::new(facade);
         let engine = self.engine();
         let v = match what {
@@ -189,9 +219,15 @@ impl GovernanceHost for LoopGovernance {
                 // the in-language `areev loop list`, so the hashes a
                 // reviewer needs for APPROVE/APPLY are right here.
                 let health = engine.health(&sub, crate::now_ms()).map_err(Self::wrap)?;
-                let pending = engine
-                    .recommendations(&sub, Some(areev_loop::RecStatus::Pending))
-                    .map_err(Self::wrap)?;
+                // Filtered by coverage (#312): a reviewer sees the findings
+                // derived from namespaces they may read, and no others.
+                let pending = crate::visible_recommendations(
+                    &engine,
+                    &sub,
+                    &authz,
+                    Some(areev_loop::RecStatus::Pending),
+                )
+                .map_err(Self::wrap)?;
                 serde_json::to_value(health).map(|mut v| {
                     v["pending_recommendations"] = serde_json::Value::Array(
                         pending

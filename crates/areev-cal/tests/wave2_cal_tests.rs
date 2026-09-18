@@ -125,11 +125,23 @@ fn wave2_reads_respect_the_read_grants() {
     // Namespace-scoped reads work…
     let v = payload(&ex, &f, r#"ENTITY "a" RELATION "b" AT 3000 AXIS knowledge"#);
     assert_eq!(v["grain"]["fields"]["object"], "c", "{v}");
-    // …the provenance walk (namespace-spanning) is refused…
+    // …the provenance walk answers what THIS session can read (#304): the
+    // parent is in `caller`, which this principal holds, so the statement is
+    // served — narrowed to children in readable namespaces, which here is
+    // none. It used to demand `read ON *`, which made a wide-open service
+    // principal the only way to offer reverse provenance at all.
     let v = payload(&ex, &f, &format!("DERIVED FROM sha256:{}", h.to_hex()));
-    assert_eq!(v["type"], "unsupported", "{v}");
-    assert!(v["message"].as_str().unwrap().contains("AUT-E001"), "{v}");
-    // …and so is DESCRIBE STATS (store-wide).
+    assert_eq!(v["type"], "derived_from", "{v}");
+    assert_eq!(v["grains"].as_array().unwrap().len(), 0, "{v}");
+    // A grain this session cannot read is still refused outright.
+    let unreadable = f
+        .with_store(|m| m.add(&Fact::new("x", "y", "z").namespace("elsewhere").created_at(2_500)))
+        .unwrap();
+    let err = ex
+        .execute(&format!("DERIVED FROM sha256:{}", unreadable.to_hex()), &f)
+        .unwrap_err();
+    assert!(err.to_string().contains("CAL-E121"), "{err}");
+    // DESCRIBE STATS is store-wide and still needs the wide grant.
     let err = ex.execute("DESCRIBE STATS", &f).unwrap_err();
     assert!(err.to_string().contains("CAL-E121"), "{err}");
 }

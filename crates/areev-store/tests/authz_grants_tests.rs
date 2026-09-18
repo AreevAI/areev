@@ -1,73 +1,95 @@
-//! The store's grant-grain reader: live `mg:permits` heads in the reserved
-//! `agent:authz` namespace become a principal's grants; a revoke is a
-//! retraction by supersession, so a revoked grant simply stops being a head.
+//! Grant resolution bounds and the policy-change epoch (#309).
 
 use areev_core::authz::{Grant, Verb, AUTHZ_NS, REL_PERMITS};
-use areev_core::types::{Fact, Grain};
+use areev_core::types::Fact;
 use areev_store::Areev;
 use tempfile::TempDir;
 
 fn open_mem() -> (Areev, TempDir) {
-    let dir = TempDir::new().unwrap();
-    let m = Areev::open(dir.path().join("m.db").to_str().unwrap()).unwrap();
-    (m, dir)
+    let d = TempDir::new().unwrap();
+    let m = Areev::open(d.path().join("m.db").to_str().unwrap()).unwrap();
+    (m, d)
 }
 
-fn grant_fact(principal: &str, object: &str, at: i64) -> Fact {
-    Fact::new(principal, REL_PERMITS, object)
-        .namespace(AUTHZ_NS)
-        .created_at(at)
-}
-
-#[test]
-fn live_grants_parse_and_scope_correctly() {
-    let (mut m, _dir) = open_mem();
-    m.add(&grant_fact("agent:bot", "read,write ON caller", 1_000))
-        .unwrap();
-    m.add(&grant_fact("agent:bot", "erase ON *", 2_000)).unwrap();
-    // Another principal's grant must not bleed over.
-    m.add(&grant_fact("user:anna", "admin ON *", 3_000)).unwrap();
-
-    let grants = m.authz_grants("agent:bot").unwrap();
-    assert_eq!(grants.len(), 2);
-    assert!(grants.iter().any(|g| g.covers(Verb::Read, "caller")));
-    assert!(grants.iter().any(|g| g.covers(Verb::Erase, "anything")));
-    assert!(!grants.iter().any(|g| g.covers(Verb::Admin, "caller")));
-
-    assert_eq!(m.authz_grants("user:nobody").unwrap().len(), 0);
+fn grant(m: &mut Areev, principal: &str, ns: &str) {
+    let g = Grant { verbs: vec![Verb::Read], namespaces: vec![ns.to_string()] };
+    let mut f = Fact::new(principal, REL_PERMITS, &g.to_object_string());
+    f.common.namespace = Some(AUTHZ_NS.to_string());
+    m.add(&f).unwrap();
 }
 
 #[test]
-fn a_revoked_grant_stops_being_a_head() {
-    let (mut m, _dir) = open_mem();
-    let h = m
-        .add(&grant_fact("agent:bot", "delete ON caller", 1_000))
-        .unwrap();
-    assert_eq!(m.authz_grants("agent:bot").unwrap().len(), 1);
-
-    // REVOKE = retraction by supersession (OMS 1.6 §12.6): a partial revoke
-    // supersedes with the reduced grant; a full revoke retracts outright.
-    let mut reduced = grant_fact("agent:bot", "read ON caller", 2_000);
-    m.supersede(&h, &mut reduced).unwrap();
-
-    let grants = m.authz_grants("agent:bot").unwrap();
-    assert_eq!(grants, vec![Grant {
-        verbs: vec![Verb::Read],
-        namespaces: vec!["caller".to_string()],
-    }]);
-    assert!(!grants[0].covers(Verb::Delete, "caller"));
+fn grants_past_the_cap_are_reported_not_silently_truncated() {
+    // #309: 300 single-namespace grants used to resolve as the first 256,
+    // and a read on the oldest-granted namespace was refused with AUT-E001
+    // although its grant grain was live — fail-closed, but undiagnosable.
+    let (mut m, _d) = open_mem();
+    for i in 0..300 {
+        grant(&mut m, "user:p", &format!("deal.n{i:03}"));
+    }
+    let err = m.authz_grants("user:p").unwrap_err();
+    assert!(
+        err.to_string().contains("more than 256 grant grains"),
+        "the refusal must name the cap: {err}"
+    );
+    assert!(err.to_string().contains("Pack namespaces into fewer grants"));
 }
 
 #[test]
-fn malformed_grant_grains_are_skipped_not_granted() {
-    let (mut m, _dir) = open_mem();
-    m.add(&grant_fact("agent:bot", "not a grant string", 1_000))
-        .unwrap();
-    m.add(&grant_fact("agent:bot", "fly ON caller", 2_000)).unwrap();
-    m.add(&grant_fact("agent:bot", "read ON caller", 3_000)).unwrap();
+fn a_principal_at_the_cap_still_resolves() {
+    let (mut m, _d) = open_mem();
+    for i in 0..Areev::AUTHZ_GRANT_CAP {
+        grant(&mut m, "user:q", &format!("deal.n{i:03}"));
+    }
+    let g = m.authz_grants("user:q").unwrap();
+    assert_eq!(g.len(), Areev::AUTHZ_GRANT_CAP);
+}
 
-    // Under-granting is the safe failure: only the well-formed grant counts.
-    let grants = m.authz_grants("agent:bot").unwrap();
-    assert_eq!(grants.len(), 1);
-    assert!(grants[0].covers(Verb::Read, "caller"));
+#[test]
+fn one_grant_may_name_many_namespaces() {
+    // The documented way past the cap: grant grains are the unit, not
+    // namespaces.
+    let (mut m, _d) = open_mem();
+    let names: Vec<String> = (0..500).map(|i| format!("deal.n{i:03}")).collect();
+    let g = Grant { verbs: vec![Verb::Read], namespaces: names };
+    let mut f = Fact::new("user:r", REL_PERMITS, &g.to_object_string());
+    f.common.namespace = Some(AUTHZ_NS.to_string());
+    m.add(&f).unwrap();
+    let got = m.authz_grants("user:r").unwrap();
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].namespaces.len(), 500);
+}
+
+#[test]
+fn authz_epoch_moves_only_for_authorization_writes() {
+    let (mut m, _d) = open_mem();
+    let e0 = m.authz_epoch().unwrap();
+
+    // A write somewhere else must not move it.
+    let mut f = Fact::new("alice", "prefers", "tea");
+    f.common.namespace = Some("caller".into());
+    m.add(&f).unwrap();
+    assert_eq!(m.authz_epoch().unwrap(), e0, "an unrelated write is invisible");
+
+    grant(&mut m, "user:p", "a");
+    let e1 = m.authz_epoch().unwrap();
+    assert_ne!(e1, e0, "a grant moves the epoch");
+
+    grant(&mut m, "user:p", "b");
+    let e2 = m.authz_epoch().unwrap();
+    assert_ne!(e2, e1);
+
+    // A forget in the namespace moves it too, even though it lowers MAX(seq).
+    let heads = m.recall(AUTHZ_NS, "user:p", Some(REL_PERMITS), 10).unwrap();
+    let h = heads[0].hash;
+    m.forget(&h).unwrap();
+    let e3 = m.authz_epoch().unwrap();
+    assert_ne!(e3, e2, "a retraction must be observable");
+    assert_ne!(e3, e1);
+}
+
+#[test]
+fn authz_epoch_is_zero_on_a_memory_with_no_policy() {
+    let (mut m, _d) = open_mem();
+    assert_eq!(m.authz_epoch().unwrap(), 0);
 }

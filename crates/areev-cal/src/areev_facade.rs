@@ -19,7 +19,10 @@ use areev_store::Areev;
 
 use crate::ast::QueryParam;
 use crate::errors::CalError;
-use crate::facade::{AssemblyManifest, CalStoreFacade, TemplateInfo};
+use crate::facade::{
+    AccumulateResult, AssemblyManifest, CalCapabilities, CalStoreFacade, FieldInfo, GrainTypeInfo,
+    GrantRow, RerankType, TemplateInfo,
+};
 use crate::json_build::{build_grain_from_json, GrainSink};
 use crate::queries::{PersistedQuery, QueryEntry, QueryListEntry, QueryRegistry};
 use crate::store_types::{
@@ -118,6 +121,56 @@ fn set_contains(set: &Option<Vec<String>>, value: Option<&str>) -> bool {
         None => true,
         Some(values) => value.is_some_and(|v| values.iter().any(|c| c == v)),
     }
+}
+
+/// A grain's structural tags.
+///
+/// `GrainCommon.tags` serializes under the LONG name `structural_tags` (it
+/// compacts to the wire key `tags`, then expands back to `structural_tags`).
+/// Reading `"tags"` here would find nothing and silently match everything,
+/// which is the same class of failure #318 fixes.
+fn grain_tags(g: &DeserializedGrain) -> Vec<&str> {
+    g.fields
+        .get("structural_tags")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|t| t.as_str()).collect())
+        .unwrap_or_default()
+}
+
+/// Does this grain pass the `tags INCLUDE […]` / `EXCLUDE […]` sets (#318)?
+///
+/// A grain passes when it carries EVERY member of `tags` and NONE of
+/// `exclude_tags`. A grain with no tags therefore matches no `INCLUDE` and
+/// every `EXCLUDE`, which is the reading an export receipt has to be able to
+/// rely on.
+///
+/// Both fields parsed, were advertised as filterable by `DESCRIBE FIELDS`,
+/// were marked consumed by push-down — and were read by nothing. So
+/// `tags EXCLUDE ["label:restricted"]` returned exactly the grains it was
+/// asked to exclude, and `areev corpus --select` wrote them into the JSONL
+/// under an immutable manifest recording the exclusion. That is the failure
+/// class #91 closed for every other field: pushed down, evaluated per grain,
+/// or refused — never dropped.
+fn tags_match(
+    tags: &Option<Vec<String>>,
+    exclude: &Option<Vec<String>>,
+    g: &DeserializedGrain,
+) -> bool {
+    if tags.is_none() && exclude.is_none() {
+        return true;
+    }
+    let have = grain_tags(g);
+    if let Some(required) = tags {
+        if !required.iter().all(|t| have.contains(&t.as_str())) {
+            return false;
+        }
+    }
+    if let Some(forbidden) = exclude {
+        if forbidden.iter().any(|t| have.contains(&t.as_str())) {
+            return false;
+        }
+    }
+    true
 }
 
 /// "3 hours ago" for `WITH annotate_relative_time`. Coarse on purpose: the
@@ -234,6 +287,121 @@ impl AreevFacade {
         self.authz.read().expect("authz lock poisoned").clone()
     }
 
+    /// Make a principal's live grants EQUAL `desired`, in one pass (#309).
+    ///
+    /// Narrowing a packed grant had no atomic path at all: `REVOKE` refuses a
+    /// scope narrower than the grant, so removing one namespace from
+    /// `read ON deal.a,deal.b,deal.c` meant revoke-all-then-grant (a window
+    /// with NO access) or the other order (a window with too much). A
+    /// synchronizer projecting an external policy engine into a memory had to
+    /// pause that principal's requests around its own lock to hide the
+    /// window.
+    ///
+    /// Here, every live `mg:permits` head is either superseded in place into
+    /// a desired grant or retired with the same `"revoked"` retraction record
+    /// `REVOKE` writes, and what is missing is added. A concurrent bind
+    /// therefore observes the old set or the new one — never an empty one,
+    /// and never a third set that was true at no point.
+    ///
+    /// An equal set writes NOTHING, so a synchronizer can run on a timer
+    /// without churning the audit trail.
+    ///
+    /// Gated by `admin ON *`, like `GRANT` and `REVOKE`.
+    pub fn set_grants(
+        &self,
+        principal: &str,
+        desired: &[areev_core::authz::Grant],
+        because: &str,
+    ) -> Result<GrantChange> {
+        self.check_verb(Verb::Admin, "*")?;
+        let want: Vec<String> = {
+            let mut v: Vec<String> = desired.iter().map(|g| g.to_object_string()).collect();
+            v.sort();
+            v.dedup();
+            v
+        };
+        let mut m = self.store.lock().unwrap();
+        let live = m.recall(
+            areev_core::authz::AUTHZ_NS,
+            principal,
+            Some(areev_core::authz::REL_PERMITS),
+            areev_store::Areev::AUTHZ_GRANT_CAP,
+        )?;
+        let mut have: Vec<(Hash, String)> = Vec::new();
+        for g in &live {
+            let Some(obj) = g.get_str("object") else { continue };
+            if areev_core::authz::Grant::from_object_string(obj).is_err() {
+                continue; // retraction records carry no rights
+            }
+            have.push((g.hash, obj.to_string()));
+        }
+        let mut change = GrantChange::default();
+        let mut unmatched_want: Vec<&String> =
+            want.iter().filter(|w| !have.iter().any(|(_, o)| o == *w)).collect();
+        let stale: Vec<(Hash, String)> = have
+            .iter()
+            .filter(|(_, o)| !want.contains(o))
+            .cloned()
+            .collect();
+        let write = |m: &mut areev_store::Areev, old: &Hash, object: &str| -> Result<()> {
+            let mut fact = areev_core::types::Fact::new(
+                principal,
+                areev_core::authz::REL_PERMITS,
+                object,
+            )
+            .namespace(areev_core::authz::AUTHZ_NS)
+            .created_at(now_epoch_ms());
+            fact.common.context = Some(serde_json::json!({
+                "grantor": self.session_principal(),
+                "because": because,
+                "set_grants": true,
+            }));
+            m.supersede(old, &mut fact)?;
+            Ok(())
+        };
+        for (old, _) in &stale {
+            match unmatched_want.pop() {
+                // Supersede IN PLACE where a head can become a desired grant:
+                // the principal never passes through a moment with fewer
+                // rights than either the old or the new set gives.
+                Some(object) => {
+                    write(&mut m, old, object)?;
+                    change.superseded += 1;
+                }
+                None => {
+                    write(&mut m, old, "revoked")?;
+                    change.retired += 1;
+                }
+            }
+        }
+        for object in unmatched_want {
+            let mut fact = areev_core::types::Fact::new(
+                principal,
+                areev_core::authz::REL_PERMITS,
+                object,
+            )
+            .namespace(areev_core::authz::AUTHZ_NS)
+            .created_at(now_epoch_ms());
+            fact.common.context = Some(serde_json::json!({
+                "grantor": self.session_principal(),
+                "because": because,
+                "set_grants": true,
+            }));
+            m.add(&fact)?;
+            change.added += 1;
+        }
+        Ok(change)
+    }
+
+    /// A value that changes whenever this memory's authorization policy does
+    /// (#309) — a single indexed read a host caching bound sessions can make
+    /// per request instead of re-resolving grants or evicting on a timer.
+    ///
+    /// A CHANGE DETECTOR: compare for equality, never for ordering.
+    pub fn authz_epoch(&self) -> Result<i64> {
+        self.store.lock().unwrap().authz_epoch()
+    }
+
     /// A per-call, principal-scoped session over this facade — the
     /// rebind-race-free write path (governed-agents §6.8).
     ///
@@ -261,24 +429,58 @@ impl AreevFacade {
         Ok(PrincipalSession {
             facade: self,
             authz: areev_core::authz::AuthzSet::restricted(principal, grants),
+            namespace: None,
         })
+    }
+
+    /// The namespace a namespace-DEFAULTING read resolves to.
+    ///
+    /// The active session's, when one is bound on this thread; otherwise the
+    /// facade's own. `RELATED`, `ENTITY … AT` and `NOVELTY` read exactly one
+    /// namespace and take no operand for it, so a multi-principal host had
+    /// no way to point them at the namespace the caller works in (#302).
+    fn default_ns(&self) -> Option<String> {
+        active_session_namespace(self).or_else(|| self.namespace.clone())
+    }
+
+    /// The rights ONE call is authorized against.
+    ///
+    /// The facade's shared slot, unless a [`PrincipalSession`] is active on
+    /// this thread for this facade — then the session's own fail-closed set
+    /// (#302).
+    ///
+    /// A THREAD-LOCAL override rather than a second slot, and that is the
+    /// whole point. [`Self::bind_principal`] swaps one process-wide value,
+    /// which is why its own documentation says it is safe only for hosts
+    /// that serialize requests: two concurrent requests race, and the loser
+    /// executes under the winner's rights. A thread-local cannot race by
+    /// construction — CAL execution is synchronous on the calling thread (it
+    /// serializes on `Mutex<Areev>` anyway), so a session's rights are
+    /// visible exactly for the duration of its own call and to nobody else.
+    ///
+    /// Before this, `PrincipalSession` carried per-principal rights for
+    /// WRITES only: every gated read went to the shared slot, so a host
+    /// serving several signed-in people needed a facade per principal — and
+    /// on the embedded backend, where a second handle is refused, that was
+    /// not possible at all.
+    fn rights(&self) -> areev_core::authz::AuthzSet {
+        if let Some(set) = active_session_rights(self) {
+            return set;
+        }
+        self.authz.read().expect("authz lock poisoned").clone()
     }
 
     /// The enforcement read used by every gated method.
     fn check_verb(&self, verb: Verb, ns: &str) -> Result<()> {
-        self.authz.read().expect("authz lock poisoned").check(verb, ns)
+        self.rights().check(verb, ns)
     }
 
     fn session_is_owner(&self) -> bool {
-        self.authz.read().expect("authz lock poisoned").is_owner()
+        self.rights().is_owner()
     }
 
     fn session_principal(&self) -> String {
-        self.authz
-            .read()
-            .expect("authz lock poisoned")
-            .principal()
-            .to_string()
+        self.rights().principal().to_string()
     }
 
     /// Write the Tier-2 audit Observation (CAL 1.3 §8.14): every destructive
@@ -288,6 +490,57 @@ impl AreevFacade {
     /// namespace next to the grants. Audit records are *occurrences*, so
     /// each carries a unique frame id: two identical erasures must stay two
     /// records (the #66 lesson).
+    /// Record that a destruction went ahead over a legal hold (#278).
+    ///
+    /// The Tier-2 record names the hold — its namespace, who placed it, and
+    /// why — so the audit says WHAT was overridden, not merely that
+    /// something was.
+    fn audit_hold_override(
+        &self,
+        verb: &str,
+        target: &str,
+        because: &str,
+        count: usize,
+        hold: &areev_store::HoldRecord,
+    ) -> Result<()> {
+        let mut obs = areev_core::authz::audit_observation(
+            &self.session_principal(),
+            verb,
+            target,
+            Some(because),
+            count,
+            now_epoch_ms(),
+        );
+        if let Some(serde_json::Value::Object(map)) = obs.common.context.as_mut() {
+            map.insert(
+                "hold_overridden".into(),
+                serde_json::json!({
+                    "ns": hold.ns,
+                    "placed_by": hold.placed_by,
+                    "because": hold.because,
+                }),
+            );
+        }
+        self.store.lock().unwrap().append_audit(&mut obs).map(|_| ())
+    }
+
+    /// A REFUSED destruction is recorded too (#278).
+    ///
+    /// The record a controller needs to answer an Art. 17 request on an
+    /// Art. 17(3) ground: the request was made, and here is the obligation
+    /// that deferred it. `grains_erased: 0` says nothing was destroyed.
+    fn audit_hold_refusal(&self, verb: &str, target: &str, detail: &str) {
+        let mut obs = areev_core::authz::audit_observation(
+            &self.session_principal(),
+            &format!("{verb}.refused"),
+            target,
+            Some(detail),
+            0,
+            now_epoch_ms(),
+        );
+        let _ = self.store.lock().unwrap().append_audit(&mut obs);
+    }
+
     fn audit_tier2(
         &self,
         verb: &str,
@@ -344,7 +597,8 @@ impl AreevFacade {
             }
             obs.common.context = Some(serde_json::Value::Object(context));
         }
-        self.store.lock().unwrap().add(&obs).map(|_| ())
+        // One chain per memory (#280), shared with the CLI writers.
+        self.store.lock().unwrap().append_audit(&mut obs).map(|_| ())
     }
 
     /// The namespace a JSON-built write lands in: the explicit `namespace`
@@ -479,7 +733,9 @@ impl AreevFacade {
                 o.insert("revealed_fingerprints".into(), serde_json::json!(fingerprints));
             }
         }
-        self.with_store(|m| m.add(&obs))?;
+        // The reveal is a Tier-2 record like an erasure, so it rides the
+        // same chain (#280).
+        self.with_store(|m| m.append_audit(&mut obs))?;
         serde_json::to_string(&serde_json::json!({"revealed": revealed}))
             .map_err(|e| AreevError::Internal(e.to_string()))
     }
@@ -950,6 +1206,61 @@ fn build_tool_call_fields(
 pub struct PrincipalSession<'f> {
     facade: &'f AreevFacade,
     authz: areev_core::authz::AuthzSet,
+    /// This session's default namespace (#302). `None` inherits the
+    /// facade's, which is fixed at construction — so without this a
+    /// multi-principal host could not point `RELATED`, `ENTITY … AT` or
+    /// `NOVELTY` at the namespace the CALLER works in.
+    namespace: Option<String>,
+}
+
+thread_local! {
+    /// The session stack active on THIS thread, keyed by facade identity so
+    /// one facade's session can never authorize another facade's call.
+    ///
+    /// A stack rather than a slot because a session's own call may re-enter
+    /// the facade; the innermost is the one that applies.
+    static ACTIVE_SESSIONS: std::cell::RefCell<
+        Vec<(usize, areev_core::authz::AuthzSet, Option<String>)>,
+    > = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The rights of the innermost session active on this thread for `facade`.
+fn active_session_rights(facade: &AreevFacade) -> Option<areev_core::authz::AuthzSet> {
+    let key = facade as *const AreevFacade as usize;
+    ACTIVE_SESSIONS.with(|s| {
+        s.borrow()
+            .iter()
+            .rev()
+            .find(|(k, _, _)| *k == key)
+            .map(|(_, a, _)| a.clone())
+    })
+}
+
+/// The default namespace of the innermost session active on this thread.
+fn active_session_namespace(facade: &AreevFacade) -> Option<String> {
+    let key = facade as *const AreevFacade as usize;
+    ACTIVE_SESSIONS.with(|s| {
+        s.borrow()
+            .iter()
+            .rev()
+            .find(|(k, _, _)| *k == key)
+            .and_then(|(_, _, ns)| ns.clone())
+    })
+}
+
+/// Pops the session off the thread's stack on drop, so a panic inside a
+/// gated method cannot leave one principal's rights installed for the next
+/// call on this thread.
+pub struct SessionScope {
+    _private: (),
+}
+
+impl Drop for SessionScope {
+    fn drop(&mut self) {
+        ACTIVE_SESSIONS.with(|s| {
+            s.borrow_mut().pop();
+        });
+    }
 }
 
 impl PrincipalSession<'_> {
@@ -959,6 +1270,24 @@ impl PrincipalSession<'_> {
 
     pub fn authz(&self) -> &areev_core::authz::AuthzSet {
         &self.authz
+    }
+
+    /// Point this session's namespace-defaulting reads — `RELATED`,
+    /// `ENTITY … AT`, `NOVELTY`, and any `RECALL` with no explicit
+    /// namespace — at `ns` (#302).
+    pub fn in_namespace(mut self, ns: impl Into<String>) -> Self {
+        self.namespace = Some(ns.into());
+        self
+    }
+
+    /// Install this session's rights for the duration of one call.
+    fn enter(&self) -> SessionScope {
+        let key = self.facade as *const AreevFacade as usize;
+        ACTIVE_SESSIONS.with(|s| {
+            s.borrow_mut()
+                .push((key, self.authz.clone(), self.namespace.clone()))
+        });
+        SessionScope { _private: () }
     }
 
     /// The namespace a write lands in (mirrors the facade's default rule).
@@ -1967,6 +2296,9 @@ impl CalStoreFacade for AreevFacade {
             .filter(|g| set_contains(&params.subject_in, g.get_str("subject")))
             .filter(|g| set_contains(&params.relation_in, g.get_str("relation")))
             .filter(|g| set_contains(&params.object_in, g.get_str("object")))
+            // #318: the tag sets, applied here for exactly the reason the
+            // three above are.
+            .filter(|g| tags_match(&params.tags, &params.exclude_tags, g))
             .filter(|g| match params.grain_type {
                 Some(gt) => g.grain_type == gt,
                 None => true,
@@ -2288,8 +2620,38 @@ impl CalStoreFacade for AreevFacade {
             };
             self.check_verb(Verb::Delete, &ns)?;
         }
-        self.store.lock().unwrap().forget(hash)?;
-        self.audit_tier2("delete", &format!("hash:{}", hash.to_hex()), because, 1, &[])
+        let target = format!("hash:{}", hash.to_hex());
+        if let Err(e) = self.store.lock().unwrap().forget(hash) {
+            if e.code() == "STO-E009" {
+                // #278: a deferral is evidence, not silence.
+                self.audit_hold_refusal("delete", &target, &e.to_string());
+            }
+            return Err(e);
+        }
+        self.audit_tier2("delete", &target, because, 1, &[])
+    }
+
+    /// `FORGET <hash> WITH override_hold BECAUSE "…"` (#278).
+    ///
+    /// `admin` on the namespace ON TOP of `delete`, the way `reveal_tokens`
+    /// gates re-identification: a principal who may erase is not
+    /// automatically one who may override a records-retention hold.
+    fn cal_delete_overriding(&self, hash: &Hash, because: &str) -> Result<()> {
+        let ns = {
+            let g = self.store.lock().unwrap().get(hash)?;
+            g.get_str("namespace").unwrap_or("shared").to_string()
+        };
+        if !self.session_is_owner() {
+            self.check_verb(Verb::Delete, &ns)?;
+            self.check_verb(Verb::Admin, &ns)?;
+        }
+        let over = areev_store::HoldOverride::new(self.session_principal(), because)?;
+        let target = format!("hash:{}", hash.to_hex());
+        let overridden = self.store.lock().unwrap().forget_overriding(hash, &over)?;
+        match overridden {
+            Some(hold) => self.audit_hold_override("delete", &target, because, 1, &hold),
+            None => self.audit_tier2("delete", &target, Some(because), 1, &[]),
+        }
     }
 
     /// `MERGE` — the resolved value supersedes every open tip; the merge
@@ -2304,7 +2666,7 @@ impl CalStoreFacade for AreevFacade {
         confidence: f64,
         because: &str,
     ) -> Result<Hash> {
-        let ns = self.namespace.as_deref().unwrap_or("shared").to_string();
+        let ns = self.default_ns().unwrap_or_else(|| "shared".to_string());
         self.check_verb(Verb::Supersede, &ns)?;
         let mut merged = areev_core::types::Fact::new(subject, relation, object)
             .namespace(&ns)
@@ -2315,6 +2677,71 @@ impl CalStoreFacade for AreevFacade {
     }
 
     /// `RELATED` — the bounded k-hop walk in the session namespace.
+    fn cal_related_scoped(
+        &self,
+        namespaces: &[String],
+        start: &str,
+        relations: &[&str],
+        direction: &str,
+        depth: usize,
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        if namespaces.is_empty() {
+            return self.cal_related(start, relations, direction, depth, limit);
+        }
+        // EVERY named namespace is read-checked as itself before anything is
+        // read (#303), the rule `recall` applies to exact terms. One
+        // ungranted term refuses the whole statement rather than narrowing
+        // the walk — a walk that quietly covered less than it was asked to
+        // is an answer that means something different from what it says.
+        for ns in namespaces {
+            self.check_verb(Verb::Read, ns)?;
+        }
+        let dir = match direction {
+            "in" => areev_store::Direction::In,
+            "both" => areev_store::Direction::Both,
+            _ => areev_store::Direction::Out,
+        };
+        self.store.lock().unwrap().related_scoped(
+            namespaces,
+            start,
+            relations,
+            dir,
+            depth.clamp(1, 4),
+            limit.min(256),
+        )
+    }
+
+    fn cal_entity_at_scoped(
+        &self,
+        namespaces: &[String],
+        subject: &str,
+        relation: &str,
+        at_ms: i64,
+        axis: &str,
+    ) -> Result<Vec<(String, serde_json::Value)>> {
+        if namespaces.is_empty() {
+            return Ok(self
+                .cal_entity_at(subject, relation, at_ms, axis)?
+                .into_iter()
+                .map(|g| (String::new(), g))
+                .collect());
+        }
+        for ns in namespaces {
+            self.check_verb(Verb::Read, ns)?;
+        }
+        let axis = match axis {
+            "knowledge" => areev_store::Axis::Knowledge,
+            _ => areev_store::Axis::World,
+        };
+        let rows = self
+            .store
+            .lock()
+            .unwrap()
+            .entity_at_scoped(namespaces, subject, relation, at_ms, axis)?;
+        Ok(rows.into_iter().map(|(ns, g)| (ns, grain_json(&g))).collect())
+    }
+
     fn cal_related(
         &self,
         start: &str,
@@ -2323,7 +2750,7 @@ impl CalStoreFacade for AreevFacade {
         depth: usize,
         limit: usize,
     ) -> Result<Vec<String>> {
-        let ns = self.namespace.as_deref().unwrap_or("shared").to_string();
+        let ns = self.default_ns().unwrap_or_else(|| "shared".to_string());
         self.check_verb(Verb::Read, &ns)?;
         let dir = match direction {
             "in" => areev_store::Direction::In,
@@ -2356,7 +2783,7 @@ impl CalStoreFacade for AreevFacade {
         relation: Option<&str>,
         k: usize,
     ) -> Result<Vec<(String, f64)>> {
-        let ns = self.namespace.as_deref().unwrap_or("shared").to_string();
+        let ns = self.default_ns().unwrap_or_else(|| "shared".to_string());
         self.check_verb(Verb::Read, &ns)?;
         let rows = self
             .store
@@ -2373,7 +2800,7 @@ impl CalStoreFacade for AreevFacade {
         at_ms: i64,
         axis: &str,
     ) -> Result<Option<serde_json::Value>> {
-        let ns = self.namespace.as_deref().unwrap_or("shared").to_string();
+        let ns = self.default_ns().unwrap_or_else(|| "shared".to_string());
         self.check_verb(Verb::Read, &ns)?;
         let axis = match axis {
             "knowledge" => areev_store::Axis::Knowledge,
@@ -2388,7 +2815,7 @@ impl CalStoreFacade for AreevFacade {
     }
 
     fn cal_run_trace(&self, run_id: &str, limit: usize) -> Result<serde_json::Value> {
-        let ns = self.namespace.as_deref().unwrap_or("shared").to_string();
+        let ns = self.default_ns().unwrap_or_else(|| "shared".to_string());
         self.check_verb(Verb::Read, &ns)?;
         let mut m = self.store.lock().unwrap();
         let recorded: Vec<_> = m.run_trace(&ns, run_id, limit)?.iter().map(grain_json).collect();
@@ -2397,16 +2824,46 @@ impl CalStoreFacade for AreevFacade {
     }
 
     fn cal_runs_touching(&self, hash: &Hash, depth: usize) -> Result<Vec<String>> {
-        let ns = self.namespace.as_deref().unwrap_or("shared").to_string();
+        let ns = self.default_ns().unwrap_or_else(|| "shared".to_string());
         self.check_verb(Verb::Read, &ns)?;
         self.store.lock().unwrap().runs_touching(&ns, hash, depth)
     }
 
     fn cal_derived_from(&self, hash: &Hash) -> Result<Vec<serde_json::Value>> {
-        // Provenance spans namespaces — the read needs the wide grant.
-        self.check_verb(Verb::Read, "*")?;
+        // Provenance spans namespaces, so an owner session — and any session
+        // holding `read ON *` — answers the whole index, unchanged.
+        //
+        // Every other session used to be refused outright (#304), which made
+        // `read ON *` the only way to let a person ask "what was built from
+        // this" — and the two places a host actually uses reverse provenance
+        // are corrections and lineage, both of which people with exact
+        // namespace grants do. The fallback was a service principal holding
+        // `read ON *` with the host post-filtering its results, which moves
+        // the authorization decision out of the engine entirely.
+        if self.session_is_owner() || self.check_verb(Verb::Read, "*").is_ok() {
+            let grains = self.store.lock().unwrap().grains_derived_from(hash)?;
+            return Ok(grains.iter().map(grain_json).collect());
+        }
+        // Otherwise: the PARENT must be readable by this session, under the
+        // same rule `get` applies — you may ask what was derived from a grain
+        // you can read, and nothing else.
+        let parent = self.store.lock().unwrap().get(hash)?;
+        self.check_verb(Verb::Read, parent.get_str("namespace").unwrap_or("shared"))?;
         let grains = self.store.lock().unwrap().grains_derived_from(hash)?;
-        Ok(grains.iter().map(grain_json).collect())
+        // Keep only children this session may read. Deliberately NO count of
+        // what was withheld: a count would disclose that ANOTHER namespace
+        // derived something from this grain, which is exactly what `recall`
+        // declines to reveal when it refuses without naming a sibling
+        // namespace. Narrowing rather than refusing is the non-disclosing
+        // option, and it is the one that makes the read usable at all.
+        Ok(grains
+            .iter()
+            .filter(|g| {
+                self.check_verb(Verb::Read, g.get_str("namespace").unwrap_or("shared"))
+                    .is_ok()
+            })
+            .map(grain_json)
+            .collect())
     }
 
     fn cal_stats(&self) -> Result<serde_json::Value> {
@@ -2445,7 +2902,7 @@ impl CalStoreFacade for AreevFacade {
         role: Option<&str>,
         run_id: Option<&str>,
     ) -> Result<Hash> {
-        let ns = self.namespace.as_deref().unwrap_or("shared").to_string();
+        let ns = self.default_ns().unwrap_or_else(|| "shared".to_string());
         self.check_verb(Verb::Write, &ns)?;
         let observer = self.session_principal();
         self.store.lock().unwrap().capture(
@@ -2619,13 +3076,30 @@ impl CalStoreFacade for AreevFacade {
         text_mentions: bool,
         because: &str,
     ) -> Result<crate::store_types::ErasureProof> {
-        let ns = self.namespace.as_deref().unwrap_or("shared").to_string();
+        let ns = self.default_ns().unwrap_or_else(|| "shared".to_string());
         self.check_verb(Verb::Erase, &ns)?;
-        let report = self.store.lock().unwrap().forget_subject_with(
+        let fp = areev_core::authz::subject_fingerprint(user_id);
+        let report = match self.store.lock().unwrap().forget_subject_with(
             &ns,
             user_id,
             areev_store::ErasureOptions { text_mentions },
-        )?;
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                if e.code() == "STO-E009" {
+                    // #278: the subject stays a FINGERPRINT even in a
+                    // refusal — an immutable, replicating grain naming the
+                    // subject would undo the erasure it records
+                    // (REQ-ERASE-5).
+                    self.audit_hold_refusal(
+                        "erase",
+                        &format!("subject:{fp} ns:{ns}"),
+                        &e.to_string(),
+                    );
+                }
+                return Err(e);
+            }
+        };
         let stale_exports = self
             .store
             .lock()
@@ -2658,6 +3132,44 @@ impl CalStoreFacade for AreevFacade {
         })
     }
 
+    /// `FORGET SUBJECT "<id>" WITH override_hold BECAUSE "…"` (#278).
+    fn cal_forget_user_overriding(
+        &self,
+        user_id: &str,
+        text_mentions: bool,
+        because: &str,
+    ) -> Result<crate::store_types::ErasureProof> {
+        let ns = self.default_ns().unwrap_or_else(|| "shared".to_string());
+        self.check_verb(Verb::Erase, &ns)?;
+        if !self.session_is_owner() {
+            self.check_verb(Verb::Admin, &ns)?;
+        }
+        let over = areev_store::HoldOverride::new(self.session_principal(), because)?;
+        let (report, overridden) = self.store.lock().unwrap().forget_subject_overriding(
+            &ns,
+            user_id,
+            areev_store::ErasureOptions { text_mentions },
+            &over,
+        )?;
+        let target = format!(
+            "subject:{} ns:{ns}",
+            areev_core::authz::subject_fingerprint(user_id)
+        );
+        match overridden {
+            Some(hold) => {
+                self.audit_hold_override("erase", &target, because, report.grains_erased, &hold)?
+            }
+            None => self.audit_tier2("erase", &target, Some(because), report.grains_erased, &[])?,
+        }
+        Ok(crate::store_types::ErasureProof {
+            user_id: user_id.to_string(),
+            count: report.grains_erased as u64,
+            key_fingerprint: String::new(),
+            timestamp: now_epoch_ms(),
+            user_record_deleted: report.grains_erased > 0,
+        })
+    }
+
     /// `REPORT SUBJECT` — the read-only DSAR selection (OMS 1.6 draft):
     /// the SAME selector `cal_forget_user` erases with, hydrated instead.
     /// Session-namespace-scoped like the erasure form; authorized by
@@ -2668,7 +3180,7 @@ impl CalStoreFacade for AreevFacade {
         subject_id: &str,
         text_mentions: bool,
     ) -> Result<crate::store_types::SubjectReportResult> {
-        let ns = self.namespace.as_deref().unwrap_or("shared").to_string();
+        let ns = self.default_ns().unwrap_or_else(|| "shared".to_string());
         self.check_verb(Verb::Read, &ns)?;
         let report = self.store.lock().unwrap().subject_report_with(
             &ns,
@@ -2792,4 +3304,284 @@ fn now_epoch_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// What [`AreevFacade::set_grants`] did (#309).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct GrantChange {
+    /// Grants that did not exist before.
+    pub added: usize,
+    /// Live heads rewritten in place into a desired grant.
+    pub superseded: usize,
+    /// Live heads retired with a `"revoked"` retraction record.
+    pub retired: usize,
+}
+
+impl GrantChange {
+    /// Whether anything was written. An equal set writes nothing.
+    pub fn is_empty(&self) -> bool {
+        self.added == 0 && self.superseded == 0 && self.retired == 0
+    }
+}
+
+/// A [`PrincipalSession`] IS a CAL facade (#302).
+///
+/// `CalExecutor::execute(cal, &session)` therefore runs ANY statement — read
+/// or write — under the session's own fail-closed rights, instead of only
+/// its writes. Every method installs the session for the duration of the
+/// call and delegates to the facade, so there is ONE validation path and a
+/// method added to the facade later cannot silently keep reading the shared
+/// slot: it would not compile here without a delegation.
+///
+/// `bind_principal` stays for hosts that serialize requests.
+impl crate::facade::CalStoreFacade for PrincipalSession<'_> {
+    fn recall(&self, params: &RecallParams) -> Result<Vec<SearchHit>> {
+        let _scope = self.enter();
+        self.facade.recall(params)
+    }
+    fn exists(&self, hash: &Hash) -> Result<bool> {
+        let _scope = self.enter();
+        self.facade.exists(hash)
+    }
+    fn get(&self, hash: &Hash) -> Result<DeserializedGrain> {
+        let _scope = self.enter();
+        self.facade.get(hash)
+    }
+    fn count(&self) -> Result<usize> {
+        let _scope = self.enter();
+        self.facade.count()
+    }
+    fn get_history(&self, namespace: &str, subject: &str, relation: &str,) -> Result<Vec<VersionEntry>> {
+        let _scope = self.enter();
+        self.facade.get_history(namespace, subject, relation)
+    }
+    /// The SESSION's namespace when it set one, else the facade's — so a
+    /// host serving several people can point each caller's namespace-
+    /// defaulting reads at the namespace they work in (#302).
+    fn default_namespace(&self) -> Option<&str> {
+        self.namespace.as_deref().or(self.facade.default_namespace())
+    }
+    fn active_user(&self) -> Option<&str> {
+        let _scope = self.enter();
+        self.facade.active_user()
+    }
+    fn cal_add(&self, grain_type: &str, fields: &serde_json::Map<String, serde_json::Value>,) -> Result<Hash> {
+        let _scope = self.enter();
+        self.facade.cal_add(grain_type, fields)
+    }
+    fn cal_add_with_options(&self, grain_type: &str, fields: &serde_json::Map<String, serde_json::Value>, options: crate::store_types::AddOptions,) -> Result<crate::store_types::AddResult> {
+        let _scope = self.enter();
+        self.facade.cal_add_with_options(grain_type, fields, options)
+    }
+    fn cal_supersede(&self, old_hash: &Hash, grain_type: &str, fields: &serde_json::Map<String, serde_json::Value>,) -> Result<Hash> {
+        let _scope = self.enter();
+        self.facade.cal_supersede(old_hash, grain_type, fields)
+    }
+    fn cal_accumulate(&self, grain_type: &str, target: &super::ast::AccumulateTarget, add_ops: &[(String, f64)], set_ops: &serde_json::Map<String, serde_json::Value>, reason: &str,) -> Result<AccumulateResult> {
+        let _scope = self.enter();
+        self.facade.cal_accumulate(grain_type, target, add_ops, set_ops, reason)
+    }
+    fn describe_capabilities(&self) -> CalCapabilities {
+        let _scope = self.enter();
+        self.facade.describe_capabilities()
+    }
+    fn describe_grain_types(&self) -> Vec<GrainTypeInfo> {
+        let _scope = self.enter();
+        self.facade.describe_grain_types()
+    }
+    fn describe_fields(&self, _grain_type: Option<areev_core::types::GrainType>) -> Vec<FieldInfo> {
+        let _scope = self.enter();
+        self.facade.describe_fields(_grain_type)
+    }
+    fn note_assembly_budget(&self, overflow: bool) {
+        let _scope = self.enter();
+        self.facade.note_assembly_budget(overflow)
+    }
+    fn anon_egress_report(&self) -> Option<serde_json::Value> {
+        let _scope = self.enter();
+        self.facade.anon_egress_report()
+    }
+    fn note_assembly_manifest(&self, manifest: &AssemblyManifest) {
+        let _scope = self.enter();
+        self.facade.note_assembly_manifest(manifest)
+    }
+    fn define_template(
+        &self,
+        name: &str,
+        source: &str,
+        description: Option<&str>,
+        parent: Option<&str>,
+        grain_types: &[String],
+    ) -> Result<()> {
+        let _scope = self.enter();
+        self.facade
+            .define_template(name, source, description, parent, grain_types)
+    }
+    fn drop_template(&self, _name: &str) -> Result<()> {
+        let _scope = self.enter();
+        self.facade.drop_template(_name)
+    }
+    fn open_forks(&self) -> Result<Vec<ForkGroupInfo>> {
+        let _scope = self.enter();
+        self.facade.open_forks()
+    }
+    fn rerank_passages(&self, _query: &str, _passages: &[&str], _rerank_type: RerankType, _model: Option<&str>, _user_id: Option<&str>,) -> Result<Vec<usize>> {
+        let _scope = self.enter();
+        self.facade.rerank_passages(_query, _passages, _rerank_type, _model, _user_id)
+    }
+    fn cal_delete(&self, _hash: &Hash, _because: Option<&str>) -> Result<()> {
+        let _scope = self.enter();
+        self.facade.cal_delete(_hash, _because)
+    }
+    fn cal_delete_overriding(&self, hash: &Hash, because: &str) -> Result<()> {
+        let _scope = self.enter();
+        self.facade.cal_delete_overriding(hash, because)
+    }
+    fn cal_forget_user_overriding(
+        &self,
+        user_id: &str,
+        text_mentions: bool,
+        because: &str,
+    ) -> Result<crate::store_types::ErasureProof> {
+        let _scope = self.enter();
+        self.facade
+            .cal_forget_user_overriding(user_id, text_mentions, because)
+    }
+    fn cal_forget_user(&self, _user_id: &str, _text_mentions: bool, _because: &str,) -> Result<crate::store_types::ErasureProof> {
+        let _scope = self.enter();
+        self.facade.cal_forget_user(_user_id, _text_mentions, _because)
+    }
+    fn cal_forget_scope(&self, scope: &str) -> Result<crate::store_types::ErasureProof> {
+        let _guard = self.enter();
+        self.facade.cal_forget_scope(scope)
+    }
+    fn cal_subject_report(&self, _subject_id: &str, _text_mentions: bool,) -> Result<crate::store_types::SubjectReportResult> {
+        let _scope = self.enter();
+        self.facade.cal_subject_report(_subject_id, _text_mentions)
+    }
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        // Deliberately None: a downcast to `AreevFacade` would hand the
+        // caller the UNSCOPED facade and let it read past this session's
+        // grants — which is the whole thing this type exists to prevent.
+        None
+    }
+    fn cal_merge(&self, _subject: &str, _relation: &str, _object: &str, _confidence: f64, _because: &str,) -> Result<Hash> {
+        let _scope = self.enter();
+        self.facade.cal_merge(_subject, _relation, _object, _confidence, _because)
+    }
+    fn cal_related_scoped(
+        &self,
+        namespaces: &[String],
+        start: &str,
+        relations: &[&str],
+        direction: &str,
+        depth: usize,
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        let _scope = self.enter();
+        self.facade
+            .cal_related_scoped(namespaces, start, relations, direction, depth, limit)
+    }
+    fn cal_entity_at_scoped(
+        &self,
+        namespaces: &[String],
+        subject: &str,
+        relation: &str,
+        at_ms: i64,
+        axis: &str,
+    ) -> Result<Vec<(String, serde_json::Value)>> {
+        let _scope = self.enter();
+        self.facade
+            .cal_entity_at_scoped(namespaces, subject, relation, at_ms, axis)
+    }
+    fn cal_related(&self, _start: &str, _relations: &[&str], _direction: &str, _depth: usize, _limit: usize,) -> Result<Vec<String>> {
+        let _scope = self.enter();
+        self.facade.cal_related(_start, _relations, _direction, _depth, _limit)
+    }
+    fn cal_novelty(&self, _text: &str, _subject: Option<&str>, _relation: Option<&str>, _k: usize,) -> Result<Vec<(String, f64)>> {
+        let _scope = self.enter();
+        self.facade.cal_novelty(_text, _subject, _relation, _k)
+    }
+    fn cal_entity_at(&self, _subject: &str, _relation: &str, _at_ms: i64, _axis: &str,) -> Result<Option<serde_json::Value>> {
+        let _scope = self.enter();
+        self.facade.cal_entity_at(_subject, _relation, _at_ms, _axis)
+    }
+    fn cal_run_trace(&self, _run_id: &str, _limit: usize) -> Result<serde_json::Value> {
+        let _scope = self.enter();
+        self.facade.cal_run_trace(_run_id, _limit)
+    }
+    fn cal_runs_touching(&self, _hash: &Hash, _depth: usize) -> Result<Vec<String>> {
+        let _scope = self.enter();
+        self.facade.cal_runs_touching(_hash, _depth)
+    }
+    fn cal_derived_from(&self, _hash: &Hash) -> Result<Vec<serde_json::Value>> {
+        let _scope = self.enter();
+        self.facade.cal_derived_from(_hash)
+    }
+    fn cal_stats(&self) -> Result<serde_json::Value> {
+        let _scope = self.enter();
+        self.facade.cal_stats()
+    }
+    fn cal_verify(&self) -> Result<serde_json::Value> {
+        let _scope = self.enter();
+        self.facade.cal_verify()
+    }
+    fn cal_remember(&self, _content: &str, _session_id: Option<&str>, _role: Option<&str>, _run_id: Option<&str>,) -> Result<Hash> {
+        let _scope = self.enter();
+        self.facade.cal_remember(_content, _session_id, _role, _run_id)
+    }
+    fn cal_grant(&self, _principal: &str, _verbs: &[String], _namespaces: &[String], _because: Option<&str>,) -> Result<Hash> {
+        let _scope = self.enter();
+        self.facade.cal_grant(_principal, _verbs, _namespaces, _because)
+    }
+    fn cal_revoke(&self, _principal: &str, _verbs: &[String], _namespaces: &[String], _because: Option<&str>,) -> Result<usize> {
+        let _scope = self.enter();
+        self.facade.cal_revoke(_principal, _verbs, _namespaces, _because)
+    }
+    fn cal_show_grants(&self, _principal: Option<&str>) -> Result<Vec<GrantRow>> {
+        let _scope = self.enter();
+        self.facade.cal_show_grants(_principal)
+    }
+    fn cal_purge_stale(&self, _min_age_days: f64, _namespace: Option<&str>, _batch_limit: usize, _grain_type: Option<&str>, _because: &str,) -> Result<usize> {
+        let _scope = self.enter();
+        self.facade.cal_purge_stale(_min_age_days, _namespace, _batch_limit, _grain_type, _because)
+    }
+    fn list_templates(&self) -> Vec<TemplateInfo> {
+        let _scope = self.enter();
+        self.facade.list_templates()
+    }
+    fn get_template(&self, _name: &str) -> Option<TemplateInfo> {
+        let _scope = self.enter();
+        self.facade.get_template(_name)
+    }
+    fn record_template_run(&self, name: &str) {
+        let _scope = self.enter();
+        self.facade.record_template_run(name)
+    }
+    fn define_query(
+        &self,
+        name: &str,
+        body: &str,
+        description: Option<&str>,
+        params: &[crate::ast::QueryParam],
+    ) -> Result<()> {
+        let _scope = self.enter();
+        self.facade.define_query(name, body, description, params)
+    }
+    fn drop_query(&self, _name: &str) -> Result<()> {
+        let _scope = self.enter();
+        self.facade.drop_query(_name)
+    }
+    fn list_queries(&self) -> Vec<crate::queries::QueryListEntry> {
+        let _scope = self.enter();
+        self.facade.list_queries()
+    }
+    fn get_query(&self, _name: &str) -> Option<crate::queries::QueryEntry> {
+        let _scope = self.enter();
+        self.facade.get_query(_name)
+    }
+    fn update_query_last_run(&self, _name: &str) -> Result<()> {
+        let _scope = self.enter();
+        self.facade.update_query_last_run(_name)
+    }
 }

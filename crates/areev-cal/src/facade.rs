@@ -257,6 +257,32 @@ pub trait CalStoreFacade: Send + Sync {
     // ── Tier 2 destructive operations (DELETE, FORGET) ────────────────────
 
     /// Delete a single grain by hash. Maps to `Areev::forget()`.
+    /// `FORGET <hash> WITH override_hold BECAUSE "…"` (#278).
+    ///
+    /// Defaulted to a REFUSAL rather than to the ordinary delete: a facade
+    /// that has not implemented the override must not silently perform one.
+    fn cal_delete_overriding(
+        &self,
+        _hash: &Hash,
+        _because: &str,
+    ) -> Result<()> {
+        Err(areev_core::error::AreevError::Validation(
+            "this facade does not implement overriding a legal hold".into(),
+        ))
+    }
+
+    /// `FORGET SUBJECT "<id>" WITH override_hold BECAUSE "…"` (#278).
+    fn cal_forget_user_overriding(
+        &self,
+        _user_id: &str,
+        _text_mentions: bool,
+        _because: &str,
+    ) -> Result<crate::store_types::ErasureProof> {
+        Err(areev_core::error::AreevError::Validation(
+            "this facade does not implement overriding a legal hold".into(),
+        ))
+    }
+
     fn cal_delete(&self, _hash: &Hash, _because: Option<&str>) -> Result<()> {
         Err(areev_core::error::AreevError::Internal(
             "destructive operations not available".into(),
@@ -321,6 +347,52 @@ pub trait CalStoreFacade: Send + Sync {
     }
 
     /// `RELATED` (Wave 3): the bounded k-hop entity walk.
+    /// [`cal_related`](Self::cal_related) over a SET of namespaces (#303).
+    ///
+    /// Defaulted to the single-namespace form when the set is empty, so a
+    /// host facade that has not implemented it keeps working for every
+    /// statement without the new clause.
+    fn cal_related_scoped(
+        &self,
+        namespaces: &[String],
+        start: &str,
+        relations: &[&str],
+        direction: &str,
+        depth: usize,
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        if namespaces.is_empty() {
+            return self.cal_related(start, relations, direction, depth, limit);
+        }
+        Err(areev_core::error::AreevError::Internal(
+            "scoped graph walks not available on this facade".into(),
+        ))
+    }
+
+    /// [`cal_entity_at`](Self::cal_entity_at) over a SET of namespaces
+    /// (#303). One independently resolved answer per namespace, paired with
+    /// the namespace it came from — no cross-namespace precedence is
+    /// invented.
+    fn cal_entity_at_scoped(
+        &self,
+        namespaces: &[String],
+        subject: &str,
+        relation: &str,
+        at_ms: i64,
+        axis: &str,
+    ) -> Result<Vec<(String, serde_json::Value)>> {
+        if namespaces.is_empty() {
+            return Ok(self
+                .cal_entity_at(subject, relation, at_ms, axis)?
+                .into_iter()
+                .map(|g| (String::new(), g))
+                .collect());
+        }
+        Err(areev_core::error::AreevError::Internal(
+            "scoped as-of reads not available on this facade".into(),
+        ))
+    }
+
     fn cal_related(
         &self,
         _start: &str,

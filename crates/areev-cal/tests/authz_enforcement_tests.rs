@@ -341,3 +341,115 @@ fn purge_honors_its_limit() {
         .unwrap_or(0);
     assert_eq!(n, 3, "three grains must survive a LIMIT 2 sweep");
 }
+
+// ---------------------------------------------------------------------------
+// #304 — DERIVED FROM answers what the session can read
+// ---------------------------------------------------------------------------
+
+/// Parent P in `a`; children C1 in `a` and C2 in `b`.
+fn provenance_rig(dir: &TempDir) -> (AreevFacade, String) {
+    let mut m = Areev::open(dir.path().join("prov.db").to_str().unwrap()).unwrap();
+    for (i, (principal, object)) in [
+        ("user:a-only", "read ON a"),
+        ("user:a-and-b", "read ON a,b"),
+        ("user:b-only", "read ON b"),
+        ("user:wide", "read ON *"),
+        ("user:none", "write ON a"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        m.add(
+            &Fact::new(principal, REL_PERMITS, object)
+                .namespace(AUTHZ_NS)
+                .created_at(1_000 + i as i64),
+        )
+        .unwrap();
+    }
+    let parent = m
+        .add(&Fact::new("deal:1", "stage", "LOI").namespace("a").created_at(2_000))
+        .unwrap();
+    let mut c1 = Fact::new("deal:1", "note", "internal").namespace("a").created_at(2_100);
+    c1.common.derived_from = Some(parent.to_hex());
+    m.add(&c1).unwrap();
+    let mut c2 = Fact::new("deal:1", "note", "sibling").namespace("b").created_at(2_200);
+    c2.common.derived_from = Some(parent.to_hex());
+    m.add(&c2).unwrap();
+    let f = AreevFacade::with_session(m, Some("a".to_string()), None);
+    (f, parent.to_hex())
+}
+
+fn derived_count(f: &AreevFacade, hash: &str) -> Result<usize, String> {
+    let ex = CalExecutor::new(CalExecutorConfig::default());
+    match ex.execute(&format!("DERIVED FROM sha256:{hash}"), f) {
+        Ok(r) => {
+            let v = serde_json::to_value(r.payload_json().unwrap()).unwrap();
+            Ok(v["grains"].as_array().map(Vec::len).unwrap_or(0))
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[test]
+fn derived_from_returns_only_what_the_session_can_read() {
+    let dir = TempDir::new().unwrap();
+    let (f, parent) = provenance_rig(&dir);
+
+    // The owner and a `read ON *` session see both children, as before.
+    assert_eq!(derived_count(&f, &parent).unwrap(), 2, "owner is unchanged");
+    let wide = f.with_principal("user:wide").unwrap();
+    assert_eq!(derived_count(&wide, &parent).unwrap(), 2);
+
+    // A principal granted only `a` sees the child in `a` — and is no longer
+    // refused outright for lacking `read ON *`.
+    let dir2 = TempDir::new().unwrap();
+    let (f2, parent2) = provenance_rig(&dir2);
+    let a_only = f2.with_principal("user:a-only").unwrap();
+    assert_eq!(derived_count(&a_only, &parent2).unwrap(), 1);
+
+    let dir3 = TempDir::new().unwrap();
+    let (f3, parent3) = provenance_rig(&dir3);
+    let both = f3.with_principal("user:a-and-b").unwrap();
+    assert_eq!(derived_count(&both, &parent3).unwrap(), 2);
+}
+
+#[test]
+fn derived_from_refuses_a_parent_the_session_cannot_read() {
+    // The rule is `get`'s: you may ask what was derived from a grain you can
+    // read, and nothing else. A `b`-only principal cannot read the parent in
+    // `a`, so the statement is refused rather than answered with an
+    // informative empty list.
+    let dir = TempDir::new().unwrap();
+    let (f, parent) = provenance_rig(&dir);
+    let b_only = f.with_principal("user:b-only").unwrap();
+    let got = derived_count(&b_only, &parent);
+    assert!(got.is_err(), "expected a refusal, got {got:?}");
+    assert!(got.unwrap_err().contains("AUT-E001"));
+
+    let dir2 = TempDir::new().unwrap();
+    let (f2, parent2) = provenance_rig(&dir2);
+    let none = f2.with_principal("user:none").unwrap();
+    let err = derived_count(&none, &parent2).unwrap_err();
+    assert!(err.contains("AUT-E001"), "{err}");
+}
+
+#[test]
+fn a_narrowed_result_discloses_no_count_of_what_was_withheld() {
+    // A count would say "another namespace derived something from this",
+    // which is exactly what `recall` declines to reveal when it refuses
+    // without naming a sibling namespace.
+    let dir = TempDir::new().unwrap();
+    let (f, parent) = provenance_rig(&dir);
+    let a_only = f.with_principal("user:a-only").unwrap();
+    let ex = CalExecutor::new(CalExecutorConfig::default());
+    let v = serde_json::to_value(
+        ex.execute(&format!("DERIVED FROM sha256:{parent}"), &a_only)
+            .unwrap()
+            .payload_json()
+            .unwrap(),
+    )
+    .unwrap();
+    let dump = v.to_string();
+    assert!(!dump.contains("sibling"), "the b-namespace child must not leak: {dump}");
+    assert!(!dump.contains("withheld"), "and neither must a count of it: {dump}");
+}

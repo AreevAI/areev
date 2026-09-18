@@ -1990,7 +1990,13 @@ impl UiServer {
             ("GET", "/api/loop/recommendations") => {
                 let status = q("status").and_then(|s| status_from_str(&s));
                 let sub = BorrowedSubstrate::new(&self.facade);
-                match self.engine().recommendations(&sub, status) {
+                // Coverage-filtered (#312).
+                match areev_loop_adapter::visible_recommendations(
+                    &self.engine(),
+                    &sub,
+                    &self.facade.authz(),
+                    status,
+                ) {
                     Ok(recs) => ok_json(json!({
                         "ok": true,
                         "recommendations": recs.iter().map(rec_json).collect::<Vec<_>>(),
@@ -2385,6 +2391,7 @@ fn status_from_str(s: &str) -> Option<RecStatus> {
         "applied" => Some(RecStatus::Applied),
         "rolled_back" => Some(RecStatus::RolledBack),
         "expired" => Some(RecStatus::Expired),
+        "withdrawn" => Some(RecStatus::Withdrawn),
         _ => None, // includes "all"
     }
 }

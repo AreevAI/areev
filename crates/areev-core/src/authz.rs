@@ -381,6 +381,41 @@ pub fn audit_observation(
     obs
 }
 
+/// Link a Tier-2 audit Observation into the memory's destruction chain (#280).
+///
+/// `previous` is the content address of the record this one follows, and
+/// `seq` its 1-based position. The predecessor goes in `common.derived_from`
+/// — the same field the loop's own audit trail uses
+/// (`areev_loop::AuditRecord::to_grain_spec`) — so one verifier walks both;
+/// `context.seq` makes a *gap* detectable, which `derived_from` alone cannot
+/// do once an interior record has been forgotten and its successor's
+/// predecessor no longer resolves.
+///
+/// The first record of a chain carries `chain_root: true` and no predecessor.
+/// Records written before chaining existed carry neither, and an export must
+/// report those as `unchained`, never as a break — absence of a link in a
+/// record written by an older build is not evidence of tampering.
+pub fn chain_audit_observation(
+    obs: &mut crate::types::Observation,
+    previous: Option<&str>,
+    seq: u64,
+) {
+    if let Some(prev) = previous {
+        obs.common.derived_from = Some(prev.to_string());
+    }
+    if let Some(serde_json::Value::Object(map)) = obs.common.context.as_mut() {
+        map.insert("seq".into(), serde_json::json!(seq));
+        match previous {
+            None => {
+                map.insert("chain_root".into(), serde_json::json!(true));
+            }
+            Some(prev) => {
+                map.insert("previous_audit".into(), serde_json::json!(prev));
+            }
+        }
+    }
+}
+
 /// The prefix every Areev-minted bearer token carries.
 ///
 /// Three jobs, all of which a bare random string cannot do: secret scanners
@@ -795,6 +830,28 @@ impl CredentialMap {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn chaining_an_audit_observation_sets_the_link_and_the_sequence() {
+        // #280: the first record is a chain root with no predecessor; every
+        // later one names its predecessor twice — once in `derived_from` (so
+        // a provenance walk reaches it) and once in `context.previous_audit`
+        // (so an export line is self-describing).
+        let mut first = audit_observation("u", "erase", "subject:ab ns:n", Some("dsar"), 1, 1_000);
+        chain_audit_observation(&mut first, None, 1);
+        let ctx = first.common.context.clone().unwrap();
+        assert_eq!(ctx["seq"], serde_json::json!(1));
+        assert_eq!(ctx["chain_root"], serde_json::json!(true));
+        assert!(first.common.derived_from.is_none());
+
+        let mut second = audit_observation("u", "delete", "hash:ff", None, 1, 2_000);
+        chain_audit_observation(&mut second, Some("aabb"), 2);
+        let ctx = second.common.context.clone().unwrap();
+        assert_eq!(ctx["seq"], serde_json::json!(2));
+        assert_eq!(ctx["previous_audit"], serde_json::json!("aabb"));
+        assert!(ctx.get("chain_root").is_none());
+        assert_eq!(second.common.derived_from.as_deref(), Some("aabb"));
+    }
+
     use super::*;
 
     #[test]

@@ -16,6 +16,28 @@
 
 use areev_core::error::{AreevError, Hash, Result};
 use areev_core::authz::HARNESS_NS;
+
+/// Where a CONTENT-BEARING harness record goes (#301).
+///
+/// Run evidence splits in two. Ids and counters — the manifest link, the
+/// cancel Facts, the run-outcome census — stay in the memory-wide
+/// `agent:harness` so `run list`, cancel and the lease paths are unchanged.
+/// Records that carry CONTENT — the model's own summary of a transcript, an
+/// outbound call's URL and request headers, a blob read — may instead go to
+/// `agent:harness.<run_ns>` when the host asked for it.
+///
+/// The dotted CHILD of the harness namespace, deliberately, not the run's own
+/// namespace: keeping them out of the agent's recall scope is why they are
+/// not written there in the first place. `agent:harness.*` still reads
+/// everything, so an operator surface loses nothing; what changes is that one
+/// namespace's run evidence becomes separately grantable, retainable and
+/// erasable, instead of `read ON agent:harness` disclosing every namespace's.
+pub fn harness_ns_for(run_ns: Option<&str>) -> String {
+    match run_ns {
+        Some(ns) if !ns.is_empty() => format!("{HARNESS_NS}.{ns}"),
+        _ => HARNESS_NS.to_string(),
+    }
+}
 use areev_core::types::{
     ExecutionStatus, ExecutorKind, FailureCause, Grain, Observation, State, Tool,
 };
@@ -61,7 +83,7 @@ fn base_tool(
         NodeExecutor::Host { tool_hash, tool_name } => {
             (tool_hash.clone(), tool_name.clone(), ExecutorKind::Host)
         }
-        NodeExecutor::Client { tool_hash, tool_name } => {
+        NodeExecutor::Client { tool_hash, tool_name, .. } => {
             (tool_hash.clone(), tool_name.clone(), ExecutorKind::Client)
         }
         // An abstract node's model turns journal under the reserved
@@ -245,11 +267,14 @@ pub fn write_fold_summary(
     summary: &str,
     clock_ms: u64,
     principal: &str,
+    // The namespace this record's CONTENT belongs to (#301);
+    // `None` keeps the memory-wide `agent:harness`.
+    harness_ns: Option<&str>,
 ) -> Result<Hash> {
     let mut obs = Observation::new(principal, "agent")
         .subject(&format!("run:{run_id}"))
         .object(summary)
-        .namespace(HARNESS_NS)
+        .namespace(&harness_ns_for(harness_ns))
         .created_at(clock_ms as i64);
     let ex = &mut obs.common.extra_fields;
     ex.insert("run_id".into(), json!(run_id));
@@ -278,12 +303,15 @@ pub fn write_egress_refusal(
     refusal: &crate::broker::EgressRefusal,
     clock_ms: u64,
     principal: &str,
+    // The namespace this record's CONTENT belongs to (#301);
+    // `None` keeps the memory-wide `agent:harness`.
+    harness_ns: Option<&str>,
 ) -> Result<Hash> {
     let caller = if refusal.caller.is_empty() { "connector" } else { &refusal.caller };
     let mut obs = Observation::new(principal, "system")
         .subject(&format!("run:{run_id}"))
         .object(&refusal.destination)
-        .namespace(HARNESS_NS)
+        .namespace(&harness_ns_for(harness_ns))
         .created_at(clock_ms as i64);
     let ex = &mut obs.common.extra_fields;
     ex.insert("run_id".into(), json!(run_id));
@@ -318,12 +346,15 @@ pub fn write_egress_call(
     call: &crate::broker::EgressCall,
     clock_ms: u64,
     principal: &str,
+    // The namespace this record's CONTENT belongs to (#301);
+    // `None` keeps the memory-wide `agent:harness`.
+    harness_ns: Option<&str>,
 ) -> Result<Hash> {
     let caller = if call.caller.is_empty() { "connector" } else { &call.caller };
     let mut obs = Observation::new(principal, "system")
         .subject(&format!("run:{run_id}"))
         .object(&call.url)
-        .namespace(HARNESS_NS)
+        .namespace(&harness_ns_for(harness_ns))
         .created_at(clock_ms as i64);
     let ex = &mut obs.common.extra_fields;
     ex.insert("run_id".into(), json!(run_id));
@@ -376,12 +407,15 @@ pub fn write_blob_read(
     read: &crate::broker::BlobRead,
     clock_ms: u64,
     principal: &str,
+    // The namespace this record's CONTENT belongs to (#301);
+    // `None` keeps the memory-wide `agent:harness`.
+    harness_ns: Option<&str>,
 ) -> Result<Hash> {
     let caller = if read.caller.is_empty() { "connector" } else { &read.caller };
     let mut obs = Observation::new(principal, "system")
         .subject(&format!("run:{run_id}"))
         .object(&read.uri)
-        .namespace(HARNESS_NS)
+        .namespace(&harness_ns_for(harness_ns))
         .created_at(clock_ms as i64);
     let ex = &mut obs.common.extra_fields;
     ex.insert("run_id".into(), json!(run_id));

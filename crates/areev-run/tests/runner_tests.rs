@@ -381,11 +381,29 @@ fn hitl_parks_enforces_separation_and_completes_on_resume() {
     assert_eq!(envelope["asks"][0]["approval"], true);
 
     // The triggering principal may not approve their own run's ask (§6.6):
-    // refused STRUCTURALLY.
+    // refused STRUCTURALLY — and, since #292, JOURNALED before the refusal
+    // returns. This is the most audit-relevant rejection the runtime makes,
+    // and it was the one the docs promised and the code did not write.
     let err = runner
         .respond("run-h", &ask_id, json!({"ok": true}), false, "user:runner")
         .unwrap_err();
     assert!(matches!(err, RunError::Unauthorized { .. }), "{err}");
+    let self_approval_records = rig.facade.with_store(|m| {
+        m.run_trace(areev_core::authz::HARNESS_NS, "run-h", 100)
+            .unwrap()
+            .into_iter()
+            .filter(|g| {
+                g.get_str("object")
+                    .is_some_and(|o| o.contains("approval by the triggering"))
+            })
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(self_approval_records.len(), 1, "the refusal is journaled");
+    assert_eq!(
+        self_approval_records[0].get_str("observer_id"),
+        Some("user:runner"),
+        "authored by the refused responder"
+    );
 
     // A second principal approves; resuming completes the run and the
     // responder is attributed on the superseding result grain.
@@ -417,7 +435,10 @@ fn hitl_parks_enforces_separation_and_completes_on_resume() {
             .filter(|g| g.get_str("object").is_some_and(|o| o.contains("rejected response")))
             .count()
     });
-    assert_eq!(rejections, 1, "the losing response is journaled");
+    // Two now (#292): the refused self-approval and the late response. Both
+    // are evidence — "the person who asked tried to approve it" and "two
+    // officers answered seconds apart" are exactly what an audit needs.
+    assert_eq!(rejections, 2, "both refusals are journaled");
 
     // Verify covers the parked span too.
     let report = runner.verify("run-h").unwrap();

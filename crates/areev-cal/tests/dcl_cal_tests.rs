@@ -301,3 +301,125 @@ fn every_verb_round_trips_through_grant_and_revoke() {
         "{rows}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #309 — an atomic grant transition
+// ---------------------------------------------------------------------------
+
+#[test]
+fn set_grants_narrows_a_packed_grant_with_no_window() {
+    use areev_core::authz::{Grant, Verb};
+    let dir = TempDir::new().unwrap();
+    let m = Areev::open(dir.path().join("sg.db").to_str().unwrap()).unwrap();
+    let f = AreevFacade::with_session(m, Some("ops".to_string()), None);
+
+    let of = |ns: &[&str]| Grant {
+        verbs: vec![Verb::Read],
+        namespaces: ns.iter().map(|s| (*s).to_string()).collect(),
+    };
+    // Start at {a, b, c}.
+    let c = f.set_grants("user:p", &[of(&["deal.a", "deal.b", "deal.c"])], "onboard")
+        .unwrap();
+    assert_eq!(c.added, 1);
+    assert_eq!(f.with_store(|m| m.authz_grants("user:p")).unwrap().len(), 1);
+
+    // Narrow to {a, b}. `REVOKE` refuses a scope narrower than the grant, so
+    // this used to mean revoke-all-then-grant (a window with NO access) or
+    // the other order (a window with too much).
+    let c = f.set_grants("user:p", &[of(&["deal.a", "deal.b"])], "left deal.c")
+        .unwrap();
+    assert_eq!(c.superseded, 1, "rewritten in place, not retired and re-added");
+    assert_eq!(c.added, 0);
+    assert_eq!(c.retired, 0);
+    let live = f.with_store(|m| m.authz_grants("user:p")).unwrap();
+    assert_eq!(live.len(), 1);
+    assert_eq!(live[0].namespaces, vec!["deal.a".to_string(), "deal.b".to_string()]);
+
+    // The narrowing took effect.
+    let bound = f.principal_session("user:p").unwrap();
+    assert!(bound.authz().allows(Verb::Read, "deal.a"));
+    assert!(!bound.authz().allows(Verb::Read, "deal.c"));
+}
+
+#[test]
+fn an_equal_set_writes_nothing() {
+    use areev_core::authz::{Grant, Verb};
+    let dir = TempDir::new().unwrap();
+    let m = Areev::open(dir.path().join("sg2.db").to_str().unwrap()).unwrap();
+    let f = AreevFacade::with_session(m, Some("ops".to_string()), None);
+    let g = Grant { verbs: vec![Verb::Read], namespaces: vec!["a".into()] };
+    f.set_grants("user:p", std::slice::from_ref(&g), "one").unwrap();
+    let before = f.with_store(|m| m.head_op_seq()).unwrap();
+    let c = f.set_grants("user:p", std::slice::from_ref(&g), "again").unwrap();
+    assert!(c.is_empty(), "{c:?}");
+    assert_eq!(
+        f.with_store(|m| m.head_op_seq()).unwrap(),
+        before,
+        "a synchronizer on a timer must not churn the audit trail"
+    );
+}
+
+#[test]
+fn set_grants_retires_what_is_no_longer_wanted() {
+    use areev_core::authz::{Grant, Verb};
+    let dir = TempDir::new().unwrap();
+    let m = Areev::open(dir.path().join("sg3.db").to_str().unwrap()).unwrap();
+    let f = AreevFacade::with_session(m, Some("ops".to_string()), None);
+    f.set_grants(
+        "user:p",
+        &[
+            Grant { verbs: vec![Verb::Read], namespaces: vec!["a".into()] },
+            Grant { verbs: vec![Verb::Write], namespaces: vec!["b".into()] },
+        ],
+        "onboard",
+    )
+    .unwrap();
+    let c = f
+        .set_grants(
+            "user:p",
+            &[Grant { verbs: vec![Verb::Read], namespaces: vec!["a".into()] }],
+            "offboard b",
+        )
+        .unwrap();
+    assert_eq!(c.retired, 1, "{c:?}");
+    let live = f.with_store(|m| m.authz_grants("user:p")).unwrap();
+    assert_eq!(live.len(), 1);
+    assert_eq!(live[0].verbs, vec![Verb::Read]);
+}
+
+#[test]
+fn set_grants_to_the_empty_set_leaves_a_principal_with_nothing() {
+    use areev_core::authz::{Grant, Verb};
+    let dir = TempDir::new().unwrap();
+    let m = Areev::open(dir.path().join("sg4.db").to_str().unwrap()).unwrap();
+    let f = AreevFacade::with_session(m, Some("ops".to_string()), None);
+    f.set_grants(
+        "user:p",
+        &[Grant { verbs: vec![Verb::Read], namespaces: vec!["a".into()] }],
+        "onboard",
+    )
+    .unwrap();
+    f.set_grants("user:p", &[], "offboard").unwrap();
+    assert!(f.with_store(|m| m.authz_grants("user:p")).unwrap().is_empty());
+}
+
+#[test]
+fn the_authz_epoch_moves_only_for_policy_writes() {
+    use areev_core::authz::{Grant, Verb};
+    use areev_core::types::Fact;
+    let dir = TempDir::new().unwrap();
+    let m = Areev::open(dir.path().join("sg5.db").to_str().unwrap()).unwrap();
+    let f = AreevFacade::with_session(m, Some("ops".to_string()), None);
+    let e0 = f.authz_epoch().unwrap();
+    let mut ordinary = Fact::new("a", "b", "c");
+    ordinary.common.namespace = Some("ops".into());
+    f.with_store(|m| m.add(&ordinary)).unwrap();
+    assert_eq!(f.authz_epoch().unwrap(), e0, "an ordinary write is invisible");
+    f.set_grants(
+        "user:p",
+        &[Grant { verbs: vec![Verb::Read], namespaces: vec!["a".into()] }],
+        "onboard",
+    )
+    .unwrap();
+    assert_ne!(f.authz_epoch().unwrap(), e0, "a policy change is not");
+}

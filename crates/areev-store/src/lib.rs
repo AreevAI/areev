@@ -55,6 +55,15 @@ pub struct OpRecord {
     pub hlc: i64,
     pub op: i64,
     pub hash: Hash,
+    /// The namespace this operation belongs to (#307).
+    ///
+    /// `None` for rows written before the column existed, and for an
+    /// imported tombstone whose peer recorded none. An `OP_FORGET` row's
+    /// grain is gone, so a consumer cannot recover the namespace by
+    /// resolving the hash — which is exactly why it is recorded here
+    /// rather than derived. A projector rebuilding per-namespace tables must
+    /// treat `None` as unattributable, not as its own.
+    pub ns: Option<String>,
 }
 
 /// Traversal direction for `related`. `In` uses the
@@ -136,6 +145,13 @@ pub struct ImportStats {
     pub unknown_key: usize,
     /// Grains in attestable namespaces carrying no attestation at all.
     pub unattested: usize,
+    /// Tombstones applied to a namespace this memory holds under a legal
+    /// hold (#278). A hold binds the memory where destruction is DECIDED;
+    /// replication carries the decision rather than re-taking it, or a
+    /// follower that placed its own hold would abort mid-import and diverge
+    /// permanently. Counted so an operator can see it happened, and
+    /// reconcile against the leader's own audit trail.
+    pub forgets_under_hold: usize,
 }
 
 /// Escape `\`, `%` and `_` for a `LIKE ?N ESCAPE '\'` pattern — the one
@@ -187,6 +203,47 @@ enum ErasureSelector {
         gtype: Option<i64>,
         limit: Option<usize>,
     },
+}
+
+/// One live legal hold, as the guard and the audit record see it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HoldRecord {
+    pub ns: String,
+    pub because: String,
+    pub placed_by: String,
+}
+
+/// An explicit, audited override of a legal hold (D10, #278).
+///
+/// Never a default and never a flag alone: `authority` names who is
+/// answering for the destruction and `because` states the ground, both of
+/// which land in the Tier-2 audit Observation as `context.hold_overridden`.
+/// A hold exists because someone decided records must not be destroyed;
+/// destroying them anyway is a second decision, and it has an author.
+///
+/// Carried separately from [`ErasureOptions`] on purpose — that struct is
+/// `Copy` with public fields, so widening it would be a source break for
+/// every caller that constructs it literally.
+#[derive(Debug, Clone)]
+pub struct HoldOverride {
+    /// The principal answering for the override.
+    pub authority: String,
+    /// Why the hold is being overridden. Mandatory — an override with no
+    /// stated ground is indistinguishable from a mistake.
+    pub because: String,
+}
+
+impl HoldOverride {
+    pub fn new(authority: impl Into<String>, because: impl Into<String>) -> Result<Self> {
+        let authority = authority.into();
+        let because = because.into();
+        if authority.trim().is_empty() || because.trim().is_empty() {
+            return Err(AreevError::Validation(
+                "overriding a legal hold requires a non-empty authority and because".into(),
+            ));
+        }
+        Ok(Self { authority, because })
+    }
 }
 
 /// Options for [`Areev::forget_subject_with`].
@@ -315,6 +372,48 @@ pub trait EmbedBackend: Send + Sync {
     /// stored vectors came from a different model.
     fn model(&self) -> &str {
         "unspecified"
+    }
+
+    /// Embed one text, saying whether it is a stored DOCUMENT or a search
+    /// QUERY (#290).
+    ///
+    /// Asymmetric models — the ones with `query:` / `passage:` prefixes or an
+    /// `input_type` parameter — embed the two differently by design. A
+    /// backend that cannot see which one it was asked for has to pick one
+    /// for both, and pays for it in recall. Defaulted, so every existing
+    /// backend keeps compiling and behaving identically.
+    fn embed_as(&self, text: &str, _input: EmbedInput) -> Result<Vec<f32>> {
+        self.embed(text)
+    }
+
+    /// Embed a batch in one call.
+    ///
+    /// The write path hands a whole `add_batch` here, so a bulk ingest makes
+    /// one model call instead of N — and, with [`CommandEmbed`], one process
+    /// spawn instead of N. The default implementation preserves exactly
+    /// today's behaviour for backends that do not override it.
+    ///
+    /// Must return one vector per input, positionally aligned.
+    fn embed_batch(&self, texts: &[&str], input: EmbedInput) -> Result<Vec<Vec<f32>>> {
+        texts.iter().map(|t| self.embed_as(t, input)).collect()
+    }
+}
+
+/// Which side of a retrieval an embedding is for (#290).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbedInput {
+    /// Text being stored and later retrieved.
+    Document,
+    /// Text being searched WITH.
+    Query,
+}
+
+impl EmbedInput {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            EmbedInput::Document => "document",
+            EmbedInput::Query => "query",
+        }
     }
 }
 
@@ -458,11 +557,20 @@ impl CommandEmbed {
     }
 
     fn run(&self, text: &str) -> Result<Vec<f32>> {
+        self.run_as(text, EmbedInput::Document)
+    }
+
+    /// The child learns which side it is embedding from `AREEV_EMBED_INPUT`
+    /// (#290) — an environment variable rather than a stdin protocol change,
+    /// following the `AREEV_TOOL_NAME` precedent, so every existing embed
+    /// command keeps working unchanged.
+    fn run_as(&self, text: &str, input: EmbedInput) -> Result<Vec<f32>> {
         use areev_core::proc::{self, SpawnPolicy, StderrMode};
         let mut cmd = std::process::Command::new(&self.argv[0]);
         cmd.args(&self.argv[1..]);
         let policy = SpawnPolicy::default().stderr(StderrMode::Inherit);
-        let out = proc::run(cmd, Some(text.as_bytes()), &[], &policy)
+        let env = [("AREEV_EMBED_INPUT", input.as_str())];
+        let out = proc::run(cmd, Some(text.as_bytes()), &env, &policy)
             .map_err(|e| AreevError::Storage(format!("embed command '{}': {e}", self.argv[0])))?;
         if let Some(why) = out.failure(&format!("embed command '{}'", self.argv[0])) {
             return Err(AreevError::Storage(why));
@@ -480,7 +588,10 @@ impl EmbedBackend for CommandEmbed {
         self.dim
     }
     fn embed(&self, text: &str) -> Result<Vec<f32>> {
-        let v = self.run(text)?;
+        self.embed_as(text, EmbedInput::Document)
+    }
+    fn embed_as(&self, text: &str, input: EmbedInput) -> Result<Vec<f32>> {
+        let v = self.run_as(text, input)?;
         if v.len() != self.dim {
             return Err(AreevError::Validation(format!(
                 "embed command returned {} dims, expected {}",
@@ -940,8 +1051,15 @@ fn parse_bundle_records(data: &[u8], mut i: usize) -> Result<Vec<BundleRecord>> 
 /// `entity_relations`, embedding provenance, `link_index`,
 /// `min_reader_version`) deliberately do NOT ride along — they describe the
 /// *source* file's indexing and host capabilities, which a replica may not
-/// share. Legal `hold:` rows stay file-local pending an erasure-docs
-/// decision on whether holds must survive restore.
+/// share.
+///
+/// Legal `hold:` rows DO ride along (#279). `docs/compliance-profiles.md`
+/// lists a hold as a file-truth that "travels with a copy, sync, restore",
+/// and a hold that silently disappears on the replica fails at exactly the
+/// moment it matters. They merge write-if-absent like the other policy rows
+/// — never overwriting a local hold — and, unlike every other replicable
+/// row, they apply on a point-in-time import too: a hold is a present-day
+/// stop, not history, and over-holding is the safe failure.
 /// One live pseudonym mapping: `(namespace, mapping_id, placeholder → value)`.
 pub type AnonMappingRow = (String, String, std::collections::BTreeMap<String, String>);
 
@@ -1043,8 +1161,8 @@ impl TriggerState {
 
 const VAULT_PREFIX: &str = "vault:";
 
-const REPLICABLE_META_PREFIXES: [&str; 5] =
-    ["qry:", "tpl:", "retention:", "retention_floor:", "anon:"];
+const REPLICABLE_META_PREFIXES: [&str; 6] =
+    ["qry:", "tpl:", "retention:", "retention_floor:", "anon:", "hold:"];
 
 /// RRF fusion constant used by `recall_hybrid` (the standard k0 = 60).
 /// Exported so observability surfaces can report the effective value.
@@ -1103,7 +1221,7 @@ const RETENTION_PREFIX: &str = "retention:";
 const RETENTION_FLOOR_PREFIX: &str = "retention_floor:";
 
 /// `meta` key prefix for LEGAL HOLDS — while a hold is live on a namespace,
-/// ALL age-based destruction there refuses, floors notwithstanding
+/// EVERY destruction path there refuses (#278), floors notwithstanding
 /// (litigation holds are not a retention parameter, they are a stop).
 const HOLD_PREFIX: &str = "hold:";
 
@@ -1255,6 +1373,16 @@ impl Default for AreevOptions {
     }
 }
 
+/// Additive column migrations applied after [`SCHEMA`] on every open.
+///
+/// Each one is expected to fail (harmlessly) on a file that already has the
+/// column, which is why they are separated from `SCHEMA` and run with the
+/// error discarded rather than propagated.
+const SCHEMA_MIGRATIONS: &[&str] = &[
+    // #307: attribute every op-log row to a namespace.
+    "ALTER TABLE oplog ADD COLUMN ns INTEGER",
+];
+
 const SCHEMA: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT)",
     "CREATE TABLE IF NOT EXISTS terms(id INTEGER PRIMARY KEY, term TEXT UNIQUE)",
@@ -1304,7 +1432,12 @@ const SCHEMA: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_osp_seq ON osp(seq)",
     "CREATE TABLE IF NOT EXISTS entity_latest(ns INTEGER, s INTEGER, p INTEGER, o INTEGER, seq INTEGER, hash BLOB, PRIMARY KEY(ns,s,p))",
     "CREATE TABLE IF NOT EXISTS heads(ns INTEGER, s INTEGER, p INTEGER, seq INTEGER, hash BLOB, created_at INTEGER, PRIMARY KEY(ns,s,p,seq))",
-    "CREATE TABLE IF NOT EXISTS oplog(op_seq INTEGER PRIMARY KEY, hlc INTEGER, op INTEGER, hash BLOB)",
+    // `ns` is the grain's namespace dictionary id (#307). NULLABLE on
+    // purpose: rows written by an older build carry none, and a tombstone
+    // imported from a peer that did not record one cannot invent it. A
+    // consumer must treat NULL as "cannot attribute", never as "mine".
+    "CREATE TABLE IF NOT EXISTS oplog(op_seq INTEGER PRIMARY KEY, hlc INTEGER, op INTEGER, hash BLOB, ns INTEGER)",
+    "CREATE INDEX IF NOT EXISTS idx_oplog_ns ON oplog(ns, op_seq)",
     "CREATE TABLE IF NOT EXISTS thread_idx(ns INTEGER, session INTEGER, seq INTEGER)",
     "CREATE INDEX IF NOT EXISTS idx_thread ON thread_idx(ns, session, seq)",
     // Reverse provenance: parent content address -> the grains derived from it.
@@ -1635,6 +1768,12 @@ struct GrainPrep {
     gtype: i64,
     text: Option<String>,
     embedding: Option<Vec<f32>>,
+    /// The text this grain still needs embedded, when an embedder is
+    /// installed (#290). Prep records it; `fill_embeddings` turns a whole
+    /// batch into ONE `embed_batch` call. Embedding per grain inside prep
+    /// meant N sequential model calls for an N-grain write — and, with
+    /// `CommandEmbed`, N process spawns.
+    pending_embed: Option<String>,
     /// `(fts_vocab.id, term frequency)` for this grain's text, and the
     /// document length in tokens. Empty when text indexing is off or deferred.
     tokens: Vec<(i64, i64)>,
@@ -2090,6 +2229,22 @@ impl Areev {
         for sql in SCHEMA {
             dbh.execute(sql, vec![])?;
         }
+        // Additive column migrations for files written by an older build.
+        // `CREATE TABLE IF NOT EXISTS` above is a no-op on an existing table,
+        // so a new column has to be added explicitly; the error from a
+        // duplicate column is the expected outcome on an already-migrated
+        // file and is deliberately ignored.
+        for sql in SCHEMA_MIGRATIONS {
+            let _ = dbh.execute(sql, vec![]);
+        }
+        // Backfill `oplog.ns` (#307) for live grains. Historical tombstones
+        // stay NULL: their grain is gone, so the namespace is genuinely
+        // unrecoverable and a consumer must see that rather than a guess.
+        let _ = dbh.execute(
+            "UPDATE oplog SET ns = (SELECT g.ns FROM grains g WHERE g.hash = oplog.hash) \
+             WHERE ns IS NULL",
+            vec![],
+        );
         let mut warnings: Vec<String> = Vec::new();
         if telemetry_overridden {
             warnings.push(
@@ -2118,7 +2273,15 @@ impl Areev {
         // re-stamping file-truths.
         let telemetry = match telemetry_mode {
             TelemetryMode::Off => None,
-            mode => Some(Telemetry::open(path, enc_key.as_deref(), mode)?),
+            mode => {
+                let mut t = Telemetry::open(path, enc_key.as_deref(), mode)?;
+                // #306: hashed query keys are HMAC'd under a key derived
+                // from the memory's own AEAD key when it has one.
+                if let Some(k) = enc_key.as_deref() {
+                    t.set_qkey_key(k);
+                }
+                Some(t)
+            }
         };
         Self::finish_open(dbh, explicit, BlobStore::Fs(blob_dir), telemetry, warnings, Some(guard))
     }
@@ -2351,7 +2514,8 @@ impl Areev {
                     if *d != o.entity_relations {
                         warnings.push(
                             "file-declared entity_relations differ from explicit options (re-stamped) — \
-                             OSP rows indexed under the old set are unchanged"
+                             OSP rows indexed under the old set are unchanged; run \
+                             `areev reindex` to index existing grains under the new set"
                                 .into(),
                         );
                     }
@@ -2921,6 +3085,89 @@ impl Areev {
         Ok(affected > 0)
     }
 
+    /// `meta` key holding the head of the memory's Tier-2 destruction audit
+    /// chain: `<seq>:<hex head>`.
+    ///
+    /// A write-path CACHE, not state: it is recomputable from the grains
+    /// themselves, so it deliberately does not replicate (it is outside
+    /// [`REPLICABLE_META_PREFIXES`]) — a replica's chain is its own.
+    const AUDIT_HEAD_KEY: &'static str = "audit_head:tier2";
+
+    /// Append one Tier-2 audit Observation to the memory's destruction
+    /// chain (#280).
+    ///
+    /// One chain per memory, shared by every writer — the CAL facade, the
+    /// CLI's erasure and hold records — so a missing interior record is
+    /// detectable. `derived_from` alone cannot do that: once a record is
+    /// forgotten its successor's predecessor simply fails to resolve, which
+    /// is indistinguishable from an export window edge. The `seq` is what
+    /// makes a GAP visible, and a gap is what tamper-evidence means here.
+    ///
+    /// Serialized against concurrent appenders by the same `reserve_write`
+    /// row lock every write takes, so two Postgres writers can never mint
+    /// two records claiming the same predecessor.
+    pub fn append_audit(&mut self, obs: &mut areev_core::types::Observation) -> Result<Hash> {
+        self.check_writable("append an audit record")?;
+        // Claim the slot with a compare-and-set, THEN write the record.
+        //
+        // The order matters and the other one is worse: writing first and
+        // claiming after means a loser has already stored an Observation
+        // stamped with a `seq` the winner also took, and two records at one
+        // sequence is a forged-looking chain. Claiming first means the only
+        // failure window — a store error between the claim and the write —
+        // leaves a GAP, which the export reports honestly as a break. A
+        // visible gap is the right failure for a tamper-evidence trail.
+        for _ in 0..Self::AUDIT_APPEND_ATTEMPTS {
+            let head = self.meta_get(Self::AUDIT_HEAD_KEY)?;
+            let (seq, prev) = match &head {
+                None => (1u64, None),
+                Some(raw) => match raw.split_once(':') {
+                    Some((n, h)) => (
+                        n.parse::<u64>().map_err(|_| {
+                            AreevError::Validation(format!("unreadable audit chain head {raw:?}"))
+                        })? + 1,
+                        Some(h.to_string()),
+                    ),
+                    // An unreadable head must not silently restart the chain
+                    // at 1 — that would hide every record written so far.
+                    None => {
+                        return Err(AreevError::Validation(format!(
+                            "unreadable audit chain head {raw:?}"
+                        )))
+                    }
+                },
+            };
+            let mut candidate = obs.clone();
+            areev_core::authz::chain_audit_observation(&mut candidate, prev.as_deref(), seq);
+            let (_, hash) = areev_core::format::serialize_grain(&candidate)?;
+            let claimed = self.meta_cas(
+                Self::AUDIT_HEAD_KEY,
+                head.as_deref(),
+                &format!("{seq}:{}", hash.to_hex()),
+            )?;
+            if !claimed {
+                continue;
+            }
+            *obs = candidate;
+            return self.add(obs);
+        }
+        Err(AreevError::Storage(
+            "could not claim an audit chain slot — too many concurrent appenders".into(),
+        ))
+    }
+
+    /// Bounded retries for the audit chain's compare-and-set. Contention is
+    /// between destructive operations, which are rare and human-paced.
+    const AUDIT_APPEND_ATTEMPTS: usize = 16;
+
+    /// The chain head as `(seq, hash)`, for an export checkpoint.
+    pub fn audit_chain_head(&self) -> Result<Option<(u64, String)>> {
+        Ok(self.meta_get(Self::AUDIT_HEAD_KEY)?.and_then(|raw| {
+            raw.split_once(':')
+                .and_then(|(n, h)| n.parse::<u64>().ok().map(|n| (n, h.to_string())))
+        }))
+    }
+
     /// Read one trigger's evaluation state, with the raw row alongside it.
     ///
     /// The raw string is what a later [`Self::meta_cas`] must present as
@@ -3485,8 +3732,10 @@ impl Areev {
         Ok(out)
     }
 
-    /// Place a legal hold on a namespace: all age-based destruction there
-    /// refuses until the hold is released. `because` and `placed_by` are
+    /// Place a legal hold on a namespace: EVERY destruction path there
+    /// refuses until the hold is released (#278) — the age-based sweeps,
+    /// `forget` by hash, identity erasure, and (on Postgres) the schema drop.
+    /// Refusals carry `STO-E009` and the surfaces record them. `because` and `placed_by` are
     /// mandatory — a hold is a legal act with an owner.
     pub fn place_hold(&self, ns: &str, because: &str, placed_by: &str, at_ms: i64) -> Result<()> {
         if ns.trim().is_empty() {
@@ -3526,6 +3775,51 @@ impl Areev {
         Ok(out)
     }
 
+    /// The hold guard every destruction passes through, read straight off
+    /// the connection so it can run INSIDE the caller's transaction (#278).
+    ///
+    /// Placement matters on Postgres: a hold placed by a second handle
+    /// between the caller's pre-flight check and its delete would otherwise
+    /// lose the race, and the grains it was placed to preserve would be gone.
+    /// Inside the transaction, after `reserve_write`, the two are serialized.
+    fn hold_for_ns_on(db: &dyn Db, ns: &str) -> Result<Option<HoldRecord>> {
+        let key = format!("{HOLD_PREFIX}{ns}");
+        let rows = db.query("SELECT v FROM meta WHERE k = ?1", vec![pt(&key)])?;
+        let Some(raw) = rows.first().and_then(|r| r.text(0)) else {
+            return Ok(None);
+        };
+        let v: serde_json::Value = serde_json::from_str(raw)
+            .map_err(|e| AreevError::Validation(format!("unreadable hold for '{ns}': {e}")))?;
+        Ok(Some(HoldRecord {
+            ns: ns.to_string(),
+            because: v.get("because").and_then(|b| b.as_str()).unwrap_or("").to_string(),
+            placed_by: v.get("placed_by").and_then(|b| b.as_str()).unwrap_or("").to_string(),
+        }))
+    }
+
+    /// Refuse a destruction in a held namespace, or record the override.
+    ///
+    /// Returns the hold that was overridden, so the caller can name it in the
+    /// audit record — an override that leaves no trace of WHAT it overrode
+    /// is not an audited override.
+    fn guard_hold(
+        db: &dyn Db,
+        ns: &str,
+        over: Option<&HoldOverride>,
+    ) -> Result<Option<HoldRecord>> {
+        let Some(hold) = Self::hold_for_ns_on(db, ns)? else {
+            return Ok(None);
+        };
+        match over {
+            Some(_) => Ok(Some(hold)),
+            None => Err(AreevError::LegalHold(format!(
+                "namespace '{}' is under a legal hold placed by {} ({}) — destruction \
+                 refuses until the hold is released, or is overridden explicitly",
+                hold.ns, hold.placed_by, hold.because
+            ))),
+        }
+    }
+
     /// The floor/hold guard every age-based destruction passes through.
     /// `ns = None` (a global sweep) must clear EVERY namespace's floor and
     /// every hold — an operator who wants to sweep around a held namespace
@@ -3535,7 +3829,11 @@ impl Areev {
         match ns {
             Some(n) => {
                 if let Some((_, because, placed_by)) = holds.iter().find(|(h, _, _)| h == n) {
-                    return Err(AreevError::Validation(format!(
+                    // STO-E009, not VAL-E001 (#278): "deferred by a hold" is
+                    // an expected, reportable outcome a host must be able to
+                    // record without parsing a message — and the same code
+                    // now covers every other destruction path.
+                    return Err(AreevError::LegalHold(format!(
                         "namespace '{n}' is under a legal hold placed by {placed_by} \
                          ({because}) — age-based destruction refuses until the hold \
                          is released"
@@ -3544,7 +3842,7 @@ impl Areev {
             }
             None => {
                 if let Some((h, because, placed_by)) = holds.first() {
-                    return Err(AreevError::Validation(format!(
+                    return Err(AreevError::LegalHold(format!(
                         "a global sweep is refused while any legal hold is live \
                          (namespace '{h}', placed by {placed_by}: {because}) — \
                          scope the sweep to unheld namespaces"
@@ -4296,10 +4594,12 @@ impl Areev {
             _ => (Vec::new(), 0),
         };
         let embed_text = projected;
-        let embedding = match (&self.embedder, &embed_text) {
-            (Some(e), Some(t)) => Some(e.embed(t)?),
+        // Deferred to `fill_embeddings`, which batches the whole write.
+        let pending_embed = match (&self.embedder, &embed_text) {
+            (Some(_), Some(t)) => Some(t.clone()),
             _ => None,
         };
+        let embedding: Option<Vec<f32>> = None;
         // Cross-grain links are subject-ed on the grain's own hash, so a link
         // is queryable from either end without inventing a synthetic node.
         let mut links = Vec::with_capacity(gv.links.len());
@@ -4337,6 +4637,7 @@ impl Areev {
             gtype: gv.gtype as i64,
             text,
             embedding,
+            pending_embed,
             tokens,
             doc_len,
             links,
@@ -4345,6 +4646,52 @@ impl Areev {
             parent,
             corpus_export: gv.corpus_export,
         })
+    }
+
+    /// Embed a prepared batch in ONE backend call (#290).
+    ///
+    /// Runs BEFORE the write transaction opens, so a backend failure, a
+    /// wrong count or a wrong dimension refuses the whole write with nothing
+    /// stored — a half-embedded corpus is worse than an unembedded one,
+    /// because the vector leg then answers confidently from a partial index.
+    fn fill_embeddings(&mut self, preps: &mut [GrainPrep]) -> Result<()> {
+        let Some(embedder) = &self.embedder else {
+            return Ok(());
+        };
+        let idx: Vec<usize> = preps
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.pending_embed.is_some())
+            .map(|(i, _)| i)
+            .collect();
+        if idx.is_empty() {
+            return Ok(());
+        }
+        let texts: Vec<&str> = idx
+            .iter()
+            .map(|i| preps[*i].pending_embed.as_deref().expect("filtered"))
+            .collect();
+        let vectors = embedder.embed_batch(&texts, EmbedInput::Document)?;
+        if vectors.len() != texts.len() {
+            return Err(AreevError::Validation(format!(
+                "embed backend returned {} vectors for {} texts — a positional \
+                 mismatch would attach each grain the wrong vector",
+                vectors.len(),
+                texts.len()
+            )));
+        }
+        let dim = embedder.dim();
+        for (slot, v) in idx.into_iter().zip(vectors) {
+            if v.len() != dim {
+                return Err(AreevError::Validation(format!(
+                    "embed backend returned {} dims, expected {dim}",
+                    v.len()
+                )));
+            }
+            preps[slot].embedding = Some(v);
+            preps[slot].pending_embed = None;
+        }
+        Ok(())
     }
 
     /// Resolve a token to its `fts_vocab` id, assigning one if new.
@@ -4400,10 +4747,13 @@ impl Areev {
             }
             prepped.push(Some(self.prep_from_blob(blob, hash, true)?));
         }
-        let preps: Vec<GrainPrep> = prepped.into_iter().flatten().collect();
+        let mut preps: Vec<GrainPrep> = prepped.into_iter().flatten().collect();
         if preps.is_empty() {
             return Ok(hashes);
         }
+        // One model call for the whole batch — and the duplicates skipped
+        // above were never prepped, so they are never embedded either.
+        self.fill_embeddings(&mut preps)?;
         let (preps, first_seq, first_op, hlc0) = self.reserve_for(preps);
         // A grain type newer than any pre-1.5 build could decode makes this file
         // unreadable to those builds — `deserialize_blob` errors on an unknown
@@ -4456,6 +4806,7 @@ impl Areev {
             let (blob, hash) = g.serialize_dyn()?;
             preps.push(self.prep_from_blob(blob, hash, true)?);
         }
+        self.fill_embeddings(&mut preps)?;
         Ok(self.reserve_for(preps))
     }
 
@@ -4478,8 +4829,19 @@ impl Areev {
 
     /// Backfill the secondary indexes that were added after this file may have
     /// been written: reverse provenance (`prov_idx`), run correlation
-    /// (`run_idx`), governed corpus manifests (`corpus_idx`), and the
-    /// `related_to` cross-link triples.
+    /// (`run_idx`), governed corpus manifests (`corpus_idx`), the
+    /// `related_to` cross-link triples, and the `osp` reverse rows for every
+    /// triple whose relation is entity-valued under the file's CURRENT
+    /// declaration (#310).
+    ///
+    /// The last of those is what makes a relation declarable after ingestion:
+    /// `osp` rows are written on the add path only when the relation was
+    /// already in `entity_relations`, so facts written before the declaration
+    /// were invisible to every reverse walk and nothing backfilled them. A
+    /// rebuild replays every triple's reverse row — inserting it when the
+    /// relation is declared now, removing it when the relation has left the
+    /// set — so the index always matches the declaration rather than the
+    /// declaration that happened to be live at write time.
     ///
     /// Returns the number of index rows written. Idempotent — the tables are
     /// cleared first, so running it twice is not double-counting. Reads every
@@ -4520,6 +4882,14 @@ impl Areev {
             parent: Option<Vec<u8>>,
             corpus_export: bool,
             links: Vec<(i64, i64, i64)>,
+            /// An ordinary `(s, p, o)` triple's dictionary ids, and whether
+            /// its relation is entity-valued under the CURRENT declaration
+            /// (#310). The row is replayed either way: declared means the
+            /// `osp` row is (re)written, undeclared means it is removed, so
+            /// one rebuild both backfills a relation declared after the fact
+            /// and cleans up one that was withdrawn.
+            triple: Option<(i64, i64, i64)>,
+            triple_is_entity: bool,
             /// Dictionary id of a subject carried without a full triple, and
             /// whether the grain is superseded (so the rebuilt row lands with
             /// the same `cur` the incremental path would have left it at).
@@ -4582,6 +4952,19 @@ impl Areev {
                     }
                     _ => None,
                 };
+                let mut triple = None;
+                let mut triple_is_entity = false;
+                if let (Some(sj), Some(rl), Some(ob)) = (&gv.subject, &gv.relation, &gv.object) {
+                    if let (Some(si), Some(pi_), Some(oi)) = (
+                        self.term_lookup(sj)?,
+                        self.term_lookup(rl)?,
+                        self.term_lookup(ob)?,
+                    ) {
+                        triple = Some((si, pi_, oi));
+                        triple_is_entity =
+                            rl == "mg:harness" || self.entity_rels.contains(rl.as_str());
+                    }
+                }
                 plan.push(Row {
                     seq: *seq,
                     ns: *ns,
@@ -4589,6 +4972,8 @@ impl Areev {
                     parent,
                     corpus_export: gv.corpus_export,
                     links,
+                    triple,
+                    triple_is_entity,
                     subject_only,
                     superseded: *superseded,
                 });
@@ -4636,6 +5021,33 @@ impl Areev {
                         ],
                     )?;
                     n += 1;
+                }
+                if let Some((ts, tp, to)) = r.triple {
+                    // Replayed rather than appended, and replayed even when
+                    // the relation is NOT entity-valued: the delete is what
+                    // withdraws a relation's rows when it leaves the declared
+                    // set, and the conditional insert is what backfills rows
+                    // for grains written before it joined (#310). `triples`
+                    // is untouched here — the forward index was always
+                    // written; only the reverse one was conditional.
+                    self.db.execute(
+                        "DELETE FROM osp WHERE ns=?1 AND o=?2 AND s=?3 AND p=?4 AND seq=?5",
+                        vec![pi(r.ns), pi(to), pi(ts), pi(tp), pi(r.seq)],
+                    )?;
+                    if r.triple_is_entity {
+                        self.db.execute(
+                            "INSERT INTO osp(ns,o,s,p,seq,cur) VALUES (?1,?2,?3,?4,?5,?6)",
+                            vec![
+                                pi(r.ns),
+                                pi(to),
+                                pi(ts),
+                                pi(tp),
+                                pi(r.seq),
+                                pi(if r.superseded { 0 } else { 1 }),
+                            ],
+                        )?;
+                        n += 1;
+                    }
                 }
                 for (ls, lp, lo) in &r.links {
                     // Replayed rather than appended: a re-run must not stack
@@ -5641,8 +6053,14 @@ impl Areev {
                 }
             }
             dbr.execute(
-                "INSERT INTO oplog(op_seq,hlc,op,hash) VALUES (?1,?2,?3,?4)",
-                vec![pi(op_seq), pi(hlc), pi(OP_SUPERSEDE), pb(new_hash.as_bytes().to_vec())],
+                "INSERT INTO oplog(op_seq,hlc,op,hash,ns) VALUES (?1,?2,?3,?4,?5)",
+                vec![
+                    pi(op_seq),
+                    pi(hlc),
+                    pi(OP_SUPERSEDE),
+                    pb(new_hash.as_bytes().to_vec()),
+                    pi(preps[0].ns_id),
+                ],
             )?;
             Ok(())
         })?;
@@ -5656,8 +6074,44 @@ impl Areev {
     }
 
     /// How many grant grains one principal may carry — a sanity bound, far
-    /// above any real ACL.
-    const AUTHZ_GRANT_CAP: usize = 256;
+    /// above any real ACL. Exceeding it is REPORTED, never silently
+    /// truncated (#309).
+    pub const AUTHZ_GRANT_CAP: usize = 256;
+
+    /// A value that changes whenever the memory's authorization policy does
+    /// (#309).
+    ///
+    /// The highest sequence number in `agent:authz`. A host caching bound
+    /// sessions reads this once per request — one indexed read — instead of
+    /// re-resolving every principal's grants, or evicting its whole cache on
+    /// a timer and hoping. Writes outside `agent:authz` never move it.
+    ///
+    /// It is a CHANGE DETECTOR, not a version number: compare for equality,
+    /// never for ordering or distance.
+    pub fn authz_epoch(&mut self) -> Result<i64> {
+        let Some(ns_id) = self.term_lookup(authz::AUTHZ_NS)? else {
+            return Ok(0);
+        };
+        let rows = self.db.query(
+            "SELECT COALESCE(MAX(seq), 0) FROM grains WHERE ns = ?1",
+            vec![pi(ns_id)],
+        )?;
+        let max_seq = rows.first().and_then(|r| r.i64(0)).unwrap_or(0);
+        // A forget removes the row, so MAX(seq) alone would go BACKWARDS and
+        // could land on a value a cache has already seen. Mixing in the op
+        // count makes every add, supersede and forget in the namespace move
+        // the value.
+        let ops = self
+            .db
+            .query(
+                "SELECT COUNT(*) FROM oplog WHERE ns = ?1",
+                vec![pi(ns_id)],
+            )?
+            .first()
+            .and_then(|r| r.i64(0))
+            .unwrap_or(0);
+        Ok(max_seq.wrapping_mul(1_000_003).wrapping_add(ops))
+    }
 
     /// The live grants for one principal: the `mg:permits` heads in the
     /// reserved `agent:authz` namespace (OMS 1.6 §12.6), parsed from their
@@ -5671,12 +6125,27 @@ impl Areev {
         // object strings — an egress policy on agent:authz would otherwise
         // pseudonymize every principal and fail every check (fail-closed in
         // the wrong place).
+        //
+        // Over-fetch by one so hitting the cap is DETECTABLE (#309). Before
+        // this, a principal holding more than 256 grant grains silently got
+        // the first 256 and a live grant on the 257th namespace simply
+        // stopped working — fail-closed, but with no warning at `GRANT`, at
+        // bind, or in `SHOW GRANTS`. Silent under-granting is still a
+        // security incident: it is an outage nobody can diagnose.
         let grains = self.recall_raw(
             authz::AUTHZ_NS,
             principal,
             Some(authz::REL_PERMITS),
-            Self::AUTHZ_GRANT_CAP,
+            Self::AUTHZ_GRANT_CAP + 1,
         )?;
+        if grains.len() > Self::AUTHZ_GRANT_CAP {
+            return Err(AreevError::Validation(format!(
+                "principal {principal:?} holds more than {} grant grains — refusing to \
+                 resolve a SILENT SUBSET of its rights. Pack namespaces into fewer \
+                 grants (one grant may name many namespaces) and retire the rest",
+                Self::AUTHZ_GRANT_CAP
+            )));
+        }
         let mut grants = Vec::new();
         for g in &grains {
             if let Some(obj) = g.get_str("object") {
@@ -5690,7 +6159,125 @@ impl Areev {
 
     /// Forget (erase from hot store) — writes a tombstone to the op-log.
     /// File-level crypto-erasure remains the strong path.
+    ///
+    /// Refuses with `STO-E009` when the grain's namespace is under a legal
+    /// hold (#278). The check lives HERE rather than on each surface because
+    /// `forget` is the choke point every one of them goes through — CAL
+    /// `FORGET <hash>`, the MCP tool, the bindings, the console, the memory
+    /// tool's `delete`/`rename`, the mem0 importer's DELETE events, the
+    /// loop's rollback. A guard on the age path alone left every other door
+    /// open, which is the bug: a hold that only some deletion paths honour
+    /// is not a hold.
     pub fn forget(&mut self, hash: &Hash) -> Result<()> {
+        self.forget_maybe_overriding(hash, None).map(|_| ())
+    }
+
+    /// [`forget`](Self::forget) with an explicit, audited override of a legal
+    /// hold (D10). Returns the hold that was overridden, if any, so the
+    /// caller can name it in the Tier-2 audit record.
+    pub fn forget_overriding(
+        &mut self,
+        hash: &Hash,
+        over: &HoldOverride,
+    ) -> Result<Option<HoldRecord>> {
+        self.forget_maybe_overriding(hash, Some(over))
+    }
+
+    /// Bundle replay's door into the tombstone path: convergence, not a new
+    /// decision (#278 item 4).
+    ///
+    /// A follower that placed its own hold must still apply a tombstone the
+    /// leader decided on, or it aborts mid-import and diverges permanently.
+    /// A hold binds the memory where destruction is DECIDED; replication
+    /// carries the decision, it does not re-take it. The import counts these
+    /// separately so an operator can see it happened.
+    fn forget_replicated(&mut self, hash: &Hash) -> Result<bool> {
+        let held = self
+            .grain_namespace(hash)?
+            .map(|ns| Self::hold_for_ns_on(self.db.as_ref(), &ns))
+            .transpose()?
+            .flatten()
+            .is_some();
+        self.forget_unguarded(hash)?;
+        Ok(held)
+    }
+
+    /// A chained Tier-2 audit record is not forgettable by hash (#280).
+    ///
+    /// Without this, the trail the export verifies is deletable by anyone
+    /// who can delete anything: an owner session could `FORGET` the record
+    /// of its own erasure and the export would come back clean. An
+    /// AGE-BASED purge of `agent:authz` is deliberately still possible — a
+    /// retention policy over the audit namespace is a legitimate act, it
+    /// leaves its own record, and the export reports the surviving chain's
+    /// new root rather than a break.
+    fn refuse_forgetting_an_audit_record(&mut self, hash: &Hash) -> Result<()> {
+        let rows = self.db.query(
+            "SELECT blob FROM grains WHERE hash = ?1",
+            vec![pb(hash.as_bytes().to_vec())],
+        )?;
+        let Some(blob) = rows.first().and_then(|r| r.blob(0)) else {
+            return Ok(());
+        };
+        let view = deserialize_blob(&blob)?;
+        let ctx = view.fields.get("context");
+        let is_tier2 = ctx.and_then(|c| c.get("audit")).and_then(serde_json::Value::as_str)
+            == Some("tier2")
+            && ctx.and_then(|c| c.get("seq")).is_some();
+        if is_tier2 {
+            return Err(AreevError::Validation(format!(
+                "grain {} is a chained Tier-2 audit record — the destruction trail is \
+                 not deletable by hash; an age-based purge of the audit namespace is \
+                 the supported path",
+                hash.to_hex()
+            )));
+        }
+        Ok(())
+    }
+
+    /// The namespace of a stored grain, by content address.
+    fn grain_namespace(&mut self, hash: &Hash) -> Result<Option<String>> {
+        let rows = self.db.query(
+            "SELECT ns FROM grains WHERE hash = ?1",
+            vec![pb(hash.as_bytes().to_vec())],
+        )?;
+        match rows.first().and_then(|r| r.i64(0)) {
+            Some(id) => self.term_str(id),
+            None => Ok(None),
+        }
+    }
+
+    fn forget_maybe_overriding(
+        &mut self,
+        hash: &Hash,
+        over: Option<&HoldOverride>,
+    ) -> Result<Option<HoldRecord>> {
+        self.refuse_forgetting_an_audit_record(hash)?;
+        let ns = self.grain_namespace(hash)?;
+        // Pre-flight so a refusal costs no transaction; the authoritative
+        // check is inside the transaction below.
+        if let Some(ns) = &ns {
+            Self::guard_hold(self.db.as_ref(), ns, over)?;
+        }
+        let overridden = ns
+            .as_deref()
+            .map(|n| Self::hold_for_ns_on(self.db.as_ref(), n))
+            .transpose()?
+            .flatten();
+        self.forget_guarded_inner(hash, ns.as_deref(), over)?;
+        Ok(overridden)
+    }
+
+    fn forget_unguarded(&mut self, hash: &Hash) -> Result<()> {
+        self.forget_guarded_inner(hash, None, None)
+    }
+
+    fn forget_guarded_inner(
+        &mut self,
+        hash: &Hash,
+        hold_ns: Option<&str>,
+        over: Option<&HoldOverride>,
+    ) -> Result<()> {
         self.check_writable("forget a grain")?;
         // Pre-transaction read for the (ns,s,p) key only. The SEQ is
         // deliberately not taken from here: it is re-resolved under the row
@@ -5724,6 +6311,12 @@ impl Areev {
                 Some(w) => (w.op0, w.hlc0),
                 None => (ram_op, ram_hlc),
             };
+            // Authoritative hold check: after the serialization point, so a
+            // hold placed concurrently by a second Postgres handle cannot
+            // lose the race against this delete (#278).
+            if let Some(hns) = hold_ns {
+                Self::guard_hold(dbr, hns, over)?;
+            }
             // Re-resolve BY HASH under the row lock and use the FRESH seq
             // for every delete: with concurrent writers, two racing forgets
             // must produce one success and one NotFound, and a forget +
@@ -5808,8 +6401,14 @@ impl Areev {
                 }
             }
             dbr.execute(
-                "INSERT INTO oplog(op_seq,hlc,op,hash) VALUES (?1,?2,?3,?4)",
-                vec![pi(op_seq), pi(hlc), pi(OP_FORGET), pb(hash.as_bytes().to_vec())],
+                "INSERT INTO oplog(op_seq,hlc,op,hash,ns) VALUES (?1,?2,?3,?4,?5)",
+                vec![
+                    pi(op_seq),
+                    pi(hlc),
+                    pi(OP_FORGET),
+                    pb(hash.as_bytes().to_vec()),
+                    opt_i(ns),
+                ],
             )?;
             // Targeted CAS reclamation, mirroring erase_where: a tombstone
             // that leaves the attachment bytes on disk is not a tombstone.
@@ -5910,12 +6509,40 @@ impl Areev {
         subject: &str,
         opts: ErasureOptions,
     ) -> Result<ErasureReport> {
+        self.forget_subject_inner(ns, subject, opts, None).map(|(r, _)| r)
+    }
+
+    /// [`forget_subject_with`](Self::forget_subject_with) with an explicit,
+    /// audited override of a legal hold (D10, #278). Returns the report and
+    /// the hold that was overridden, for the audit record.
+    pub fn forget_subject_overriding(
+        &mut self,
+        ns: &str,
+        subject: &str,
+        opts: ErasureOptions,
+        over: &HoldOverride,
+    ) -> Result<(ErasureReport, Option<HoldRecord>)> {
+        self.forget_subject_inner(ns, subject, opts, Some(over))
+    }
+
+    fn forget_subject_inner(
+        &mut self,
+        ns: &str,
+        subject: &str,
+        opts: ErasureOptions,
+        over: Option<&HoldOverride>,
+    ) -> Result<(ErasureReport, Option<HoldRecord>)> {
         // Destruction takes an exact namespace — never a pattern (root
         // invariant 3: a hash, an identity, or an age, never a predicate).
         require_exact_ns("forget_subject", ns)?;
         self.check_subject_selector("forget_subject", subject, opts.text_mentions)?;
+        // #278: identity erasure honours the hold like every other
+        // destruction. A refusal here erases NOTHING — not even a partial
+        // alias pass — so `subject_report` is unchanged afterwards
+        // (REQ-ERASE-4: the report and the erasure share one selector).
+        let overridden = Self::guard_hold(self.db.as_ref(), ns, over)?;
         let Some(ns_id) = self.term_lookup(ns)? else {
-            return Ok(ErasureReport::default());
+            return Ok((ErasureReport::default(), overridden));
         };
         let mut report = self.erase_where(
             ErasureSelector::Identity {
@@ -5953,7 +6580,7 @@ impl Areev {
                 report.erased_hashes.extend(alias_report.erased_hashes);
             }
         }
-        Ok(report)
+        Ok((report, overridden))
     }
 
     /// Shared preconditions for the subject selector — erasure AND the
@@ -6450,12 +7077,13 @@ impl Areev {
                     }
                 }
                 self.db.execute(
-                    "INSERT INTO oplog(op_seq,hlc,op,hash) VALUES (?1,?2,?3,?4)",
+                    "INSERT INTO oplog(op_seq,hlc,op,hash,ns) VALUES (?1,?2,?3,?4,?5)",
                     vec![
                         pi(op0 + i as i64),
                         pi(hlc0 + i as i64),
                         pi(OP_FORGET),
                         pb(t.hash.clone()),
+                        pi(t.ns),
                     ],
                 )?;
             }
@@ -6652,6 +7280,16 @@ impl Areev {
     /// imported supersession whose grain already existed locally. Without it
     /// those transitions never replicate and downstream replicas diverge.
     fn log_op(&mut self, op: i64, hash: &Hash, hlc: i64) -> Result<()> {
+        // The grain is still present on this path (it is a supersession of a
+        // grain we already hold), so its namespace is recoverable.
+        let ns_id = self
+            .db
+            .query(
+                "SELECT ns FROM grains WHERE hash = ?1",
+                vec![pb(hash.as_bytes().to_vec())],
+            )?
+            .first()
+            .and_then(|r| r.i64(0));
         let ram_op = self.next_op;
         self.next_op += 1;
         let dbr = self.db.as_ref();
@@ -6663,8 +7301,14 @@ impl Areev {
                 None => ram_op,
             };
             dbr.execute(
-                "INSERT INTO oplog(op_seq,hlc,op,hash) VALUES (?1,?2,?3,?4)",
-                vec![pi(op_seq), pi(hlc), pi(op), pb(hash.as_bytes().to_vec())],
+                "INSERT INTO oplog(op_seq,hlc,op,hash,ns) VALUES (?1,?2,?3,?4,?5)",
+                vec![
+                    pi(op_seq),
+                    pi(hlc),
+                    pi(op),
+                    pb(hash.as_bytes().to_vec()),
+                    opt_i(ns_id),
+                ],
             )?;
             Ok(())
         })
@@ -6685,6 +7329,23 @@ impl Areev {
     pub fn telemetry_flush(&mut self) -> Result<()> {
         if let Some(tel) = self.telemetry.as_mut() {
             tel.flush()?;
+        }
+        Ok(())
+    }
+
+    /// Drop every telemetry row belonging to one namespace (#306).
+    ///
+    /// The scrubs that already exist are per grain hash and per subject
+    /// string; neither reaches a zero-result free-text query, which names no
+    /// hash and need not contain the erased identity. Erasing a namespace
+    /// should take its recall evidence with it, and every `telem_*` row
+    /// carries `ns`, so it can.
+    ///
+    /// Exact namespace only.
+    pub fn telemetry_scrub_namespace(&mut self, ns: &str) -> Result<()> {
+        require_exact_ns("telemetry scrub", ns)?;
+        if let Some(tel) = self.telemetry.as_mut() {
+            tel.scrub_namespace(ns)?;
         }
         Ok(())
     }
@@ -7035,6 +7696,166 @@ impl Areev {
         Ok(out)
     }
 
+    /// [`related`](Self::related) over a SET of namespaces (#303).
+    ///
+    /// A cross-namespace as-of read is N calls and merely inconvenient. A
+    /// cross-namespace WALK is not composable from per-namespace calls at
+    /// all: the frontier, the `seen` set, the depth counter and the cap are
+    /// shared state, so a host doing it itself re-implements the BFS with one
+    /// round trip per namespace per hop, and its depth and cap mean something
+    /// different from Areev's. One BFS whose hops read `ns IN (…)` is the
+    /// same traversal with a wider edge set.
+    ///
+    /// Exact names only — a namespace PATTERN is refused, as it is on every
+    /// point read. A one-element list keeps the parameterized single-namespace
+    /// plan, so nothing about today's call path changes.
+    pub fn related_scoped(
+        &mut self,
+        ns_list: &[String],
+        start: &str,
+        relations: &[&str],
+        dir: Direction,
+        depth: usize,
+        cap: usize,
+    ) -> Result<Vec<String>> {
+        if let [one] = ns_list {
+            return self.related(one, start, relations, dir, depth, cap);
+        }
+        let mut ns_ids: Vec<i64> = Vec::new();
+        for n in ns_list {
+            require_exact_ns("related", n)?;
+            if let Some(id) = self.term_lookup(n)? {
+                ns_ids.push(id);
+            }
+        }
+        ns_ids.sort_unstable();
+        ns_ids.dedup();
+        if ns_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let start_id = match self.term_lookup(start)? {
+            Some(x) => x,
+            None => return Ok(Vec::new()),
+        };
+        let mut rel_ids: Vec<i64> = Vec::new();
+        for r in relations {
+            if let Some(id) = self.term_lookup(r)? {
+                rel_ids.push(id);
+            }
+        }
+        if rel_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Engine-internal dictionary ids, inlined exactly as `nearest_scoped`
+        // and `live_seqs` do — they are integers this function produced, never
+        // caller text.
+        let ns_in = ns_ids
+            .iter()
+            .map(i64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let depth = depth.min(4);
+        let cap = cap.min(512);
+        let reached = 'bfs: {
+            let mut seen: HashSet<i64> = HashSet::new();
+            seen.insert(start_id);
+            let mut order: Vec<i64> = Vec::new();
+            let mut frontier = vec![start_id];
+            for _ in 0..depth {
+                let mut next = Vec::new();
+                for node in &frontier {
+                    for p in &rel_ids {
+                        if matches!(dir, Direction::Out | Direction::Both) {
+                            for row in self.db.query(
+                                &format!(
+                                    "SELECT o FROM triples WHERE ns IN ({ns_in}) AND s=?1 \
+                                     AND p=?2 AND cur=1 LIMIT 64"
+                                ),
+                                vec![pi(*node), pi(*p)],
+                            )? {
+                                if let Some(o) = row.i64(0) {
+                                    if seen.insert(o) {
+                                        order.push(o);
+                                        next.push(o);
+                                        if order.len() >= cap {
+                                            break 'bfs order;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if matches!(dir, Direction::In | Direction::Both) {
+                            for row in self.db.query(
+                                &format!(
+                                    "SELECT s FROM osp WHERE ns IN ({ns_in}) AND o=?1 \
+                                     AND p=?2 AND cur=1 LIMIT 64"
+                                ),
+                                vec![pi(*node), pi(*p)],
+                            )? {
+                                if let Some(s) = row.i64(0) {
+                                    if seen.insert(s) {
+                                        order.push(s);
+                                        next.push(s);
+                                        if order.len() >= cap {
+                                            break 'bfs order;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if next.is_empty() {
+                    break;
+                }
+                frontier = next;
+            }
+            order
+        };
+        let mut out = Vec::with_capacity(reached.len());
+        for id in reached {
+            if let Some(t) = self.term_str(id)? {
+                out.push(t);
+            }
+        }
+        // The egress boundary is per namespace, so it runs once per named
+        // namespace over the shared result — a term reachable from two
+        // namespaces is covered by both policies, which is the safe reading.
+        for n in ns_list {
+            self.egress_strings_exit(n, None, &mut out)?;
+        }
+        Ok(out)
+    }
+
+    /// [`entity_at`](Self::entity_at) over a SET of namespaces (#303).
+    ///
+    /// One independently resolved answer per namespace, paired with the
+    /// namespace it came from. Deliberately NOT merged into a single winner:
+    /// there is no defensible precedence between two namespaces' independent
+    /// records of the same subject at the same instant, and inventing one
+    /// would make the answer depend on an ordering Areev made up.
+    pub fn entity_at_scoped(
+        &mut self,
+        ns_list: &[String],
+        subject: &str,
+        relation: &str,
+        t: i64,
+        axis: Axis,
+    ) -> Result<Vec<(String, DeserializedGrain)>> {
+        let mut out = Vec::new();
+        let mut seen: HashSet<&str> = HashSet::new();
+        for ns in ns_list {
+            require_exact_ns("entity_at", ns)?;
+            if !seen.insert(ns.as_str()) {
+                continue;
+            }
+            if let Some(g) = self.entity_at(ns, subject, relation, t, axis)? {
+                out.push((ns.clone(), g));
+            }
+        }
+        Ok(out)
+    }
+
     /// Bounded bidirectional-ish path search (forward BFS with parents).
     pub fn path(
         &mut self,
@@ -7160,6 +7981,19 @@ impl Areev {
             }
             Axis::World => {
                 // Current knowledge filtered by world validity at T.
+                //
+                // Among the live grains whose window contains T, the one that
+                // took effect most recently in WORLD time wins (#305). Write
+                // order only breaks an exact tie. Ordering by `tr.seq` alone
+                // answered a world-time question with a system-time
+                // tie-break, which is unobservable while windows are closed
+                // and wrong the moment two are open-ended — the ordinary
+                // shape when a state's end is only known as "the next state
+                // began", and the shape every out-of-order backfill produces.
+                //
+                // `COALESCE(g.vf, g.created_at)` rather than sorting NULLs
+                // last so a memory that never sets `valid_from` keeps exactly
+                // today's answers.
                 let (ns_id, s_id, p_id) = match (
                     self.term_lookup(ns)?,
                     self.term_lookup(subject)?,
@@ -7176,7 +8010,7 @@ impl Areev {
                            AND g.svt IS NULL
                            AND (g.vf IS NULL OR g.vf <= ?4)
                            AND (g.vt IS NULL OR g.vt > ?4)
-                         ORDER BY tr.seq DESC LIMIT 1",
+                         ORDER BY COALESCE(g.vf, g.created_at) DESC, tr.seq DESC LIMIT 1",
                         vec![pi(ns_id), pi(s_id), pi(p_id), pi(t)],
                     )?
                     .first()
@@ -7618,7 +8452,11 @@ impl Areev {
             ));
         }
         let embedder = self.embedder.as_ref().expect("checked above");
-        let qjson = vec_to_json(&embedder.embed(text)?);
+        // Document, not Query (#290): `nearest_semantic` / `NOVELTY` compares
+        // a CANDIDATE GRAIN against stored documents — "is this already in
+        // here" — so both sides belong in the document space. Embedding one
+        // side as a query would put the comparison across two spaces.
+        let qjson = vec_to_json(&embedder.embed_as(text, EmbedInput::Document)?);
         self.nearest_scoped(ns, subject, relation, &qjson, k)
     }
 
@@ -7759,7 +8597,8 @@ impl Areev {
         let Some(embedder) = &self.embedder else {
             return Ok(Vec::new());
         };
-        let qv = embedder.embed(query)?;
+        // The search side of an asymmetric model (#290).
+        let qv = embedder.embed_as(query, EmbedInput::Query)?;
         let qjson = vec_to_json(&qv);
         if let [ns_id] = ns_ids {
             // Single namespace: the fixed literal keeps its cached plan.
@@ -8148,7 +8987,7 @@ impl Areev {
             return Ok(pool);
         }
         let qv = match &self.embedder {
-            Some(e) => e.embed(query)?,
+            Some(e) => e.embed_as(query, EmbedInput::Query)?,
             None => return Ok(pool.into_iter().take(k).collect()),
         };
         let qjson = vec_to_json(&qv);
@@ -8644,8 +9483,14 @@ impl Areev {
                 }
             }
             dbr.execute(
-                "INSERT INTO oplog(op_seq,hlc,op,hash) VALUES (?1,?2,?3,?4)",
-                vec![pi(op_seq), pi(hlc), pi(OP_SUPERSEDE), pb(merge_hash.as_bytes().to_vec())],
+                "INSERT INTO oplog(op_seq,hlc,op,hash,ns) VALUES (?1,?2,?3,?4,?5)",
+                vec![
+                    pi(op_seq),
+                    pi(hlc),
+                    pi(OP_SUPERSEDE),
+                    pb(merge_hash.as_bytes().to_vec()),
+                    pi(preps[0].ns_id),
+                ],
             )?;
             Ok(())
         })?;
@@ -9299,17 +10144,82 @@ impl Areev {
 
     /// Op-log cursor read — the change feed (backs sync + UIs).
     pub fn changes_since(&mut self, after_op_seq: i64, limit: usize) -> Result<Vec<OpRecord>> {
-        let mut out = Vec::new();
-        for row in self.db.query(
-            "SELECT op_seq, hlc, op, hash FROM oplog WHERE op_seq > ?1 ORDER BY op_seq LIMIT ?2",
-            vec![pi(after_op_seq), pi(limit as i64)],
-        )? {
-            out.push(OpRecord {
-                op_seq: row.i64(0).unwrap_or(0),
-                hlc: row.i64(1).unwrap_or(0),
-                op: row.i64(2).unwrap_or(0),
-                hash: Hash::try_from_bytes(&row.blob(3).unwrap_or_default())?,
-            });
+        self.changes_since_inner(after_op_seq, &[], limit)
+    }
+
+    /// [`changes_since`](Self::changes_since) narrowed to a set of
+    /// namespaces (#307).
+    ///
+    /// `op_seq` stays the MEMORY-WIDE sequence, so a scoped cursor remains
+    /// comparable with [`head_op_seq`](Self::head_op_seq) and a consumer can
+    /// widen or narrow its scope without re-seeding. An empty `ns_list` is
+    /// the unscoped feed.
+    ///
+    /// Rows with no recorded namespace — written by an older build, or an
+    /// imported tombstone whose peer recorded none — are NOT returned by a
+    /// scoped read. They cannot be attributed, and handing an unattributable
+    /// row to a per-namespace consumer would be a guess.
+    pub fn changes_since_scoped(
+        &mut self,
+        after_op_seq: i64,
+        ns_list: &[String],
+        limit: usize,
+    ) -> Result<Vec<OpRecord>> {
+        self.changes_since_inner(after_op_seq, ns_list, limit)
+    }
+
+    fn changes_since_inner(
+        &mut self,
+        after_op_seq: i64,
+        ns_list: &[String],
+        limit: usize,
+    ) -> Result<Vec<OpRecord>> {
+        let mut ns_ids: Vec<i64> = Vec::new();
+        if !ns_list.is_empty() {
+            for n in ns_list {
+                require_exact_ns("changes_since", n)?;
+                if let Some(id) = self.term_lookup(n)? {
+                    ns_ids.push(id);
+                }
+            }
+            ns_ids.sort_unstable();
+            ns_ids.dedup();
+            if ns_ids.is_empty() {
+                return Ok(Vec::new());
+            }
+        }
+        let sql = if ns_ids.is_empty() {
+            "SELECT op_seq, hlc, op, hash, ns FROM oplog WHERE op_seq > ?1 \
+             ORDER BY op_seq LIMIT ?2"
+                .to_string()
+        } else {
+            // Engine-internal dictionary ids, inlined as elsewhere.
+            let list = ns_ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+            format!(
+                "SELECT op_seq, hlc, op, hash, ns FROM oplog WHERE op_seq > ?1 \
+                 AND ns IN ({list}) ORDER BY op_seq LIMIT ?2"
+            )
+        };
+        let mut ops: Vec<(OpRecord, Option<i64>)> = Vec::new();
+        for row in self.db.query(&sql, vec![pi(after_op_seq), pi(limit as i64)])? {
+            ops.push((
+                OpRecord {
+                    op_seq: row.i64(0).unwrap_or(0),
+                    hlc: row.i64(1).unwrap_or(0),
+                    op: row.i64(2).unwrap_or(0),
+                    hash: Hash::try_from_bytes(&row.blob(3).unwrap_or_default())?,
+                    ns: None,
+                },
+                row.i64(4),
+            ));
+        }
+        let mut out = Vec::with_capacity(ops.len());
+        for (mut rec, ns_id) in ops {
+            rec.ns = match ns_id {
+                Some(id) => self.term_str(id)?,
+                None => None,
+            };
+            out.push(rec);
         }
         Ok(out)
     }
@@ -9622,7 +10532,9 @@ impl Areev {
     /// Insert one already-serialized grain (bundle import path).
     fn insert_blob(&mut self, blob: Vec<u8>, hash: Hash, op: i64, hlc_in: i64) -> Result<()> {
         self.check_writable("import a bundle")?;
-        let pr = self.prep_from_blob(blob, hash, false)?;
+        let mut pr = self.prep_from_blob(blob, hash, false)?;
+        self.fill_embeddings(std::slice::from_mut(&mut pr))?;
+        let pr = pr;
         let (d_docs, d_len) = fts_delta(std::slice::from_ref(&pr));
         let ram_seq = self.next_seq;
         self.next_seq += 1;
@@ -9758,8 +10670,14 @@ impl Areev {
                 )?;
             }
             dbr.execute(
-                "INSERT INTO oplog(op_seq,hlc,op,hash) VALUES (?1,?2,?3,?4)",
-                vec![pi(op_seq), pi(hlc_in), pi(op), pb(pr.hash.as_bytes().to_vec())],
+                "INSERT INTO oplog(op_seq,hlc,op,hash,ns) VALUES (?1,?2,?3,?4,?5)",
+                vec![
+                    pi(op_seq),
+                    pi(hlc_in),
+                    pi(op),
+                    pb(pr.hash.as_bytes().to_vec()),
+                    pi(pr.ns_id),
+                ],
             )?;
             Ok(())
         })?;
@@ -9989,31 +10907,44 @@ impl Areev {
                         }
                     }
                 }
-                OP_FORGET => match self.forget(&hash) {
-                    Ok(()) => stats.applied += 1,
+                OP_FORGET => match self.forget_replicated(&hash) {
+                    Ok(under_hold) => {
+                        stats.applied += 1;
+                        if under_hold {
+                            stats.forgets_under_hold += 1;
+                        }
+                    }
                     Err(AreevError::NotFound(_)) => stats.skipped += 1,
                     Err(e) => return Err(e),
                 },
                 _ => return Err(AreevError::Format(format!("unknown bundle op {op}"))),
             }
         }
-        if max_hlc.is_none() {
-            let mut anon_changed = false;
-            for (key, value) in &meta_entries {
-                if self.apply_bundle_meta_row(key, value)? {
-                    stats.meta_applied += 1;
-                    anon_changed |= key.starts_with(anon_gate::ANON_PREFIX);
-                } else {
-                    stats.meta_skipped += 1;
-                }
+        // A point-in-time import replays history, so the registry — saved
+        // queries, templates, retention policies — is deliberately skipped:
+        // it describes the source file's present, not the past this import
+        // is reconstructing. Legal holds are the ONE exception (#279): a
+        // hold is a present-day stop on destruction, not a historical fact,
+        // and a restore that comes back unheld is the failure the hold
+        // exists to prevent. Over-holding is the safe direction.
+        let pitr = max_hlc.is_some();
+        let mut anon_changed = false;
+        for (key, value) in &meta_entries {
+            if pitr && !key.starts_with(HOLD_PREFIX) {
+                stats.meta_skipped += 1;
+                continue;
             }
-            // A replicated anon policy takes effect on this handle now, not
-            // at the next open — the gate cache mirrors the meta rows.
-            if anon_changed {
-                self.reload_anon_policies()?;
+            if self.apply_bundle_meta_row(key, value)? {
+                stats.meta_applied += 1;
+                anon_changed |= key.starts_with(anon_gate::ANON_PREFIX);
+            } else {
+                stats.meta_skipped += 1;
             }
-        } else {
-            stats.meta_skipped += meta_entries.len();
+        }
+        // A replicated anon policy takes effect on this handle now, not
+        // at the next open — the gate cache mirrors the meta rows.
+        if anon_changed {
+            self.reload_anon_policies()?;
         }
         Ok(stats)
     }
@@ -10271,8 +11202,14 @@ fn insert_prepped(
             )?;
         }
         db.execute_hot(
-            "INSERT INTO oplog(op_seq,hlc,op,hash) VALUES (?1,?2,?3,?4)",
-            vec![pi(first_op + i as i64), pi(hlc0 + i as i64), pi(OP_ADD), pb(pr.hash.as_bytes().to_vec())],
+            "INSERT INTO oplog(op_seq,hlc,op,hash,ns) VALUES (?1,?2,?3,?4,?5)",
+            vec![
+                pi(first_op + i as i64),
+                pi(hlc0 + i as i64),
+                pi(OP_ADD),
+                pb(pr.hash.as_bytes().to_vec()),
+                pi(pr.ns_id),
+            ],
         )?;
     }
     Ok(())

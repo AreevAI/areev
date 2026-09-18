@@ -25,17 +25,31 @@ use croner::Cron;
 
 use crate::error::{Result, TriggerError};
 
-/// This release evaluates cron in UTC only.
-///
-/// IANA timezone support means `chrono-tz` (~794 KB, and it pulls `phf`) or a
-/// second time library, and it means picking a side in a disagreement that real
-/// implementations have not settled: AWS EventBridge and robfig/cron *skip* an
-/// occurrence that falls in a spring-forward gap, while Vixie cron fires it
-/// immediately. They agree on the fall-back fold — fire once, do not repeat —
-/// so only the gap is contested, but that is enough to make a silent guess the
-/// wrong move. Refusing a timezone we would only mishandle is better than
-/// firing at the wrong hour and being believed.
+/// The zone every build understands, with or without zone data.
 const SUPPORTED_TIMEZONE: &str = "UTC";
+
+/// Cron evaluates in the trigger's declared IANA zone under the `tz` feature
+/// (#297); a build without it keeps refusing anything but UTC, BY NAME.
+///
+/// The DST policy is declared here rather than inherited, because real
+/// implementations disagree and a silent guess is the wrong move:
+///
+/// * **Gap** (spring forward): fire ONCE, at the first valid instant after
+///   the gap. AWS EventBridge and robfig/cron skip the occurrence entirely;
+///   Vixie cron fires it immediately. A daily 02:30 job that simply does not
+///   run on one day a year is a silent missed obligation, so Areev fires it
+///   late rather than not at all.
+/// * **Fold** (fall back): fire ONCE, at the EARLIER occurrence. Everyone
+///   agrees on this one.
+/// * Missed occurrences collapse per the trigger's own `catchup` policy,
+///   unchanged.
+///
+/// Wildcard and step minute fields are evaluated on local WALL time, which
+/// is what "every 15 minutes" means to the person who wrote it.
+#[cfg(feature = "tz")]
+fn resolve_zone(tz: &str) -> Option<chrono_tz::Tz> {
+    tz.parse::<chrono_tz::Tz>().ok()
+}
 
 /// Parse and validate a declaration's schedule without evaluating it.
 ///
@@ -74,16 +88,7 @@ pub fn validate(trigger: &Trigger) -> Result<()> {
         let expr = trigger.cron.as_deref().unwrap_or_default();
         parse_cron(expr)?;
         if let Some(tz) = trigger.config_str(areev_core::types::config_keys::TIMEZONE) {
-            if !tz.eq_ignore_ascii_case(SUPPORTED_TIMEZONE) {
-                return Err(TriggerError::BadSchedule {
-                    expr: expr.to_string(),
-                    why: format!(
-                        "timezone {tz:?} is not supported in this release — cron is evaluated \
-                         in UTC. Declare the expression in UTC rather than having it fire at \
-                         the wrong local hour across a DST boundary"
-                    ),
-                });
-            }
+            check_timezone(expr, tz)?;
         }
     }
     if trigger.kind == TriggerKind::Composite {
@@ -108,6 +113,84 @@ pub fn validate(trigger: &Trigger) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Validate a declared zone against what THIS build can evaluate (#297).
+///
+/// An unknown zone name is refused whether or not zone data is compiled in —
+/// a typo must never fall back to UTC and fire at the wrong hour while
+/// looking correct. A build without the feature names the feature, so an
+/// operator meeting the refusal knows what to change rather than believing
+/// the zone itself is unsupported.
+fn check_timezone(expr: &str, tz: &str) -> Result<()> {
+    if tz.eq_ignore_ascii_case(SUPPORTED_TIMEZONE) {
+        return Ok(());
+    }
+    #[cfg(feature = "tz")]
+    {
+        if resolve_zone(tz).is_some() {
+            return Ok(());
+        }
+        Err(TriggerError::BadSchedule {
+            expr: expr.to_string(),
+            why: format!(
+                "timezone {tz:?} is not an IANA zone name this build's zone data knows \
+                 (e.g. \"America/New_York\", \"Asia/Kolkata\", \"UTC\")"
+            ),
+        })
+    }
+    #[cfg(not(feature = "tz"))]
+    {
+        Err(TriggerError::BadSchedule {
+            expr: expr.to_string(),
+            why: format!(
+                "timezone {tz:?} needs zone data this build does not carry — rebuild \
+                 areev-trigger with the `tz` feature, or declare the expression in UTC"
+            ),
+        })
+    }
+}
+
+/// The zone this trigger DECLARES, for `trigger status` (#297).
+///
+/// `None` for UTC and for every non-schedule kind — a status surface should
+/// say "this is zoned" only when it is.
+pub fn declared_zone(trigger: &Trigger) -> Option<String> {
+    if trigger.kind != TriggerKind::Schedule {
+        return None;
+    }
+    trigger_zone(trigger)
+}
+
+/// `at_ms` rendered in the trigger's own zone (#297), beside the UTC
+/// instant.
+///
+/// On a DST boundary the UTC instant moves by an hour while the local wall
+/// time does not, so a surface showing only UTC looks like the schedule
+/// drifted.
+#[cfg(feature = "tz")]
+pub fn render_local(trigger: &Trigger, at_ms: i64) -> Option<String> {
+    let tz = declared_zone(trigger)?;
+    let zone = resolve_zone(&tz)?;
+    let utc = chrono::DateTime::from_timestamp_millis(at_ms)?;
+    Some(format!(
+        "{} {}",
+        utc.with_timezone(&zone).format("%Y-%m-%dT%H:%M:%S%:z"),
+        tz
+    ))
+}
+
+#[cfg(not(feature = "tz"))]
+pub fn render_local(_trigger: &Trigger, _at_ms: i64) -> Option<String> {
+    None
+}
+
+/// The zone a schedule trigger evaluates in.
+fn trigger_zone(trigger: &Trigger) -> Option<String> {
+    trigger
+        .config_str(areev_core::types::config_keys::TIMEZONE)
+        .filter(|tz| !tz.eq_ignore_ascii_case(SUPPORTED_TIMEZONE))
+        .map(str::to_string)
 }
 
 fn parse_cron(expr: &str) -> Result<Cron> {
@@ -143,16 +226,96 @@ pub fn next_due_after(trigger: &Trigger, after_ms: i64) -> Result<Option<i64>> {
                     why: format!("{after_ms} is not a representable instant"),
                 }
             })?;
-            let next = cron.find_next_occurrence(&after, false).map_err(|e| {
-                TriggerError::BadSchedule { expr: expr.to_string(), why: e.to_string() }
-            })?;
-            Ok(Some(next.timestamp_millis()))
+            match trigger_zone(trigger) {
+                None => {
+                    let next = cron.find_next_occurrence(&after, false).map_err(|e| {
+                        TriggerError::BadSchedule { expr: expr.to_string(), why: e.to_string() }
+                    })?;
+                    Ok(Some(next.timestamp_millis()))
+                }
+                Some(tz) => next_local_occurrence(expr, &cron, &tz, after_ms, after),
+            }
         }
         // Push and gate kinds are not clocked: they fire when something arrives.
         TriggerKind::Memory | TriggerKind::Webhook | TriggerKind::Manual | TriggerKind::Composite => {
             Ok(None)
         }
     }
+}
+
+/// The next occurrence of `cron` in `tz`, strictly after `after_ms` (#297).
+///
+/// **The fold hazard, and why the loop exists.** Evaluating in local wall
+/// time means an instant inside the repeated hour maps to two UTC instants,
+/// and the earlier one wins. So `30 1 * * *` asked from 01:10 EST resolves to
+/// 01:30 EDT — an instant BEFORE the question. `advance_after_firing`'s
+/// `Some(n) if n > next` guard would then break out of its catch-up loop and
+/// leave the schedule stuck. The contract here is therefore "strictly after",
+/// enforced by searching forward past the fold rather than trusting the
+/// zone-aware search to be monotonic.
+#[cfg(feature = "tz")]
+fn next_local_occurrence(
+    expr: &str,
+    cron: &Cron,
+    tz: &str,
+    after_ms: i64,
+    after: chrono::DateTime<chrono::Utc>,
+) -> Result<Option<i64>> {
+    use chrono::TimeZone;
+    let zone = resolve_zone(tz).ok_or_else(|| TriggerError::BadSchedule {
+        expr: expr.to_string(),
+        why: format!("timezone {tz:?} is not a zone name this build knows"),
+    })?;
+    let mut cursor = after.with_timezone(&zone);
+    // A handful of steps is always enough: at most one fold can sit between
+    // a question and its answer, and each step advances the cursor by at
+    // least the schedule's own period.
+    for _ in 0..8 {
+        let next = cron.find_next_occurrence(&cursor, false).map_err(|e| {
+            TriggerError::BadSchedule { expr: expr.to_string(), why: e.to_string() }
+        })?;
+        let ms = next.timestamp_millis();
+        if ms > after_ms {
+            return Ok(Some(ms));
+        }
+        // Inside the fold: step one second past the answer in LOCAL terms
+        // and ask again, which lands on the second pass of the repeated hour.
+        cursor = zone.from_utc_datetime(
+            &chrono::DateTime::from_timestamp_millis(ms + 1_000)
+                .ok_or_else(|| TriggerError::BadSchedule {
+                    expr: expr.to_string(),
+                    why: "instant out of range while resolving a DST fold".into(),
+                })?
+                .naive_utc(),
+        );
+    }
+    Err(TriggerError::BadSchedule {
+        expr: expr.to_string(),
+        why: format!(
+            "no occurrence strictly after {after_ms} in {tz} within the DST search bound"
+        ),
+    })
+}
+
+/// Without zone data there is no local evaluation to do — `validate` already
+/// refused the declaration, and this is the fail-closed backstop for a
+/// declaration that reached the fire path unvalidated (imported in a bundle,
+/// say).
+#[cfg(not(feature = "tz"))]
+fn next_local_occurrence(
+    expr: &str,
+    _cron: &Cron,
+    tz: &str,
+    _after_ms: i64,
+    _after: chrono::DateTime<chrono::Utc>,
+) -> Result<Option<i64>> {
+    Err(TriggerError::BadSchedule {
+        expr: expr.to_string(),
+        why: format!(
+            "timezone {tz:?} needs zone data this build does not carry — rebuild \
+             areev-trigger with the `tz` feature, or declare the expression in UTC"
+        ),
+    })
 }
 
 /// Where to set `next_due_at` after a firing that happened at `fired_at_ms`,
@@ -393,20 +556,143 @@ mod tests {
     }
 
     #[test]
-    fn a_non_utc_timezone_is_refused_rather_than_mishandled() {
-        // Firing at the wrong local hour and being believed is worse than
-        // refusing, because nobody notices a schedule that is quietly an hour
-        // off for half the year.
-        let t = schedule("0 9 * * *").config(serde_json::json!({
-            "int:timezone": "America/New_York"
-        }));
-        let e = validate(&t).unwrap_err();
-        assert_eq!(e.code(), "TRG-E006");
-        assert!(e.to_string().contains("UTC"), "the message should say what IS supported");
-
-        // UTC spelled either way is fine.
+    fn utc_is_accepted_however_it_is_spelled() {
         let ok = schedule("0 9 * * *").config(serde_json::json!({ "int:timezone": "utc" }));
         assert!(validate(&ok).is_ok());
+        let ok = schedule("0 9 * * *").config(serde_json::json!({ "int:timezone": "UTC" }));
+        assert!(validate(&ok).is_ok());
+    }
+
+    #[test]
+    fn an_unknown_zone_name_is_refused_whatever_the_build() {
+        // A typo must never fall back to UTC and fire at the wrong hour while
+        // looking correct.
+        let t = schedule("0 9 * * *")
+            .config(serde_json::json!({ "int:timezone": "Mars/Olympus" }));
+        let e = validate(&t).unwrap_err();
+        assert_eq!(e.code(), "TRG-E006");
+    }
+
+    #[cfg(not(feature = "tz"))]
+    #[test]
+    fn a_build_without_zone_data_refuses_and_names_the_feature() {
+        let t = schedule("0 9 * * *")
+            .config(serde_json::json!({ "int:timezone": "America/New_York" }));
+        let e = validate(&t).unwrap_err();
+        assert_eq!(e.code(), "TRG-E006");
+        assert!(e.to_string().contains("`tz` feature"), "{e}");
+    }
+
+    #[cfg(feature = "tz")]
+    mod tz_tests {
+        use super::*;
+
+        fn zoned(expr: &str, tz: &str) -> Trigger {
+            schedule(expr).config(serde_json::json!({ "int:timezone": tz }))
+        }
+
+        fn ms(iso: &str) -> i64 {
+            areev_core::time::iso8601_to_ms(iso).unwrap()
+        }
+
+        #[test]
+        fn a_declared_zone_validates() {
+            assert!(validate(&zoned("0 8 * * 1", "America/New_York")).is_ok());
+            assert!(validate(&zoned("0 9 * * *", "Asia/Kolkata")).is_ok());
+        }
+
+        #[test]
+        fn a_weekly_local_time_tracks_the_offset_across_the_dst_boundary() {
+            // 08:00 New York is 12:00Z in EDT and 13:00Z in EST. Declaring it
+            // in UTC means being an hour wrong for half the year — the thing
+            // a zone declaration exists to prevent.
+            let t = zoned("0 8 * * 1", "America/New_York");
+            let first = next_due_after(&t, ms("2026-10-19T12:00:01Z")).unwrap().unwrap();
+            assert_eq!(first, ms("2026-10-26T12:00:00Z"), "still EDT");
+            let second = next_due_after(&t, first).unwrap().unwrap();
+            assert_eq!(second, ms("2026-11-02T13:00:00Z"), "EST after the change");
+        }
+
+        #[test]
+        fn a_time_skipped_by_spring_forward_fires_once_at_the_next_valid_minute() {
+            // 02:30 does not exist on 2026-03-08 in New York: the clock jumps
+            // 02:00 EST → 03:00 EDT. Skipping the occurrence entirely (what
+            // EventBridge and robfig/cron do) is a silent missed obligation
+            // once a year, so Areev fires it LATE rather than not at all —
+            // once, at the first valid instant after the gap.
+            let t = zoned("30 2 * * *", "America/New_York");
+            let gap_day = next_due_after(&t, ms("2026-03-07T12:00:00Z")).unwrap().unwrap();
+            assert_eq!(
+                gap_day,
+                ms("2026-03-08T07:00:00Z"),
+                "03:00 EDT — the first valid instant after the gap"
+            );
+            // Exactly one firing for that day: the next is the following day
+            // at 02:30 EDT (06:30Z), not a second pass at the gap.
+            let next = next_due_after(&t, gap_day).unwrap().unwrap();
+            assert_eq!(next, ms("2026-03-09T06:30:00Z"));
+        }
+
+        #[test]
+        fn an_ordinary_day_fires_at_the_declared_local_time() {
+            // The control for the gap case: 02:30 EST is 07:30Z.
+            let t = zoned("30 2 * * *", "America/New_York");
+            let fired = next_due_after(&t, ms("2026-03-06T12:00:00Z")).unwrap().unwrap();
+            assert_eq!(fired, ms("2026-03-07T07:30:00Z"));
+        }
+
+        #[test]
+        fn a_repeated_time_fires_once_at_the_earlier_occurrence() {
+            // 01:30 happens twice on 2026-11-01 in New York (05:30Z EDT and
+            // 06:30Z EST). Firing twice would double-run a daily job.
+            let t = zoned("30 1 * * *", "America/New_York");
+            let first = next_due_after(&t, ms("2026-11-01T00:00:00Z")).unwrap().unwrap();
+            assert_eq!(first, ms("2026-11-01T05:30:00Z"), "the earlier one");
+            let next = next_due_after(&t, first).unwrap().unwrap();
+            assert_eq!(
+                next,
+                ms("2026-11-02T06:30:00Z"),
+                "the next DAY, not the second pass of the repeated hour"
+            );
+        }
+
+        #[test]
+        fn every_answer_is_strictly_after_the_question_across_the_fold() {
+            // The hazard: inside the repeated hour the earlier instant wins,
+            // so a naive local search can answer at or before `after_ms` —
+            // and `advance_after_firing`'s `n > next` guard would then break
+            // out of its loop and leave the schedule stuck.
+            let t = zoned("30 1 * * *", "America/New_York");
+            let start = ms("2026-11-01T05:00:00Z");
+            let end = ms("2026-11-01T07:00:00Z");
+            let mut at = start;
+            while at < end {
+                let got = next_due_after(&t, at).unwrap().unwrap();
+                assert!(got > at, "answer {got} must be strictly after {at}");
+                at += 60_000;
+            }
+        }
+
+        #[test]
+        fn catchup_last_across_a_dst_boundary_collapses_to_one_firing() {
+            let mut t = zoned("30 1 * * *", "America/New_York");
+            t.catchup = Catchup::Last;
+            let fired = ms("2026-10-30T05:30:00Z");
+            let now = ms("2026-11-03T12:00:00Z");
+            let next = advance_after_firing(&t, fired, now).unwrap().unwrap();
+            assert!(next > now, "one firing ahead, not a backlog: {next}");
+        }
+
+        #[test]
+        fn an_absent_or_utc_zone_is_unchanged() {
+            let utc = schedule("0 9 * * *");
+            let zoned_utc = zoned("0 9 * * *", "UTC");
+            let at = ms("2026-03-08T00:00:00Z");
+            assert_eq!(
+                next_due_after(&utc, at).unwrap(),
+                next_due_after(&zoned_utc, at).unwrap()
+            );
+        }
     }
 
     #[test]

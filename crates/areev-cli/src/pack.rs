@@ -67,6 +67,214 @@ use serde_json::{json, Map, Value};
 use crate::{flag, need};
 use std::collections::HashMap;
 
+/// What a pack operation found or did (#315).
+///
+/// Exactly the fields `--format json` prints, so the CLI is a printer over
+/// this and the two cannot drift on what a pack contains.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PackReport {
+    pub pack: String,
+    pub version: String,
+    pub namespace: Option<String>,
+    pub grains: Vec<GrainRow>,
+    pub blobs: Vec<BlobRow>,
+    /// Registry keys (`qry:<name>` / `tpl:<name>`) the pack carries.
+    pub registry: Vec<String>,
+    /// An exported pack's bundle file, when it has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bundle: Option<String>,
+    /// Code addresses a host must pin before anything from this pack runs.
+    pub allow_executor: Vec<String>,
+    pub warnings: Vec<String>,
+    /// The reserved `"host"` object (#316), verbatim.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<Value>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GrainRow {
+    pub file: String,
+    pub grain_type: String,
+    pub hash: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BlobRow {
+    pub name: String,
+    pub file: String,
+    pub bytes: usize,
+    pub address: String,
+}
+
+/// Why a pack operation refused (#315).
+///
+/// Typed rather than a string, so a host can branch on the CAUSE — an
+/// expectation mismatch is a deployment decision, a dangling reference is an
+/// authoring bug, and a store refusal is neither. Store and authorization
+/// errors pass through as [`PackError::Store`] carrying the original
+/// `AreevError`, so an `AUT-E001` stays an `AUT-E001`.
+#[derive(Debug)]
+pub enum PackError {
+    /// `PCK-E001` — the manifest or a grain file is malformed.
+    Malformed(String),
+    /// `PCK-E002` — a grain's `expected_hash` does not match what it built
+    /// to. Nothing is written.
+    ExpectationMismatch { file: String, expected: String, built: String },
+    /// `PCK-E003` — a `blob:` or `grain:` reference names nothing the pack
+    /// carries (a forward reference included).
+    UnresolvedRef(String),
+    /// `PCK-E004` — the address a grain stored under differs from the
+    /// address it was built to.
+    AddressDrift(String),
+    /// The store or the session refused. Passed through unchanged.
+    Store(areev_core::error::AreevError),
+}
+
+impl PackError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            PackError::Malformed(_) => "PCK-E001",
+            PackError::ExpectationMismatch { .. } => "PCK-E002",
+            PackError::UnresolvedRef(_) => "PCK-E003",
+            PackError::AddressDrift(_) => "PCK-E004",
+            PackError::Store(e) => e.code(),
+        }
+    }
+}
+
+impl std::fmt::Display for PackError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let code = self.code();
+        match self {
+            PackError::Malformed(m) => write!(f, "{code}: {m}"),
+            PackError::ExpectationMismatch { file, expected, built } => write!(
+                f,
+                "{code}: {file}: expected {expected}, builds to {built} — a content \
+                 address covers the whole grain, so a mismatch means the declaration \
+                 changed, including any code blob it names. Installing it would change \
+                 what runs, and everything pointing at the old hash (every trigger above \
+                 all) would now point somewhere else. Nothing was written. Fix the pack, \
+                 or update expected_hash deliberately and re-point whatever named the \
+                 old hash (triggers do NOT follow heads)"
+            ),
+            PackError::UnresolvedRef(m) => write!(f, "{code}: {m}"),
+            PackError::AddressDrift(m) => write!(f, "{code}: {m}"),
+            PackError::Store(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for PackError {}
+
+impl From<areev_core::error::AreevError> for PackError {
+    fn from(e: areev_core::error::AreevError) -> Self {
+        PackError::Store(e)
+    }
+}
+
+/// How to install a pack (#315).
+#[derive(Debug, Clone, Default)]
+pub struct InstallOptions {
+    /// Report what would be written and write nothing.
+    pub dry_run: bool,
+    /// The namespace a grain with none of its own lands in. `None` uses the
+    /// facade's session namespace.
+    pub namespace: Option<String>,
+}
+
+
+/// Validate a pack directory, with no store at all (#315).
+///
+/// Content addressing needs no memory — `serialize_grain` is the whole story
+/// — so CI can check a pack without provisioning one.
+pub fn validate_pack(dir: &Path) -> Result<PackReport, PackError> {
+    let mut pack = read_pack(dir).map_err(PackError::Malformed)?;
+    let addressed = if pack.bundle.is_some() {
+        Vec::new()
+    } else {
+        resolve_addresses(&mut pack)?
+    };
+    let mut warnings = Vec::new();
+    for key in &pack.unknown_keys {
+        warnings.push(format!(
+            "pack.json carries a top-level key this build does not read: {key:?} — a              misspelled section installs nothing and says nothing"
+        ));
+    }
+    for e in &pack.entries {
+        if e.grain_type == "tool" {
+            check_tool(e, &mut warnings).map_err(PackError::Malformed)?;
+        }
+        check_evalset(e).map_err(PackError::Malformed)?;
+    }
+    Ok(report_of(&pack, &addressed, warnings))
+}
+
+/// Classify a legacy string error onto the typed causes.
+///
+/// The internals still speak `String`; this is the ONE place that decides
+/// which code a message means, so a host branching on `PCK-E002` cannot be
+/// fooled by a rewording elsewhere.
+fn classify(why: String) -> PackError {
+    if why.contains("expected_hash") && why.contains("builds") {
+        // `file: expected_hash X but this pack builds Y`
+        let file = why.split(':').next().unwrap_or("").trim().to_string();
+        let mut parts = why.split_whitespace();
+        let mut expected = String::new();
+        let mut built = String::new();
+        while let Some(tok) = parts.next() {
+            if tok == "expected_hash" {
+                expected = parts.next().unwrap_or("").to_string();
+            }
+            if tok == "builds" {
+                built = parts.next().unwrap_or("").to_string();
+            }
+        }
+        return PackError::ExpectationMismatch { file, expected, built };
+    }
+    if why.contains("blob:") || why.contains("grain:") || why.contains("names nothing") {
+        return PackError::UnresolvedRef(why);
+    }
+    if why.contains("stored as") && why.contains("addressed as") {
+        return PackError::AddressDrift(why);
+    }
+    PackError::Malformed(why)
+}
+
+fn report_of(
+    pack: &Pack,
+    addressed: &[(String, String, String)],
+    warnings: Vec<String>,
+) -> PackReport {
+    PackReport {
+        pack: pack.name.clone(),
+        version: pack.version.clone(),
+        namespace: pack.namespace.clone(),
+        grains: addressed
+            .iter()
+            .map(|(file, grain_type, hash)| GrainRow {
+                file: file.clone(),
+                grain_type: grain_type.clone(),
+                hash: hash.clone(),
+            })
+            .collect(),
+        blobs: pack
+            .blobs
+            .iter()
+            .map(|(name, (file, bytes, address))| BlobRow {
+                name: name.clone(),
+                file: file.clone(),
+                bytes: bytes.len(),
+                address: address.clone(),
+            })
+            .collect(),
+        registry: pack.registry.keys().cloned().collect(),
+        bundle: pack.bundle.clone(),
+        allow_executor: pins(pack),
+        warnings,
+        host: pack.host.clone(),
+    }
+}
+
 /// One grain the pack seeds.
 struct Entry {
     /// Relative path, for messages.
@@ -101,7 +309,38 @@ struct Pack {
     /// in a bundle (the v2 `MGB2` meta segment), so a bundle pack needs no
     /// equivalent.
     registry: BTreeMap<String, String>,
+    /// Top-level manifest keys this build does not know (#316).
+    ///
+    /// Reported as warnings rather than refused, so an existing pack keeps
+    /// installing — but reported, because the failure `docs/pack.md` warns
+    /// about is exactly this shape: a misspelled `"templats"` section was
+    /// dropped in silence, and the pack then installed a trigger whose
+    /// `context_query` named a query that was not there.
+    unknown_keys: Vec<String>,
+    /// The reserved `"host"` object (#316): returned verbatim, never
+    /// interpreted. A host's own per-install configuration schema and its
+    /// fixture metadata live here, so a pack is ONE versioned artifact
+    /// instead of a pack plus a second file with its own version number.
+    ///
+    /// Guaranteed collision-free: no future manifest key will be added
+    /// inside it.
+    host: Option<Value>,
 }
+
+/// Top-level `pack.json` keys this build reads (#316).
+const KNOWN_MANIFEST_KEYS: &[&str] = &[
+    "pack",
+    "version",
+    "description",
+    "namespace",
+    "blobs",
+    "bundle",
+    "expect",
+    "queries",
+    "templates",
+    "grains",
+    "host",
+];
 
 pub fn run_pack(
     m: Option<Areev>,
@@ -264,6 +503,19 @@ fn read_pack(dir: &Path) -> Result<Pack, String> {
         entries.push(Entry { file: rel, id, grain_type, fields, expected });
     }
 
+    // #316: every top-level key this build does not read, named.
+    let mut unknown_keys: Vec<String> = manifest
+        .as_object()
+        .map(|o| {
+            o.keys()
+                .filter(|k| !KNOWN_MANIFEST_KEYS.contains(&k.as_str()))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    unknown_keys.sort();
+    let host = manifest.get("host").cloned();
+
     if entries.is_empty() && bundle.is_none() && registry.is_empty() {
         return Err("pack.json names neither \"grains\" nor \"bundle\" — a pack that seeds \
                     nothing installs nothing"
@@ -279,7 +531,60 @@ fn read_pack(dir: &Path) -> Result<Pack, String> {
         bundle,
         expect,
         registry,
+        unknown_keys,
+        host,
     })
+}
+
+/// Validate an evalset Fact shipped inside a pack (#316).
+///
+/// An evalset can already ride a pack — a `fact` grain with relation
+/// `mg:evalset`, referenced from a Tool Definition as
+/// `"evalset_hash": "grain:<id>"` — and `pack validate` checked only tools,
+/// so an evalset whose cases had neither `input` nor `expect` validated and
+/// addressed cleanly although `areev eval create` would have refused it.
+///
+/// ONE shared function with the verb, so the two cannot drift on what a
+/// valid case is.
+pub fn validate_evalset_cases(cases: &[Value]) -> Result<(), String> {
+    if cases.is_empty() {
+        return Err("an evalset needs at least one case".into());
+    }
+    for (i, c) in cases.iter().enumerate() {
+        let ok = c.get("name").and_then(Value::as_str).is_some()
+            && c.get("input").is_some()
+            && c.get("expect").is_some_and(|e| {
+                e.get("equals").is_some()
+                    || e.get("contains").and_then(Value::as_str).is_some()
+            });
+        if !ok {
+            return Err(format!(
+                "case {i} must be {{\"name\", \"input\", \"expect\": {{\"equals\": …}} | \
+                 {{\"contains\": \"…\"}}}}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The evalset checks a pack entry needs (#316).
+fn check_evalset(e: &Entry) -> Result<(), String> {
+    if e.grain_type != "fact" || e.fields.get("relation").and_then(Value::as_str) != Some("mg:evalset")
+    {
+        return Ok(());
+    }
+    let body = e
+        .fields
+        .get("object")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{}: an mg:evalset fact needs its cases in \"object\"", e.file))?;
+    let payload: Value = serde_json::from_str(body)
+        .map_err(|err| format!("{}: evalset object is not JSON: {err}", e.file))?;
+    let cases = payload
+        .get("cases")
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("{}: evalset names no \"cases\" list", e.file))?;
+    validate_evalset_cases(cases).map_err(|why| format!("{}: {why}", e.file))
 }
 
 /// Rewrite every `"blob:<name>"` string to the address those bytes have.
@@ -397,37 +702,32 @@ impl areev_cal::json_build::GrainSink for AddressSink {
 /// the bytes, and the bytes are not final until the grain is built. A forward
 /// reference is refused rather than guessed at, which is also why the manifest
 /// is an ordered list and not a set.
-fn resolve_addresses(pack: &mut Pack) -> Result<Vec<(String, String, String)>, String> {
+fn resolve_addresses(pack: &mut Pack) -> Result<Vec<(String, String, String)>, PackError> {
     let mut out = Vec::with_capacity(pack.entries.len());
-    let mut mismatches = Vec::new();
+    let mut mismatches: Vec<(String, String, String)> = Vec::new();
     let mut minted: BTreeMap<String, String> = BTreeMap::new();
     for e in pack.entries.iter_mut() {
-        resolve_grain_refs(&mut e.fields, &minted, &e.file)?;
+        // A dangling or FORWARD `grain:` / `blob:` reference is its own
+        // cause (#315): it is an authoring bug, not a malformed manifest.
+        resolve_grain_refs(&mut e.fields, &minted, &e.file)
+            .map_err(PackError::UnresolvedRef)?;
         let hash =
             areev_cal::json_build::build_grain_from_json(&e.grain_type, &e.fields, AddressSink)
-                .map_err(|err| format!("{}: {err}", e.file))?
+                .map_err(|err| PackError::Malformed(format!("{}: {err}", e.file)))?
                 .to_hex();
         minted.insert(e.id.clone(), hash.clone());
         if let Some(want) = &e.expected {
             if want != &hash {
-                mismatches.push(format!(
-                    "  {} ({}): expected {want}, builds to {hash}",
-                    e.file, e.grain_type
-                ));
+                mismatches.push((e.file.clone(), want.clone(), hash.clone()));
             }
         }
         out.push((e.file.clone(), e.grain_type.clone(), hash));
     }
-    if !mismatches.is_empty() {
-        return Err(format!(
-            "this pack does not build what its manifest says it builds:\n{}\n\
-             A content address covers the whole grain, so a mismatch means the \
-             declaration changed — including any code blob it names, since the \
-             address of the bytes is part of the plan. Nothing was written. Fix the \
-             pack, or update expected_hash deliberately and re-point whatever named \
-             the old hash (triggers do NOT follow heads).",
-            mismatches.join("\n")
-        ));
+    if let Some((file, expected, built)) = mismatches.into_iter().next() {
+        // Typed at the source rather than sniffed out of a message later: a
+        // host branching on "the deployment expected a different plan" must
+        // not be fooled by a rewording.
+        return Err(PackError::ExpectationMismatch { file, expected, built });
     }
     Ok(out)
 }
@@ -435,57 +735,49 @@ fn resolve_addresses(pack: &mut Pack) -> Result<Vec<(String, String, String)>, S
 // ------------------------------------------------------------ the verbs
 
 fn validate(dir: &Path, json_out: bool) -> Result<(), String> {
-    let mut pack = read_pack(dir)?;
-    let addressed =
-        if pack.bundle.is_some() { Vec::new() } else { resolve_addresses(&mut pack)? };
-    // Tool schemas are checked the way the runtime checks them, by building
-    // the Definition — `build_grain_from_json` refuses a malformed
-    // `input_schema` and an invalid `tool_name` — plus the capability
-    // declaration, which is what decides where a blob may reach.
-    let mut warnings = Vec::new();
-    for e in &pack.entries {
-        if e.grain_type == "tool" {
-            check_tool(e, &mut warnings)?;
-        }
-    }
+    // A printer over the library function (#315), so `pack validate` in CI
+    // and a host calling `validate_pack` cannot disagree about what a pack
+    // contains.
+    let r = validate_pack(dir).map_err(|e| e.to_string())?;
     if json_out {
         println!(
             "{}",
             json!({
-                "pack": pack.name,
-                "version": pack.version,
-                "namespace": pack.namespace,
-                "grains": addressed.iter().map(|(f, t, h)| json!({"file": f, "type": t, "hash": h})).collect::<Vec<_>>(),
-                "blobs": pack.blobs.iter().map(|(k, (p, b, a))| json!({"name": k, "file": p, "bytes": b.len(), "address": a})).collect::<Vec<_>>(),
-                "bundle": pack.bundle,
-                "registry": pack.registry.keys().collect::<Vec<_>>(),
-                "warnings": warnings,
+                "pack": r.pack,
+                "version": r.version,
+                "namespace": r.namespace,
+                "grains": r.grains.iter().map(|g| json!({"file": g.file, "type": g.grain_type, "hash": g.hash})).collect::<Vec<_>>(),
+                "blobs": r.blobs.iter().map(|b| json!({"name": b.name, "file": b.file, "bytes": b.bytes, "address": b.address})).collect::<Vec<_>>(),
+                "bundle": r.bundle,
+                "registry": r.registry,
+                // Verbatim, never interpreted (#316).
+                "host": r.host,
+                "warnings": r.warnings,
                 "ok": true,
             })
         );
         return Ok(());
     }
-    println!("pack {} {} — valid", pack.name, pack.version);
-    for (name, (path, bytes, addr)) in &pack.blobs {
-        println!("  blob  {name:16} {addr}  ({} bytes, {path})", bytes.len());
+    println!("pack {} {} — valid", r.pack, r.version);
+    for b in &r.blobs {
+        println!("  blob  {:16} {}  ({} bytes, {})", b.name, b.address, b.bytes, b.file);
     }
-    for (file, ty, hash) in &addressed {
-        println!("  grain {ty:16} {hash}  ({file})");
+    for g in &r.grains {
+        println!("  grain {:16} {}  ({})", g.grain_type, g.hash, g.file);
     }
-    for key in pack.registry.keys() {
+    for key in &r.registry {
         println!("  meta  {key}");
     }
-    if let Some(b) = &pack.bundle {
+    if let Some(b) = &r.bundle {
         println!("  bundle {b}");
     }
-    for w in &warnings {
+    for w in &r.warnings {
         eprintln!("areev: pack: {w}");
     }
-    let pins = pins(&pack);
-    if !pins.is_empty() {
+    if !r.allow_executor.is_empty() {
         println!(
             "\nPin the code before running anything from this pack:\n  --allow-executor {}",
-            pins.join(",")
+            r.allow_executor.join(",")
         );
     }
     Ok(())
@@ -531,6 +823,76 @@ fn check_tool(e: &Entry, warnings: &mut Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
+/// Install a pack into an OPEN memory, through the caller's own facade (#315).
+///
+/// The facade, not a store: install then runs under whatever principal the
+/// caller bound, so a service installing an agent on a tenant's behalf is
+/// authorized like every other write — a principal without `write` on the
+/// pack's namespace gets `AUT-E001` and the memory's op-log is unchanged.
+/// The previous entry point consumed an owner `Areev`, which a host with an
+/// already-open handle could not supply at all.
+pub fn install_pack(
+    facade: &AreevFacade,
+    dir: &Path,
+    opts: &InstallOptions,
+) -> Result<PackReport, PackError> {
+    let mut pack = read_pack(dir).map_err(PackError::Malformed)?;
+    if let Some(bundle) = pack.bundle.clone() {
+        install_bundle(facade, &pack, &bundle, false).map_err(classify)?;
+        return Ok(report_of(&pack, &[], Vec::new()));
+    }
+    let addressed = resolve_addresses(&mut pack)?;
+    let mut warnings = Vec::new();
+    for key in &pack.unknown_keys {
+        warnings.push(format!(
+            "pack.json carries a top-level key this build does not read: {key:?}"
+        ));
+    }
+    for e in &pack.entries {
+        if e.grain_type == "tool" {
+            check_tool(e, &mut warnings).map_err(PackError::Malformed)?;
+        }
+        check_evalset(e).map_err(PackError::Malformed)?;
+    }
+    if opts.dry_run {
+        return Ok(report_of(&pack, &addressed, warnings));
+    }
+    for (name, (_, bytes, addr)) in &pack.blobs {
+        let stored = facade.with_store(|s| s.put_blob(bytes))?;
+        if &stored != addr {
+            return Err(PackError::AddressDrift(format!(
+                "blob {name} stored as {stored} but addressed as {addr}"
+            )));
+        }
+    }
+    for (key, body) in &pack.registry {
+        facade.with_store(|s| s.meta_put(key, body))?;
+    }
+    // ALL-OR-NOTHING (#315): one batched write, so a refusal at write time —
+    // an authorization failure above all — leaves no partial agent. Writing
+    // one grain at a time meant a pack refused halfway had already seeded
+    // the tools of an agent whose plan never arrived.
+    let specs: Vec<(String, Map<String, Value>)> = pack
+        .entries
+        .iter()
+        .map(|e| (e.grain_type.clone(), e.fields.clone()))
+        .collect();
+    let hashes = facade.cal_add_batch(&specs)?;
+    for ((e, (_, _, expected)), hash) in
+        pack.entries.iter().zip(addressed.iter()).zip(hashes.iter())
+    {
+        let hex = hash.to_hex();
+        if &hex != expected {
+            return Err(PackError::AddressDrift(format!(
+                "{}: built to {expected} but stored as {hex} — validate no longer \
+                 describes install",
+                e.file
+            )));
+        }
+    }
+    Ok(report_of(&pack, &addressed, warnings))
+}
+
 fn install(
     m: Areev,
     ns: &str,
@@ -549,7 +911,7 @@ fn install(
     // Everything is built and checked BEFORE anything is written: a refused
     // pack must leave the memory exactly as it found it, and a half-installed
     // agent is worse than an uninstalled one.
-    let addressed = resolve_addresses(&mut pack)?;
+    let addressed = resolve_addresses(&mut pack).map_err(|e| e.to_string())?;
     let mut warnings = Vec::new();
     for e in &pack.entries {
         if e.grain_type == "tool" {

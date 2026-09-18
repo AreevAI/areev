@@ -949,7 +949,7 @@ impl Pool {
                 }
                 let (tool_name, tool_hash) = match &job.executor {
                     NodeExecutor::Host { tool_name, tool_hash }
-                    | NodeExecutor::Client { tool_name, tool_hash } => {
+                    | NodeExecutor::Client { tool_name, tool_hash, .. } => {
                         (tool_name.clone(), tool_hash.clone())
                     }
                     NodeExecutor::Subgraph { workflow_hash } => {
@@ -1090,7 +1090,7 @@ fn run_llm_effect(
     };
     match result {
         Ok(resp) => {
-            let result = serde_json::json!({
+            let mut result = serde_json::json!({
                 "text": resp.text,
                 "tool_calls": resp.tool_calls.iter().map(|c| serde_json::json!({
                     "id": c.id,
@@ -1108,6 +1108,32 @@ fn run_llm_effect(
                     areev_llm::StopReason::Other(_) => "other",
                 },
             });
+            // Optional keys, ABSENT when the provider reported nothing — so
+            // a run against a model that does not think, on a provider that
+            // echoes no served model, journals byte-identically to 1.8.5 and
+            // `verify` of an existing run is untouched.
+            if let Some(pc) = &resp.provider_content {
+                // #284: the assistant turn's own content blocks, so a resume
+                // after a crash between turns replays them exactly.
+                result["provider_content"] = pc.clone();
+            }
+            if let Some(m) = &resp.served_model {
+                // #287: an alias or a router resolving elsewhere is otherwise
+                // invisible — the request and the journal would both name
+                // what was ASKED for.
+                result["served_model"] = serde_json::json!(m);
+            }
+            if let Some(r) = &resp.served_region {
+                result["served_region"] = serde_json::json!(r);
+            }
+            // #291: the transport prices its own usage, or says it cannot.
+            // `None` is UNPRICED, not free — `priced` is what keeps the two
+            // apart downstream, so a cost bound over an unpriced run reads
+            // `not_measurable` rather than "within".
+            let priced = llm.price_usd_micros(&resp.usage);
+            if priced.is_some() {
+                result["usd_priced"] = serde_json::json!(true);
+            }
             let bytes = crate::journal::outcome_journal_bytes(&EffectOutcome::Completed {
                 result: result.clone(),
                 journal_bytes: 0,
@@ -1120,7 +1146,7 @@ fn run_llm_effect(
                 journal_bytes: bytes,
                 input_tokens: resp.usage.input_tokens,
                 output_tokens: resp.usage.output_tokens,
-                usd_micros: 0,
+                usd_micros: priced.unwrap_or(0),
             }
         }
         Err(e) => EffectOutcome::Failed {

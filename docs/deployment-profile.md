@@ -44,14 +44,31 @@ files, the trigger heartbeat, and the AWS/GCP/Azure/Kubernetes mappings — is
    natively (`--tls-cert`/`--tls-key`, the non-default `tls` build feature,
    rustls) for deployments with nowhere to run a proxy — the exception path,
    not a replacement for the documented default.
-3. **The multi-principal credential map.** One OS process = one
-   principal. Governed deployments bind a principal per service
-   (`facade.bind_principal` / `--as`), grants live IN the file as
-   `mg:permits` Facts, and the run verbs are Control-tier: `run.execute`
-   / `run.respond` (approver ≠ initiator, structurally), `run.cancel`
-   deliberately low. Erasure follows the same grants (`delete` / `erase`
-   verbs) — provisioning is `areev`-CLI statements, auditable in the file
-   itself.
+3. **The multi-principal credential map.** Grants live IN the file as
+   `mg:permits` Facts, and the run verbs are Control-tier: `run.execute` /
+   `run.respond` (approver ≠ initiator **and** ≠ the run's `initiator`,
+   structurally), `run.cancel` deliberately low. Erasure follows the same
+   grants (`delete` / `erase` verbs) — provisioning is `areev`-CLI
+   statements, auditable in the file itself.
+
+   `facade.bind_principal` / `--as` remains the path for a host that
+   **serializes requests**: it swaps one process-wide slot, so two concurrent
+   requests race. A host serving many signed-in people uses
+   `facade.principal_session(p)` instead, which since 1.9.0 (#302) is itself
+   a CAL facade — reads as well as writes run under the session's own
+   fail-closed rights, on any number of threads, over ONE store handle. "One
+   OS process = one principal" is therefore no longer the rule; it was, and
+   on the embedded backend (where a second handle is refused) it made
+   multi-principal serving impossible. See
+   [`security-model.md`](security-model.md) §"Multi-principal hosts".
+
+   Projecting an external policy engine into a memory: `set_grants(principal,
+   &[Grant], because)` makes a principal's live grants EQUAL a desired set in
+   one pass, superseding heads in place where it can (#309), so narrowing a
+   packed grant no longer means a window with no access or a window with too
+   much. An equal set writes nothing. `authz_epoch()` is a single indexed
+   read that changes whenever the memory's policy does — what a host caching
+   bound sessions checks per request instead of evicting on a timer.
 4. **Postgres for multi-tenant.** One memory = one schema keeps tenant
    isolation at the storage boundary; pgvector serves recall. Unlike the
    embedded backend, this one admits **multiple concurrent writers per
@@ -311,7 +328,21 @@ change on the owning role's next read-write open, and until then a read-only
 open of that memory refuses with `STO-E005` naming what is missing, rather
 than reading a shape it does not understand.
 
-**A schema migration is not rolling-deploy safe.** The bootstrap advisory
+**Whether a schema migration is rolling-deploy safe depends on the
+migration**, and the binary knows which: `areev provision --check` reports
+`rolling_deploy: safe | drain_writers_first | unknown`, computed from
+`PG_ROLLING_SAFE_FROM` — the oldest stamped version whose writers keep
+working during and after this build's bootstrap. Ask it rather than reasoning
+from the release notes. The two migrations so far:
+
+| From → to | Verdict | Why |
+|---|---|---|
+| unstamped → **1** (the `terms` digest key) | `drain_writers_first` | it DROPS a constraint an older writer's `ON CONFLICT (term)` still needs — detail below |
+| **1 → 2** (1.9.0, #307: `oplog.ns`) | `safe` | one NULLABLE column plus a backfill. An older writer inserts without it and its rows simply read as unattributed, which is exactly how pre-1.9.0 rows behave anyway |
+
+The v1 case, which is the one that bites:
+
+**That migration is not rolling-deploy safe.** The bootstrap advisory
 lock serializes *openers* against each other; it does not stop writers that
 are already inside the schema on the previous build. When the `terms`
 migration drops the text uniqueness constraint, an older binary still running
@@ -326,6 +357,28 @@ Expect that first open to hold an exclusive lock on `terms` while it adds and
 backfills the column and builds the digest index — one time, proportional
 to the dictionary's size (seconds for tens of thousands of distinct terms).
 Reads on the embedded backend are unaffected; this is a Postgres-tier rule.
+
+**Ask the binary, do not diff the source** (1.9.0, #308).
+`areev provision --check --db DSN [--schema NAME] [--telemetry MODE]
+[--format json]` is a **read-only** probe: SELECTs only, no advisory lock, no
+DDL, no `meta` write, so it runs under the documented least-privilege
+read-only role. It reports, per schema, whether it `exists`; per stamp
+(`pg_schema`, `telem_meta.schema_version`, `link_index`, `ns_registry`) the
+found and wanted values; `pending: […]`; and
+`rolling_deploy: "safe" | "drain_writers_first" | "unknown"` — computed from
+`PG_ROLLING_SAFE_FROM`, a constant beside `PG_SCHEMA_VERSION` naming the
+oldest stamped version whose writers keep working during and after this
+build's bootstrap. `unknown` means there is no stamp to compare against:
+absence of evidence is never reported as safety.
+
+Exit **0** current, **2** pending or absent (the `loop list --fail-on`
+convention), **1** error — so a release pipeline branches on the code and
+reads the JSON only when it wants detail. The library entry point is
+`areev_store::pg::check_provision(url, schema, telemetry)`.
+
+Before this, the only probe was to open with `?provision=never` and watch for
+`STO-E008`: an error path, covering one stamp, saying "stale" without saying
+what was pending.
 
 The motivating consumer is `areev ui --read-only`: paired
 with #124 (the console no longer displays its own DSN), a read-only console

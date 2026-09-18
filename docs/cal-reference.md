@@ -395,11 +395,13 @@ optional `ELSE` fallback).
 
 ```
 ENTITY "<subject>" RELATION "<relation>" AT <epoch-ms> [AXIS world|knowledge]
+                   [WHERE namespace IN ("a", "b")]
 RUN TRACE "<run-id>" [LIMIT <n>]
 RUNS TOUCHING sha256:<hash> [DEPTH <n>]
 DERIVED FROM sha256:<hash>
 SHOW FORKS
 RELATED "<start>" VIA "<r1,r2>" [DIRECTION out|in|both] [DEPTH <n>] [LIMIT <n>]
+        [WHERE namespace IN ("a", "b")]
 NOVELTY "<text>" [SUBJECT "<s>"] [RELATION "<r>"] [LIMIT <k>]
 DESCRIBE STATS
 DESCRIBE INTEGRITY
@@ -414,14 +416,43 @@ DESCRIBE INTEGRITY
   distilled from them, via provenance). `RUNS TOUCHING` is the reverse
   walk — which runs produced or refined a grain; reads leave no grain and
   are never recorded.
-- `DERIVED FROM` is reverse provenance (requires `read` on `*` — provenance
-  spans namespaces), `SHOW FORKS` lists the open multi-head contradictions,
-  and the two `DESCRIBE` reads are the store counters and the
-  integrity/content-address recheck (`read` on `*`).
+- `DERIVED FROM` is reverse provenance, and **returns the derived grains
+  this session can read** (1.9.0, #304). An owner session and one holding
+  `read ON *` see everything, unchanged. Any other session must be able to
+  read the PARENT — the rule `GET` applies — and the children are narrowed
+  to namespaces it may read. No count of what was withheld is reported: a
+  count would disclose that another namespace derived something from this
+  grain, which is exactly what `RECALL` declines to reveal when it refuses
+  without naming a sibling. It used to demand `read ON *`, which made a
+  wide-open service principal the only way to offer reverse provenance to
+  people holding exact namespace grants — moving the authorization decision
+  out of the engine.
+- `SHOW FORKS` lists the open multi-head contradictions, and the two
+  `DESCRIBE` reads are the store counters and the integrity/content-address
+  recheck (`read` on `*`).
 - `RELATED` is the bounded k-hop entity walk (depth 1–4; `in`/`both` only
   see relations the file declares entity-valued). `NOVELTY` is the
   paraphrase check — nearest existing grains to a candidate text; it needs
   a host-installed embedder and refuses cleanly without one.
+- **`WHERE namespace IN ("a", "b")`** on `RELATED` and `ENTITY … AT` reads a
+  SET of namespaces (1.9.0, #303). A cross-namespace as-of read is N calls
+  and merely inconvenient; a cross-namespace WALK is not composable from
+  per-namespace calls at all — the frontier, the `seen` set, the depth
+  counter and the cap are shared state, so a host doing it itself
+  re-implements the BFS and its depth and cap mean something different from
+  Areev's.
+
+  Exact names only: a pattern is refused, as on every point read. Each named
+  namespace is `read`-checked **as itself** before anything is read, and one
+  ungranted term refuses the statement with no partial walk — a walk that
+  quietly covered less than it was asked to is an answer that means
+  something other than what it says. The 100-term cap is the shared
+  `CAL-E011`. Without the clause, behaviour is identical to before.
+
+  The set form of `ENTITY … AT` answers **each namespace independently** and
+  returns `{"grains": [{"namespace": …, "grain": …}]}` — no cross-namespace
+  precedence is invented, because there is none to invent. The
+  single-namespace shape is unchanged.
 
 #### `REPORT SUBJECT` — the DSAR read (OMS 1.6 draft)
 
@@ -690,6 +721,21 @@ order. Now:
   `scope`, `scope_path`, `tags` — narrow the scan and have no per-grain
   value, so under `NOT`/`OR`, or with a comparator their push-down does not
   support, they refuse with **`CAL-E061`** instead of widening.
+- **`tags INCLUDE [ … ]` / `tags EXCLUDE [ … ]`** (also spelled
+  `tags IN (…)` / `tags NOT IN (…)`) filter on the grain's structural tag
+  list, up to the shared 100-value cap. A grain passes when it carries
+  **every** `INCLUDE` member and **none** of the `EXCLUDE` members — so a
+  grain with no tags matches no `INCLUDE` and every `EXCLUDE`. The equality
+  form (`tags = "x"`) stays refused with `CAL-E061`.
+
+  Until 1.9.0 (#318) both set forms parsed, were advertised as filterable by
+  `DESCRIBE FIELDS`, were marked consumed by push-down — and were read by
+  nothing: `tags EXCLUDE ["label:restricted"]` returned exactly the grains
+  it was asked to exclude, and `areev corpus --select` wrote them into the
+  export under an immutable manifest recording the exclusion. `tags` is
+  currently the only carrier for a host label in a `WHERE` (a
+  domain-prefixed field is refused with `CAL-E002`, a bare extra field with
+  `CAL-E060` on a typed recall).
 - Comparators the push-down alone never honoured (`confidence < 0.5`,
   `subject != "x"`, `deadline IS NULL`) are now applied per grain.
 - **A field the grain does not carry answers no predicate** (1.7.4, #206/#207).
@@ -1259,8 +1305,8 @@ predicate** (CAL 1.3 §8.14). Three statements exist, and nothing mutates a
 stored blob:
 
 ```
-FORGET sha256:<hash> [BECAUSE "<why>"]
-FORGET SUBJECT "<id>" [WITH text_mentions] BECAUSE "<why>"
+FORGET sha256:<hash> [WITH override_hold] [BECAUSE "<why>"]
+FORGET SUBJECT "<id>" [WITH text_mentions] [WITH override_hold] BECAUSE "<why>"
 PURGE OLDER THAN <n><d|h|m> [TYPE <grain-type>] [IN "<namespace>"] [LIMIT <n>] BECAUSE "<why>"
 ```
 
@@ -1279,7 +1325,35 @@ PURGE OLDER THAN <n><d|h|m> [TYPE <grain-type>] [IN "<namespace>"] [LIMIT <n>] B
 **Every execution writes an audit Observation** in the reserved
 `agent:authz` namespace — the session principal, the verb, the target, the
 reason, and the erased count — recallable like any grain:
-`RECALL observations WHERE namespace = "agent:authz"`.
+`RECALL observations WHERE namespace = "agent:authz"`. Since 1.9.0 (#280)
+they are **hash-chained**: one chain per memory, `derived_from` naming the
+predecessor and `context.seq` its position, so a deleted interior record
+leaves a detectable gap instead of a clean-looking export.
+
+### Legal holds take precedence (1.9.0, #278)
+
+A namespace under a legal hold refuses **every** destruction above with
+`STO-E009`, not only the age-based sweep — and the refusal is itself
+recorded (`erase.refused` / `delete.refused`, `grains_erased: 0`), which is
+the evidence a controller needs to answer an erasure request on a
+retention ground.
+
+`WITH override_hold` destroys anyway. It is a **second decision, and it has
+an author**:
+
+```sql
+FORGET sha256:<hash> WITH override_hold BECAUSE "regulator ordered destruction"
+FORGET SUBJECT "acme" WITH override_hold BECAUSE "regulator ordered destruction"
+```
+
+- `BECAUSE` becomes **mandatory** with it, on both forms — an override with
+  no stated ground is indistinguishable from a mistake.
+- Authorization requires **`admin` on the namespace in addition to**
+  `erase`/`delete`, the way `reveal_tokens` gates re-identification: a
+  principal who may erase is not automatically one who may override a
+  records-retention hold.
+- The audit record carries `context.hold_overridden = {ns, placed_by,
+  because}`, so it says WHAT was overridden, not merely that something was.
 
 The read-only mirror of `FORGET SUBJECT` is [`REPORT SUBJECT`](#report-
 subject--the-dsar-read-oms-16-draft) — the same selector in show-me mode,
@@ -1299,7 +1373,8 @@ Defense in depth, unchanged in spirit:
    destruction.
 3. **Authorization.** A session bound to a principal executes destruction
    only under its grants — `delete` for the hash form, `erase` for the bulk
-   forms, per namespace; the refusal is `AUT-E001`/`CAL-E121` naming the
+   forms, per namespace, plus `admin` on the namespace for
+   `WITH override_hold`; the refusal is `AUT-E001`/`CAL-E121` naming the
    missing verb. An unbound local session is the owner (everything).
 4. **The process cap.** `allow_destructive_ops` (**on by default**) still
    turns all of it off per-process — `areev serve --mcp

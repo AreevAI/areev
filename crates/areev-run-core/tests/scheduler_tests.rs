@@ -311,7 +311,7 @@ fn cycle_whose_back_edge_targets_a_non_entry_node_parks_instead_of_stalling() {
     });
     let plan = PlanGraph::build(&w).unwrap();
     let mut execs = host_execs(&plan);
-    execs[1] = NodeExecutor::Client { tool_hash: "cafe".into(), tool_name: "g".into() };
+    execs[1] = NodeExecutor::Client { tool_hash: "cafe".into(), tool_name: "g".into(), approval: true };
     let behavior = |key: &JournalKey, _in: &Value| ok(json!({key.node.clone(): true}));
 
     let r = Sim {
@@ -513,7 +513,7 @@ fn client_ask_parks_once_resumes_by_id_and_never_charges_the_wait() {
         .edge("approve", "ship");
     let plan = PlanGraph::build(&w).unwrap();
     let mut execs = host_execs(&plan);
-    execs[1] = NodeExecutor::Client { tool_hash: "cafe".into(), tool_name: "approve".into() };
+    execs[1] = NodeExecutor::Client { tool_hash: "cafe".into(), tool_name: "approve".into(), approval: true };
 
     let behavior = |key: &JournalKey, _in: &Value| ok(json!({key.node.clone(): true}));
 
@@ -825,7 +825,7 @@ fn scheduler_state_serde_round_trips_mid_run() {
     let w = wf(&["auto", "approve"]).edge("auto", "approve");
     let plan = PlanGraph::build(&w).unwrap();
     let mut execs = host_execs(&plan);
-    execs[1] = NodeExecutor::Client { tool_hash: "cafe".into(), tool_name: "approve".into() };
+    execs[1] = NodeExecutor::Client { tool_hash: "cafe".into(), tool_name: "approve".into(), approval: true };
     let behavior = |key: &JournalKey, _in: &Value| ok(json!({key.node.clone(): true}));
     let r = Sim {
         env: env(&plan, &execs, Budgets::default()),

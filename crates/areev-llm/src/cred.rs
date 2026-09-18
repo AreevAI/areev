@@ -26,6 +26,60 @@ pub trait Credential: Send + Sync {
 
     /// Short label for diagnostics. Never includes key material.
     fn kind(&self) -> &'static str;
+
+    /// Produce the auth headers for ONE request, when minting a string is not
+    /// enough (#286).
+    ///
+    /// `Ok(None)` — the default — means "use the adapter's own header around
+    /// [`token`](Self::token)", which is exactly today's behaviour, so
+    /// `StaticKey`, `GoogleAdc` and every host implementation are untouched.
+    ///
+    /// `Ok(Some(headers))` means the adapter sends EXACTLY those headers and
+    /// no default auth header of its own. This is what a request SIGNER
+    /// needs: AWS SigV4 signs the method, the URL, the headers and the body
+    /// hash, none of which `token()` can see. The adapter serializes the body
+    /// once and hands those same bytes here, then sends them unchanged — a
+    /// re-serialization between signing and sending would invalidate the
+    /// signature.
+    ///
+    /// An `Err` is terminal: nothing is sent. A credential that cannot
+    /// authorize a request must not fall back to an unauthenticated one.
+    fn authorize(&self, _req: &AuthRequest<'_>) -> Result<Option<Vec<(String, String)>>> {
+        Ok(None)
+    }
+}
+
+/// The request a [`Credential::authorize`] implementation is signing.
+///
+/// `body` is the exact byte sequence that will be sent — signers hash it.
+pub struct AuthRequest<'a> {
+    pub method: &'a str,
+    pub url: &'a str,
+    pub body: &'a [u8],
+}
+
+/// Which header an Anthropic-wire-format endpoint expects the credential in
+/// (#286).
+///
+/// The native API takes `x-api-key`. The same wire format hosted inside a
+/// firm's own cloud tenant is commonly fronted by a gateway that takes an
+/// OAuth bearer token instead — and a workload identity that mints one had
+/// nowhere to put it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AuthScheme {
+    #[default]
+    XApiKey,
+    Bearer,
+}
+
+impl AuthScheme {
+    /// The one header this scheme sets, for the minted value.
+    pub fn header(&self, token: &str) -> (String, String) {
+        match self {
+            AuthScheme::XApiKey => ("x-api-key".to_string(), token.to_string()),
+            AuthScheme::Bearer => ("authorization".to_string(), format!("Bearer {token}")),
+        }
+    }
 }
 
 /// A fixed key, read once — the historical behaviour, unchanged.

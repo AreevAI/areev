@@ -127,6 +127,8 @@ pub enum RecStatus {
     Applied,
     RolledBack,
     Expired,
+    /// The engine withdrew it — every cited grain has moved (#317).
+    Withdrawn,
 }
 
 impl RecStatus {
@@ -138,6 +140,7 @@ impl RecStatus {
             RecStatus::Applied => "applied",
             RecStatus::RolledBack => "rolled_back",
             RecStatus::Expired => "expired",
+            RecStatus::Withdrawn => "withdrawn",
         }
     }
 
@@ -149,6 +152,7 @@ impl RecStatus {
             "applied" => Some(RecStatus::Applied),
             "rolled_back" => Some(RecStatus::RolledBack),
             "expired" => Some(RecStatus::Expired),
+            "withdrawn" => Some(RecStatus::Withdrawn),
             _ => None,
         }
     }

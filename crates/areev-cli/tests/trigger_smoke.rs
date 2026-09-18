@@ -133,23 +133,52 @@ fn k8s_render_uses_the_image_binary_not_the_authoring_hosts_path() {
 }
 
 /// A schedule this build cannot evaluate is refused at declaration (#67).
+///
+/// Since 1.9.0 the CLI carries zone data (#297), so a REAL zone is accepted
+/// and reported — an UNKNOWN zone name is what cannot be evaluated, and
+/// refusing a typo rather than falling back to UTC is the point: a schedule
+/// quietly firing at the wrong hour looks correct.
 #[test]
-fn a_non_utc_timezone_is_refused_when_declared() {
+fn an_unknown_timezone_is_refused_when_declared() {
     let dir = TempDir::new().unwrap();
     let db = dir.path().join("t.db");
     let db = db.to_str().unwrap();
 
     let (ok, _out, err) = areev(&[
         "trigger", "add", "--db", db, "--ns", "ops", "--type", "schedule", "--workflow", WF,
-        "--cron", "0 9 * * *", "--timezone", "Asia/Kolkata", "--because", "probe",
+        "--cron", "0 9 * * *", "--timezone", "Mars/Olympus", "--because", "probe",
     ]);
-    assert!(!ok, "a non-UTC timezone must be refused");
+    assert!(!ok, "an unknown zone name must be refused");
     assert!(err.contains("TRG-E006"), "{err}");
 
     // Nothing was stored, so `status` cannot report it as healthy.
     let (ok, out, _err) = areev(&["trigger", "status", "--db", db, "--ns", "ops"]);
     assert!(ok);
     assert!(out.contains("no triggers declared"), "{out}");
+}
+
+/// A real IANA zone is accepted, and `trigger status` says which one (#297).
+#[test]
+fn a_declared_timezone_is_accepted_and_reported() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("tz.db");
+    let db = db.to_str().unwrap();
+
+    let (ok, _out, err) = areev(&[
+        "trigger", "add", "--db", db, "--ns", "ops", "--type", "schedule", "--workflow", WF,
+        "--cron", "0 8 * * 1", "--timezone", "America/New_York", "--because", "weekly brief",
+    ]);
+    assert!(ok, "{err}");
+
+    let (ok, out, err) = areev(&[
+        "trigger", "status", "--db", db, "--ns", "ops", "--format", "json",
+    ]);
+    assert!(ok, "{err}");
+    assert!(
+        out.contains("America/New_York"),
+        "status must name the zone — on a DST boundary the UTC instant moves \
+         by an hour while the local wall time does not: {out}"
+    );
 }
 
 /// The read and lifecycle verbs — `show`, `status`, `pause`, `resume`,

@@ -137,7 +137,7 @@ triggers:    areev-trigger (evaluator; starts runs via areev-run)     ┤
 | `areev-trigger` | Standing rules that start workflows: the `Trigger` grain's eight kinds over four primitives, the one-shot `trigger run` evaluator (claim, cursor, backoff, catch-up), the connector contract in **two shapes** — a host command (`--connector-cmd`, same JSON-on-stdio as `--tool-cmd`) or a **grain** (`connector_tool` → a Tool Definition, pinned by the host with `--allow-executor`, dispatched through `areev-run`'s `CodeExecutor` and answered by the per-poll broker; `TRG-E012` when unpinned) — composite gates with correlation windows, and heartbeat rendering (the egress broker moved to `areev-run` so tools could share it). No daemon: cadence is data, evaluation is a command — `docs/triggers.md` | — |
 | `areev-mcp` | Stdio MCP server (see below) | — |
 | `areev-server` | Web console (see below) | — |
-| `areev` | The `areev` binary (see below) | — |
+| `areev` | The `areev` binary — and, since 1.9.0, a thin `[lib]` beside it exposing `areev::pack` so a Rust host installs an agent without spawning the binary (#315) | — |
 | `areev-py` | PyO3 bindings (see below) | — |
 | `areev-bench` | Reproducible benchmark harnesses (latency, honesty, LoCoMo accuracy, and the **self-improvement** A/B/A/B causal proof — `SELFIMPROVE.md`) | yes |
 | `areev-js` | Node (napi) bindings — **standalone package, not a workspace member** (see below) | — |
@@ -152,7 +152,20 @@ triggers:    areev-trigger (evaluator; starts runs via areev-run)     ┤
 2. **Canonical serialization is frozen** (NFC, sorted keys, compact keys,
    omit-defaults). Changing it silently changes every content address and
    breaks OMS conformance — see `crates/areev-core/CLAUDE.md`.
-3. **CAL destruction is authorization-gated, not structural** (CAL 1.3,
+3. **A legal hold binds EVERY deletion path, not only the age-based ones**
+   (1.9.0, #278). The check lives at the store choke points —
+   `Areev::forget` and the identity selector — and runs INSIDE the erasure
+   transaction after `reserve_write`, so CAL, MCP, the bindings, the console,
+   the memory tool, the importers and the loop's rollback all inherit it, and
+   a hold placed concurrently on Postgres cannot lose the race.
+   `drop_postgres_schema` reads `hold:` rows before `DROP SCHEMA … CASCADE`.
+   The refusal is `STO-E009` and is itself recorded; the override
+   (`WITH override_hold BECAUSE`, `--override-hold --because`) needs `admin`
+   on the namespace as well as `erase`/`delete` and names the hold it
+   overrode. Bundle replay is the one exception, deliberately: a hold binds
+   the memory where destruction is DECIDED, and a follower that refused a
+   replicated tombstone would diverge permanently.
+4. **CAL destruction is authorization-gated, not structural** (CAL 1.3,
    [`docs/cal-all-you-need-proposal.md`](docs/cal-all-you-need-proposal.md)).
    The destructive statements are `FORGET <hash>` (single-grain tombstone,
    `delete` verb), `FORGET SUBJECT "<id>" [WITH text_mentions]` (identity
@@ -177,9 +190,13 @@ triggers:    areev-trigger (evaluator; starts runs via areev-run)     ┤
    cap): the report and the erasure share ONE selector, so a DSAR discloses
    exactly what an erasure removes. [`docs/gdpr.md`](docs/gdpr.md) is the
    article→capability map.
-4. **CAL syntax is an OMS conformance contract** — no new CAL syntax
-   without a spec-level decision.
-5. **One memory = one isolation unit** — a file on the embedded backend, a
+5. **CAL syntax is an OMS conformance contract** — no new CAL syntax
+   without a spec-level decision. 1.9.0 added three clauses under that rule,
+   each recorded in `ARCHITECTURE.md` §10 and `docs/cal-reference.md`:
+   `FORGET … WITH override_hold` (#278), `WHERE namespace IN (…)` on
+   `RELATED` / `ENTITY … AT` (#303), and the previously-inert
+   `tags INCLUDE/EXCLUDE` becoming load-bearing (#318).
+6. **One memory = one isolation unit** — a file on the embedded backend, a
    Postgres schema on the `postgres` backend; either way it is the unit of
    erasure, sync, and portability. Write concurrency is backend-specific:
    the embedded backend is single-writer, enforced by a process-wide
@@ -204,7 +221,7 @@ triggers:    areev-trigger (evaluator; starts runs via areev-run)     ┤
    `open_with()` deliberately re-stamps and reports changes via
    `open_warnings()`. Host config (embedder capability, executor limits) is
    per-process and never persisted in the file.
-6. **Dependency-light by policy**: no clap (hand-rolled args), no HTTP
+7. **Dependency-light by policy**: no clap (hand-rolled args), no HTTP
    framework (std `TcpListener`), no MCP SDK (hand-rolled JSON-RPC), no
    workspace-wide async runtime (store wraps a private tokio current-thread
    runtime behind a sync API). Think twice before adding a dependency.
@@ -242,8 +259,10 @@ Every user-facing error carries a stable `DOMAIN-Ennn` code (3-letter
 uppercase domain, `-E`, digits) as the **leading token of its `Display`
 string**, plus a `code()` method. Domains: `FMT` (.mg format), `MEM`
 (grains + tool-schema binding), `STO` (Turso store), `CRY` (crypto), `VAL`
-(input validation), `CAL` (query language), `SYS` (internal). A reported code
-alone locates the variant and subsystem. **Codes are append-only** — never
+(input validation), `CAL` (query language), `SYS` (internal), plus the ones
+owned by crates outside core — `LOP` (loop engine), `AUT` (authorization),
+`RUN` (scheduler + driver), `TRG` (triggers) and `PCK` (agent packs). A
+reported code alone locates the variant and subsystem. **Codes are append-only** — never
 renumber or reuse one. Source of truth for text is inline on `AreevError`
 (`areev-core/src/error.rs`), `SchemaSubsetError`, and `CalError`
 (`areev-cal/src/errors.rs`); the full registry + the rule for adding one is

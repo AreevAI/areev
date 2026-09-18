@@ -162,3 +162,91 @@ fn full_mode_joins_recalls_to_runs_without_splitting_intent_rollups() {
     assert_eq!(stats.len(), 1, "run_id must not enter the query intent key");
     assert_eq!(stats[0].run_count, 2);
 }
+
+#[test]
+fn aggregate_hashed_keeps_no_query_text_anywhere() {
+    // #306: what a person types is content. Under `aggregate` it was
+    // retained memory-wide in `qkey` and `sample`, and no scrub reached a
+    // zero-result query.
+    const MARKER: &str = "zzmarkerqueryzz";
+    let d = TempDir::new().unwrap();
+    let mut m = open(&d, TelemetryMode::AggregateHashed);
+    m.add(&fact("ns", "alice", "prefers", "tea")).unwrap();
+    for _ in 0..3 {
+        let _ = m.recall_hybrid("ns", None, None, Some(MARKER), 5, None).unwrap();
+    }
+    m.telemetry_flush().unwrap();
+
+    let stats = m.telemetry_query_stats(None).unwrap();
+    assert!(!stats.is_empty(), "rollups still accumulate");
+    for q in &stats {
+        assert!(!q.key.contains(MARKER), "qkey leaked the text: {}", q.key);
+        assert!(q.sample.is_empty(), "sample must be empty, got {:?}", q.sample);
+    }
+    // Counters are what the analyzers need, and they are intact.
+    let total: i64 = stats.iter().map(|q| q.run_count).sum();
+    assert_eq!(total, 3);
+    // And the ring log is never written under a hashed mode.
+    assert!(m.telemetry_recall_log(None).unwrap().is_empty());
+}
+
+#[test]
+fn aggregate_still_keeps_the_sample() {
+    // Nothing moves for existing deployments.
+    const MARKER: &str = "zzkeeptextzz";
+    let d = TempDir::new().unwrap();
+    let mut m = open(&d, TelemetryMode::Aggregate);
+    m.add(&fact("ns", "alice", "prefers", "tea")).unwrap();
+    let _ = m.recall_hybrid("ns", None, None, Some(MARKER), 5, None).unwrap();
+    m.telemetry_flush().unwrap();
+    let stats = m.telemetry_query_stats(None).unwrap();
+    assert!(stats.iter().any(|q| q.sample.contains(MARKER)));
+}
+
+#[test]
+fn telemetry_scrub_namespace_clears_one_namespace_and_leaves_the_others() {
+    const MARKER: &str = "zzscrubmezz";
+    let d = TempDir::new().unwrap();
+    let mut m = open(&d, TelemetryMode::Aggregate);
+    m.add(&fact("a", "alice", "prefers", "tea")).unwrap();
+    m.add(&fact("b", "bob", "prefers", "chai")).unwrap();
+    // A ZERO-RESULT free-text query: names no grain hash, so `scrub(hash)`
+    // can never reach it. This is the case the namespace scrub exists for.
+    let _ = m.recall_hybrid("a", None, None, Some(MARKER), 5, None).unwrap();
+    let _ = m.recall_hybrid("b", None, None, Some("chai"), 5, None).unwrap();
+    m.telemetry_flush().unwrap();
+    assert!(m
+        .telemetry_query_stats(None)
+        .unwrap()
+        .iter()
+        .any(|q| q.sample.contains(MARKER)));
+
+    m.telemetry_scrub_namespace("a").unwrap();
+    let after = m.telemetry_query_stats(None).unwrap();
+    assert!(
+        !after.iter().any(|q| q.sample.contains(MARKER)),
+        "a's rows are gone"
+    );
+    assert!(after.iter().any(|q| q.ns == "b"), "b's rows survive");
+    assert!(m.telemetry_access_stats(Some("a")).unwrap().is_empty());
+    assert!(!m.telemetry_access_stats(Some("b")).unwrap().is_empty());
+}
+
+#[test]
+fn telemetry_scrub_namespace_refuses_a_pattern() {
+    let d = TempDir::new().unwrap();
+    let mut m = open(&d, TelemetryMode::Aggregate);
+    assert!(m.telemetry_scrub_namespace("a.*").is_err());
+}
+
+#[test]
+fn aggregate_hashed_parses_by_every_documented_spelling() {
+    for spelling in ["aggregate-hashed", "aggregate_hashed", "hashed"] {
+        assert_eq!(
+            TelemetryMode::parse(spelling),
+            Some(TelemetryMode::AggregateHashed),
+            "{spelling}"
+        );
+    }
+    assert_eq!(TelemetryMode::AggregateHashed.as_str(), "aggregate-hashed");
+}

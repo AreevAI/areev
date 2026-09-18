@@ -157,9 +157,9 @@ impl ToolCallLlm for OverflowingLlm {
 }
 
 fn turn_tools(calls: Vec<(&str, &str, Value)>) -> ToolCallResponse {
-    ToolCallResponse {
-        text: None,
-        tool_calls: calls
+    ToolCallResponse::new(
+        None,
+        calls
             .into_iter()
             .map(|(id, name, arguments)| ToolCallOut {
                 id: id.to_string(),
@@ -168,18 +168,18 @@ fn turn_tools(calls: Vec<(&str, &str, Value)>) -> ToolCallResponse {
                 arguments_raw: None,
             })
             .collect(),
-        stop_reason: StopReason::ToolUse,
-        usage: Usage { input_tokens: 10, output_tokens: 5, cache_read_tokens: None },
-    }
+        StopReason::ToolUse,
+        Usage { input_tokens: 10, output_tokens: 5, cache_read_tokens: None },
+    )
 }
 
 fn turn_final(text: &str) -> ToolCallResponse {
-    ToolCallResponse {
-        text: Some(text.to_string()),
-        tool_calls: vec![],
-        stop_reason: StopReason::EndTurn,
-        usage: Usage { input_tokens: 20, output_tokens: 7, cache_read_tokens: None },
-    }
+    ToolCallResponse::new(
+        Some(text.to_string()),
+        vec![],
+        StopReason::EndTurn,
+        Usage { input_tokens: 20, output_tokens: 7, cache_read_tokens: None },
+    )
 }
 
 /// The same turn shapes, but reporting the prompt tokens the PROVIDER saw —

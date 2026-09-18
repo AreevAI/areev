@@ -38,7 +38,34 @@ pub const KNOWN_CATEGORIES: &[&str] = &[
     "sg_nric",
     "ae_eid",
     "mrn",
+    // US identifiers (issue #281). Structure-validated (SSN, ITIN) or
+    // checksum-plus-cue (ABA routing) — see the individual detectors.
+    "us_ssn",
+    "us_itin",
+    "aba_routing",
 ];
+
+/// Categories whose detections are backed by a checksum or a structural
+/// validator, as opposed to shape alone. Used as an overlap tiebreak (#281):
+/// a dashed SSN also matches the phone pattern, and the specific,
+/// validator-backed reading must win over the generic one.
+pub fn category_is_validated(category: &str) -> bool {
+    matches!(
+        category,
+        "email"
+            | "ipv4"
+            | "ipv6"
+            | "mac"
+            | "url_userinfo"
+            | "credit_card"
+            | "iban"
+            | "sg_nric"
+            | "ae_eid"
+            | "us_ssn"
+            | "us_itin"
+            | "aba_routing"
+    )
+}
 
 fn re(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
     cell.get_or_init(|| Regex::new(pattern).expect("static detector regex"))
@@ -80,6 +107,9 @@ pub(super) fn run_tier0(
     detect_iban(text, &mut out);
     detect_sg_nric(text, &mut out);
     detect_ae_eid(text, &mut out);
+    detect_us_ssn(text, &mut out);
+    detect_us_itin(text, &mut out);
+    detect_aba_routing(text, &mut out);
     detect_mrn(text, &mut out);
     detect_secret(text, &mut out);
     detect_keyword_proximity(text, &mut out);
@@ -348,6 +378,158 @@ fn detect_ae_eid(text: &str, out: &mut Vec<Detection>) {
             out.push(det(m.start(), m.end(), "ae_eid", "tier0.ae_eid"));
         }
     }
+}
+
+/// End offsets of every cue match, for the cue-proximity rule shared by the
+/// bare-digit-run detectors (`detect_mrn`'s 40-character window, #281).
+fn cue_ends(text: &str, cell: &'static OnceLock<Regex>, pattern: &str) -> Vec<usize> {
+    re(cell, pattern).find_iter(text).map(|m| m.end()).collect()
+}
+
+/// A cue sits within 40 characters before `start`.
+fn cue_near(cues: &[usize], start: usize) -> bool {
+    cues.iter()
+        .any(|c| start >= *c && start.saturating_sub(*c) <= 40)
+}
+
+/// The three digit groups of an `AAA-GG-SSSS`-shaped candidate, dashed,
+/// spaced, or bare. Returns `None` when the run is not nine digits.
+fn us_id_groups(s: &str) -> Option<(u32, u32, u32)> {
+    let digits: Vec<u32> = s.chars().filter_map(|c| c.to_digit(10)).collect();
+    if digits.len() != 9 {
+        return None;
+    }
+    let n = |sl: &[u32]| sl.iter().fold(0u32, |a, d| a * 10 + d);
+    Some((n(&digits[0..3]), n(&digits[3..5]), n(&digits[5..9])))
+}
+
+/// US Social Security Numbers — `AAA-GG-SSSS` / `AAA GG SSSS` unconditionally,
+/// a bare nine-digit run only with an SSN cue within 40 characters before it.
+///
+/// Structure-validated rather than checksummed (the SSA issues no check
+/// digit): area ≠ 000, ≠ 666 and not 900–999 (which is the ITIN range, so the
+/// two detectors are disjoint by construction), group ≠ 00, serial ≠ 0000.
+/// Without the bare-run cue gate this would redact every nine-digit quantity.
+fn detect_us_ssn(text: &str, out: &mut Vec<Detection>) {
+    static SEP: OnceLock<Regex> = OnceLock::new();
+    static BARE: OnceLock<Regex> = OnceLock::new();
+    static CUE: OnceLock<Regex> = OnceLock::new();
+    let sep = re(&SEP, r"[0-9]{3}[- ][0-9]{2}[- ][0-9]{4}");
+    for m in sep.find_iter(text) {
+        if boundary_ok(text, m.start(), m.end()) && us_ssn_ok(m.as_str()) {
+            out.push(det(m.start(), m.end(), "us_ssn", "tier0.us_ssn"));
+        }
+    }
+    let cues = cue_ends(
+        text,
+        &CUE,
+        r"(?i)\b(ssn|ss#|social security (number|no\.?)|soc sec|taxpayer id|tin)\b",
+    );
+    if cues.is_empty() {
+        return;
+    }
+    let bare = re(&BARE, r"[0-9]{9}");
+    for m in bare.find_iter(text) {
+        if boundary_ok(text, m.start(), m.end())
+            && cue_near(&cues, m.start())
+            && us_ssn_ok(m.as_str())
+        {
+            out.push(det(m.start(), m.end(), "us_ssn", "tier0.us_ssn"));
+        }
+    }
+}
+
+fn us_ssn_ok(s: &str) -> bool {
+    match us_id_groups(s) {
+        Some((area, group, serial)) => {
+            area != 0 && area != 666 && area < 900 && group != 0 && serial != 0
+        }
+        None => false,
+    }
+}
+
+/// US Individual Taxpayer Identification Numbers — the SSN shapes with an
+/// area beginning in 9 and a group in one of the IRS-assigned ranges. Bare
+/// runs are cue-gated; the dashed form is specific enough on its own.
+fn detect_us_itin(text: &str, out: &mut Vec<Detection>) {
+    static SEP: OnceLock<Regex> = OnceLock::new();
+    static BARE: OnceLock<Regex> = OnceLock::new();
+    static CUE: OnceLock<Regex> = OnceLock::new();
+    let sep = re(&SEP, r"9[0-9]{2}[- ][0-9]{2}[- ][0-9]{4}");
+    for m in sep.find_iter(text) {
+        if boundary_ok(text, m.start(), m.end()) && us_itin_ok(m.as_str()) {
+            out.push(det(m.start(), m.end(), "us_itin", "tier0.us_itin"));
+        }
+    }
+    let cues = cue_ends(
+        text,
+        &CUE,
+        r"(?i)\b(itin|individual taxpayer identification( number)?)\b",
+    );
+    if cues.is_empty() {
+        return;
+    }
+    let bare = re(&BARE, r"9[0-9]{8}");
+    for m in bare.find_iter(text) {
+        if boundary_ok(text, m.start(), m.end())
+            && cue_near(&cues, m.start())
+            && us_itin_ok(m.as_str())
+        {
+            out.push(det(m.start(), m.end(), "us_itin", "tier0.us_itin"));
+        }
+    }
+}
+
+fn us_itin_ok(s: &str) -> bool {
+    match us_id_groups(s) {
+        Some((area, group, _serial)) => {
+            (900..=999).contains(&area)
+                && matches!(group, 50..=65 | 70..=88 | 90..=92 | 94..=99)
+        }
+        None => false,
+    }
+}
+
+/// ABA routing transit numbers — nine digits, a valid Federal Reserve
+/// district prefix, and the standard 3-7-1 weighted checksum.
+///
+/// ALWAYS cue-gated: the checksum passes roughly one random nine-digit run in
+/// ten, so shape plus checksum alone would redact ordinary figures.
+fn detect_aba_routing(text: &str, out: &mut Vec<Detection>) {
+    static NUM: OnceLock<Regex> = OnceLock::new();
+    static CUE: OnceLock<Regex> = OnceLock::new();
+    let cues = cue_ends(
+        text,
+        &CUE,
+        r"(?i)\b(routing|aba|rtn|routing transit)\b",
+    );
+    if cues.is_empty() {
+        return;
+    }
+    let num = re(&NUM, r"[0-9]{9}");
+    for m in num.find_iter(text) {
+        if boundary_ok(text, m.start(), m.end())
+            && cue_near(&cues, m.start())
+            && aba_routing_ok(m.as_str())
+        {
+            out.push(det(m.start(), m.end(), "aba_routing", "tier0.aba_routing"));
+        }
+    }
+}
+
+fn aba_routing_ok(s: &str) -> bool {
+    let d: Vec<u32> = s.chars().filter_map(|c| c.to_digit(10)).collect();
+    if d.len() != 9 {
+        return false;
+    }
+    let prefix = d[0] * 10 + d[1];
+    let prefix_ok =
+        matches!(prefix, 0..=12 | 21..=32 | 61..=72 | 80);
+    if !prefix_ok {
+        return false;
+    }
+    let sum = 3 * (d[0] + d[3] + d[6]) + 7 * (d[1] + d[4] + d[7]) + (d[2] + d[5] + d[8]);
+    sum.is_multiple_of(10)
 }
 
 /// Medical record numbers — shape alone is a bare digit run, which is why
@@ -679,5 +861,115 @@ mod national_id_tests {
         // Cue present but far away — outside the proximity window.
         let far = format!("MRN was not recorded.{} 4471820", " ".repeat(60));
         assert!(cats(&far).is_empty(), "proximity window must bound the cue");
+    }
+}
+
+#[cfg(test)]
+mod us_id_tests {
+    use super::*;
+
+    /// Only the US detectors, so a phone/date overlap does not hide a miss.
+    fn cats(text: &str) -> Vec<String> {
+        let mut d = Vec::new();
+        detect_us_ssn(text, &mut d);
+        detect_us_itin(text, &mut d);
+        detect_aba_routing(text, &mut d);
+        d.iter()
+            .map(|x| format!("{}:{}", x.category, &text[x.start..x.end]))
+            .collect()
+    }
+
+    #[test]
+    fn ssn_separated_forms_need_no_cue() {
+        assert_eq!(cats("123-45-6789"), vec!["us_ssn:123-45-6789"]);
+        assert_eq!(cats("123 45 6789"), vec!["us_ssn:123 45 6789"]);
+    }
+
+    #[test]
+    fn ssn_bare_run_needs_a_cue() {
+        assert_eq!(cats("SSN 123456789"), vec!["us_ssn:123456789"]);
+        // No cue: an ordinary nine-digit quantity stays clean.
+        assert!(cats("bare 123456789").is_empty());
+        assert!(cats("EBITDA 123456789").is_empty());
+    }
+
+    #[test]
+    fn ssn_structure_is_validated() {
+        for bad in [
+            "000-45-6789",
+            "666-45-6789",
+            "900-45-6789",
+            "123-00-6789",
+            "123-45-0000",
+        ] {
+            assert!(cats(bad).is_empty(), "{bad} must not be an SSN");
+        }
+    }
+
+    #[test]
+    fn ssn_respects_word_boundaries() {
+        assert!(cats("X123-45-6789Y").is_empty());
+    }
+
+    #[test]
+    fn itin_group_ranges_are_validated() {
+        for ok in ["912-70-1234", "900-50-1234", "999-88-0001", "950-94-1234"] {
+            assert_eq!(cats(ok), vec![format!("us_itin:{ok}")], "{ok}");
+        }
+        for bad in ["912-49-1234", "912-66-1234", "912-89-1234", "912-93-1234"] {
+            assert!(cats(bad).is_empty(), "{bad} must not be an ITIN");
+        }
+    }
+
+    #[test]
+    fn ssn_and_itin_are_disjoint() {
+        // The ITIN area range (900-999) is exactly what `us_ssn_ok` excludes.
+        assert!(!us_ssn_ok("912-70-1234"));
+        assert!(!us_itin_ok("123-45-6789"));
+    }
+
+    #[test]
+    fn aba_needs_cue_prefix_and_checksum() {
+        for ok in ["021000021", "011000015", "121000248"] {
+            assert_eq!(
+                cats(&format!("routing {ok}")),
+                vec![format!("aba_routing:{ok}")],
+                "{ok}"
+            );
+        }
+        // Bad checksum.
+        assert!(cats("routing 021000022").is_empty());
+        // Passes the checksum but starts outside every Federal Reserve
+        // district prefix.
+        assert!(aba_checksum_only("130000006"));
+        assert!(cats("routing 130000006").is_empty());
+        // No cue at all, and a cue too far away.
+        assert!(cats("invoice 021000021").is_empty());
+        let far = format!("routing{} 021000021", " ".repeat(45));
+        assert!(cats(&far).is_empty());
+    }
+
+    fn aba_checksum_only(s: &str) -> bool {
+        let d: Vec<u32> = s.chars().filter_map(|c| c.to_digit(10)).collect();
+        (3 * (d[0] + d[3] + d[6]) + 7 * (d[1] + d[4] + d[7]) + (d[2] + d[5] + d[8])).is_multiple_of(10)
+    }
+
+    #[test]
+    fn a_real_phone_is_not_a_us_identifier() {
+        assert!(cats("(212) 555-0142").is_empty());
+        let mut d = Vec::new();
+        detect_phone("(212) 555-0142", &mut d);
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].category, "phone");
+    }
+
+    #[test]
+    fn a_dashed_ssn_also_matches_the_phone_shape() {
+        // Both fire; `resolve_overlaps` picks the validated one (see
+        // `anon::tests`). Detection stays additive so a phone-only policy
+        // still redacts the span.
+        let mut d = Vec::new();
+        detect_phone("123-45-6789", &mut d);
+        assert_eq!(d.len(), 1, "the dashed phone pattern still matches");
     }
 }

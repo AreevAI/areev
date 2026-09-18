@@ -26,5 +26,5 @@ pub mod templates;
 
 pub use executor::{CalExecutor, CalExecutorConfig};
 pub use facade::CalStoreFacade;
-pub use areev_facade::AreevFacade;
+pub use areev_facade::{AreevFacade, GrantChange, PrincipalSession, SessionScope};
 pub use parser::parse;

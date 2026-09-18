@@ -57,6 +57,7 @@ Turso transitively includes [tantivy](https://github.com/quickwit-oss/tantivy)
 | aes-gcm, hkdf | MIT OR Apache-2.0 |
 | getrandom | MIT OR Apache-2.0 |
 | croner (areev-trigger only) | MIT |
+| chrono-tz (areev-trigger, `tz` feature — on in the CLI and both bindings) | MIT OR Apache-2.0 |
 | ureq (areev-llm, areev-run) | MIT OR Apache-2.0 |
 | pyo3 (areev-py only) | MIT OR Apache-2.0 |
 | napi, napi-derive (areev-js only) | MIT |

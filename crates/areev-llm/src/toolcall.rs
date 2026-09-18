@@ -85,6 +85,27 @@ pub enum ChatMessage {
     Assistant {
         text: Option<String>,
         tool_calls: Vec<ToolCallOut>,
+        /// The provider's own representation of this assistant turn's
+        /// content, opaque to Areev (#284).
+        ///
+        /// On models that think by default, a response carries `thinking`
+        /// blocks (usually empty text plus a signature), and continuing the
+        /// conversation requires those blocks to be echoed back UNCHANGED —
+        /// within a tool-use turn Anthropic states this as required, and
+        /// removing them either 400s on signature/ordering or silently
+        /// disables thinking for that request. Either outcome is wrong for a
+        /// governed run: the first kills the node, the second changes model
+        /// behaviour across the tool boundary with nothing in the journal
+        /// saying so.
+        ///
+        /// A host cannot fix this from its side of the seam: a custom
+        /// transport receives the transcript Areev rebuilt, and a
+        /// process-local cache does not survive `resume`. So the transcript
+        /// itself carries the bytes, and the journal persists them.
+        ///
+        /// `None` for providers that have no such content — the OpenAI and
+        /// Ollama adapters set it to `None` and their bodies are unchanged.
+        provider_content: Option<Value>,
     },
     /// The result of a tool call from a prior assistant turn, addressed by
     /// the id the provider assigned (never by position).
@@ -161,6 +182,56 @@ pub struct ToolCallResponse {
     pub tool_calls: Vec<ToolCallOut>,
     pub stop_reason: StopReason,
     pub usage: Usage,
+    /// The assistant turn's content blocks exactly as the provider returned
+    /// them, opaque to Areev — see
+    /// [`ChatMessage::Assistant::provider_content`] (#284).
+    pub provider_content: Option<Value>,
+    /// The model the provider reports having SERVED, when it says so (#287).
+    ///
+    /// An alias or a router that resolved elsewhere is otherwise invisible:
+    /// the request says `claude-opus-5`, the journal says `claude-opus-5`,
+    /// and which weights actually answered is unrecorded. `None` when the
+    /// provider reports nothing.
+    pub served_model: Option<String>,
+    /// The region the provider reports having served from, where it says so
+    /// (#287). `None` when unreported.
+    pub served_region: Option<String>,
+}
+
+impl ToolCallResponse {
+    /// The four fields every transport must supply. Use this rather than a
+    /// struct literal: the optional fields are expected to grow, and a
+    /// constructor means the next one is not a source break for every host
+    /// transport in existence (#284 item 4).
+    pub fn new(
+        text: Option<String>,
+        tool_calls: Vec<ToolCallOut>,
+        stop_reason: StopReason,
+        usage: Usage,
+    ) -> Self {
+        Self {
+            text,
+            tool_calls,
+            stop_reason,
+            usage,
+            provider_content: None,
+            served_model: None,
+            served_region: None,
+        }
+    }
+
+    /// Builder form for the provider's opaque content.
+    pub fn with_provider_content(mut self, content: Option<Value>) -> Self {
+        self.provider_content = content;
+        self
+    }
+
+    /// Builder form for the served-model/region provenance.
+    pub fn with_served(mut self, model: Option<String>, region: Option<String>) -> Self {
+        self.served_model = model;
+        self.served_region = region;
+        self
+    }
 }
 
 /// The tool-calling seam. Implementations are transports: they encode
@@ -191,6 +262,56 @@ pub trait ToolCallLlm: Send + Sync {
     fn context_window(&self) -> Option<u64> {
         None
     }
+    /// The temperature this transport will ACTUALLY send for `requested`, or
+    /// `None` when it will send none at all (#283).
+    ///
+    /// Telemetry must not claim a parameter that never went out on the wire.
+    /// A `gen_ai.request.temperature` attribute of 0.0 on a request that
+    /// carried no temperature is worse than a missing attribute: it is an
+    /// assertion about the model's configuration that is false, on the
+    /// channel an operator uses to explain a run's behaviour.
+    ///
+    /// Defaulted to "what you asked for", so every host transport keeps
+    /// compiling and keeps reporting what it already reported.
+    fn effective_temperature(&self, requested: f64) -> Option<f64> {
+        Some(requested)
+    }
+    /// A per-turn price in USD micros for this usage, or `None` when this
+    /// transport does not price (#291).
+    ///
+    /// `None` means UNPRICED, which is not the same as free — the runtime
+    /// keeps the two apart so an unpriced run reports `not_measurable`
+    /// rather than `$0`, and a cost bound over it never reads as "within".
+    ///
+    /// The transport is the right place for it: it knows its own model, and
+    /// [`Usage`] already carries `cache_read_tokens`. A host that injects its
+    /// own transport prices from its own rate card. `Runner` gains no field,
+    /// so every struct-literal host keeps compiling.
+    fn price_usd_micros(&self, _usage: &Usage) -> Option<u64> {
+        None
+    }
+    /// The region this transport serves from, when it can state one (#287).
+    /// Part of a run's model pin: a run parked in one jurisdiction must not
+    /// silently finish in another.
+    fn region(&self) -> Option<&str> {
+        None
+    }
+    /// An opaque host string identifying THIS transport's configuration
+    /// (#287) — a configuration hash, typically.
+    ///
+    /// Areev never interprets it; it only compares it. That is what lets a
+    /// host wrapping its own transport have the engine enforce the host's own
+    /// notion of "the same configuration", without the engine having to model
+    /// what the host considers significant.
+    fn pin_tag(&self) -> Option<&str> {
+        None
+    }
+    /// Content address of this transport's request profile (#285), for the
+    /// run's model pin: what was actually SENT is part of what a run ran
+    /// under.
+    fn request_profile_digest(&self) -> Option<String> {
+        None
+    }
     fn call(&self, req: &ToolCallRequest<'_>) -> ToolCallResult<ToolCallResponse>;
     /// Streaming variant: `on_token` receives text deltas as they arrive.
     /// Default: the non-streaming call, delivered as one final chunk —
@@ -210,6 +331,34 @@ pub trait ToolCallLlm: Send + Sync {
 
 // ---- shared transport ------------------------------------------------------
 
+/// Resolve one request's auth headers through the credential seam (#286).
+///
+/// The body bytes are passed in and returned unchanged: a signing credential
+/// hashes them, so the adapter must send exactly what it signed. Serializing
+/// again between signing and sending would silently invalidate every
+/// signature.
+///
+/// `Some(headers)` from `authorize` REPLACES the adapter's default auth
+/// header entirely — a signer that also got an `x-api-key` alongside its
+/// signature would be sending two credentials, one of which it did not
+/// intend.
+fn resolve_auth_headers(
+    cred: &dyn crate::cred::Credential,
+    default: impl FnOnce(&str) -> (String, String),
+    method: &str,
+    url: &str,
+    body: &[u8],
+) -> ToolCallResult<Vec<(String, String)>> {
+    let signed = cred
+        .authorize(&crate::cred::AuthRequest { method, url, body })
+        .map_err(|e| terminal(e.to_string()))?;
+    if let Some(headers) = signed {
+        return Ok(headers);
+    }
+    let token = cred.token().map_err(|e| terminal(e.to_string()))?;
+    Ok(vec![default(&token)])
+}
+
 /// POST JSON and classify failures for the retry table. Unlike the loop's
 /// `post_json`, status codes survive: 429/5xx → retryable, other 4xx →
 /// terminal, transport faults → retryable.
@@ -217,6 +366,22 @@ fn post_json_classified(
     url: &str,
     headers: &[(&str, &str)],
     body: &Value,
+) -> ToolCallResult<Value> {
+    let bytes =
+        serde_json::to_vec(body).map_err(|e| terminal(format!("encode request: {e}")))?;
+    let owned: Vec<(String, String)> = headers
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+        .collect();
+    post_bytes_classified(url, &owned, &bytes)
+}
+
+/// The byte-exact form (#286): the caller has already serialized, possibly
+/// signed those exact bytes, and must have them sent unchanged.
+fn post_bytes_classified(
+    url: &str,
+    headers: &[(String, String)],
+    body_bytes: &[u8],
 ) -> ToolCallResult<Value> {
     // Status codes are NOT errors at the agent level here, so a 4xx body
     // survives to be read. That body is the only place a provider states
@@ -226,11 +391,9 @@ fn post_json_classified(
         .post(url)
         .header("Content-Type", "application/json");
     for (k, v) in headers {
-        req = req.header(*k, *v);
+        req = req.header(k.as_str(), v.as_str());
     }
-    let body_text = serde_json::to_string(body)
-        .map_err(|e| terminal(format!("encode request: {e}")))?;
-    let (status, text) = match req.send(&body_text) {
+    let (status, text) = match req.send(body_bytes) {
         Ok(mut resp) => {
             let status = resp.status().as_u16();
             let body = resp.body_mut().read_to_string().map_err(|e| ToolCallError {
@@ -329,7 +492,11 @@ fn openai_messages(req: &ToolCallRequest<'_>) -> Vec<Value> {
     for m in &req.messages {
         match m {
             ChatMessage::User(t) => out.push(json!({"role": "user", "content": t})),
-            ChatMessage::Assistant { text, tool_calls } => {
+            // `provider_content` is Anthropic-shaped opaque content; the
+            // OpenAI-compatible wire format has nowhere to put it, and this
+            // adapter never produces one, so it is ignored here and the body
+            // stays byte-identical to before #284.
+            ChatMessage::Assistant { text, tool_calls, provider_content: _ } => {
                 let mut msg = json!({"role": "assistant"});
                 if let Some(t) = text {
                     msg["content"] = json!(t);
@@ -433,26 +600,41 @@ fn openai_parse(resp: &Value) -> ToolCallResult<ToolCallResponse> {
                 .and_then(|c| c.as_u64()),
         })
     });
-    Ok(ToolCallResponse {
+    Ok(ToolCallResponse::new(
         text,
         tool_calls,
         stop_reason,
-        usage: require_usage(usage, "openai-compatible")?,
-    })
+        require_usage(usage, "openai-compatible")?,
+    )
+    // The OpenAI wire format echoes the model that answered — which for a
+    // router or an alias is not always the one that was asked for (#287).
+    .with_served(
+        resp.get("model").and_then(|m| m.as_str()).map(str::to_string),
+        None,
+    ))
 }
 
-fn openai_body(req: &ToolCallRequest<'_>, model: &str) -> ToolCallResult<Value> {
+fn openai_body(
+    req: &ToolCallRequest<'_>,
+    model: &str,
+    profile: &crate::profile::RequestProfile,
+) -> ToolCallResult<Value> {
     let mut body = json!({
         "model": model,
         "messages": openai_messages(req),
-        "max_tokens": req.max_tokens,
-        "temperature": req.temperature,
         "stream": false,
     });
+    body[profile.token_limit_key()] = json!(req.max_tokens);
+    if profile.sends_temperature() {
+        body["temperature"] = json!(req.temperature);
+    }
     if !req.tools.is_empty() {
         body["tools"] = Value::Array(render_tools(req.tools, ProviderKind::OpenAiTools)?);
         body["tool_choice"] = openai_tool_choice(&req.tool_choice);
     }
+    // Merged last, and it can never clobber an owned key — the profile
+    // constructor already refused those (#285).
+    profile.apply_extra(&mut body);
     Ok(body)
 }
 
@@ -467,26 +649,46 @@ impl ToolCallLlm for crate::OpenAiCompat {
     fn provider(&self) -> &'static str {
         self.provider_name
     }
+    fn request_profile_digest(&self) -> Option<String> {
+        self.profile.digest()
+    }
     fn call(&self, req: &ToolCallRequest<'_>) -> ToolCallResult<ToolCallResponse> {
-        let body = openai_body(req, &self.model)?;
+        let body = openai_body(req, &self.model, &self.profile)?;
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        let auth = format!("Bearer {}", self.cred.token().map_err(|e| terminal(e.to_string()))?);
-        openai_parse(&post_json_classified(&url, &[("Authorization", &auth)], &body)?)
+        // Serialize ONCE: a signing credential hashes these exact bytes, and
+        // the same bytes are what goes on the wire (#286).
+        let bytes =
+            serde_json::to_vec(&body).map_err(|e| terminal(format!("encode request: {e}")))?;
+        let headers = resolve_auth_headers(
+            self.cred.as_ref(),
+            |t| ("authorization".to_string(), format!("Bearer {t}")),
+            "POST",
+            &url,
+            &bytes,
+        )?;
+        openai_parse(&post_bytes_classified(&url, &headers, &bytes)?)
     }
     fn call_streaming(
         &self,
         req: &ToolCallRequest<'_>,
         on_token: &mut dyn FnMut(&str),
     ) -> ToolCallResult<ToolCallResponse> {
-        let mut body = openai_body(req, &self.model)?;
+        let mut body = openai_body(req, &self.model, &self.profile)?;
         body["stream"] = json!(true);
         // Without this the final chunk carries no usage — and a usage-less
         // stream is refused (§6.7: budgets need the figures).
         body["stream_options"] = json!({"include_usage": true});
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        let auth = format!("Bearer {}", self.cred.token().map_err(|e| terminal(e.to_string()))?);
-        let lines =
-            crate::toolcall_stream::post_stream_lines(&url, &[("Authorization", &auth)], &body)?;
+        let bytes =
+            serde_json::to_vec(&body).map_err(|e| terminal(format!("encode request: {e}")))?;
+        let headers = resolve_auth_headers(
+            self.cred.as_ref(),
+            |t| ("authorization".to_string(), format!("Bearer {t}")),
+            "POST",
+            &url,
+            &bytes,
+        )?;
+        let lines = crate::toolcall_stream::post_stream_lines(&url, &headers, &bytes)?;
         crate::toolcall_stream::openai_accumulate(lines, on_token)
     }
 }
@@ -498,7 +700,17 @@ fn anthropic_messages(req: &ToolCallRequest<'_>) -> Vec<Value> {
     for m in &req.messages {
         match m {
             ChatMessage::User(t) => out.push(json!({"role": "user", "content": t})),
-            ChatMessage::Assistant { text, tool_calls } => {
+            ChatMessage::Assistant { text, tool_calls, provider_content } => {
+                // When the turn carries the provider's own content, replay it
+                // BYTE-IDENTICALLY (#284): thinking blocks and their
+                // signatures must come back unchanged, and rebuilding the
+                // blocks from `text` + `tool_calls` is exactly what dropped
+                // them. Rebuilding stays the path for turns Areev itself
+                // synthesized and for every other provider.
+                if let Some(content) = provider_content {
+                    out.push(json!({"role": "assistant", "content": content}));
+                    continue;
+                }
                 let mut blocks: Vec<Value> = Vec::new();
                 if let Some(t) = text {
                     blocks.push(json!({"type": "text", "text": t}));
@@ -585,21 +797,83 @@ fn anthropic_parse(resp: &Value) -> ToolCallResult<ToolCallResponse> {
             cache_read_tokens: u.get("cache_read_input_tokens").and_then(|c| c.as_u64()),
         })
     });
-    Ok(ToolCallResponse {
+    // Capture the whole content array verbatim when it holds anything Areev
+    // does not model — today that means `thinking` / `redacted_thinking`
+    // blocks and their signatures (#284). A response of only text and
+    // tool_use carries no opaque content, so the transcript and the journal
+    // stay byte-identical to 1.8.5 for every model that does not think.
+    let provider_content = blocks
+        .iter()
+        .any(|b| {
+            !matches!(
+                b.get("type").and_then(|t| t.as_str()),
+                Some("text") | Some("tool_use")
+            )
+        })
+        .then(|| Value::Array(blocks.clone()));
+    Ok(ToolCallResponse::new(
         text,
         tool_calls,
         stop_reason,
-        usage: require_usage(usage, "anthropic")?,
-    })
+        require_usage(usage, "anthropic")?,
+    )
+    .with_provider_content(provider_content)
+    .with_served(
+        resp.get("model").and_then(|m| m.as_str()).map(str::to_string),
+        None,
+    ))
 }
 
-fn anthropic_body(req: &ToolCallRequest<'_>, model: &str) -> ToolCallResult<Value> {
+/// Whether this Claude model still ACCEPTS a sampling parameter (#283).
+///
+/// Anthropic removed `temperature`, `top_p` and `top_k` on Claude Opus 4.7,
+/// Opus 4.8, Opus 5, Sonnet 5 and the Fable 5 models: a request that sets one
+/// returns HTTP 400, which is terminal here (only 429 and 5xx are retried),
+/// so an abstract node using any of them died on its first turn, every time.
+///
+/// The set is CLOSED by construction — every newer model rejects the field —
+/// so, unlike a growing per-model table, it cannot go stale. It also fails in
+/// the right direction: a model wrongly left out runs at the provider's own
+/// default (a quality question), while a model wrongly put in is the dead
+/// node this exists to prevent. Same reasoning as [`CLAUDE_CONTEXT_FLOOR`].
+fn anthropic_accepts_temperature(model: &str) -> bool {
+    // Bedrock and Vertex prefix the model id (`anthropic.claude-…`,
+    // `us.anthropic.claude-…`), so match on the family fragment rather than
+    // the start of the string.
+    const LEGACY_FAMILIES: &[&str] = &[
+        "claude-3-",
+        "claude-3.",
+        "claude-4-0",
+        "claude-4-1",
+        "claude-opus-4-0",
+        "claude-opus-4-1",
+        "claude-opus-4-5",
+        "claude-opus-4-6",
+        "claude-sonnet-4-0",
+        "claude-sonnet-4-5",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5",
+        // `claude-3-` already covers 3.5 and 3.7 — one entry per family that
+        // is not a substring of another, so the list stays checkable.
+    ];
+    LEGACY_FAMILIES.iter().any(|f| model.contains(f))
+}
+
+fn anthropic_body(
+    req: &ToolCallRequest<'_>,
+    model: &str,
+    profile: &crate::profile::RequestProfile,
+) -> ToolCallResult<Value> {
     let mut body = json!({
         "model": model,
         "max_tokens": req.max_tokens,
-        "temperature": req.temperature,
         "messages": anthropic_messages(req),
     });
+    // The model's own contract first (#283: current Claude models 400 on a
+    // sampling parameter), then the operator's profile (#285).
+    if anthropic_accepts_temperature(model) && profile.sends_temperature() {
+        body["temperature"] = json!(req.temperature);
+    }
     if let Some(s) = &req.system {
         // Same cache posture as the loop adapter: the stable prefix is
         // marked ephemeral-cacheable.
@@ -612,6 +886,7 @@ fn anthropic_body(req: &ToolCallRequest<'_>, model: &str) -> ToolCallResult<Valu
             body["tool_choice"] = tc;
         }
     }
+    profile.apply_extra(&mut body);
     Ok(body)
 }
 
@@ -645,30 +920,54 @@ impl ToolCallLlm for crate::Anthropic {
     fn context_window(&self) -> Option<u64> {
         self.model.starts_with("claude-").then_some(CLAUDE_CONTEXT_FLOOR)
     }
+    fn effective_temperature(&self, requested: f64) -> Option<f64> {
+        anthropic_accepts_temperature(&self.model).then_some(requested)
+    }
+    fn request_profile_digest(&self) -> Option<String> {
+        self.profile.digest()
+    }
     fn call(&self, req: &ToolCallRequest<'_>) -> ToolCallResult<ToolCallResponse> {
-        let body = anthropic_body(req, &self.model)?;
+        let body = anthropic_body(req, &self.model, &self.profile)?;
         let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
-        let key = self.cred.token().map_err(|e| terminal(e.to_string()))?;
-        anthropic_parse(&post_json_classified(
+        let bytes =
+            serde_json::to_vec(&body).map_err(|e| terminal(format!("encode request: {e}")))?;
+        let scheme = self.auth_scheme;
+        let mut headers = resolve_auth_headers(
+            self.cred.as_ref(),
+            |t| scheme.header(t),
+            "POST",
             &url,
-            &[("x-api-key", key.as_str()), ("anthropic-version", ANTHROPIC_HEADERS_VERSION)],
-            &body,
-        )?)
+            &bytes,
+        )?;
+        headers.push((
+            "anthropic-version".to_string(),
+            ANTHROPIC_HEADERS_VERSION.to_string(),
+        ));
+        anthropic_parse(&post_bytes_classified(&url, &headers, &bytes)?)
     }
     fn call_streaming(
         &self,
         req: &ToolCallRequest<'_>,
         on_token: &mut dyn FnMut(&str),
     ) -> ToolCallResult<ToolCallResponse> {
-        let mut body = anthropic_body(req, &self.model)?;
+        let mut body = anthropic_body(req, &self.model, &self.profile)?;
         body["stream"] = json!(true);
         let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
-        let key = self.cred.token().map_err(|e| terminal(e.to_string()))?;
-        let lines = crate::toolcall_stream::post_stream_lines(
+        let bytes =
+            serde_json::to_vec(&body).map_err(|e| terminal(format!("encode request: {e}")))?;
+        let scheme = self.auth_scheme;
+        let mut headers = resolve_auth_headers(
+            self.cred.as_ref(),
+            |t| scheme.header(t),
+            "POST",
             &url,
-            &[("x-api-key", key.as_str()), ("anthropic-version", ANTHROPIC_HEADERS_VERSION)],
-            &body,
+            &bytes,
         )?;
+        headers.push((
+            "anthropic-version".to_string(),
+            ANTHROPIC_HEADERS_VERSION.to_string(),
+        ));
+        let lines = crate::toolcall_stream::post_stream_lines(&url, &headers, &bytes)?;
         crate::toolcall_stream::anthropic_accumulate(lines, on_token)
     }
 }
@@ -721,12 +1020,16 @@ fn ollama_parse(resp: &Value) -> ToolCallResult<ToolCallResponse> {
         (Some(i), Some(o)) => Some(Usage { input_tokens: i, output_tokens: o, cache_read_tokens: None }),
         _ => None,
     };
-    Ok(ToolCallResponse {
+    Ok(ToolCallResponse::new(
         text,
         tool_calls,
         stop_reason,
-        usage: require_usage(usage, "ollama")?,
-    })
+        require_usage(usage, "ollama")?,
+    )
+    .with_served(
+        resp.get("model").and_then(|m| m.as_str()).map(str::to_string),
+        None,
+    ))
 }
 
 fn ollama_body(req: &ToolCallRequest<'_>, model: &str) -> ToolCallResult<Value> {
@@ -766,7 +1069,9 @@ impl ToolCallLlm for crate::Ollama {
         let mut body = ollama_body(req, &self.model)?;
         body["stream"] = json!(true);
         let url = format!("{}/api/chat", self.host.trim_end_matches('/'));
-        let lines = crate::toolcall_stream::post_stream_lines(&url, &[], &body)?;
+        let bytes =
+            serde_json::to_vec(&body).map_err(|e| terminal(format!("encode request: {e}")))?;
+        let lines = crate::toolcall_stream::post_stream_lines(&url, &[], &bytes)?;
         crate::toolcall_stream::ollama_accumulate(lines, on_token)
     }
 }
@@ -835,6 +1140,7 @@ mod tests {
                         arguments: json!({}),
                         arguments_raw: None,
                     }],
+                    provider_content: None,
                 },
                 ChatMessage::ToolResult {
                     tool_call_id: "call_0".into(),

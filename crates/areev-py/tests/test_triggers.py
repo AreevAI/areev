@@ -74,18 +74,34 @@ def test_trigger_add_refuses_a_declaration_that_could_never_fire(tmp_path):
             json.dumps({"kind": "schedule", "workflow": WORKFLOW, "cron": "not a cron"}), "x"
         )
 
+    # An UNKNOWN zone name is refused in every build (#297): a typo must never
+    # fall back to UTC and fire at the wrong hour while looking correct.
     with pytest.raises(ValueError, match="TRG-E006|timezone"):
         m.trigger_add(
             json.dumps({
                 "kind": "schedule",
                 "workflow": WORKFLOW,
                 "cron": "0 3 * * *",
-                "config": {"int:timezone": "Asia/Kolkata"},
+                "config": {"int:timezone": "Mars/Olympus"},
             }),
             "x",
         )
 
-    # …and the same expression in UTC is accepted.
+    # A real IANA zone is ACCEPTED since 1.9.0 — the binding carries the zone
+    # data (areev-trigger's `tz` feature), which is what lets a firm declare
+    # its own close in its own time.
+    tz = m.trigger_add(
+        json.dumps({
+            "kind": "schedule",
+            "workflow": WORKFLOW,
+            "cron": "0 3 * * *",
+            "config": {"int:timezone": "Asia/Kolkata"},
+        }),
+        "india close",
+    )
+    assert len(tz) == HEX64
+
+    # …and so is the same expression in UTC.
     ok = m.trigger_add(
         json.dumps({
             "kind": "schedule",
@@ -96,8 +112,8 @@ def test_trigger_add_refuses_a_declaration_that_could_never_fire(tmp_path):
         "nightly close",
     )
     assert len(ok) == HEX64
-    # Nothing was stored for either refusal.
-    assert len(json.loads(m.trigger_list())) == 1
+    # Nothing was stored for either refusal — two accepted, no more.
+    assert len(json.loads(m.trigger_list())) == 2
 
 
 def test_trigger_run_evaluates_and_dry_run_touches_nothing(tmp_path):
@@ -205,16 +221,19 @@ def test_add_trigger_refuses_a_declaration_that_can_never_fire(tmp_path):
     m = ops_db(tmp_path, "i67.db")
 
     # The reporter's exact shape: `timezone` at top level, not under `config`.
+    # Since #297 the check it must reach is "is this a zone?" rather than "is
+    # this UTC?", so an unknown name is what proves the field did not vanish
+    # into extra_fields.
     with pytest.raises(ValueError, match="TRG-E006"):
         m.add("trigger", json.dumps({
             "name": "probe-tz", "kind": "schedule", "workflow": WORKFLOW,
-            "cron": "0 9 * * *", "timezone": "Asia/Kolkata", "enabled": True}))
+            "cron": "0 9 * * *", "timezone": "Mars/Olympus", "enabled": True}))
 
     # …the config spelling, and a cron that simply does not parse.
     with pytest.raises(ValueError, match="TRG-E006"):
         m.add("trigger", json.dumps({
             "kind": "schedule", "workflow": WORKFLOW, "cron": "0 9 * * *",
-            "config": {"int:timezone": "Asia/Kolkata"}}))
+            "config": {"int:timezone": "Mars/Olympus"}}))
     with pytest.raises(ValueError, match="TRG-E006"):
         m.add("trigger", json.dumps({
             "kind": "schedule", "workflow": WORKFLOW, "cron": "not a cron"}))

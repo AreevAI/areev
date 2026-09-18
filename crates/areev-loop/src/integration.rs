@@ -5286,6 +5286,160 @@ fn lesson_llm(h1: &str) -> MockLlm {
     }
 }
 
+// ---- #317: the OPEN queue's premise ---------------------------------------
+
+/// A PENDING recommendation whose every cited grain has moved is withdrawn
+/// by the engine, not left for a reviewer to approve into a revert.
+#[test]
+fn a_pending_recommendation_whose_premise_moved_is_withdrawn() {
+    use crate::substrate::OmsSubstrate;
+    let t = 6_000_000;
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("release", "readiness_rule", "flagged: stale target for migration");
+    let e = Engine::with_builtins().with_llm(Box::new(lesson_llm(&h1)));
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    let rec = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .find(|r| matches!(r.origin, crate::model::Origin::Llm { .. }))
+        .expect("the lesson is proposed");
+
+    // Nothing has moved: it stays pending.
+    let r = e.run(&mut sub.inner, &RunOptions::default(), t + 10).unwrap();
+    assert_eq!(r.withdrawn, 0);
+    assert!(e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .iter()
+        .any(|x| x.hash == rec.hash));
+
+    // Its one cited grain is superseded by a DIFFERENT value.
+    sub.inner
+        .execute_cal(&format!(
+            r#"SUPERSEDE {h1} WITH fact {{"subject":"release","relation":"readiness_rule","object":"REL-GAMMA: review before every deploy","namespace":"test"}}"#
+        ))
+        .unwrap();
+    let r = e.run(&mut sub.inner, &RunOptions::default(), t + 20).unwrap();
+    assert_eq!(r.withdrawn, 1, "the engine withdraws it");
+
+    let withdrawn = e
+        .recommendations(&sub.inner, Some(RecStatus::Withdrawn))
+        .unwrap();
+    assert!(withdrawn.iter().any(|x| x.hash == rec.hash));
+    assert!(
+        !e.recommendations(&sub.inner, Some(RecStatus::Pending))
+            .unwrap()
+            .iter()
+            .any(|x| x.hash == rec.hash),
+        "and it leaves the open queue"
+    );
+}
+
+#[test]
+fn a_withdrawn_recommendation_cannot_be_reviewed() {
+    use crate::substrate::OmsSubstrate;
+    let t = 6_100_000;
+    let scopes = ScopeSet::all();
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("release", "readiness_rule", "flagged: stale target for migration");
+    let e = Engine::with_builtins().with_llm(Box::new(lesson_llm(&h1)));
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    let rec = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .find(|r| matches!(r.origin, crate::model::Origin::Llm { .. }))
+        .expect("proposed");
+    sub.inner.retract(&rec.evidence[0], "retracted").unwrap();
+    e.run(&mut sub.inner, &RunOptions::default(), t + 20).unwrap();
+
+    let err = e
+        .review(
+            &mut sub.inner,
+            &rec.hash,
+            Decision::Approve,
+            "user:a",
+            ObserverType::Human,
+            &scopes,
+            "looks right",
+            t + 30,
+        )
+        .unwrap_err();
+    assert_eq!(err.code(), "LOP-E020", "{err}");
+}
+
+#[test]
+fn a_value_identical_supersession_does_not_withdraw() {
+    use crate::substrate::OmsSubstrate;
+    // Consolidation is not drift. This is the same rule the applied-side
+    // check uses, which is why both go through `same_value`.
+    let t = 6_200_000;
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("release", "readiness_rule", "flagged: stale target for migration");
+    let e = Engine::with_builtins().with_llm(Box::new(lesson_llm(&h1)));
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    sub.inner
+        .execute_cal(&format!(
+            r#"SUPERSEDE {h1} WITH fact {{"subject":"release","relation":"readiness_rule","object":"flagged: stale target for migration","namespace":"test"}}"#
+        ))
+        .unwrap();
+    let r = e.run(&mut sub.inner, &RunOptions::default(), t + 20).unwrap();
+    assert_eq!(r.withdrawn, 0);
+}
+
+#[test]
+fn the_policy_switch_turns_the_withdrawal_sweep_off() {
+    use crate::substrate::OmsSubstrate;
+    let t = 6_300_000;
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("release", "readiness_rule", "flagged: stale target for migration");
+    let e = Engine::with_builtins()
+        .with_llm(Box::new(lesson_llm(&h1)))
+        .with_policy(Policy::from_json(r#"{"premise_drift": false}"#).unwrap());
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    sub.inner.retract(&h1, "retracted").unwrap();
+    let r = e.run(&mut sub.inner, &RunOptions::default(), t + 20).unwrap();
+    assert_eq!(r.withdrawn, 0, "the switch governs both halves of the check");
+}
+
+#[test]
+fn a_withdrawal_strikes_no_cooldown_and_never_suppresses_the_finding() {
+    use crate::substrate::OmsSubstrate;
+    // The engine withdrew it because the evidence moved, not because anyone
+    // decided against the finding. A cooldown or a dedup suppression would
+    // silence exactly the case the sweep exists to surface: the same
+    // question, asked again on evidence that still stands.
+    let t = 6_400_000;
+    let mut sub = TestSubstrate::new();
+    let h1 = sub.add_fact("release", "readiness_rule", "flagged: stale target for migration");
+    let e = Engine::with_builtins().with_llm(Box::new(lesson_llm(&h1)));
+    e.run(&mut sub.inner, &RunOptions::default(), t).unwrap();
+    let rec = e
+        .recommendations(&sub.inner, Some(RecStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .find(|r| matches!(r.origin, crate::model::Origin::Llm { .. }))
+        .expect("proposed");
+
+    sub.inner.retract(&h1, "retracted").unwrap();
+    let r = e.run(&mut sub.inner, &RunOptions::default(), t + 20).unwrap();
+    assert_eq!(r.withdrawn, 1);
+
+    // No cooldown was struck for it.
+    let state = crate::config::LoopPersisted::from_value(sub.inner.load_state().unwrap())
+        .unwrap();
+    assert_eq!(
+        state.status_index.get(&rec.hash),
+        Some(&RecStatus::Withdrawn)
+    );
+    assert!(
+        !state.cooldowns.keys().any(|k| k == &rec.dedup_key),
+        "a withdrawal is not a rejection: {:?}",
+        state.cooldowns
+    );
+}
+
 /// A lesson learned from a rule that is later REPLACED has lost its premise:
 /// the gate records `drifted` and proposes the revert; applying it rolls the
 /// lesson back. A value-identical supersession (consolidation) is not drift,

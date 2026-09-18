@@ -72,6 +72,42 @@ pub struct RunOptions {
     pub llm_context_tokens: Option<u64>,
     /// Crash-injection for the §5.5 gates. `None` in production.
     pub inject_crash: Option<CrashPoint>,
+    /// Who or what this run is started ON BEHALF OF (#293). Frozen into the
+    /// manifest; an approval ask refuses this responder as well as
+    /// `principal`.
+    pub initiator: Option<String>,
+    /// Write content-bearing harness records to `agent:harness.<ns>` rather
+    /// than the memory-wide `agent:harness` (#301). Frozen into the manifest.
+    pub harness_ns: Option<String>,
+    /// Whether this run may settle a `confirmation` ask from its own
+    /// initiator (#294). Off by default: a Definition can arrive in a bundle
+    /// or a pack, and a weakening delivered with the thing it weakens is not
+    /// a permission — the same reasoning as `--allow-executor`.
+    pub allow_confirmation_asks: bool,
+    /// Store the run's input as its own grain in the run's namespace rather
+    /// than by value in the manifest (#301).
+    pub input_in_run_namespace: bool,
+    /// Run-lease TTL in milliseconds (#299). `None` keeps
+    /// [`lease::DEFAULT_RUN_LEASE_MS`]. A fixed ten minutes meant a crashed
+    /// driver stalled its run for ten minutes; shortening it is only safe
+    /// together with the mid-superstep renewal this release adds.
+    pub lease_ms: Option<i64>,
+    /// This driver's node identity for the run lease (#300). `None` derives
+    /// it from the hostname and pid, the way the trigger evaluator already
+    /// does. Two containers both running as PID 1 under one principal
+    /// produced the SAME holder string and therefore did not exclude each
+    /// other, which is the normal container shape.
+    pub node: Option<String>,
+    /// Ceiling on the effects a WHOLE run may settle (#295). `None` = no
+    /// bound beyond the per-attempt one.
+    pub max_run_effects: Option<u64>,
+    /// Ceiling on the host tool calls a WHOLE run may dispatch (#295).
+    pub max_tool_calls: Option<u64>,
+    /// Cap on concurrently executing runs in this memory (#296). `None` =
+    /// unbounded, today's behaviour.
+    pub max_concurrent_runs: Option<u32>,
+    /// Cap on concurrently executing runs for this principal (#296).
+    pub max_concurrent_runs_per_principal: Option<u32>,
 }
 
 /// The per-LLM-call ceiling when a manifest pins none (§6.7 reserves it per
@@ -389,6 +425,12 @@ fn seam_messages(input: &Value) -> Vec<areev_llm::ChatMessage> {
                                 .collect()
                         })
                         .unwrap_or_default(),
+                    // #284: the provider's own content blocks, carried back
+                    // into the transcript so the adapter can replay the turn
+                    // byte-identically. Absent on every transcript written
+                    // before this existed, and on every provider that has
+                    // none, so nothing moves for them.
+                    provider_content: m.get("provider_content").cloned(),
                 }),
                 "tool" => Some(areev_llm::ChatMessage::ToolResult {
                     tool_call_id: m
@@ -573,6 +615,37 @@ impl Runner {
             )
             .map(|m| m.with_limits(opts, llm_window))
         })?;
+        // Freeze the model, the engine and the attribution alongside every
+        // other thing a run is pinned to (#287, #288, #293, #294, #301).
+        let manifest = manifest
+            .with_llm_pin(self.llm_pin())
+            .with_engine_pin()
+            .with_attribution(opts);
+        // #294: a plan that pins a CONFIRMATION Definition refuses at start
+        // unless the host opted in, naming the node and the flag.
+        //
+        // The `--allow-executor` reasoning: a Definition can arrive in a
+        // bundle or a pack, and a weakening delivered together with the thing
+        // it weakens is not a permission. Refusing here rather than at the
+        // ask means a run never starts down a path whose approval boundary
+        // this host has not sanctioned.
+        if !manifest.allow_confirmation_asks {
+            if let Some(p) = manifest
+                .pinned
+                .iter()
+                .find(|p| p.ask_kind.as_deref() == Some(crate::manifest::ASK_KIND_CONFIRMATION))
+            {
+                return Err(RunError::CodeExecRefused {
+                    condition: format!(
+                        "node '{}' binds a tool declaring ask_kind=\"confirmation\", which \
+                         lets the run's own initiator settle it — this host has not \
+                         allowed that. Pass --allow-confirmation-asks (or \
+                         $AREEV_RUN_ALLOW_CONFIRMATION_ASKS=1) if that is intended",
+                        p.node
+                    ),
+                });
+            }
+        }
         // Refuse an unpinned code executor before the run exists: it would
         // otherwise take a lease, write a manifest, and fail on first
         // dispatch, leaving a terminal run to explain. The address is named
@@ -629,16 +702,107 @@ impl Runner {
             }
         }
         self.check_read_grants(&manifest)?;
-        self.facade
-            .with_store(|m| manifest.persist_in_namespace(m, &self.ns))
-            .map_err(err_run)?;
+        // Claim the concurrency slot BEFORE the manifest is written (#296):
+        // a start refused at the cap must leave nothing behind, so the run id
+        // stays genuinely free rather than half-existing as a manifest with
+        // no journal.
+        let slots = crate::lease::RunSlots::claim(
+            &self.facade,
+            run_id,
+            &self.principal,
+            self.clock.now_ms() as i64,
+            opts.lease_ms.unwrap_or(crate::lease::DEFAULT_RUN_LEASE_MS),
+            opts.max_concurrent_runs,
+            opts.max_concurrent_runs_per_principal,
+        )?;
+        // #301: under `--input-placement run-ns` the input is its own grain
+        // in the run's namespace, and the manifest keeps only its address.
+        let input_ns = opts.input_in_run_namespace.then(|| self.ns.clone());
+        if let Err(e) = self
+            .facade
+            .with_store(|m| manifest.persist_with_input(m, &self.ns, input_ns.as_deref()))
+            .map_err(err_run)
+        {
+            let mut slots = slots;
+            slots.release(&self.facade);
+            return Err(e);
+        }
 
         let st = SchedulerState::new(run_id, &plan);
         let events = vec![
             EventIn::ClockReading { unix_ms: self.clock.now_ms() },
             EventIn::Start { input },
         ];
-        self.drive(&plan, plan_hash, &manifest, st, JournalView::default(), events, opts)
+        self.drive(
+            &plan,
+            plan_hash,
+            &manifest,
+            st,
+            JournalView::default(),
+            events,
+            opts,
+            Some(slots),
+        )
+    }
+
+    /// This driver's LLM pin, or `None` when no transport is configured.
+    ///
+    /// Built from the transport's own answers — `provider()`, `model()`, and
+    /// the two defaulted seam methods a host can override — so a host
+    /// wrapping its own transport can have Areev enforce the host's own
+    /// notion of "the same configuration" without Areev modelling it.
+    pub(crate) fn llm_pin(&self) -> Option<crate::manifest::LlmPin> {
+        self.llm.as_ref().map(|l| crate::manifest::LlmPin {
+            provider: l.provider().to_string(),
+            model: l.model().to_string(),
+            region: l.region().map(str::to_string),
+            tag: l.pin_tag().map(str::to_string),
+            profile: l.request_profile_digest(),
+        })
+    }
+
+    /// Refuse a resume whose model configuration differs from the one the run
+    /// started under (#287).
+    ///
+    /// A manifest with no pin — every run written before 1.9.0 — resumes
+    /// under anything, as it always did.
+    fn check_llm_pin(&self, manifest: &RunManifest) -> Result<(), RunError> {
+        let Some(pinned) = &manifest.llm else {
+            return Ok(());
+        };
+        match self.llm_pin() {
+            Some(offered) if pinned.matches(&offered) => Ok(()),
+            // A pinned run resumed with NO transport is a mismatch, not a
+            // missing-LLM error: the run has an answer for what it needs and
+            // this driver is not it. RUN-E006 would send an operator looking
+            // for a configuration problem instead of a pin.
+            other => Err(RunError::ModelMismatch {
+                pinned: pinned.describe(),
+                offered: other
+                    .map(|p| p.describe())
+                    .unwrap_or_else(|| "no LLM configured".into()),
+            }),
+        }
+    }
+
+    /// Refuse a resume across a scheduler generation (#288).
+    ///
+    /// The VERSION string is deliberately not compared: a patch upgrade must
+    /// not strand every parked approval run. Only the epoch, which moves
+    /// exactly when a change makes an existing journal replay differently.
+    fn check_engine_pin(&self, manifest: &RunManifest) -> Result<(), RunError> {
+        let Some(pinned) = &manifest.engine else {
+            return Ok(());
+        };
+        let this = areev_run_core::SCHEDULER_EPOCH;
+        if pinned.scheduler_epoch == this {
+            return Ok(());
+        }
+        Err(RunError::EngineMismatch {
+            written_by: pinned.version.clone(),
+            epoch: pinned.scheduler_epoch,
+            this_epoch: this,
+        })
     }
 
     /// Resume a run from its latest checkpoint: settle expired asks, adopt
@@ -646,6 +810,10 @@ impl Runner {
     pub fn resume(&self, run_id: &str, opts: &RunOptions) -> Result<RunSession, RunError> {
         self.check_run_verb(areev_core::authz::Verb::RunExecute)?;
         let manifest = self.load_manifest(run_id)?;
+        // Before the lease and before any grain is written (#287, #288): a
+        // run that must not continue here must not LOOK like it started to.
+        self.check_engine_pin(&manifest)?;
+        self.check_llm_pin(&manifest)?;
         let plan_hash = Hash::from_hex(&manifest.plan_hash)
             .map_err(|_| RunError::ManifestMismatch { why: "bad plan hash".into() })?;
         let plan = self.load_plan(&plan_hash)?;
@@ -666,7 +834,7 @@ impl Runner {
                 EventIn::ClockReading { unix_ms: self.clock.now_ms() },
                 EventIn::Start { input: manifest.input.clone() },
             ];
-            return self.drive(&plan, &plan_hash, &manifest, st, view, events, opts);
+            return self.drive(&plan, &plan_hash, &manifest, st, view, events, opts, None);
         };
         let st: SchedulerState = serde_json::from_value(last.scheduler.clone())
             .map_err(|e| RunError::ManifestMismatch { why: format!("checkpoint state: {e}") })?;
@@ -780,7 +948,7 @@ impl Runner {
             }
         }
 
-        self.drive(&plan, &plan_hash, &manifest, st, view, events, opts)
+        self.drive(&plan, &plan_hash, &manifest, st, view, events, opts, None)
     }
 
     /// §5.4 time-travel fork: a NEW run descending from one of `base`'s
@@ -903,6 +1071,10 @@ impl Runner {
                     )
                     .map(|m| m.with_limits(opts, llm_window))
                 })?;
+                let manifest = manifest
+                    .with_llm_pin(self.llm_pin())
+                    .with_engine_pin()
+                    .with_attribution(opts);
                 self.check_read_grants(&manifest)?;
                 let mut fresh = SchedulerState::new(new_run_id, &plan);
                 // The Start bootstrap, applied here so the seed checkpoint
@@ -926,6 +1098,17 @@ impl Runner {
                     principal: self.principal.clone(),
                     budgets: opts.budgets,
                     ask_ttl_sec: opts.ask_ttl_sec,
+                    // Same reasoning for the INITIATOR (#293): the `..base`
+                    // spread would otherwise inherit whoever the base run was
+                    // started on behalf of, and a fork is a new decision by a
+                    // new person. It is the fork's own knob, and empty when
+                    // the forker did not set one.
+                    initiator: opts.initiator.clone(),
+                    // A fork is the SANCTIONED way to move a run to a new
+                    // model or a new engine (#287, #288) — so it pins what it
+                    // is actually running under, not what the base ran under.
+                    llm: self.llm_pin(),
+                    engine: Some(crate::manifest::EnginePin::current()),
                     ..base_manifest
                 }
             }
@@ -989,7 +1172,6 @@ impl Runner {
         is_error: bool,
         responder: &str,
     ) -> Result<(), RunError> {
-        self.check_responder(responder)?;
         let manifest = self.load_manifest(run_id)?;
         let plan_hash = Hash::from_hex(&manifest.plan_hash)
             .map_err(|_| RunError::ManifestMismatch { why: "bad plan hash".into() })?;
@@ -1023,6 +1205,18 @@ impl Runner {
             let _ = self.facade.with_store(|m| m.add(&obs));
         };
 
+        // The `run.respond` grant check runs HERE rather than first (#292):
+        // the docs promise every rejection is journaled before the error
+        // returns, and a refusal recorded without a `run_id` is not evidence
+        // anyone can join to a run. Loading the manifest first costs one read
+        // on a path that is already human-paced.
+        if let Err(e) = self.check_responder(responder) {
+            journal_rejection(&format!(
+                "responder lacks run.respond on {}: {e}",
+                self.ns
+            ));
+            return Err(e);
+        }
         let Some(pending) = st.pending_asks.get(tool_call_id) else {
             journal_rejection("no such pending ask (settled, expired, or never asked)");
             return Err(RunError::UnknownAsk { tool_call_id: tool_call_id.to_string() });
@@ -1050,14 +1244,34 @@ impl Runner {
         }
         // Approval separation of duties (§6.6, D5): structurally refused,
         // not conventioned — mirrors the loop's self-approval block.
-        if pending.ask.approval && responder == manifest.principal {
-            return Err(RunError::Unauthorized {
-                what: format!(
-                    "approval ask {tool_call_id} requires a responder other than \
-                     the triggering principal '{}'",
-                    manifest.principal
-                ),
-            });
+        //
+        // The refusal is JOURNALED first (#292). This is the most
+        // audit-relevant rejection the runtime makes — "the person who asked
+        // for this tried to approve it" — and it was the one the docs
+        // promised and the code did not write. For a bubbled ask the record
+        // lands on the parent run id, where the judgement is made.
+        //
+        // `initiator` (#293) closes the other half: a run a service starts on
+        // a person's behalf executes under the SERVICE's principal, so
+        // without it the person behind the request was invisible to this
+        // check and could approve their own work. The field is free-form
+        // attribution — a value naming no principal (a trigger occurrence id)
+        // simply never matches a responder.
+        if pending.ask.approval {
+            let self_approval = responder == manifest.principal;
+            let initiator_approval = manifest.initiator.as_deref() == Some(responder);
+            if self_approval || initiator_approval {
+                let who = if self_approval { "principal" } else { "initiator" };
+                journal_rejection(&format!(
+                    "approval by the triggering {who} '{responder}'"
+                ));
+                return Err(RunError::Unauthorized {
+                    what: format!(
+                        "approval ask {tool_call_id} requires a responder other than \
+                         the triggering {who} '{responder}'"
+                    ),
+                });
+            }
         }
         // A bubbled ask settles in the child, but it is judged HERE first:
         // the child's manifest names whichever principal happened to drive
@@ -1277,6 +1491,7 @@ impl Runner {
     /// The shared drive loop. One clock reading per iteration; journal hits
     /// replay without executing; everything else goes to the pool.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn drive(
         &self,
         plan: &PlanGraph,
@@ -1286,6 +1501,10 @@ impl Runner {
         view: JournalView,
         initial_events: Vec<EventIn>,
         opts: &RunOptions,
+        // Slots the caller already claimed (#296). `start` claims BEFORE it
+        // persists the manifest, so a run refused at the cap leaves nothing
+        // behind at all; `resume` and `fork` let this claim them.
+        pre_claimed: Option<crate::lease::RunSlots>,
     ) -> Result<RunSession, RunError> {
         let executors = manifest.executors();
         let arg_schemas = self.load_arg_schemas(manifest)?;
@@ -1319,14 +1538,55 @@ impl Runner {
         // not at each caller.
         self.executor.bind_run_principal(&self.principal);
 
-        let holder = format!("{}#{}", self.principal, std::process::id());
-        let mut lease = crate::lease::RunLease::acquire(
+        // #300: the holder carries the HOST, not just the pid. Two
+        // containers both running as PID 1 under one service principal used
+        // to produce the same holder string, and `acquire` re-enters an equal
+        // holder by design — so the second pod took a LIVE lease and both
+        // drivers advanced one run.
+        let holder = crate::lease::holder_for(&self.principal, opts.node.as_deref());
+        let lease_ms = match opts.lease_ms {
+            None => crate::lease::DEFAULT_RUN_LEASE_MS,
+            Some(ms) if ms < crate::lease::MIN_RUN_LEASE_MS => {
+                return Err(RunError::InvalidPlan {
+                    why: format!(
+                        "--lease is {}s, below the {}s floor — under it, ordinary \
+                         scheduling jitter between renewals looks like a dead driver, \
+                         and a takeover mid-flight is the failure the lease exists to \
+                         prevent",
+                        ms / 1000,
+                        crate::lease::MIN_RUN_LEASE_MS / 1000
+                    ),
+                })
+            }
+            Some(ms) => ms,
+        };
+        // #296: a concurrency slot, claimed BEFORE anything is written, so a
+        // run refused at the cap leaves nothing behind and its id stays free.
+        let mut slots = match pre_claimed {
+            Some(s) => s,
+            None => crate::lease::RunSlots::claim(
+                &self.facade,
+                &run_id,
+                &self.principal,
+                self.clock.now_ms() as i64,
+                lease_ms,
+                opts.max_concurrent_runs,
+                opts.max_concurrent_runs_per_principal,
+            )?,
+        };
+        let mut lease = match crate::lease::RunLease::acquire(
             &self.facade,
             &run_id,
             &holder,
             self.clock.now_ms() as i64,
-            crate::lease::DEFAULT_RUN_LEASE_MS,
-        )?;
+            lease_ms,
+        ) {
+            Ok(l) => l,
+            Err(e) => {
+                slots.release(&self.facade);
+                return Err(e);
+            }
+        };
 
         // §6.10: the event bus wraps the observer; `emit` never blocks.
         // Arc'd because LLM jobs carry a TokenChunk sink into the pool.
@@ -1822,6 +2082,7 @@ impl Runner {
                                         &r,
                                         clock,
                                         &self.principal,
+                                        manifest.harness_ns.as_deref(),
                                     )
                                 })
                                 .map_err(err_run)?;
@@ -1839,6 +2100,7 @@ impl Runner {
                                         c,
                                         clock,
                                         &self.principal,
+                                        manifest.harness_ns.as_deref(),
                                     )
                                 })
                                 .map_err(err_run)?;
@@ -1860,6 +2122,7 @@ impl Runner {
                                         r,
                                         clock,
                                         &self.principal,
+                                        manifest.harness_ns.as_deref(),
                                     )
                                 })
                                 .map_err(err_run)?;
@@ -1889,6 +2152,7 @@ impl Runner {
                         // progress became durable, and therefore the point at
                         // which a driver that has lost the run must stop.
                         lease.renew(&self.facade, &run_id, self.clock.now_ms() as i64)?;
+                        slots.renew(&self.facade, &run_id, self.clock.now_ms() as i64);
                     }
                     Command::Finish { outcome } => {
                         finished = Some(outcome);
@@ -1974,6 +2238,7 @@ impl Runner {
                 // A terminal run needs no lease: releasing lets `verify`,
                 // `fork` or an inspect start at once rather than waiting one
                 // lease TTL for a run that is already over.
+                slots.release(&self.facade);
                 lease.release(&self.facade);
                 return Ok(RunSession::Finished { outcome, run_id });
             }
@@ -2003,6 +2268,18 @@ impl Runner {
                         });
                     }
                     completed.insert(done.key.clone(), done);
+                    // Renew INSIDE the superstep (#299), after each result.
+                    //
+                    // This is what makes a short TTL safe, and what the old
+                    // fixed ten minutes was hiding: an abstract node's turns
+                    // and tool calls all happen inside ONE superstep, so with
+                    // a 300 s tool timeout and sixteen effects a perfectly
+                    // healthy driver could outlive its own lease and be taken
+                    // over mid-flight. The lease is a host-local `meta` row,
+                    // so renewing more often leaves `verify` untouched.
+                    let now_ms = self.clock.now_ms() as i64;
+                    lease.renew(&self.facade, &run_id, now_ms)?;
+                    slots.renew(&self.facade, &run_id, now_ms);
                 }
                 let now = self.clock.now_ms();
                 events.push(EventIn::ClockReading { unix_ms: now });
@@ -2067,7 +2344,8 @@ impl Runner {
                                                     &summary,
                                                     now,
                                                     &self.principal,
-                                                )
+                                        manifest.harness_ns.as_deref(),
+                                    )
                                             })
                                             .map_err(err_run)?;
                                     }
@@ -2106,12 +2384,14 @@ impl Runner {
                 // a park would make the next `areev run resume`, in a different
                 // process with a different holder id, wait out a full lease TTL
                 // for a run nobody is advancing.
+                slots.release(&self.facade);
                 lease.release(&self.facade);
                 return Ok(RunSession::Parked { envelope, run_id });
             }
 
             // Parked with the envelope announced in an earlier session.
             if !st.pending_asks.is_empty() {
+                slots.release(&self.facade);
                 lease.release(&self.facade);
                 return Ok(RunSession::Parked {
                     envelope: json!({

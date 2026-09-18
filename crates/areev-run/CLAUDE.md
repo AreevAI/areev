@@ -5,6 +5,48 @@ the pure scheduler (`areev-run-core`) with the store. All store writes
 happen on the driver thread in command order; parallelism lives exclusively
 in the executor pool.
 
+## What 1.9.0 froze, capped and attributed (the Rounic wave)
+
+Five things a run now carries that it did not, each for the same reason: a
+record kept for years has to say what it ran under, not merely what it did.
+
+- **`RunManifest.llm`** (#287) — provider, model, region, an opaque host
+  `tag`, and the request-profile digest. `resume` refuses a mismatch with
+  `RUN-E025` **before the lease is taken and before any grain is written**, so
+  a run that must not continue here does not look like it started to. `fork`
+  is the way through and pins what it is actually running under.
+  `ToolCallResponse.served_model` / `served_region` record what the provider
+  says it served, so an alias or a router resolving elsewhere is visible.
+- **`RunManifest.engine`** (#288) — version plus
+  `areev_run_core::SCHEDULER_EPOCH`. Only the EPOCH is compared
+  (`RUN-E026`): a patch upgrade must not strand parked approval runs. Bump
+  the epoch exactly when a change makes an existing journal replay
+  differently — the #251 class — with a CHANGELOG line each time.
+- **`RunManifest.initiator`** (#293) and **`ask_kind`** (#294) — who a run was
+  started for, and which Client asks that person may answer. Both frozen, so
+  a mid-run supersession cannot downgrade a parked approval, and a
+  `confirmation` plan refuses at START without `--allow-confirmation-asks`.
+- **Run-level ceilings** (#295): `BudgetAxis::Effects` (derived from
+  `journal_grains / 2`, so no new state) and `ToolCalls` (a `Spent` counter
+  that is `skip_serializing_if` zero and incremented ONLY when the manifest
+  sets the cap — otherwise every pre-existing checkpoint diverges with
+  `RUN-E009`). Exhaustion preserves the undispatched work as the flow's
+  `need`, so a fork under a raised cap continues exactly there.
+- **Placement** (#301): `input_ref` puts the run's input in the run's own
+  namespace and `harness_ns` puts its content-bearing harness records in
+  `agent:harness.<run_ns>`. Ids and counters stay in `agent:harness`, so
+  `run list`, cancel and the lease paths are untouched.
+
+Beside them: effects are **priced** through `ToolCallLlm::price_usd_micros`
+(#291) with `usd_priced` keeping unpriced distinct from free; the lease is
+configurable and renewed mid-superstep with a host-qualified holder (#299,
+#300); concurrency slots are CAS'd rows beside the lease (#296); and the
+separation-of-duties and grant refusals are journaled (#292).
+
+Every one of these serializes `skip_serializing_if`-absent, so a 1.8.5
+manifest is byte-identical and resumes under anything — which the
+`manifest.rs` golden pins.
+
 ## The journal (§5.1) — existing vocabulary only
 
 - **Intent** = Tool grain `status=Pending`, written BEFORE dispatch, carrying
@@ -530,7 +572,6 @@ Neither replaces the other — see `docs/security-model.md` and
   (`error.code = "context_length_exceeded"`), only partial on Anthropic.
 - F7 owner-nonce copy detection needs an op-cursor read API; v1 ships taint
   detection + explicit forks only.
-- D10 `--override-hold` on FORGET SUBJECT lands with the compliance wave.
 - `run_trace` fork splicing (the `mg:fork_of` Fact is the index; the CLI
   splice view is not built yet).
 - #112 does not reach the TRIGGER CONNECTOR path. `Evaluator::poll` builds its

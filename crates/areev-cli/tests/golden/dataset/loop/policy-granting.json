@@ -23,5 +23,6 @@
     "enabled": true,
     "min_nodes": 2
   },
-  "premise_drift": true
+  "premise_drift": true,
+  "premise_drift_open_all": true
 }

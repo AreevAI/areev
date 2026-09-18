@@ -852,7 +852,7 @@ namespaces is a supported shape, not a mistake.
 | Intent | Tool grain, `status = pending` | session `--ns` | **before** every effect dispatch |
 | Result | supersession of the intent, re-stating its identity + usage | session `--ns` | when the effect settles |
 | Checkpoint | State grain (scheduler state + the superstep's decision record), chained by `derived_from` | session `--ns` | every superstep |
-| Manifest | the frozen plan resolution, budgets, principal — plus its `run:<id> mg:harness` link Fact, which carries the run's session namespace (`run_ns`) so the run index can be listed per tenant (#165). A link from before that stamp has no `run_ns`: a scoped listing excludes it and counts it as `unattributed`, an unscoped one shows it with a null namespace | `agent:harness` | at start |
+| Manifest | the frozen plan resolution, budgets, principal, `initiator` (#293), the **model pin** (`llm`: provider, model, region, host tag, request-profile digest — #287) and the **engine pin** (`engine`: version + `scheduler_epoch` — #288) — plus its `run:<id> mg:harness` link Fact, which carries the run's session namespace (`run_ns`) so the run index can be listed per tenant (#165). A link from before that stamp has no `run_ns`: a scoped listing excludes it and counts it as `unattributed`, an unscoped one shows it with a null namespace. Manifests without the 1.9.0 fields serialize **byte-identically** and resume under anything | `agent:harness` | at start |
 | Cancel / audit / redelivery / run-outcome / egress refusals | Facts and Observations | `agent:harness` | as they happen |
 
 Every journal record carries the full effect identity — run id, task path,
@@ -888,10 +888,66 @@ Note `executor` stays `host`: it is the *answering party* (a host, not a
 person at `run respond`), and code is how that host answers. What the run
 will execute is `executor_uri`.
 
+### Where a run's records live (#301)
+
+Run evidence splits in two, and the split is a tenancy boundary.
+
+**Ids and counters** — the manifest link, the cancel Facts, the run-outcome
+census — stay in the memory-wide `agent:harness`, so `run list`, cancel and
+the lease paths are unchanged.
+
+**Content-bearing records** have two opt-in placements, because
+`read ON agent:harness` — which anything that lists or inspects runs needs —
+otherwise disclosed the inputs, fold summaries and outbound-call records of
+**every** namespace in the memory, retention and erasure of a namespace left
+them behind, and no grant could express "the run records of this namespace
+only":
+
+- **`--input-placement run-ns`** stores the run's input as its own State
+  grain in the run's session namespace; the manifest keeps only
+  `input_ref: {hash}`. `load`, `resume`, `verify`, `shadow` and `fork`
+  resolve it, and a missing input grain **refuses** rather than replaying
+  against `null` — replaying a different run under the same id would read as
+  a journal integrity failure rather than a missing premise.
+- **`--harness-ns`** writes fold summaries and egress-call, egress-refusal
+  and blob-read Observations to `agent:harness.<run_ns>`, frozen in the
+  manifest. A dotted CHILD of the harness namespace, deliberately: keeping
+  them out of the agent's own recall scope is why they are not written to the
+  run namespace in the first place, `agent:harness.*` still reads everything,
+  and one namespace's run evidence becomes separately grantable, retainable
+  and erasable.
+
+Without the flags, placement is exactly as before.
+
 ## Crash recovery and resume
 
-`areev run resume --run-id ID` picks up from the latest checkpoint. On
-resume:
+`areev run resume --run-id ID` picks up from the latest checkpoint.
+
+**Two pins are checked first — before the lease is taken and before any grain
+is written**, so a run that must not continue here does not look like it
+started to:
+
+- **`RUN-E025 ModelMismatch`** (#287) when the manifest's `llm` pin differs
+  from the transport on offer, or when a pinned run is resumed with no LLM at
+  all. Everything else that shapes a run is frozen — tool resolutions,
+  runtime, capabilities, reads, reducers, every LLM ceiling — but the model
+  was not, so a run parked on a human approval could finish days later on a
+  different model, provider or region with nothing in the journal saying so.
+  `areev run fork` is the sanctioned way through: a fork writes a new
+  manifest carrying the new pin and records `fork_of`, making the change a
+  recorded decision rather than undocumented drift.
+- **`RUN-E026 EngineMismatch`** (#288) when the manifest's
+  `engine.scheduler_epoch` differs from this build's. Only the epoch is
+  compared, never the version string: a patch upgrade must not strand every
+  parked approval run. The epoch moves exactly when a change makes an
+  existing journal replay differently — 1.8.3's #251 fix is the recorded
+  case, where a verifier holding an older run could not tell tampering from
+  "written by 1.8.2".
+
+A manifest carrying neither pin — every run written before 1.9.0 — resumes
+under anything, exactly as it always did.
+
+On resume:
 
 - answered asks settle; expired asks are journaled and fail their node;
 - a **dangling intent** (crash between intent and result) is adopted —
@@ -921,8 +977,33 @@ reproduce the boundary instead of guessing at it.
 - Asks are addressed by `tool_call_id`, **never by index** — an index is a
   race with the scheduler.
 - An approval ask **structurally refuses** `responder == the principal that
-  triggered it`. This is not a policy toggle; it is checked before anything
-  else and there is no flag to disable it.
+  triggered it`, and — since 1.9.0 (#293) — `responder == the run's
+  `initiator``. This is not a policy toggle and there is no flag to disable
+  it. (The check runs after the known-ask and expiry checks, so an unknown or
+  expired ask is reported as such rather than as a separation-of-duties
+  refusal.)
+- **`--initiator`** (`$AREEV_RUN_INITIATOR`, a trailing parameter on the
+  bindings) names who or what a run was started ON BEHALF OF, frozen into the
+  manifest. Event, poll and schedule runs execute under an agent's SERVICE
+  principal, so `principal` alone could not name the person behind the work
+  and the approval check could not refuse them. The field is free-form
+  attribution: a value that names no principal — a trigger occurrence id —
+  simply never matches a responder. A same-plan fork takes the FORKER's own
+  initiator, never the base run's; a subgraph child inherits the parent's.
+  MCP never takes it from a client: an identity a caller can assert about
+  itself is not an identity.
+- A Tool Definition may declare **`ask_kind: "confirmation"`** (#294) — an ask
+  the run's own initiator or principal may answer, for a REVERSIBLE write a
+  firm's policy lets the requester confirm. Absent means `"approval"`, the
+  stricter reading, and an unrecognised value is refused at resolve. The
+  value is frozen in the manifest, so a mid-run supersession cannot downgrade
+  an approval someone is already parked on, and the run **refuses to start**
+  unless the host passed `--allow-confirmation-asks`
+  (`$AREEV_RUN_ALLOW_CONFIRMATION_ASKS`): a Definition can arrive in a bundle
+  or a pack, and a weakening delivered together with the thing it weakens is
+  not a permission — the `--allow-executor` reasoning. Everything else holds:
+  the TTL, the `run.respond` grant check, journaled rejections, and MCP still
+  refusing its own run's asks.
 - On governed sessions (grants present in the file), the responder's own
   grants must cover `run.respond`. Grants are ordinary `mg:permits` Facts —
   they live in the file, sync with it, and are granted in CAL:
@@ -933,7 +1014,10 @@ reproduce the boundary instead of guessing at it.
 
 - Rejected and expired responses are **journaled as Observations before the
   error returns** — a losing approval attempt is audit evidence, not a
-  silent 4xx.
+  silent 4xx. Since 1.9.0 (#292) that includes the two the code used to
+  skip: the separation-of-duties refusal (the most audit-relevant one the
+  runtime makes) and the `run.respond` grant refusal, which now loads the run
+  first so the record carries `run_id`.
 - `--ask-ttl <sec>` on start bounds how long an ask may sit unanswered.
 - Refusing an ask is a first-class answer: `--is-error true` journals the
   refusal and fails the node as user-aborted.
@@ -1013,6 +1097,36 @@ Every axis here is **cumulative**, never per-request: `--max-tokens` bounds
 what the run spends in total, not how large any one model request may be. What
 bounds a single request is the abstract node's transcript, which is a separate
 matter — see [What bounds the transcript](#what-bounds-the-transcript-and-what-does-not).
+
+**`--max-usd` can finally exhaust** (1.9.0, #291). Every effect used to be
+stamped `usd_micros: 0`, so a positive dollar budget was unreachable, the
+loop's spend flag never raised, and the Verify gate read an unpriced run as
+costing `$0` — `0 > 0 × ratio` evaluates `within`, not `not_measurable`. A
+transport now prices its own usage through `ToolCallLlm::price_usd_micros`
+(defaulted to `None`, which means **unpriced, not free**); a priced effect
+carries `usd_priced: true`, which is what keeps the two apart downstream.
+`verify` and `shadow` replay the journaled figure and never re-price, so a
+later rate change cannot diverge an old run.
+
+**Two run-level ceilings** (1.9.0, #295): `--max-run-effects` and
+`--max-tool-calls`. `--max-effects` bounds ONE node attempt; a run's total
+was bounded only by nodes × retries × cycles × fan-out × that number.
+Exhaustion is a resumable `BudgetExhausted { axis: Effects | ToolCalls }`,
+never a node failure — the undispatched call survives as the flow's need, so
+`areev run fork` under a raised cap continues exactly there. A tool call is
+any dispatched host tool, plan-bound or model-issued; client asks and memory
+reads do not count. A run with no cap set keeps a byte-identical `Spent` and
+verifies unchanged, because the counter is `skip_serializing_if` zero and is
+only incremented when the manifest sets the cap.
+
+**Concurrency caps** (1.9.0, #296): `--max-concurrent` and
+`--max-concurrent-per-principal` claim compare-and-set slot rows beside the
+run lease. N CAS rows is what makes a cap hard under races — counting and
+then acquiring is not. At the cap, `RUN-E027` before anything is written, so
+the run id stays free and a trigger firing leaves its item unconsumed. A
+parked run holds no slot; a crashed holder's slot is reclaimable after the
+TTL. The cap is HOST configuration, never a file truth: how many runs a
+deployment may execute at once is a property of the deployment.
 
 ## Verify and shadow
 
@@ -1522,7 +1636,7 @@ telemetry).
 | `gen_ai.request.model` | chat, invoke_agent | `ToolCallLlm::model()` |
 | `gen_ai.response.model` | chat | the request model — see the caveat below |
 | `gen_ai.request.max_tokens` | chat | the manifest's `llm_max_tokens` (§6.7's per-dispatch reservation), default 1024 |
-| `gen_ai.request.temperature` | chat | 0.0, the fixed temperature abstract-node turns are issued at |
+| `gen_ai.request.temperature` | chat | 0.0, the fixed temperature abstract-node turns are issued at — **absent** when the transport sends none (see below) |
 | `gen_ai.usage.input_tokens` / `.output_tokens` | chat | the journaled `EffectOutcome::Completed` figures — the same numbers budgets spend |
 | `gen_ai.response.finish_reasons` | chat | the result's `stop_reason` (`end_turn` / `tool_use` / `max_tokens` / `other`), always an **array** |
 | `gen_ai.tool.name` | execute_tool | the pinned Tool Definition's name |
@@ -1535,14 +1649,23 @@ telemetry).
 
 Two deliberate absences:
 
-- **No `gen_ai.usage.cost`.** `usd_micros` is always 0 — Core prices nothing —
-  and an always-zero cost attribute reads as "this run was free" rather than
-  "nobody priced it".
+- **`gen_ai.usage.cost` is present exactly when the effect was PRICED**
+  (1.9.0, #291). Core still prices nothing itself; a transport prices its own
+  usage through `ToolCallLlm::price_usd_micros`, and one that does not
+  returns `None`. Absent therefore means "nobody priced it", never "this run
+  was free" — the distinction an always-zero attribute destroyed.
+- **`gen_ai.request.temperature` is absent where nothing was sent** (1.9.0,
+  #283). Current Claude models reject sampling parameters, so the adapter
+  omits the field for them; an attribute asserting `0.0` on a request that
+  carried no temperature is a false statement about the model's
+  configuration, on the channel an operator uses to explain a run's
+  behaviour. `ToolCallLlm::effective_temperature` is the seam, defaulted so
+  host transports keep reporting what they always reported.
 - **`gen_ai.response.model` echoes the request model.** The provider does
-  return the model it served, but that reply is parsed in the executor pool
-  and only its text / tool calls / stop reason reach the journal. Where a
-  provider aliases (`gpt-4o` → a dated build) the two genuinely differ, and
-  this attribute will say so once the pool carries it through.
+  return the model it served, and since 1.9.0 the journal carries it
+  (`served_model` / `served_region`, #287) — this attribute will say so once
+  the span carries it through. Where a provider aliases (`gpt-4o` → a dated
+  build) or a router resolves elsewhere, the two genuinely differ.
 
 Every `areev.*` attribute stays on the span beside these — `areev.superstep`,
 `areev.task_path`, `areev.attempt`, `areev.effect_seq` (plus
@@ -1655,14 +1778,23 @@ unresolvable binding, `RUN-E005` bad condition, `RUN-E006` abstract node
 without an LLM, `RUN-E007` budget exhausted (fork to raise), `RUN-E009`
 replay divergence (names the differing fields), `RUN-E011` response names no
 pending ask, `RUN-E012` missing grant, `RUN-E013` canceled, `RUN-E024`
-transcript over `--llm-context-tokens` with nothing left to fold. The full
-registry is [`ERROR_CODES.md`](../ERROR_CODES.md).
+transcript over `--llm-context-tokens` with nothing left to fold,
+`RUN-E025` the model this run started under is not the one on offer (fork),
+`RUN-E026` a different scheduler epoch wrote this run (fork), `RUN-E027` a
+concurrency cap — retryable, and nothing was written. The full registry is
+[`ERROR_CODES.md`](../ERROR_CODES.md).
 
 ## Bounds, stated
 
 - An abstract node runs at most `--max-effects` effects per attempt (turns, tool
   calls and re-prompts share the counter), default **16**; one more fails the
   node. Frozen in the manifest at start.
+- A WHOLE run runs at most `--max-run-effects` effects and dispatches at most
+  `--max-tool-calls` host tool calls (1.9.0, #295) — both unbounded by
+  default. Exhausting either is a resumable budget stop, not a node failure.
+- At most `--max-concurrent` runs execute at once in a memory, and
+  `--max-concurrent-per-principal` for one principal (1.9.0, #296) — both
+  unbounded by default.
 - `--llm-tool-result-chars` bounds ONE tool result in the transcript
   (characters, default unbounded); the journal keeps every result in full.
 - `--llm-context-tokens` bounds the WHOLE transcript, in the provider's own
@@ -1692,8 +1824,26 @@ registry is [`ERROR_CODES.md`](../ERROR_CODES.md).
 ## Run leases
 
 A run is leased while a driver advances it. The lease is taken at `start` /
-`resume`, renewed at each superstep boundary, and released when the run reaches
-a terminal outcome.
+`resume`, renewed **after every settled result and at each superstep
+boundary**, and released when the run reaches a terminal outcome.
+
+The TTL is `--lease SECS` (`$AREEV_RUN_LEASE`; spelled as on `trigger run`),
+defaulting to 600 s with a 5 s floor. Two things had to ship together (1.9.0,
+#299). Renewing only at superstep boundaries is why nothing shorter was safe:
+an abstract node's turns and tool calls all happen inside ONE superstep, so
+with a 300 s tool timeout and sixteen effects a perfectly healthy driver could
+outlive its own lease and be taken over mid-flight — the failure the lease
+exists to prevent. Renewing inside the superstep is what makes a short TTL
+safe; a knob without it would have been harmful.
+
+The holder is **`{principal}#{host}/{pid}`** (`--node`, `$AREEV_NODE_ID`),
+not `principal#pid` (1.9.0, #300). Re-entering an equal holder is by design —
+that is what resuming your own run is — so two containers both running as
+PID 1 under one service principal were the SAME holder and did not exclude
+each other: the second pod acquired a LIVE lease, bumped the fence, and both
+drivers dispatched the open superstep's effects. That is the normal
+Kubernetes shape. A restarted pod is a new holder and waits out the TTL,
+which is why this pairs with a configurable lease.
 
 Before this existed, two drivers advancing one run **last-write-wins in the
 journal, silently**: `journal::ingest` overwrites a second result for the same

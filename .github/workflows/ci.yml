@@ -184,6 +184,42 @@ jobs:
           if grep -rn "allow(clippy::disallowed_methods)" crates/areev-run-core/src; then
             echo "the purity lint may not be silenced in the scheduler core"; exit 1
           fi
+      # #289: the model-provider features exist so a regulated build can
+      # state exactly which model endpoints its artifact can REACH. Cargo
+      # unifies features across a graph, so one dependency edge without
+      # `default-features = false` compiles every provider into every crate
+      # downstream of the runtime — and the statement stops being true. The
+      # runtime names only seam TYPES and never calls the factory, so its
+      # edge must carry no feature at all.
+      - name: areev-run pulls in no areev-llm provider feature
+        run: |
+          set -e
+          FOUND=$(cargo tree -p areev-run -e features --prefix none \
+                  | grep -F 'areev-llm feature' || true)
+          if [ -n "$FOUND" ]; then
+            echo "areev-run's dependency tree enables areev-llm features:"
+            echo "$FOUND"
+            echo "add default-features = false to the areev-llm dependency"
+            exit 1
+          fi
+      # The configurations CI never built until 1.9.0: a build that can
+      # construct NO provider, and the two opt-in ones a compliance reviewer
+      # asks about.
+      - name: areev-llm with no providers compiled in
+        run: |
+          cargo clippy -p areev-llm --no-default-features --all-targets -- -D warnings
+          cargo test -p areev-llm --no-default-features
+      - name: areev-llm with the opt-in provider features
+        run: |
+          cargo clippy -p areev-llm --features openrouter,vertex --all-targets -- -D warnings
+          cargo test -p areev-llm --features openrouter,vertex
+      # #297: cron-in-a-time-zone rides a cargo feature, and the DST policy
+      # is only pinned when the zone data is compiled in. The featureless
+      # build must keep refusing a non-UTC zone BY NAME.
+      - name: areev-trigger with and without zone data
+        run: |
+          cargo test -p areev-trigger --features tz
+          cargo test -p areev-trigger
 
   # NOTE: `cargo fmt --check` is intentionally NOT gated — the tree is not
   # uniformly rustfmt-formatted by design (see CONTRIBUTING.md). Contributors

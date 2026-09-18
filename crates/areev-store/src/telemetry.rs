@@ -38,6 +38,24 @@ pub enum TelemetryMode {
     /// Aggregate + a per-recall ring log (query text + top hits) for the
     /// console Sessions view. Higher volume; encrypted at rest.
     Full,
+    /// The same rollups as [`Aggregate`](Self::Aggregate), but with no query
+    /// TEXT anywhere (#306).
+    ///
+    /// What a person types while working in one namespace is content. Under
+    /// `Aggregate` it is retained memory-wide in `telem_query_stat.qkey` and
+    /// `.sample`, copied into `areev-loop` recommendations by `coverage_gap`,
+    /// and reachable by no scrub — a zero-result free-text query names no
+    /// grain hash, so the per-hash scrub cannot find it, and the per-subject
+    /// scrub only reaches it if the erased identity happens to appear in the
+    /// text.
+    ///
+    /// Here the key is the hex SHA-256 of the same `query_key()` (HMAC under
+    /// the host's `anon_key` where one is supplied — query strings are
+    /// low-entropy, so a bare digest would hand an attacker an offline
+    /// guessing oracle), the sample is empty, and the ring log is not
+    /// written. `cold_grains`, `coverage_gap` and `budget_pressure` keep
+    /// working: they need counts and distinctness, not the text.
+    AggregateHashed,
 }
 
 impl TelemetryMode {
@@ -46,6 +64,7 @@ impl TelemetryMode {
             TelemetryMode::Off => "off",
             TelemetryMode::Aggregate => "aggregate",
             TelemetryMode::Full => "full",
+            TelemetryMode::AggregateHashed => "aggregate-hashed",
         }
     }
     /// Parse a host-supplied mode string; `None` on an unknown value.
@@ -54,11 +73,18 @@ impl TelemetryMode {
             "off" | "none" | "" => Some(TelemetryMode::Off),
             "aggregate" | "agg" | "on" => Some(TelemetryMode::Aggregate),
             "full" => Some(TelemetryMode::Full),
+            "aggregate-hashed" | "aggregate_hashed" | "hashed" => {
+                Some(TelemetryMode::AggregateHashed)
+            }
             _ => None,
         }
     }
     fn records_log(&self) -> bool {
         matches!(self, TelemetryMode::Full)
+    }
+    /// Whether query TEXT is kept (#306).
+    pub fn keeps_query_text(&self) -> bool {
+        matches!(self, TelemetryMode::Aggregate | TelemetryMode::Full)
     }
 }
 
@@ -185,7 +211,7 @@ const LOG_ROW_CAP: i64 = 200_000;
 /// the bootstrap marker `PgDb::open` reads to decide whether `TELEM_SCHEMA_PG`
 /// needs running at all — so **bump it whenever `TELEM_SCHEMA_PG` or the
 /// migration below changes**, exactly like `pg::PG_SCHEMA_VERSION`.
-const TELEM_SCHEMA_VERSION: &str = "2";
+pub(crate) const TELEM_SCHEMA_VERSION: &str = "2";
 
 #[cfg(feature = "postgres")]
 const TELEM_SCHEMA_PG: &[&str] = &[
@@ -213,6 +239,13 @@ pub struct Telemetry {
     mode: TelemetryMode,
     buf: VecDeque<RecallEvent>,
     prune_countdown: u32,
+    /// HMAC key for [`TelemetryMode::AggregateHashed`] query keys, derived
+    /// from the memory's own AEAD key when it has one. Derived rather than
+    /// reused directly so the telemetry key and the encryption key are not
+    /// literally the same secret, and `None` (a plain SHA-256) when the
+    /// memory is unencrypted — a keyless digest still removes the text, it
+    /// just does not resist offline guessing.
+    qkey_hmac: Option<[u8; 32]>,
 }
 
 impl Telemetry {
@@ -296,7 +329,41 @@ impl Telemetry {
             mode,
             buf: VecDeque::new(),
             prune_countdown: 0,
+            qkey_hmac: None,
         })
+    }
+
+    /// Install the HMAC key for hashed query keys (#306), derived from the
+    /// memory's AEAD key. Separate from `open` so the postgres path, which
+    /// has no file key, simply never calls it.
+    pub fn set_qkey_key(&mut self, key: &[u8; 32]) {
+        let mut h = <sha2::Sha256 as sha2::Digest>::new();
+        sha2::Digest::update(&mut h, b"areev-telemetry-qkey/v1");
+        sha2::Digest::update(&mut h, key);
+        let out = sha2::Digest::finalize(h);
+        let mut derived = [0u8; 32];
+        derived.copy_from_slice(&out);
+        self.qkey_hmac = Some(derived);
+    }
+
+    /// The stored key for one recall, under the active mode.
+    ///
+    /// Under [`TelemetryMode::AggregateHashed`] this is a digest of the same
+    /// `query_key()`, so rollups still accumulate per intent — distinctness
+    /// is preserved, the text is not.
+    fn stored_qkey(&self, ev: &RecallEvent) -> String {
+        let raw = ev.query_key();
+        if self.mode.keeps_query_text() {
+            return raw;
+        }
+        match &self.qkey_hmac {
+            Some(k) => hex::encode(areev_core::anon::hmac_sha256(k, raw.as_bytes())),
+            None => {
+                let mut h = <sha2::Sha256 as sha2::Digest>::new();
+                sha2::Digest::update(&mut h, raw.as_bytes());
+                hex::encode(sha2::Digest::finalize(h))
+            }
+        }
     }
 
     pub fn mode(&self) -> TelemetryMode {
@@ -330,10 +397,13 @@ impl Telemetry {
         if prune {
             self.prune_countdown = 32; // prune the ring roughly every 32 flushes
         }
+        let keys_text = self.mode.keeps_query_text();
+        let qkeys: Vec<String> = events.iter().map(|ev| self.stored_qkey(ev)).collect();
         let db = self.db.as_ref();
         let flush_body = |db: &dyn Db| -> Result<()> {
-            for ev in &events {
-                let qkey = ev.query_key();
+            for (ev, qkey) in events.iter().zip(&qkeys) {
+                let qkey = qkey.clone();
+                let sample = if keys_text { ev.sample() } else { String::new() };
                 // grain-access rollup (all recalls)
                 for h in &ev.hashes {
                     let hex = h.to_hex();
@@ -359,7 +429,9 @@ impl Telemetry {
                         vec![
                             pt(&qkey),
                             pt(&ev.ns),
-                            pt(&ev.sample()),
+                            // The sample IS the query text — empty under a
+                            // hashed mode, so no text column holds it.
+                            pt(&sample),
                             pi(ev.ts_ms),
                             pi(empty),
                             pi(ev.n_results as i64),
@@ -457,6 +529,26 @@ impl Telemetry {
             "DELETE FROM telem_query_stat WHERE qkey LIKE ?1 ESCAPE '\\' OR sample LIKE ?1 ESCAPE '\\'",
             vec![pt(&like)],
         )?;
+        Ok(())
+    }
+
+    /// Namespace-erasure hook (#306): drop every sidecar row belonging to
+    /// one namespace, plus the buffered events that have not reached them.
+    ///
+    /// The gap this closes is specific: a free-text query that returned
+    /// NOTHING names no grain hash, so `scrub(hash)` can never reach it, and
+    /// `scrub_subject` only reaches it when the erased identity happens to
+    /// appear in the text. Every `telem_*` row carries `ns`, so erasing a
+    /// namespace can and should take its recall evidence with it.
+    ///
+    /// Exact namespace only — a prefix scope would erase siblings, and
+    /// destruction never takes a predicate.
+    pub fn scrub_namespace(&mut self, ns: &str) -> Result<()> {
+        self.buf.retain(|ev| ev.ns != ns);
+        for table in ["telem_grain_access", "telem_query_stat", "telem_recall_log"] {
+            self.db
+                .execute(&format!("DELETE FROM {table} WHERE ns = ?1"), vec![pt(ns)])?;
+        }
         Ok(())
     }
 

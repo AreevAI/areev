@@ -34,6 +34,7 @@ fn run_opts(args: &Map<String, Value>) -> areev_run::RunOptions {
             max_usd_micros: args.get("max_usd_micros").and_then(Value::as_u64),
             max_wall_ms: args.get("max_wall_ms").and_then(Value::as_u64),
             max_storage_bytes: args.get("max_storage_bytes").and_then(Value::as_u64),
+            ..Default::default()
         },
         ask_ttl_sec: args.get("ask_ttl_sec").and_then(Value::as_i64),
         workers: 4,
@@ -52,6 +53,11 @@ fn run_opts(args: &Map<String, Value>) -> areev_run::RunOptions {
             .and_then(|n| usize::try_from(n).ok()),
         llm_context_tokens: args.get("llm_context_tokens").and_then(Value::as_u64),
         inject_crash: None,
+        // MCP is server-bound: `initiator` is attribution the SERVER asserts,
+        // never something a client may claim about itself (#293). Same
+        // reasoning as the `responder` principal — an identity a caller can
+        // set for itself is not an identity.
+        ..Default::default()
     }
 }
 
@@ -1136,7 +1142,15 @@ impl McpServer {
                         Some(s) => Some(status_or_pending(s)),
                     };
                     let sub = BorrowedSubstrate::new(&self.facade);
-                    let recs = engine.recommendations(&sub, status).map_err(|e| e.to_string())?;
+                    // Coverage-filtered (#312): a reviewer sees the findings
+                    // derived from namespaces they may read, and no others.
+                    let recs = areev_loop_adapter::visible_recommendations(
+                        &engine,
+                        &sub,
+                        &self.facade.authz(),
+                        status,
+                    )
+                    .map_err(|e| e.to_string())?;
                     let list: Vec<Value> = recs.iter().map(rec_json).collect();
                     Ok(serde_json::to_string(&list).unwrap_or_default())
                 }
@@ -1153,6 +1167,7 @@ fn status_or_pending(s: &str) -> RecStatus {
         "applied" => RecStatus::Applied,
         "rolled_back" => RecStatus::RolledBack,
         "expired" => RecStatus::Expired,
+        "withdrawn" => RecStatus::Withdrawn,
         _ => RecStatus::Pending,
     }
 }

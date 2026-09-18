@@ -205,7 +205,20 @@ pub enum NodeExecutor {
     /// Host-executed tool; the driver resolved the Definition hash.
     Host { tool_hash: String, tool_name: String },
     /// Client-executed: park and emit a `requires_action` ask.
-    Client { tool_hash: String, tool_name: String },
+    Client {
+        tool_hash: String,
+        tool_name: String,
+        /// Whether this ask is an APPROVAL (a second person must answer) or
+        /// a CONFIRMATION the run's own initiator may answer (#294).
+        ///
+        /// Frozen from the Definition at run start, so a mid-run supersession
+        /// cannot downgrade an approval a person is already parked on.
+        /// `#[serde(default)]` is `true`: every Client ask was an approval
+        /// boundary before this existed, and a manifest that does not say
+        /// must mean the stricter thing.
+        #[serde(default = "crate::types::default_true")]
+        approval: bool,
+    },
     /// An abstract node (§6.2): the node label is an instruction an LLM
     /// interprets, choosing among the workflow's pinned Host tools. The
     /// node runs as an LLM LOOP — turn, tool calls, results, next turn —
@@ -222,6 +235,11 @@ pub enum NodeExecutor {
     /// the scheduler only has to treat it as an effect with a result.
     /// `op` is `entity_at` | `related`; `spec` is the normalized declaration.
     MemoryRead { op: String, spec: Value },
+}
+
+/// Serde default for a field whose absence must mean the STRICTER reading.
+pub(crate) fn default_true() -> bool {
+    true
 }
 
 /// Commands the driver must perform, in order.
@@ -340,6 +358,10 @@ pub struct Budgets {
     pub max_usd_micros: Option<u64>,
     pub max_wall_ms: Option<u64>,
     pub max_storage_bytes: Option<u64>,
+    /// Settled effects across the whole run (#295).
+    pub max_effects: Option<u64>,
+    /// Host tool calls across the whole run (#295).
+    pub max_tool_calls: Option<u64>,
 }
 
 impl Default for Budgets {
@@ -352,6 +374,8 @@ impl Default for Budgets {
             max_usd_micros: None,
             max_wall_ms: None,
             max_storage_bytes: None,
+            max_effects: None,
+            max_tool_calls: None,
         }
     }
 }

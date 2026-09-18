@@ -175,6 +175,19 @@ pub struct TriggerStatus {
     pub enabled: bool,
     pub paused: bool,
     pub due: bool,
+    /// The IANA zone a SCHEDULE trigger's cron is evaluated in (#297).
+    ///
+    /// `None` for UTC and for every non-schedule kind. Reported because
+    /// "when is this due" now depends on it, and on a DST boundary the UTC
+    /// instant moves by an hour while the local wall time does not — so a
+    /// status surface that showed only the UTC instant would look like the
+    /// schedule had drifted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
+    /// The next due instant in the trigger's own zone, beside the UTC one
+    /// (#297). `None` when the zone is UTC or nothing is due.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_due_local: Option<String>,
     pub leased_by: Option<String>,
     pub next_due_at: Option<i64>,
     pub last_fired_at: Option<i64>,
@@ -511,6 +524,10 @@ impl Evaluator {
                     && t.enabled
                     && !st.leased(now)
                     && schedule::is_due(&t, &st, now).unwrap_or(false),
+                timezone: schedule::declared_zone(&t),
+                next_due_local: st
+                    .next_due_at
+                    .and_then(|at| schedule::render_local(&t, at)),
                 leased_by: st.leased(now).then(|| st.claimed_by.clone()).flatten(),
                 next_due_at: st.next_due_at,
                 last_fired_at: st.last_fired_at,

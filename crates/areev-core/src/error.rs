@@ -122,6 +122,16 @@ pub enum AreevError {
     /// create the memory, or migrate it forward — because they are different
     /// jobs.
     SchemaNotProvisioned(String),
+    /// A destruction was refused because the namespace it names is under a
+    /// legal hold (#278). Its own code rather than [`Validation`](Self::Validation)
+    /// because a host has to be able to record "deferred by hold" — a
+    /// records-retention obligation, reportable and expected — without
+    /// parsing a message, and to distinguish it from a malformed request.
+    ///
+    /// Carries the namespace, the hold's owner and its stated reason, so the
+    /// refusal is itself the evidence a controller needs when answering an
+    /// erasure request on a retention ground.
+    LegalHold(String),
     SupersessionConflict(Hash),
     /// A supersession-chain walk (`Areev::supersession_chain`) did not reach
     /// a root within the bounded hop count. Real edit histories terminate in
@@ -183,6 +193,7 @@ impl AreevError {
             Self::ReadOnly(_) => "STO-E004",
             Self::ReadOnlyOpenFailed(_) => "STO-E005",
             Self::SchemaNotProvisioned(_) => "STO-E008",
+            Self::LegalHold(_) => "STO-E009",
             Self::CryptoError(_) => "CRY-E001",
             Self::AttestationInvalid(_) => "CRY-E002",
             Self::AttestationRequired(_) => "CRY-E003",
@@ -226,6 +237,7 @@ impl std::fmt::Display for AreevError {
             Self::ReadOnly(m) => write!(f, "STO-E004: refusing write on a read-only memory: {m}"),
             Self::ReadOnlyOpenFailed(m) => write!(f, "STO-E005: {m}"),
             Self::SchemaNotProvisioned(m) => write!(f, "STO-E008: {m}"),
+            Self::LegalHold(m) => write!(f, "STO-E009: {m}"),
             Self::CryptoError(m) => write!(f, "CRY-E001: crypto error: {m}"),
             Self::AttestationInvalid(m) => write!(f, "CRY-E002: attestation invalid: {m}"),
             Self::AttestationRequired(m) => write!(f, "CRY-E003: attestation required: {m}"),
@@ -271,6 +283,7 @@ mod error_code_tests {
             AreevError::ReadOnly("x".into()),
             AreevError::ReadOnlyOpenFailed("x".into()),
             AreevError::SchemaNotProvisioned("x".into()),
+            AreevError::LegalHold("x".into()),
             AreevError::CryptoError("x".into()),
             AreevError::AccumulateRetryExhausted,
             AreevError::AccumulateInternal("x".into()),

@@ -111,9 +111,17 @@ on the latter two, optional-but-recorded on the hash form.
    `FORGET USER/SCOPE` are refused from text with a pointer to SUBJECT.
    `DROP` accepts only TEMPLATE/QUERY.
 3. **Authorization**: the session's `delete` (hash) / `erase` (subject, age)
-   grant decides, and `CalExecutorConfig::allow_destructive_ops` (**default
+   grant decides — plus `admin` on the namespace for `WITH override_hold`
+   (#278) — and `CalExecutorConfig::allow_destructive_ops` (**default
    true**; `--no-destructive-ops`) is a process-wide restrictive **cap** over
    any grant. Capped/ungranted → `Ok(Unsupported)`.
+3b. **Legal holds** (#278): a namespace under a hold refuses every form with
+   `STO-E009`, and the facade records the deferral (`erase.refused` /
+   `delete.refused`). `WITH override_hold BECAUSE "…"` takes the audited
+   override path (`cal_delete_overriding` / `cal_forget_user_overriding`,
+   both defaulted on the trait to a REFUSAL so a host facade that has not
+   implemented the override cannot silently perform one); the Tier-2 record
+   carries `context.hold_overridden`.
 4. **Audit**: every execution writes a Tier-2 Observation in `agent:authz`
    via `areev_core::authz::audit_observation` — the one builder every
    surface shares. Subject erasures record a **fingerprint**
@@ -141,6 +149,36 @@ Security invariants in the lexer: **S-1** bidi-control rejection
 (`check_bidi`, U+202A–202E / U+2066–2069) and **S-6** NFC normalization —
 both run before tokenization; `compute_query_hash` NFC-normalizes again for
 the audit hash.
+
+## Multi-principal reads: `PrincipalSession` IS a facade (#302)
+
+`bind_principal` swaps ONE process-wide rights slot; its own doc says it is
+safe only for hosts that serialize requests. `principal_session(p)` is the
+race-free path, and since 1.9.0 it implements `CalStoreFacade`, so
+`CalExecutor::execute(cal, &session)` runs any statement — read or write —
+under the session's own fail-closed `AuthzSet`. Before, only writes were
+per-principal; every gated read went to the shared slot.
+
+Mechanism: a **thread-local scope**, keyed by facade identity, installed for
+the duration of one call by a `SessionScope` guard that pops on drop (so a
+refusal or a panic cannot leave one principal's rights installed for the next
+call on this thread). `AreevFacade::rights()` is the single read every
+`check_verb` goes through, and `default_ns()` the single read every
+namespace-defaulting statement goes through — which is what makes
+`in_namespace` work for `RELATED` / `ENTITY … AT` / `NOVELTY`.
+
+The delegating impl covers every method the trait does NOT default (52 of
+88). That is the safe half of the split, and it is worth knowing why rather
+than trusting the count: the trait's 54 defaults are fail-closed refusals
+("destructive operations not available"), so a method added to
+`CalStoreFacade` later and left undelegated here REFUSES for a session
+rather than falling through to the shared slot. The compiler will not catch
+the omission — a defaulted method compiles — but the failure mode is a
+refusal, not a leak. When you add one, delegate it, and check its default is
+still a refusal before relying on that.
+
+`as_any()` returns `None` — a downcast to `AreevFacade` would hand the caller
+the UNSCOPED facade.
 
 ## Module map
 

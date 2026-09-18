@@ -42,14 +42,20 @@ structured logging and interface envelopes.
 | `AUT` | Authorization: principals, verbs, grants, the credential map | `AreevError` — `areev-core/src/authz.rs` |
 | `RUN` | The `areev run` scheduler and driver: plan validation, budgets, journal, leases | `RunError` — `crates/areev-run-core/src/error.rs` |
 | `TRG` | Triggers: declaration validity, schedules, claims, connectors | `TriggerError` — `crates/areev-trigger/src/error.rs` |
+| `PCK` | Agent packs: manifest shape, reference resolution, expected-hash agreement | `areev::pack::PackError` — `crates/areev-cli/src/pack.rs` |
 
 The MCP server, HTTP console, CLI, and Python binding do not mint their own
 codes — they surface the underlying `AreevError` / `CalError` (and thus its
 code) through their own envelopes (MCP `isError` result, HTTP body, stderr,
-`PyValueError`). The `areev-loop` engine crate is the exception: it has zero
-areev dependencies, so it owns the `LOP` domain. REVIEW/APPLY *syntax*
-errors stay in the substrate's `CAL` domain; `LOP` covers engine semantics
-(lifecycle, gates, analyzers).
+`PyValueError`). Two exceptions, both because the crate owns a concept no
+other domain names: the `areev-loop` engine crate has zero areev dependencies
+and owns `LOP`, and the CLI's **pack library** (`areev::pack`, #315) owns
+`PCK` — a pack's manifest, its symbolic references and its `expected_hash`
+agreement are the pack format's own rules, and a Rust host calling
+`install_pack` has to branch on the cause. REVIEW/APPLY *syntax* errors stay
+in the substrate's `CAL` domain; `LOP` covers engine semantics (lifecycle,
+gates, analyzers). Store and authorization errors raised while installing a
+pack pass through unchanged.
 
 ## Registry — non-CAL codes
 
@@ -71,6 +77,7 @@ errors stay in the substrate's `CAL` domain; `LOP` covers engine semantics
 | `STO-E006` | `SupersessionChainTooDeep` | `Areev::supersession_chain`'s backward walk from a grain to its supersession root did not terminate within `MAX_SUPERSESSION_CHAIN_HOPS` (64) hops — the `supersedes` links are cyclic or corrupt, so the walk fails loudly rather than looping forever |
 | `STO-E007` | `AnnIndexUnsupported` | An approximate-nearest-neighbour index (pgvector HNSW) was requested on a backend that has none. Vector recall on the embedded engine is an **exact scan** with no ANN structure to build; answering the request with a silent no-op would leave the caller believing a corpus was indexed while its latency stayed linear in corpus size, so the refusal is explicit |
 | `STO-E008` | `SchemaNotProvisioned` | A read-WRITE postgres open found the schema absent, or stamped at an older `meta.pg_schema` version, and the DSN carries `?provision=never` — so **no advisory lock and no DDL were attempted, not even `CREATE SCHEMA`**. The mode exists so a deployment can guarantee its runtime role holds no `CREATE` and its schema changes go through a migration step (`areev provision`, or the operator's own job). Like `STO-E005`, the message names which of the two operator actions is needed — create the memory, or migrate it forward — because they are different jobs |
+| `STO-E009` | `LegalHold` | A destruction was refused because the namespace it names is under a legal hold (#278). Its own code rather than `VAL-E001` because "deferred by a hold" is an EXPECTED, reportable outcome a records-retention obligation produces — a host must be able to record it without parsing a message, and to tell it apart from a malformed request. Carries the namespace, the hold's owner and its stated reason. Raised by every destruction path: `forget`, `forget_subject`, the age-based sweeps, and `drop_postgres_schema`. `WITH override_hold BECAUSE "…"` (CAL), `--override-hold --because` (CLI) is the explicit, audited way through; it needs `admin` on the namespace in addition to `erase`/`delete` |
 | `CRY-E001` | `CryptoError` | Key / cipher / signing / erasure failure |
 | `CRY-E002` | `AttestationInvalid` | An attestation signed by a **trusted** author key does not verify over the content hash it names — the grain or the attestation was altered after signing. At bundle import the whole bundle is refused before any write; `verify --attestations` counts it |
 | `CRY-E003` | `AttestationRequired` | The import policy is `require` and a grain arrived with no valid attestation from a trusted author (unsigned, or signed by an unknown key). The whole bundle is refused before any write |
@@ -151,6 +158,9 @@ in source.
 | `RUN-E023` | `AnonReplayUnsafe` | An anonymization policy covers the run's namespace with a scope whose placeholders are not value-derived, so an abstract node's model boundary would make `verify` diverge |
 | `RUN-E022` | `EgressRefused` | A host command's mediated I/O was refused: destination outside the run's allowlist, a method its grant does not permit, a credential it may not spend, a request header it may not set — undeclared, or one the broker owns — or a CAS blob read without the `blob` capability (the trigger evaluator reports the same condition as `TRG-E009`) |
 | `RUN-E024` | `ContextExceeded` | An abstract node's transcript is over its context ceiling and nothing is left to fold — the node's input and the kept tail alone exceed it. The ceiling is either `--llm-context-tokens` (measured against the provider's own reported prompt tokens) or, when none was configured, the provider's own limit learned from its refusal; the message says which. Raise the ceiling, bound oversized tool results (`--llm-tool-result-chars`), or split the node |
+| `RUN-E025` | `ModelMismatch` | A run is being resumed under a model configuration it did not start under (#287). Raised BEFORE the lease is taken and before any grain is written, so a run that must not continue here does not look like it started to. `areev run fork` is the sanctioned way through: a fork writes a new manifest carrying the new pin and records what it forked from, so the change is a recorded decision rather than undocumented drift. A manifest with no pin — every run written before 1.9.0 — resumes under anything |
+| `RUN-E026` | `EngineMismatch` | This run was written by a scheduler generation whose decisions differ from this build's (#288). Only the `scheduler_epoch` is compared, never the version string: a patch upgrade must not strand every parked approval run. The epoch moves exactly when a change makes an existing journal replay differently — the #251 class |
+| `RUN-E027` | `ConcurrencyLimit` | Starting this run would exceed a per-memory or per-principal concurrency cap (#296). RETRYABLE by nature: the cap is a backstop beneath the host's own dispatcher, not a verdict on the run. Nothing is written under the run id, so the same id starts once a slot frees, and a trigger firing refused here leaves its item unconsumed (the #129 rule) |
 
 ### `TRG` — triggers (`areev-trigger/src/error.rs`)
 
@@ -168,6 +178,20 @@ in source.
 | `TRG-E010` | `Storage` | The store refused or failed underneath the evaluator |
 | `TRG-E011` | `BlobContract` | A connector's blob payload violated the contract (bad base64, dangling `"@N"` reference, or budget overrun); the poll was refused whole with the cursor unmoved |
 | `TRG-E012` | `ConnectorCode` | The trigger names its connector as a GRAIN (#185) and this host will not run it: no `--allow-executor` pin, an unreadable Definition or code blob, a Definition carrying no `executor_uri`, a declared runtime with no `--sandbox-cmd`, or a blob-reading module on an evaluator wired no memory locator |
+
+## Registry — PCK codes (agent packs)
+
+Defined on `areev::pack::PackError` (`crates/areev-cli/src/pack.rs`), the
+library half of `areev pack` (#315). Store and authorization errors pass
+through unchanged — an `AUT-E001` raised while installing stays an
+`AUT-E001`.
+
+| Code | Variant | When |
+|------|---------|------|
+| `PCK-E001` | `Malformed` | The manifest, a grain file, or a shipped evalset is malformed — including an evalset case the `areev eval create` validator would refuse (#316) |
+| `PCK-E002` | `ExpectationMismatch` | A grain's `expected_hash` differs from what the pack builds it to. Carries `{file, expected, built}`. Nothing is written: installing it would change what runs, and everything pointing at the old hash (every trigger above all) would now point somewhere else |
+| `PCK-E003` | `UnresolvedRef` | A `blob:` or `grain:` reference names nothing the pack carries — a FORWARD reference included, which is why the manifest is an ordered list and not a set |
+| `PCK-E004` | `AddressDrift` | The address a grain stored under differs from the address it was built to, so `validate` no longer describes `install` |
 
 ## Registry — CAL codes
 
