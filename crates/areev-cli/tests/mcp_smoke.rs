@@ -1122,3 +1122,117 @@ fn a_capability_tool_reaches_the_broker_the_server_was_started_with() {
     let (result, refusals) = egress201::outcome(db, "mcp-1");
     egress201::assert_outcome(&result, &refusals, "mcp");
 }
+
+/// `--as <principal>` must bind every tool, not only `areev_cal`
+/// (GHSA-rmrx-26f6-f97w).
+///
+/// `areev_recall` went through a gated facade method and was refused, but
+/// `areev_search`, `areev_related` and `areev_remember` reached the store
+/// through `AreevFacade::with_store`, which applies no authorization — so a
+/// principal granted `read` on one namespace could read, and WRITE, any other.
+///
+/// Both legs matter. The owner leg is the positive control: a gate that also
+/// refused the unbound session would pass the restricted leg and break every
+/// existing deployment.
+#[test]
+fn mcp_as_principal_binds_every_tool_not_only_cal() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("gate.db");
+    let db = db.to_str().unwrap();
+
+    let cal = |q: &str| {
+        let out = Command::new(env!("CARGO_BIN_EXE_areev"))
+            .args(["cal", "--db", db, "--index-text", "true", q])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "seed failed: {q}");
+    };
+    cal(r#"ADD fact SET subject="deal:1" SET relation="stage" SET object="PUBLIC" SET namespace="open" BECAUSE "seed""#);
+    cal(r#"ADD fact SET subject="deal:2" SET relation="stage" SET object="CLASSIFIED" SET namespace="secret" BECAUSE "seed""#);
+    cal(r#"GRANT read ON "open" TO "user:amy""#);
+
+    // Every tool aimed at the ungranted `secret` namespace.
+    let probes = || {
+        vec![
+            ("areev_cal", serde_json::json!({
+                "query": r#"RECALL facts WHERE namespace = "secret" LIMIT 5"#})),
+            ("areev_recall", serde_json::json!({
+                "subject": "deal:2", "namespace": "secret", "k": 5})),
+            ("areev_search", serde_json::json!({
+                "query": "CLASSIFIED", "namespace": "secret", "k": 5})),
+            ("areev_related", serde_json::json!({
+                "start": "deal:2", "relations": "stage", "namespace": "secret"})),
+            ("areev_remember", serde_json::json!({
+                "content": "planted by amy", "namespace": "secret"})),
+        ]
+    };
+
+    let run = |extra: &[&str]| -> Vec<(String, bool, String)> {
+        let mut args = vec!["serve", "--mcp", "--db", db, "--ns", "open"];
+        args.extend_from_slice(extra);
+        let mut child = Command::new(env!("CARGO_BIN_EXE_areev"))
+            .args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        {
+            let stdin = child.stdin.as_mut().unwrap();
+            writeln!(
+                stdin,
+                "{}",
+                rpc(1, "initialize", serde_json::json!({
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}))
+            )
+            .unwrap();
+            for (i, (name, args)) in probes().into_iter().enumerate() {
+                writeln!(
+                    stdin,
+                    "{}",
+                    rpc(10 + i as u64, "tools/call",
+                        serde_json::json!({"name": name, "arguments": args}))
+                )
+                .unwrap();
+            }
+        }
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success());
+        let lines: Vec<serde_json::Value> = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect();
+        probes()
+            .into_iter()
+            .enumerate()
+            .map(|(i, (name, _))| {
+                let r = lines
+                    .iter()
+                    .find(|v| v["id"] == 10 + i as u64)
+                    .unwrap_or_else(|| panic!("no response for {name}"));
+                let text = r["result"]["content"][0]["text"].as_str().unwrap_or("").to_string();
+                (name.to_string(), r["result"]["isError"] == true, text)
+            })
+            .collect()
+    };
+
+    // Restricted: every tool refuses, and nothing from `secret` comes back.
+    for (name, is_error, text) in run(&["--as", "user:amy"]) {
+        assert!(
+            is_error && text.contains("AUT-E001"),
+            "{name} was not refused for a principal without read on 'secret': {text}"
+        );
+        assert!(!text.contains("CLASSIFIED"), "{name} disclosed a secret grain");
+    }
+
+    // Positive control: the unbound (owner) session still reaches everything.
+    let owner = run(&[]);
+    for (name, is_error, text) in &owner {
+        assert!(!is_error, "owner session wrongly refused {name}: {text}");
+    }
+    assert!(
+        owner.iter().any(|(_, _, t)| t.contains("CLASSIFIED")),
+        "owner control is vacuous — no tool returned the seeded grain"
+    );
+}

@@ -657,14 +657,55 @@ fn take_facade(slot: &FacadeSlot) -> napi::Result<std::sync::Arc<AreevFacade>> {
 /// Verb check for the binding methods that reach the store directly instead
 /// of through a gated `cal_*` facade method. `authFile`/`principal` is
 /// documented to fail closed (CAL 1.3 §9), so a sandboxed handle must not be
-/// able to erase — or export a subject's dossier — merely by calling the
-/// binding method rather than the CAL statement that does the same thing.
+/// able to erase — or export a subject's dossier, or read a namespace it was
+/// never granted — merely by calling the binding method rather than the CAL
+/// statement that does the same thing.
+///
+/// Asks the facade's EFFECTIVE rights, not its bound set, so the check is
+/// right under an active `PrincipalSession` too.
 fn check_verb(
     facade: &AreevFacade,
     verb: areev_core::authz::Verb,
     ns: &str,
 ) -> napi::Result<()> {
-    facade.authz().check(verb, ns).map_err(err)
+    facade.effective_authz().check(verb, ns).map_err(err)
+}
+
+/// `check_verb` over every namespace a single call spans — a `related` walk
+/// or a change feed given a comma list. Fails closed on the first namespace
+/// the principal cannot reach: a walk is not composable from the namespaces
+/// it was allowed, so a partial answer would silently mean something else.
+fn check_verb_all(
+    facade: &AreevFacade,
+    verb: areev_core::authz::Verb,
+    scope: &[String],
+) -> napi::Result<()> {
+    let rights = facade.effective_authz();
+    for ns in scope {
+        rights.check(verb, ns).map_err(err)?;
+    }
+    Ok(())
+}
+
+/// Keep only the rows a memory-WIDE read may disclose to this principal.
+///
+/// The counterpart to `check_verb` for reads that take no namespace at all
+/// (the op-log feed, reverse provenance, the policy listings): refusing them
+/// outright would break an owner-equivalent host, and answering them whole
+/// discloses every namespace. `ns_of` names each row's namespace; the owner
+/// keeps everything.
+fn filter_readable<T>(
+    facade: &AreevFacade,
+    rows: Vec<T>,
+    ns_of: impl Fn(&T) -> String,
+) -> Vec<T> {
+    let rights = facade.effective_authz();
+    if rights.is_owner() {
+        return rows;
+    }
+    rows.into_iter()
+        .filter(|r| rights.allows(areev_core::authz::Verb::Read, &ns_of(r)))
+        .collect()
 }
 
 #[napi]
@@ -908,8 +949,14 @@ impl Areev {
             let facade = take_facade(&slot)?;
             // Probing the command spawns a child process — worth keeping off
             // the event loop even though it only happens once.
+            // Check BEFORE constructing: `CommandEmbed::new` probes the command
+            // by running it, and an ungranted caller must not be able to spawn
+            // a subprocess on the way to being refused.
+            check_verb(&facade, areev_core::authz::Verb::Admin, "*")?;
             let ce = CommandEmbed::new(&cmd, model.as_deref()).map_err(err)?;
-            facade.with_store(|m| m.set_embedder(Box::new(ce)));
+            facade
+                .store_as(areev_core::authz::Verb::Admin, "*", |m| m.set_embedder(Box::new(ce)))
+                .map_err(err)?;
             Ok(())
         })
     }
@@ -937,7 +984,9 @@ impl Areev {
             model: model.unwrap_or_else(|| "javascript".to_string()),
         };
         let facade = take_facade(&self.facade)?;
-        facade.with_store(|m| m.set_embedder(Box::new(backend)));
+        facade
+                .store_as(areev_core::authz::Verb::Admin, "*", |m| m.set_embedder(Box::new(backend)))
+                .map_err(err)?;
         Ok(())
     }
 
@@ -1012,7 +1061,7 @@ impl Areev {
                 ));
             }
             let grains = facade
-                .with_store(|m| {
+                .store_read(&ns, |m| {
                     m.recall_hybrid(&ns, subject.as_deref(), relation.as_deref(), Some(&query), k, None)
                 })
                 .map_err(err)?;
@@ -1038,7 +1087,7 @@ impl Areev {
         U32Job::spawn(move || {
             let facade = take_facade(&slot)?;
             facade
-                .with_store(|m| m.rebuild_text_index())
+                .store_checked(areev_core::authz::Verb::Admin, "*", |m| m.rebuild_text_index())
                 .map(|n| n as u32)
                 .map_err(err)
         })
@@ -1056,7 +1105,7 @@ impl Areev {
         U32Job::spawn(move || {
             let facade = take_facade(&slot)?;
             facade
-                .with_store(|m| m.rebuild_link_indexes())
+                .store_checked(areev_core::authz::Verb::Admin, "*", |m| m.rebuild_link_indexes())
                 .map(|n| n as u32)
                 .map_err(err)
         })
@@ -1076,8 +1125,23 @@ impl Areev {
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
             let cmd: serde_json::Value = serde_json::from_str(&command_json).map_err(err)?;
+            // One binding method, five store operations: `view` reads,
+            // `create`/`str_replace`/`insert`/`rename` write, and `delete`
+            // DESTROYS. Gating the method as a whole would either refuse a
+            // granted read or admit an ungranted erasure, so the command
+            // names the verb. An unrecognized command needs `admin`: a
+            // command added to `MemoryTool` later is then gated until it is
+            // mapped here, rather than silently ungated.
+            let verb = match cmd.get("command").and_then(|v| v.as_str()) {
+                Some("view") => areev_core::authz::Verb::Read,
+                Some("create") | Some("str_replace") | Some("insert") | Some("rename") => {
+                    areev_core::authz::Verb::Write
+                }
+                Some("delete") => areev_core::authz::Verb::Delete,
+                _ => areev_core::authz::Verb::Admin,
+            };
             facade
-                .with_store(|m| {
+                .store_checked(verb, &ns, |m| {
                     let mut t = MemoryTool::new(m, &ns);
                     t.execute(&cmd)
                 })
@@ -1104,7 +1168,7 @@ impl Areev {
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
             let rep = facade
-                .with_store(|m| {
+                .store_write(&ns, |m| {
                     areev_store::migrate::migrate_payload(
                         m,
                         &ns,
@@ -1189,7 +1253,7 @@ impl Areev {
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
             let grains = facade
-                .with_store(|m| m.recall(&ns, &subject, relation.as_deref(), k))
+                .store_read(&ns, |m| m.recall(&ns, &subject, relation.as_deref(), k))
                 .map_err(err)?;
             let out: Vec<serde_json::Value> = grains
                 .iter()
@@ -1218,7 +1282,7 @@ impl Areev {
         MaybeStringJob::spawn(move || {
             let facade = take_facade(&slot)?;
             let head = facade
-                .with_store(|m| m.latest(&ns, &subject, &relation))
+                .store_read(&ns, |m| m.latest(&ns, &subject, &relation))
                 .map_err(err)?;
             Ok(head.map(|g| {
                 json!({
@@ -1477,7 +1541,7 @@ impl Areev {
                 run_id: run_id.as_deref(),
             };
             let event = facade
-                .with_store(|m| m.capture(&ns, &content, &meta))
+                .store_write(&ns, |m| m.capture(&ns, &content, &meta))
                 .map_err(err)?;
 
             let (proposed, drafts, status) = match &llm {
@@ -1499,7 +1563,7 @@ impl Areev {
                 extractor_model: llm.as_ref().map(|l| l.model()),
             };
             let facts = facade
-                .with_store(|m| m.attach_facts(&ns, &event, &drafts, &attribution))
+                .store_write(&ns, |m| m.attach_facts(&ns, &event, &drafts, &attribution))
                 .map_err(err)?;
 
             let mut out = json!({
@@ -1564,7 +1628,7 @@ impl Areev {
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
             let versions = facade
-                .with_store(|m| m.history(&ns, &subject, &relation))
+                .store_read(&ns, |m| m.history(&ns, &subject, &relation))
                 .map_err(err)?;
             let out: Vec<serde_json::Value> = versions
                 .iter()
@@ -1592,6 +1656,9 @@ impl Areev {
             let kids = facade
                 .with_store(|m| m.grains_derived_from(&parent))
                 .map_err(err)?;
+            let kids = filter_readable(&facade, kids, |g| {
+                g.get_str("namespace").unwrap_or("shared").to_string()
+            });
             let out: Vec<serde_json::Value> = kids
                 .iter()
                 .map(|g| {
@@ -1626,7 +1693,7 @@ impl Areev {
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
             let matches = facade
-                .with_store(|m| {
+                .store_read(&ns, |m| {
                     m.nearest_semantic(&ns, subject.as_deref(), relation.as_deref(), &text, k)
                 })
                 // Name the API the caller is holding, not the CLI's flag —
@@ -1664,7 +1731,7 @@ impl Areev {
         let bytes: Vec<u8> = data.to_vec();
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
-            facade.with_store(|m| m.put_blob(&bytes)).map_err(err)
+            facade.store_checked(areev_core::authz::Verb::Write, "*", |m| m.put_blob(&bytes)).map_err(err)
         })
     }
 
@@ -1676,7 +1743,7 @@ impl Areev {
         let slot = self.facade.clone();
         BufferJob::spawn(move || {
             let facade = take_facade(&slot)?;
-            let bytes = facade.with_store(|m| m.get_blob(&uri)).map_err(err)?;
+            let bytes = facade.store_checked(areev_core::authz::Verb::Read, "*", |m| m.get_blob(&uri)).map_err(err)?;
             Ok(bytes.into())
         })
     }
@@ -1687,7 +1754,7 @@ impl Areev {
         let slot = self.facade.clone();
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
-            let s = facade.with_store(|m| m.stats()).map_err(err)?;
+            let s = facade.store_checked(areev_core::authz::Verb::Read, "*", |m| m.stats()).map_err(err)?;
             Ok(json!({
                 "grains": s.grains, "current": s.current, "triples": s.triples,
                 "terms": s.terms, "ops": s.ops, "events_indexed": s.events_indexed,
@@ -1704,7 +1771,7 @@ impl Areev {
     #[napi]
     pub fn set_signing_key(&self, seed_hex: String) -> napi::Result<String> {
         let facade = take_facade(&self.facade)?;
-        facade.with_store(|m| m.set_signing_key_hex(&seed_hex)).map_err(err)
+        facade.store_checked(areev_core::authz::Verb::Admin, "*", |m| m.set_signing_key_hex(&seed_hex)).map_err(err)
     }
 
     /// The installed author key as JSON `{"key_id", "public_key"}`, or null.
@@ -1712,7 +1779,7 @@ impl Areev {
     pub fn signing_key(&self) -> napi::Result<Option<String>> {
         let facade = take_facade(&self.facade)?;
         Ok(facade
-            .with_store(|m| Ok::<_, AreevError>(m.signing_key()))
+            .store_checked(areev_core::authz::Verb::Admin, "*", |m| Ok::<_, AreevError>(m.signing_key()))
             .map_err(err)?
             .map(|(id, pk)| json!({"key_id": id, "public_key": pk}).to_string()))
     }
@@ -1724,7 +1791,7 @@ impl Areev {
     pub fn set_trusted_authors(&self, json: String) -> napi::Result<u32> {
         let facade = take_facade(&self.facade)?;
         facade
-            .with_store(|m| m.set_trusted_authors(&json))
+            .store_checked(areev_core::authz::Verb::Admin, "*", |m| m.set_trusted_authors(&json))
             .map(|n| n as u32)
             .map_err(err)
     }
@@ -1735,7 +1802,7 @@ impl Areev {
         let p = areev_store::AttestPolicy::parse(&policy).map_err(err)?;
         let facade = take_facade(&self.facade)?;
         facade
-            .with_store(|m| {
+            .store_checked(areev_core::authz::Verb::Admin, "*", |m| {
                 m.set_attest_policy(p);
                 Ok::<_, AreevError>(())
             })
@@ -1750,7 +1817,7 @@ impl Areev {
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
             let h = Hash::from_hex(&hash).map_err(err)?;
-            let a = facade.with_store(|m| m.attest(&h)).map_err(err)?;
+            let a = facade.store_checked(areev_core::authz::Verb::Admin, "*", |m| m.attest(&h)).map_err(err)?;
             Ok(a.to_hex())
         })
     }
@@ -1764,7 +1831,7 @@ impl Areev {
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
             let st = facade
-                .with_store(|m| m.attest_all(ns_prefix.as_deref()))
+                .store_checked(areev_core::authz::Verb::Admin, "*", |m| m.attest_all(ns_prefix.as_deref()))
                 .map_err(err)?;
             serde_json::to_string(&st).map_err(|e| err(AreevError::Internal(e.to_string())))
         })
@@ -1778,7 +1845,7 @@ impl Areev {
         let slot = self.facade.clone();
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
-            let r = facade.with_store(|m| m.verify_attestations()).map_err(err)?;
+            let r = facade.store_checked(areev_core::authz::Verb::Read, "*", |m| m.verify_attestations()).map_err(err)?;
             serde_json::to_string(&r).map_err(|e| err(AreevError::Internal(e.to_string())))
         })
     }
@@ -1794,7 +1861,7 @@ impl Areev {
         I64Job::spawn(move || {
             let facade = take_facade(&slot)?;
             let st = facade
-                .with_store(|m| m.bundle_since(since.unwrap_or(0), &path))
+                .store_checked(areev_core::authz::Verb::Admin, "*", |m| m.bundle_since(since.unwrap_or(0), &path))
                 .map_err(err)?;
             Ok(st.last_op_seq)
         })
@@ -1806,7 +1873,7 @@ impl Areev {
         let slot = self.facade.clone();
         U32Job::spawn(move || {
             let facade = take_facade(&slot)?;
-            let st = facade.with_store(|m| m.import_bundle(&path)).map_err(err)?;
+            let st = facade.store_checked(areev_core::authz::Verb::Admin, "*", |m| m.import_bundle(&path)).map_err(err)?;
             Ok(st.applied as u32)
         })
     }
@@ -1817,7 +1884,7 @@ impl Areev {
         let slot = self.facade.clone();
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
-            let r = facade.with_store(|m| m.verify()).map_err(err)?;
+            let r = facade.store_checked(areev_core::authz::Verb::Read, "*", |m| m.verify()).map_err(err)?;
             if r.integrity != "ok" || r.hash_mismatches > 0 || r.undecodable > 0 {
                 return Err(err(AreevError::Storage(format!(
                     "verification failed: integrity={} mismatches={} undecodable={}",
@@ -1869,6 +1936,7 @@ impl Areev {
             // the BFS and its depth and cap mean something different from
             // Areev's.
             let scope = split_ns_list(&ns);
+            check_verb_all(&facade, areev_core::authz::Verb::Read, &scope)?;
             let reached = facade
                 .with_store(|m| {
                     if scope.len() > 1 {
@@ -1900,7 +1968,7 @@ impl Areev {
             let ax = Axis::parse(axis.as_deref().unwrap_or("world"))
                 .ok_or_else(|| napi::Error::from_reason("axis must be one of: world, knowledge"))?;
             let found = facade
-                .with_store(|m| m.entity_at(&ns, &subject, &relation, at, ax))
+                .store_read(&ns, |m| m.entity_at(&ns, &subject, &relation, at, ax))
                 .map_err(err)?;
             Ok(match found {
                 Some(g) => json!({"found": true, "grain": g}).to_string(),
@@ -1930,7 +1998,7 @@ impl Areev {
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
             let (trace, produced) = facade
-                .with_store(|m| {
+                .store_read(&ns, |m| {
                     let t = m.run_trace(&ns, &run_id, limit)?;
                     let p = if want_yield {
                         m.run_yield(&ns, &run_id, limit)?
@@ -1963,7 +2031,7 @@ impl Areev {
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
             let page = facade
-                .with_store(|m| m.run_grains(&ns, &run_id, after_seq, limit))
+                .store_read(&ns, |m| m.run_grains(&ns, &run_id, after_seq, limit))
                 .map_err(err)?;
             let exhausted = page.len() < limit.clamp(1, 1024);
             let next = (!exhausted).then(|| page.last().map(|(s, _)| *s)).flatten();
@@ -1995,7 +2063,7 @@ impl Areev {
             let facade = take_facade(&slot)?;
             let vec32: Vec<f32> = vector.iter().map(|v| *v as f32).collect();
             let matches = facade
-                .with_store(|m| {
+                .store_read(&ns, |m| {
                     m.nearest_vector(&ns, subject.as_deref(), relation.as_deref(), &vec32, k)
                 })
                 .map_err(err)?;
@@ -2023,7 +2091,7 @@ impl Areev {
             let h = Hash::from_hex(&hash).map_err(err)?;
             let vec32: Vec<f32> = vector.iter().map(|v| *v as f32).collect();
             facade
-                .with_store(|m| m.set_grain_embedding(&h, &vec32))
+                .store_checked(areev_core::authz::Verb::Admin, "*", |m| m.set_grain_embedding(&h, &vec32))
                 .map_err(err)?;
             Ok(hash)
         })
@@ -2055,7 +2123,7 @@ impl Areev {
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
             let items = areev_store::parse_embedding_items(&items_json).map_err(err)?;
-            let n = facade.with_store(|m| m.set_grain_embeddings(&items)).map_err(err)?;
+            let n = facade.store_checked(areev_core::authz::Verb::Admin, "*", |m| m.set_grain_embeddings(&items)).map_err(err)?;
             Ok(json!({"written": n}).to_string())
         })
     }
@@ -2080,7 +2148,7 @@ impl Areev {
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
             let name = facade
-                .with_store(|s| {
+                .store_checked(areev_core::authz::Verb::Admin, "*", |s| {
                     s.ensure_vector_index(m, efc, efs)?;
                     s.vector_index()
                 })
@@ -2096,7 +2164,7 @@ impl Areev {
         let slot = self.facade.clone();
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
-            facade.with_store(|s| s.drop_vector_index()).map_err(err)?;
+            facade.store_checked(areev_core::authz::Verb::Admin, "*", |s| s.drop_vector_index()).map_err(err)?;
             Ok(json!({"index": serde_json::Value::Null}).to_string())
         })
     }
@@ -2135,7 +2203,7 @@ impl Areev {
                 err(format!("queries must be a JSON array of number arrays: {e}"))
             })?;
             let report = facade
-                .with_store(|s| {
+                .store_read(&ns, |s| {
                     if let Some(ef) = ef_search {
                         s.set_vector_ef_search(ef as usize)?;
                     }
@@ -2164,7 +2232,7 @@ impl Areev {
             let facade = take_facade(&slot)?;
             let h = parse_hash(&hash)?;
             let runs = facade
-                .with_store(|m| m.runs_touching(&ns, &h, depth))
+                .store_read(&ns, |m| m.runs_touching(&ns, &h, depth))
                 .map_err(err)?;
             Ok(json!({"hash": h.to_hex(), "runs": runs}).to_string())
         })
@@ -2189,7 +2257,7 @@ impl Areev {
             let facade = take_facade(&slot)?;
             let wf = parse_hash(&workflow)?;
             let rows = facade
-                .with_store(|m| m.step_actions(&ns, &wf, node.as_deref(), limit))
+                .store_read(&ns, |m| m.step_actions(&ns, &wf, node.as_deref(), limit))
                 .map_err(err)?;
             let steps: Vec<serde_json::Value> = rows
                 .into_iter()
@@ -2739,7 +2807,11 @@ impl Areev {
         let slot = self.facade.clone();
         UnitJob::spawn(move || {
             let facade = take_facade(&slot)?;
-            facade.with_store(|m| m.set_anon_policy(&ns, &policy_json)).map_err(err)
+            facade
+                .store_checked(areev_core::authz::Verb::Admin, &ns, |m| {
+                    m.set_anon_policy(&ns, &policy_json)
+                })
+                .map_err(err)
         })
     }
 
@@ -2749,7 +2821,9 @@ impl Areev {
         let slot = self.facade.clone();
         UnitJob::spawn(move || {
             let facade = take_facade(&slot)?;
-            facade.with_store(|m| m.clear_anon_policy(&ns)).map_err(err)
+            facade
+                .store_checked(areev_core::authz::Verb::Admin, &ns, |m| m.clear_anon_policy(&ns))
+                .map_err(err)
         })
     }
 
@@ -2761,6 +2835,7 @@ impl Areev {
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
             let policies = facade.with_store(|m| m.anon_policies()).map_err(err)?;
+            let policies = filter_readable(&facade, policies, |(ns, _)| ns.clone());
             let rows: Vec<serde_json::Value> = policies
                 .into_iter()
                 .map(|(ns, p)| serde_json::json!({"ns": ns, "policy": p}))
@@ -2778,6 +2853,7 @@ impl Areev {
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
             let maps = facade.with_store(|m| m.anon_mappings()).map_err(err)?;
+            let maps = filter_readable(&facade, maps, |(ns, _, _)| ns.clone());
             let rows: Vec<serde_json::Value> = maps
                 .into_iter()
                 .map(|(ns, id, mapping)| {
@@ -2798,7 +2874,9 @@ impl Areev {
         let slot = self.facade.clone();
         UnitJob::spawn(move || {
             let facade = take_facade(&slot)?;
-            facade.with_store(|m| m.set_anonymize_egress_floor(on));
+            facade
+                .store_as(areev_core::authz::Verb::Admin, "*", |m| m.set_anonymize_egress_floor(on))
+                .map_err(err)?;
             Ok(())
         })
     }
@@ -2813,10 +2891,15 @@ impl Areev {
         let slot = self.facade.clone();
         UnitJob::spawn(move || {
             let facade = take_facade(&slot)?;
+            // Check BEFORE constructing: `CommandAnonymize::new` probes the
+            // command by running it.
+            check_verb(&facade, areev_core::authz::Verb::Admin, "*")?;
             let backend = areev_store::CommandAnonymize::new(&cmd).map_err(err)?;
-            facade.with_store(|m| {
-                m.set_anonymizer(Box::new(backend));
-            });
+            facade
+                .store_as(areev_core::authz::Verb::Admin, "*", |m| {
+                    m.set_anonymizer(Box::new(backend));
+                })
+                .map_err(err)?;
             Ok(())
         })
     }
@@ -3258,9 +3341,17 @@ impl Areev {
         let scope = ns.map(|n| split_ns_list(&n)).unwrap_or_default();
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
+            // A named scope is checked outright, so an ungranted namespace is
+            // a refusal rather than a silently short feed. An UNSCOPED call is
+            // the memory-wide feed — it stays available (an owner replicates
+            // with it) but discloses only the namespaces this principal reads.
+            check_verb_all(&facade, areev_core::authz::Verb::Read, &scope)?;
             let rows = facade
                 .with_store(|m| m.changes_since_scoped(after, &scope, limit))
                 .map_err(err)?;
+            // A row we cannot attribute to a namespace is not one we can prove
+            // this principal may see, so it drops out for everyone but the owner.
+            let rows = filter_readable(&facade, rows, |r| r.ns.clone().unwrap_or_default());
             let out: Vec<serde_json::Value> = rows
                 .into_iter()
                 .map(|r| {
@@ -3287,7 +3378,7 @@ impl Areev {
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
             facade
-                .with_store(|m| m.telemetry_scrub_namespace(&ns))
+                .store_checked(areev_core::authz::Verb::Erase, &ns, |m| m.telemetry_scrub_namespace(&ns))
                 .map_err(err)?;
             Ok(json!({"scrubbed": ns}).to_string())
         })
@@ -3730,6 +3821,8 @@ impl Areev {
                 ));
             }
             let facade = take_facade(&slot)?;
+            // Pausing a standing rule changes what the memory does next.
+            check_verb(&facade, areev_core::authz::Verb::Write, &ns)?;
             let target = js_read_only_evaluator(std::sync::Arc::clone(&facade), &ns)
                 .declarations()
                 .map_err(err)?

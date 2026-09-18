@@ -216,10 +216,51 @@ fn err<E: std::fmt::Display>(e: E) -> PyErr {
 /// Verb check for the binding methods that reach the store directly instead
 /// of through a gated `cal_*` facade method. `principal=` is documented to
 /// fail closed (CAL 1.3 §9), so a sandboxed handle must not be able to erase
-/// — or export a subject's dossier — merely by calling the binding method
-/// rather than the CAL statement that does the same thing.
+/// — or export a subject's dossier, or read a namespace it was never granted
+/// — merely by calling the binding method rather than the CAL statement that
+/// does the same thing.
+///
+/// Asks the facade's EFFECTIVE rights, not its bound set, so the check is
+/// right under an active `PrincipalSession` too.
 fn check_verb(facade: &AreevFacade, verb: areev_core::authz::Verb, ns: &str) -> PyResult<()> {
-    facade.authz().check(verb, ns).map_err(err)
+    facade.effective_authz().check(verb, ns).map_err(err)
+}
+
+/// `check_verb` over every namespace a single call spans — a `RELATED` walk
+/// or a change feed given a comma list. Fails closed on the first namespace
+/// the principal cannot reach: a walk is not composable from the namespaces
+/// it was allowed, so a partial answer would silently mean something else.
+fn check_verb_all(
+    facade: &AreevFacade,
+    verb: areev_core::authz::Verb,
+    scope: &[String],
+) -> PyResult<()> {
+    let rights = facade.effective_authz();
+    for ns in scope {
+        rights.check(verb, ns).map_err(err)?;
+    }
+    Ok(())
+}
+
+/// Keep only the rows a memory-WIDE read may disclose to this principal.
+///
+/// The counterpart to `check_verb` for reads that take no namespace at all
+/// (the op-log feed, reverse provenance, the policy listings): refusing them
+/// outright would break an owner-equivalent host, and answering them whole
+/// discloses every namespace. `ns_of` names each row's namespace; the owner
+/// keeps everything.
+fn filter_readable<T>(
+    facade: &AreevFacade,
+    rows: Vec<T>,
+    ns_of: impl Fn(&T) -> String,
+) -> Vec<T> {
+    let rights = facade.effective_authz();
+    if rights.is_owner() {
+        return rows;
+    }
+    rows.into_iter()
+        .filter(|r| rights.allows(areev_core::authz::Verb::Read, &ns_of(r)))
+        .collect()
 }
 
 /// Resolve an LLM backend the same two ways the CLI does: a subprocess
@@ -672,7 +713,8 @@ impl Areev {
             dim,
             model: model.unwrap_or_else(|| "python".to_string()),
         };
-        py.detach(|| self.facade.with_store(|m| m.set_embedder(Box::new(backend))));
+        py.detach(|| self.facade.store_as(areev_core::authz::Verb::Admin, "*", |m| m.set_embedder(Box::new(backend))))
+            .map_err(err)?;
         Ok(())
     }
 
@@ -681,8 +723,15 @@ impl Areev {
     #[pyo3(signature = (cmd, model = None))]
     fn set_embedder_command(&self, py: Python<'_>, cmd: String, model: Option<String>) -> PyResult<()> {
         py.detach(|| -> Result<(), AreevError> {
+            // Check BEFORE constructing: `CommandEmbed::new` probes the command
+            // by running it, and an ungranted caller must not be able to spawn
+            // a subprocess on the way to being refused.
+            self.facade
+                .effective_authz()
+                .check(areev_core::authz::Verb::Admin, "*")?;
             let ce = CommandEmbed::new(&cmd, model.as_deref())?;
-            self.facade.with_store(|m| m.set_embedder(Box::new(ce)));
+            self.facade
+                .store_as(areev_core::authz::Verb::Admin, "*", |m| m.set_embedder(Box::new(ce)))?;
             Ok(())
         })
         .map_err(err)
@@ -691,7 +740,7 @@ impl Areev {
     /// Backfill + rebuild the BM25 text index (e.g. after bulk loads, or on
     /// a file that flipped text indexing on later). Returns rows backfilled.
     fn reindex_text(&self, py: Python<'_>) -> PyResult<usize> {
-        py.detach(|| self.facade.with_store(|m| m.rebuild_text_index()))
+        py.detach(|| self.facade.store_checked(areev_core::authz::Verb::Admin, "*", |m| m.rebuild_text_index()))
             .map_err(err)
     }
 
@@ -702,7 +751,7 @@ impl Areev {
     /// rebuilding on demand — the counterpart of `reindex_text()`, and what
     /// `areev reindex` runs.
     fn reindex_links(&self, py: Python<'_>) -> PyResult<usize> {
-        py.detach(|| self.facade.with_store(|m| m.rebuild_link_indexes()))
+        py.detach(|| self.facade.store_checked(areev_core::authz::Verb::Admin, "*", |m| m.rebuild_link_indexes()))
             .map_err(err)
     }
 
@@ -724,7 +773,7 @@ impl Areev {
         let ns = ns.unwrap_or_else(|| self.ns.clone());
         let rep = py
             .detach(|| {
-                self.facade.with_store(|m| {
+                self.facade.store_write(&ns, |m| {
                     areev_store::migrate::migrate_payload(
                         m,
                         &ns,
@@ -875,7 +924,7 @@ impl Areev {
         }
         let grains = py
             .detach(|| {
-                self.facade.with_store(|m| {
+                self.facade.store_read(&ns, |m| {
                     m.recall_hybrid(
                         &ns,
                         subject.as_deref(),
@@ -914,7 +963,7 @@ impl Areev {
         let grains = py
             .detach(|| {
                 self.facade
-                    .with_store(|m| m.recall(&ns, &subject, relation.as_deref(), k))
+                    .store_read(&ns, |m| m.recall(&ns, &subject, relation.as_deref(), k))
             })
             .map_err(err)?;
         let out: Vec<serde_json::Value> = grains
@@ -941,7 +990,7 @@ impl Areev {
     ) -> PyResult<Option<String>> {
         let ns = ns.unwrap_or_else(|| self.ns.clone());
         let head = py
-            .detach(|| self.facade.with_store(|m| m.latest(&ns, &subject, &relation)))
+            .detach(|| self.facade.store_read(&ns, |m| m.latest(&ns, &subject, &relation)))
             .map_err(err)?;
         Ok(head.map(|g| {
             json!({
@@ -1189,7 +1238,7 @@ impl Areev {
             };
             let event = self
                 .facade
-                .with_store(|m| m.capture(&ns, &content, &meta))
+                .store_write(&ns, |m| m.capture(&ns, &content, &meta))
                 .map_err(err)?;
 
             let (proposed, drafts, status) = match &llm {
@@ -1213,7 +1262,7 @@ impl Areev {
             };
             let facts = self
                 .facade
-                .with_store(|m| m.attach_facts(&ns, &event, &drafts, &attribution))
+                .store_write(&ns, |m| m.attach_facts(&ns, &event, &drafts, &attribution))
                 .map_err(err)?;
 
             let mut out = json!({
@@ -1266,11 +1315,25 @@ impl Areev {
     ) -> PyResult<String> {
         let cmd: serde_json::Value = serde_json::from_str(&command_json).map_err(err)?;
         let ns = ns.unwrap_or_else(|| self.ns.clone());
+        // One binding method, five store operations: `view` reads, `create`/
+        // `str_replace`/`insert`/`rename` write, and `delete` DESTROYS. Gating
+        // the method as a whole would either refuse a granted read or admit an
+        // ungranted erasure, so the command names the verb. An unrecognized
+        // command needs `admin`: a command added to `MemoryTool` later is then
+        // gated until it is mapped here, rather than silently ungated.
+        let verb = match cmd.get("command").and_then(|v| v.as_str()) {
+            Some("view") => areev_core::authz::Verb::Read,
+            Some("create") | Some("str_replace") | Some("insert") | Some("rename") => {
+                areev_core::authz::Verb::Write
+            }
+            Some("delete") => areev_core::authz::Verb::Delete,
+            _ => areev_core::authz::Verb::Admin,
+        };
         py.detach(|| {
-            self.facade.with_store(|m| {
+            self.facade.store_as(verb, &ns, |m| {
                 let mut t = MemoryTool::new(m, &ns);
                 t.execute(&cmd)
-            })
+            })?
         })
         .map_err(err)
     }
@@ -1284,6 +1347,11 @@ impl Areev {
         let kids = py
             .detach(|| self.facade.with_store(|m| m.grains_derived_from(&parent)))
             .map_err(err)?;
+        // `derived_from` is a hash edge, and a child may sit in any namespace:
+        // the parent hash is not itself an authorization to read the children.
+        let kids = filter_readable(&self.facade, kids, |g| {
+            g.get_str("namespace").unwrap_or("shared").to_string()
+        });
         let out: Vec<serde_json::Value> = kids
             .iter()
             .map(|g| {
@@ -1318,7 +1386,7 @@ impl Areev {
         // inside the store call, and it cannot do that if we never let go.
         let matches = py
             .detach(|| {
-                self.facade.with_store(|m| {
+                self.facade.store_read(&ns, |m| {
                     m.nearest_semantic(&ns, subject.as_deref(), relation.as_deref(), &text, k)
                 })
             })
@@ -1354,7 +1422,7 @@ impl Areev {
     ) -> PyResult<String> {
         let ns = ns.unwrap_or_else(|| self.ns.clone());
         let versions = py
-            .detach(|| self.facade.with_store(|m| m.history(&ns, &subject, &relation)))
+            .detach(|| self.facade.store_read(&ns, |m| m.history(&ns, &subject, &relation)))
             .map_err(err)?;
         let out: Vec<serde_json::Value> = versions
             .iter()
@@ -1379,7 +1447,7 @@ impl Areev {
     /// lose the streaming property the CAS exists to provide.
     #[pyo3(signature = (data))]
     fn put_blob(&self, py: Python<'_>, data: Vec<u8>) -> PyResult<String> {
-        py.detach(|| self.facade.with_store(|m| m.put_blob(&data)))
+        py.detach(|| self.facade.store_checked(areev_core::authz::Verb::Write, "*", |m| m.put_blob(&data)))
             .map_err(err)
     }
 
@@ -1389,7 +1457,7 @@ impl Areev {
     #[pyo3(signature = (uri))]
     fn get_blob<'py>(&self, py: Python<'py>, uri: String) -> PyResult<Bound<'py, PyBytes>> {
         let bytes = py
-            .detach(|| self.facade.with_store(|m| m.get_blob(&uri)))
+            .detach(|| self.facade.store_checked(areev_core::authz::Verb::Read, "*", |m| m.get_blob(&uri)))
             .map_err(err)?;
         Ok(PyBytes::new(py, &bytes))
     }
@@ -1397,7 +1465,7 @@ impl Areev {
     /// Store statistics as JSON.
     fn stats(&self, py: Python<'_>) -> PyResult<String> {
         let s = py
-            .detach(|| self.facade.with_store(|m| m.stats()))
+            .detach(|| self.facade.store_checked(areev_core::authz::Verb::Read, "*", |m| m.stats()))
             .map_err(err)?;
         Ok(json!({
             "grains": s.grains, "current": s.current, "triples": s.triples,
@@ -1436,6 +1504,7 @@ impl Areev {
         // per-namespace calls, so a host doing it itself re-implements the
         // BFS and its depth and cap mean something different from Areev's.
         let scope = split_ns_list(&ns);
+        check_verb_all(&self.facade, areev_core::authz::Verb::Read, &scope)?;
         let reached = py
             .detach(|| {
                 let refs: Vec<&str> = rels.iter().map(String::as_str).collect();
@@ -1469,7 +1538,7 @@ impl Areev {
         let found = py
             .detach(|| {
                 self.facade
-                    .with_store(|m| m.entity_at(&ns, &subject, &relation, at, ax))
+                    .store_read(&ns, |m| m.entity_at(&ns, &subject, &relation, at, ax))
             })
             .map_err(err)?;
         Ok(match found {
@@ -1496,7 +1565,7 @@ impl Areev {
         let rows = py
             .detach(|| {
                 self.facade
-                    .with_store(|m| m.step_actions(&ns, &wf, node.as_deref(), limit))
+                    .store_read(&ns, |m| m.step_actions(&ns, &wf, node.as_deref(), limit))
             })
             .map_err(err)?;
         let steps: Vec<serde_json::Value> = rows
@@ -1559,7 +1628,7 @@ impl Areev {
         let ns = ns.unwrap_or_else(|| self.ns.clone());
         let (trace, produced) = py
             .detach(|| {
-                self.facade.with_store(|m| {
+                self.facade.store_read(&ns, |m| {
                     let t = m.run_trace(&ns, &run_id, limit)?;
                     let p = if include_yield {
                         m.run_yield(&ns, &run_id, limit)?
@@ -1591,7 +1660,7 @@ impl Areev {
     ) -> PyResult<String> {
         let ns = ns.unwrap_or_else(|| self.ns.clone());
         let page = py
-            .detach(|| self.facade.with_store(|m| m.run_grains(&ns, &run_id, after_seq, limit)))
+            .detach(|| self.facade.store_read(&ns, |m| m.run_grains(&ns, &run_id, after_seq, limit)))
             .map_err(err)?;
         let exhausted = page.len() < limit.clamp(1, 1024);
         let next = (!exhausted).then(|| page.last().map(|(s, _)| *s)).flatten();
@@ -1623,7 +1692,7 @@ impl Areev {
         let ns = ns.unwrap_or_else(|| self.ns.clone());
         let matches = py
             .detach(|| {
-                self.facade.with_store(|m| {
+                self.facade.store_read(&ns, |m| {
                     m.nearest_vector(&ns, subject.as_deref(), relation.as_deref(), &vector, k)
                 })
             })
@@ -1644,7 +1713,7 @@ impl Areev {
     /// not index rows — replicas must have vectors re-supplied.
     fn add_embedding(&self, py: Python<'_>, hash: String, vector: Vec<f32>) -> PyResult<String> {
         let h = Hash::from_hex(&hash).map_err(err)?;
-        py.detach(|| self.facade.with_store(|m| m.set_grain_embedding(&h, &vector)))
+        py.detach(|| self.facade.store_checked(areev_core::authz::Verb::Admin, "*", |m| m.set_grain_embedding(&h, &vector)))
             .map_err(err)?;
         Ok(hash)
     }
@@ -1672,7 +1741,7 @@ impl Areev {
         let n = py
             .detach(|| {
                 let items = areev_store::parse_embedding_items(&items_json)?;
-                self.facade.with_store(|m| m.set_grain_embeddings(&items))
+                self.facade.store_checked(areev_core::authz::Verb::Admin, "*", |m| m.set_grain_embeddings(&items))
             })
             .map_err(err)?;
         Ok(json!({"written": n}).to_string())
@@ -1693,7 +1762,7 @@ impl Areev {
     ) -> PyResult<String> {
         let name = py
             .detach(|| {
-                self.facade.with_store(|s| {
+                self.facade.store_checked(areev_core::authz::Verb::Admin, "*", |s| {
                     s.ensure_vector_index(m, ef_construction, ef_search)?;
                     s.vector_index()
                 })
@@ -1705,7 +1774,7 @@ impl Areev {
     /// Drop the ANN index, returning vector recall to an exact scan. Returns
     /// `{"index": null}`.
     fn drop_vector_index(&self, py: Python<'_>) -> PyResult<String> {
-        py.detach(|| self.facade.with_store(|s| s.drop_vector_index())).map_err(err)?;
+        py.detach(|| self.facade.store_checked(areev_core::authz::Verb::Admin, "*", |s| s.drop_vector_index())).map_err(err)?;
         Ok(json!({"index": serde_json::Value::Null}).to_string())
     }
 
@@ -1737,7 +1806,7 @@ impl Areev {
         let ns = ns.unwrap_or_else(|| self.ns.clone());
         let report = py
             .detach(|| {
-                self.facade.with_store(|s| {
+                self.facade.store_read(&ns, |s| {
                     if let Some(ef) = ef_search {
                         s.set_vector_ef_search(ef)?;
                     }
@@ -2081,12 +2150,20 @@ impl Areev {
     ) -> PyResult<String> {
         let limit = limit.clamp(1, 10_000);
         let scope = ns.map(|n| split_ns_list(&n)).unwrap_or_default();
+        // A named scope is checked outright, so an ungranted namespace is a
+        // refusal rather than a silently short feed. An UNSCOPED call is the
+        // memory-wide feed — it stays available (an owner replicates with it)
+        // but discloses only the namespaces this principal may read.
+        check_verb_all(&self.facade, areev_core::authz::Verb::Read, &scope)?;
         let rows = py
             .detach(|| {
                 self.facade
                     .with_store(|m| m.changes_since_scoped(after_op_seq, &scope, limit))
             })
             .map_err(err)?;
+        // A row we cannot attribute to a namespace is not one we can prove
+        // this principal may see, so it drops out for everyone but the owner.
+        let rows = filter_readable(&self.facade, rows, |r| r.ns.clone().unwrap_or_default());
         let out: Vec<serde_json::Value> = rows
             .into_iter()
             .map(|r| {
@@ -2106,7 +2183,9 @@ impl Areev {
     fn telemetry_scrub_namespace(&self, py: Python<'_>, ns: String) -> PyResult<()> {
         py.detach(|| {
             self.facade
-                .with_store(|m| m.telemetry_scrub_namespace(&ns))
+                .store_checked(areev_core::authz::Verb::Erase, &ns, |m| {
+                    m.telemetry_scrub_namespace(&ns)
+                })
         })
         .map_err(err)
     }
@@ -2135,7 +2214,7 @@ impl Areev {
         let ns = ns.unwrap_or_else(|| self.ns.clone());
         let h = Hash::from_hex(&hash).map_err(err)?;
         let runs = py
-            .detach(|| self.facade.with_store(|m| m.runs_touching(&ns, &h, depth)))
+            .detach(|| self.facade.store_read(&ns, |m| m.runs_touching(&ns, &h, depth)))
             .map_err(err)?;
         Ok(json!({"hash": h.to_hex(), "runs": runs}).to_string())
     }
@@ -2147,7 +2226,7 @@ impl Areev {
     /// attestation. Returns the key id. Host config, never persisted.
     fn set_signing_key(&self, seed_hex: String) -> PyResult<String> {
         self.facade
-            .with_store(|m| m.set_signing_key_hex(&seed_hex))
+            .store_checked(areev_core::authz::Verb::Admin, "*", |m| m.set_signing_key_hex(&seed_hex))
             .map_err(err)
     }
 
@@ -2155,7 +2234,7 @@ impl Areev {
     fn signing_key(&self) -> PyResult<Option<String>> {
         Ok(self
             .facade
-            .with_store(|m| Ok::<_, AreevError>(m.signing_key()))
+            .store_checked(areev_core::authz::Verb::Admin, "*", |m| Ok::<_, AreevError>(m.signing_key()))
             .map_err(err)?
             .map(|(id, pk)| json!({"key_id": id, "public_key": pk}).to_string()))
     }
@@ -2164,16 +2243,17 @@ impl Areev {
     /// public_key_hex}, "policy": "off|verify|require"}`). Governs bundle
     /// import and `verify_attestations`. Returns the number of keys.
     fn set_trusted_authors(&self, json: String) -> PyResult<usize> {
-        self.facade.with_store(|m| m.set_trusted_authors(&json)).map_err(err)
+        self.facade
+            .store_checked(areev_core::authz::Verb::Admin, "*", |m| m.set_trusted_authors(&json))
+            .map_err(err)
     }
 
     /// Override the installed trusted-authors policy: off | verify | require.
     fn set_attest_policy(&self, policy: String) -> PyResult<()> {
         let p = areev_store::AttestPolicy::parse(&policy).map_err(err)?;
         self.facade
-            .with_store(|m| {
+            .store_as(areev_core::authz::Verb::Admin, "*", |m| {
                 m.set_attest_policy(p);
-                Ok::<_, AreevError>(())
             })
             .map_err(err)
     }
@@ -2183,7 +2263,7 @@ impl Areev {
     fn attest(&self, py: Python<'_>, hash: String) -> PyResult<String> {
         let h = Hash::from_hex(&hash).map_err(err)?;
         let a = py
-            .detach(|| self.facade.with_store(|m| m.attest(&h)))
+            .detach(|| self.facade.store_checked(areev_core::authz::Verb::Admin, "*", |m| m.attest(&h)))
             .map_err(err)?;
         Ok(a.to_hex())
     }
@@ -2194,7 +2274,7 @@ impl Areev {
     #[pyo3(signature = (ns_prefix = None))]
     fn attest_all(&self, py: Python<'_>, ns_prefix: Option<String>) -> PyResult<String> {
         let st = py
-            .detach(|| self.facade.with_store(|m| m.attest_all(ns_prefix.as_deref())))
+            .detach(|| self.facade.store_checked(areev_core::authz::Verb::Admin, "*", |m| m.attest_all(ns_prefix.as_deref())))
             .map_err(err)?;
         serde_json::to_string(&st).map_err(|e| err(AreevError::Internal(e.to_string())))
     }
@@ -2204,7 +2284,7 @@ impl Areev {
     /// `attest_invalid` and `invalid`.
     fn verify_attestations(&self, py: Python<'_>) -> PyResult<String> {
         let r = py
-            .detach(|| self.facade.with_store(|m| m.verify_attestations()))
+            .detach(|| self.facade.store_checked(areev_core::authz::Verb::Read, "*", |m| m.verify_attestations()))
             .map_err(err)?;
         serde_json::to_string(&r).map_err(|e| err(AreevError::Internal(e.to_string())))
     }
@@ -2213,7 +2293,7 @@ impl Areev {
     #[pyo3(signature = (path, since = 0))]
     fn bundle(&self, py: Python<'_>, path: String, since: i64) -> PyResult<i64> {
         let st = py
-            .detach(|| self.facade.with_store(|m| m.bundle_since(since, &path)))
+            .detach(|| self.facade.store_checked(areev_core::authz::Verb::Admin, "*", |m| m.bundle_since(since, &path)))
             .map_err(err)?;
         Ok(st.last_op_seq)
     }
@@ -2221,7 +2301,7 @@ impl Areev {
     /// Apply a bundle (fast-forward, idempotent). Returns ops applied.
     fn import_bundle(&self, py: Python<'_>, path: String) -> PyResult<usize> {
         let st = py
-            .detach(|| self.facade.with_store(|m| m.import_bundle(&path)))
+            .detach(|| self.facade.store_checked(areev_core::authz::Verb::Admin, "*", |m| m.import_bundle(&path)))
             .map_err(err)?;
         Ok(st.applied)
     }
@@ -2229,7 +2309,7 @@ impl Areev {
     /// Integrity + content-address verification. Raises on failure.
     fn verify(&self, py: Python<'_>) -> PyResult<String> {
         let r = py
-            .detach(|| self.facade.with_store(|m| m.verify()))
+            .detach(|| self.facade.store_checked(areev_core::authz::Verb::Read, "*", |m| m.verify()))
             .map_err(err)?;
         if r.integrity != "ok" || r.hash_mismatches > 0 || r.undecodable > 0 {
             return Err(err(AreevError::Storage(format!(
@@ -2727,14 +2807,22 @@ impl Areev {
     /// from now on.
     #[pyo3(signature = (ns, policy_json))]
     fn set_anon_policy(&self, py: Python<'_>, ns: String, policy_json: String) -> PyResult<()> {
-        py.detach(|| self.facade.with_store(|m| m.set_anon_policy(&ns, &policy_json)))
+        py.detach(|| {
+            self.facade
+                .store_checked(areev_core::authz::Verb::Admin, &ns, |m| {
+                    m.set_anon_policy(&ns, &policy_json)
+                })
+        })
             .map_err(err)
     }
 
     /// Remove one namespace's anonymization policy (missing is not an error).
     #[pyo3(signature = (ns))]
     fn clear_anon_policy(&self, py: Python<'_>, ns: String) -> PyResult<()> {
-        py.detach(|| self.facade.with_store(|m| m.clear_anon_policy(&ns)))
+        py.detach(|| {
+            self.facade
+                .store_checked(areev_core::authz::Verb::Admin, &ns, |m| m.clear_anon_policy(&ns))
+        })
             .map_err(err)
     }
 
@@ -2744,6 +2832,7 @@ impl Areev {
         let policies = py
             .detach(|| self.facade.with_store(|m| m.anon_policies()))
             .map_err(err)?;
+        let policies = filter_readable(&self.facade, policies, |(ns, _)| ns.clone());
         let rows: Vec<serde_json::Value> = policies
             .into_iter()
             .map(|(ns, p)| serde_json::json!({"ns": ns, "policy": p}))
@@ -2758,6 +2847,7 @@ impl Areev {
         let maps = py
             .detach(|| self.facade.with_store(|m| m.anon_mappings()))
             .map_err(err)?;
+        let maps = filter_readable(&self.facade, maps, |(ns, _, _)| ns.clone());
         let rows: Vec<serde_json::Value> = maps
             .into_iter()
             .map(|(ns, id, mapping)| {
@@ -2771,7 +2861,8 @@ impl Areev {
     /// namespace without a declared policy. Can never weaken a declared one.
     #[pyo3(signature = (on))]
     fn set_anonymize_egress_floor(&self, py: Python<'_>, on: bool) -> PyResult<()> {
-        py.detach(|| self.facade.with_store(|m| m.set_anonymize_egress_floor(on)));
+        py.detach(|| self.facade.store_as(areev_core::authz::Verb::Admin, "*", |m| m.set_anonymize_egress_floor(on)))
+            .map_err(err)?;
         Ok(())
     }
 
@@ -2780,10 +2871,15 @@ impl Areev {
     #[pyo3(signature = (cmd))]
     fn set_anonymizer_command(&self, py: Python<'_>, cmd: String) -> PyResult<()> {
         py.detach(|| {
+            // Check BEFORE constructing: `CommandAnonymize::new` probes the
+            // command by running it.
+            self.facade
+                .effective_authz()
+                .check(areev_core::authz::Verb::Admin, "*")?;
             let backend = areev_store::CommandAnonymize::new(&cmd)?;
-            self.facade.with_store(|m| {
+            self.facade.store_as(areev_core::authz::Verb::Admin, "*", |m| {
                 m.set_anonymizer(Box::new(backend));
-            });
+            })?;
             Ok::<(), areev_core::error::AreevError>(())
         })
         .map_err(err)
@@ -3295,6 +3391,7 @@ impl Areev {
         if because.trim().is_empty() {
             return Err(err("because is required: pausing a standing rule is an auditable act"));
         }
+        check_verb(&self.facade, areev_core::authz::Verb::Write, &self.ns)?;
         let ev = self.read_only_evaluator();
         py.detach(|| -> PyResult<String> {
             let target = ev
