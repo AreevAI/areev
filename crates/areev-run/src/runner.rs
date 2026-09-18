@@ -450,7 +450,7 @@ fn diff_fields(stored: &Value, replayed: &Value) -> String {
     diffs.join("; ")
 }
 
-fn idempotency_key(key: &JournalKey, input: &Value) -> String {
+pub(crate) fn idempotency_key(key: &JournalKey, input: &Value) -> String {
     let mut h = sha2::Sha256::new();
     h.update(key.idempotency_prefix().as_bytes());
     h.update([0x1f]);

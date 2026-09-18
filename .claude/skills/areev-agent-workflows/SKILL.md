@@ -180,6 +180,12 @@ The loop **flags**, a human **decides**, supersession **applies**,
   is `out_of_support` — no score, not an error. A loop-drafted
   `plan_revision` carries the same report as `replay`, and a `plan_replay`
   policy refuses one that is worse than the incumbent on the same runs.
+  **A rebound TOOL is invisible to that** — the replay answers by journal key
+  and never consults the binding, so a candidate whose only change is a
+  module's bytes scores `same`. Add `--reexecute pure` (plus
+  `--allow-executor` and `--sandbox-cmd`) and the candidate's pure
+  `wasm32-areev` modules actually run; the report then names which terminal
+  state keys moved (`changed_keys`, key paths only). Nothing else re-executes.
 - A plan edit = new content address. Sweep: triggers (re-point), docs/
   examples quoting the hash, any `bindings` in OTHER plans that subgraph
   this one.

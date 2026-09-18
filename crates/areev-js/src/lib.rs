@@ -3109,19 +3109,32 @@ impl Areev {
     }
 
     /// Shadow evaluation over journaled runs — zero effect dispatches.
+    ///
+    /// `optionsJson` is a JSON object (#277). `{"reexecute": "pure"}`
+    /// rehearses a candidate VERSION rather than only a candidate plan: a
+    /// bound node whose candidate Definition is a pure `wasm32-areev` module
+    /// is RE-RUN in the sandbox on the replayed input instead of being
+    /// answered from the journal, so a patch that changes only a tool's bytes
+    /// stops rehearsing as `same`. That needs the same host authorization a
+    /// run needs, carried in the same object: `allow_executor` /
+    /// `allowExecutor`, `sandbox_cmd`, `executor_cache`,
+    /// `executor_timeout_secs`. Everything else still answers from the
+    /// journal and is reported under `not_reexecuted` with the reason.
     #[napi(ts_return_type = "Promise<string>")]
     pub fn run_shadow(
         &self,
         run_ids: Vec<String>,
         plan: Option<String>,
         plan_body: Option<String>,
+        options_json: Option<String>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
         let ns = self.ns.clone();
         let actor = self.actor.clone();
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
-            let runner = js_runner(facade, ns, actor, None);
+            let (opts, pin) = js_shadow_options(options_json)?;
+            let runner = js_runner_pinned(facade, ns, actor, None, None, pin, None, None);
             // With `plan` (a Workflow hash) or `planBody` (an unstored draft,
             // a JSON object string) this is the plan-change rehearsal: the
             // runs re-driven under the candidate, effects answered from the
@@ -3141,8 +3154,11 @@ impl Areev {
             };
             match candidate {
                 Some(c) => {
-                    let report = runner.shadow_plan(&run_ids, &c).map_err(err)?;
+                    let report = runner.shadow_plan_with(&run_ids, &c, &opts).map_err(err)?;
                     serde_json::to_string(&report).map_err(err)
+                }
+                None if opts.reexecute != areev_run::Reexecute::Off => {
+                    Err(err("options.reexecute needs a candidate: pass plan or planBody"))
                 }
                 None => {
                     let report = runner.shadow_eval(&run_ids);
@@ -3711,6 +3727,53 @@ fn js_tool_env_policy(names: Option<&str>) -> Option<areev_core::proc::EnvPolicy
         eprintln!("areev: toolEnv dropped {} — registered as holding a secret", dropped.join(", "));
     }
     Some(policy)
+}
+
+/// The `optionsJson` object a `runShadow` takes (#277): the re-execution
+/// mode plus the host pins a pure re-execution needs, since re-running a
+/// candidate's module is the same act as running it — the authorization has
+/// to come from the host, never from the file.
+///
+/// snake_case is canonical (the report's own fields are), and the camelCase
+/// spelling is accepted too, so ONE documented object works from Node and
+/// from Python rather than two that drift.
+fn js_shadow_options(
+    options: Option<String>,
+) -> napi::Result<(areev_run::ShadowOptions, JsExecutorPin)> {
+    let Some(text) = options else {
+        return Ok((areev_run::ShadowOptions::default(), JsExecutorPin::default()));
+    };
+    let v: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| err(format!("optionsJson: {e}")))?;
+    let obj = v.as_object().ok_or_else(|| err("optionsJson must be a JSON object"))?;
+    let pick = |snake: &str, camel: &str| obj.get(snake).or_else(|| obj.get(camel));
+    let string = |snake: &str, camel: &str| -> napi::Result<Option<String>> {
+        match pick(snake, camel) {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(serde_json::Value::String(s)) => Ok(Some(s.clone())),
+            Some(_) => Err(err(format!("optionsJson.{snake} must be a string"))),
+        }
+    };
+    let reexecute = match string("reexecute", "reexecute")? {
+        None => areev_run::Reexecute::Off,
+        Some(mode) => areev_run::Reexecute::parse(&mode).ok_or_else(|| {
+            err(format!("optionsJson.reexecute takes 'pure' or 'off', not {mode:?}"))
+        })?,
+    };
+    let pin = JsExecutorPin {
+        allow_executor: string("allow_executor", "allowExecutor")?,
+        executor_cache: string("executor_cache", "executorCache")?,
+        sandbox_cmd: string("sandbox_cmd", "sandboxCmd")?,
+        executor_timeout_secs: match pick("executor_timeout_secs", "executorTimeoutSecs") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(n) => Some(
+                n.as_i64()
+                    .ok_or_else(|| err("optionsJson.executor_timeout_secs must be a whole number"))?,
+            ),
+        },
+        tool_env: None,
+    };
+    Ok((areev_run::ShadowOptions::reexecute(reexecute), pin))
 }
 
 #[derive(Default)]

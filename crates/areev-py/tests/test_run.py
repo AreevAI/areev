@@ -58,6 +58,23 @@ def test_run_start_respond_resume_verify(db):
     assert shadow["all_consistent"] is True
     assert shadow["effect_dispatches"] == 0
 
+    # #277: rehearsing a candidate VERSION. Nothing in this plan is a pure
+    # wasm32-areev module, so nothing re-executes — and the report says so
+    # per node with the reason, rather than quietly doing nothing.
+    rehearsal = json.loads(
+        db.run_shadow(["py-1"], plan=wf, options='{"reexecute": "pure"}')
+    )
+    assert rehearsal["reexecute"] == "pure"
+    assert rehearsal["sandbox_executions"] == 0
+    assert rehearsal["effect_dispatches"] == 0
+    assert rehearsal["runs"][0]["not_reexecuted"], rehearsal
+    # The bare shadow is a consistency check, not a rehearsal: no candidate,
+    # nothing to re-execute against.
+    with pytest.raises(ValueError, match="candidate"):
+        db.run_shadow(["py-1"], options='{"reexecute": "pure"}')
+    with pytest.raises(ValueError, match="pure"):
+        db.run_shadow(["py-1"], plan=wf, options='{"reexecute": "sorta"}')
+
 
 def test_run_inspect(db):
     wf = _plan(db)

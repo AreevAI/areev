@@ -971,7 +971,13 @@ never recorded; the summary names the runs. Fewer than `min_runs` rehearsed
 runs and the gate abstains (two runs are an anecdote). Dream-RSI's monotone
 selection as a gate rather than an auto-deploy: applying stays human, with a
 BECAUSE. Without the policy the rehearsal still rides on the card; nothing
-is refused.
+is refused. The loop's rehearsal answers **every** effect from the journal:
+it holds no executor, so a `plan_revision` is scored on the plan's shape —
+edges, conditions, retries, cycle bounds — and never on a tool's code. A
+candidate that rebinds a node to a different module is invisible to it and
+rehearses as `same`; scoring that takes `areev run shadow --reexecute pure`
+with the host's own executor pins (`docs/run.md`, "Rehearsing a candidate
+version"), which is a human's command and not the loop's.
 
 `near_duplicate` (default `flag`) decides what DISCOVER does with an
 authored lesson that says, in other words, what a live lesson on the same
