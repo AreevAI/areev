@@ -2323,6 +2323,41 @@ and counting outcomes are not disclosures. A grant on the shared namespace
 still means everything, so existing deployments are unchanged, and an
 unstamped record is covered only by such a grant — fail closed.
 
+### A principal binds the surface, not the statement (1.9.1, GHSA-rmrx-26f6-f97w)
+
+Authorization lived on the gated facade methods — `cal_add`, `cal_delete`,
+`facade.recall` — while `AreevFacade::with_store` handed out the raw store with
+no check at all. That split is right in principle: a host acting under its own
+authority (the runtime journalling its run, a trigger evaluating its cadence)
+must not be gated by the end user's grants. It failed in practice because the
+CALLER-facing surfaces used the ungated door too. In 1.9.0 five binding methods
+called `check_verb` and about fifty reached `with_store` directly, so
+`principal=` restricted CAL and nothing else: a read-only principal could read
+any namespace typed, write one through `remember()`, and erase one through the
+memory tool's `delete`. MCP's `areev_search`, `areev_related` and
+`areev_remember` had the same hole under `--as`.
+
+The correction is not a rule about which methods to remember to gate — that is
+what failed. It is a **shape**: a surface a principal can bind reaches the store
+only through `store_read`/`store_write`/`store_checked`, which take the verb and
+the namespace and ask the session's EFFECTIVE rights first. Where a call takes
+no namespace, the answer is not "allow" but one of two explicit things — a
+memory-wide resource (`"*"`, the convention the gated CAL methods already used)
+or a per-row filter, so `changes_since` and reverse provenance disclose only
+namespaces the principal may read. Where a call spans a namespace list, it is
+all-or-nothing, because a silently-narrowed graph walk answers a different
+question than the one asked.
+
+`with_store` stays, deliberately, for the hosts that need it — the runtime and
+trigger crates are the bulk of its ~600 call sites and none of them take a
+caller's principal. What changed is that the three principal-bindable files are
+now closed by a test rather than by discipline: `host_surface_gating.rs` fails
+the build on a new ungated call there unless the store method is named with a
+reason, and per-surface parity tests drive the whole public API under a
+zero-grant principal. The general removal of `with_store` remains the
+Postgres-backend plan's job; this decision only fixes where it was reachable by
+someone else's rights.
+
 ### Portability and provenance over lock-in
 
 Grains are content-addressed, immutable, and hash-linked; authenticity is a

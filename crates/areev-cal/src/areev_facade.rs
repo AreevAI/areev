@@ -475,6 +475,18 @@ impl AreevFacade {
         self.rights().check(verb, ns)
     }
 
+    /// This session's EFFECTIVE rights: an active [`PrincipalSession`]'s when
+    /// one is on this thread, else the facade's bound set.
+    ///
+    /// [`Self::authz`] returns the bound set only, so a host that gates on it
+    /// while a session is active enforces the wrong principal. Host surfaces
+    /// that need to check several namespaces in one call — a `RELATED` walk
+    /// over a namespace list, a change feed filtered to what the caller may
+    /// read — should ask this, not `authz()`.
+    pub fn effective_authz(&self) -> areev_core::authz::AuthzSet {
+        self.rights()
+    }
+
     fn session_is_owner(&self) -> bool {
         self.rights().is_owner()
     }
@@ -651,9 +663,72 @@ impl AreevFacade {
         a
     }
 
+    /// Raw, **unauthorized** store access.
+    ///
+    /// This applies no `AuthzSet` check: the closure sees the whole memory
+    /// regardless of what the session's principal was granted. That is
+    /// correct for a host acting under its own authority (the runtime
+    /// journalling its own run, a trigger evaluating its own cadence) and
+    /// WRONG for anything reachable by a caller whose rights are narrower
+    /// than the file's — which is every method a principal-bound binding or
+    /// MCP session exposes.
+    ///
+    /// Use [`Self::store_read`] / [`Self::store_write`] / [`Self::store_as`]
+    /// on any surface a bound principal can reach. GHSA-rmrx-26f6-f97w was
+    /// exactly this: typed reads on the Python/Node bindings and two MCP
+    /// tools reached the store through here, so `principal=` restricted CAL
+    /// and nothing else.
     pub fn with_store<R>(&self, f: impl FnOnce(&mut Areev) -> R) -> R {
         let mut guard = self.store.lock().unwrap();
         f(&mut guard)
+    }
+
+    /// Store access gated on `verb` over `ns`, checked against the session's
+    /// EFFECTIVE rights — an active [`PrincipalSession`] when there is one,
+    /// else the facade's bound `AuthzSet`. The owner session passes
+    /// everything, so gating a call site changes nothing for an unbound
+    /// handle and fails closed for a bound one.
+    ///
+    /// `ns` follows the convention the gated CAL methods already use:
+    /// the namespace read or written, or `"*"` for a memory-wide operation.
+    pub fn store_as<R>(
+        &self,
+        verb: Verb,
+        ns: &str,
+        f: impl FnOnce(&mut Areev) -> R,
+    ) -> Result<R> {
+        self.check_verb(verb, ns)?;
+        Ok(self.with_store(f))
+    }
+
+    /// [`Self::store_as`] for the usual case — a closure that is itself a
+    /// store call returning `Result` — flattening the two so a gated call
+    /// site reads exactly like the ungated one it replaces.
+    pub fn store_checked<T>(
+        &self,
+        verb: Verb,
+        ns: &str,
+        f: impl FnOnce(&mut Areev) -> Result<T>,
+    ) -> Result<T> {
+        self.store_as(verb, ns, f)?
+    }
+
+    /// [`Self::store_checked`] with `Verb::Read`.
+    pub fn store_read<T>(
+        &self,
+        ns: &str,
+        f: impl FnOnce(&mut Areev) -> Result<T>,
+    ) -> Result<T> {
+        self.store_checked(Verb::Read, ns, f)
+    }
+
+    /// [`Self::store_checked`] with `Verb::Write`.
+    pub fn store_write<T>(
+        &self,
+        ns: &str,
+        f: impl FnOnce(&mut Areev) -> Result<T>,
+    ) -> Result<T> {
+        self.store_checked(Verb::Write, ns, f)
     }
 
     /// Ingress boundary for the structured write path (proposal §4.2):
