@@ -30,6 +30,12 @@ postgres-tls = ["postgres", "areev-store/postgres-tls"]
 [lib]
 name = "areev"
 crate-type = ["cdylib"]
+# `areev` (the CLI) gained a lib target of the same name in 1.9.0 (#315), and
+# two libs named `areev` cannot both be documented — they write to one path.
+# This is the one to drop: a `cdylib` for PyO3 has no Rust consumer, so its
+# rustdoc serves nobody; the audience reads the Python API. The CLI's library
+# IS meant to be read (`areev::pack`), so it keeps the name and the docs.
+doc = false
 
 [dependencies]
 areev-core = { path = "../areev-core", version = "1.8.3" }
