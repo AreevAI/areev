@@ -1011,7 +1011,23 @@ carrying a blob rather than a `--connector-cmd` script, and it runs only where
 `areev trigger run --allow-executor <addr>` says so — refused with `TRG-E012`
 otherwise, before a broker is started. That path matters more than it looks:
 a heartbeat runs unattended, so it is the one surface where an unauthorized
-blob would execute with nobody reading the output. There is no CAL grant form for this and there
+blob would execute with nobody reading the output.
+
+The third path is a **rehearsal**: `areev run shadow --reexecute pure` (#277)
+re-runs a candidate plan's pure `wasm32-areev` modules instead of answering
+them from the journal, which is what cashes in the "re-execution-provable"
+row of the Tier C table above. It is the same act of running someone else's
+code as a run is, so it takes the same two keys and checks them the same way
+— `--allow-executor` for the **candidate's** address and `--sandbox-cmd` for
+the runtime — and an unpinned candidate is reported by name with the pin to
+add rather than run. Nothing else re-executes: not a native blob, not a
+`wasm32-areev-io` module (which would reach the network), not a client or
+abstract node. For the same reason the mode exists on the CLI and the
+bindings but **not** on the MCP tool or `GET|POST /api/run/shadow`: those are
+reads, served by hosts that hold no executor pin, and a read that executes
+code is not a read.
+
+There is no CAL grant form for this and there
 should not be: `mg:permits` Facts replicate, and a permission that arrives in
 the same bundle as the code it authorizes is not a permission. This is the same
 split that keeps trigger evaluation state and host config out of the file.

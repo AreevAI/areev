@@ -13,22 +13,53 @@
 //! branch the live run never took — is **out of support** and earns no
 //! score; it is a report field, never an error.
 //!
-//! Zero writes and zero dispatches are structural: the path holds no
-//! executor and no model, reads the journal through the facade, and the
-//! only state it builds is the scheduler's, in memory.
+//! Zero writes and zero dispatches are structural in the default mode: the
+//! path holds no model, reads the journal through the facade, and the only
+//! state it builds is the scheduler's, in memory.
+//!
+//! ## Shadowing a candidate VERSION, not only a candidate plan (#277)
+//!
+//! Answering every effect from the journal by its key means the patch class
+//! most likely to change an answer — a tool's *bytes* — rehearses as `same`
+//! by construction: the binding is never consulted, so a candidate that
+//! rebinds one node to a new Definition replays the old Definition's
+//! journaled result. `ShadowOptions { reexecute: Reexecute::Pure }` is the
+//! opt-in that closes it, and the eligibility rule is the whole safety
+//! argument:
+//!
+//! > only a bound host node whose CANDIDATE Definition is a
+//! > `wasm32-areev` module — pure Tier C, whose frozen import set is exactly
+//! > `areev::emit`: no clock, no filesystem, no sockets — is re-executed,
+//! > in the sandbox, under its pinned fuel and pages, on the input the
+//! > replayed state built.
+//!
+//! Everything else — native blobs, `wasm32-areev-io` (which reaches the
+//! network through the broker), client, abstract, subgraph, memory reads,
+//! and any address this host has not pinned with `--allow-executor` — is
+//! still answered from the journal and reported under `not_reexecuted` with
+//! the reason. So the run's external effects stay at zero and
+//! `effect_dispatches` keeps meaning "no external effect"; the count of
+//! modules that ran is reported separately as `sandbox_executions`.
+//!
+//! What a buyer is shown before an upgrade is the terminal merged-context
+//! diff, and it is reported as **key paths only** (`changed_keys`,
+//! `added_keys`, `removed_keys` — RFC 6901 pointers), never values, so a
+//! host can put the report on a control channel that must not carry content.
 
+use crate::executor::{ExecResult, HostToolExecutor, PreparedCode};
 use crate::journal;
-use crate::manifest::RunManifest;
-use crate::runner::{builtin_eval, make_validate_args, Runner};
+use crate::manifest::{PinnedTool, RunManifest};
+use crate::runner::{builtin_eval, idempotency_key, make_validate_args, Runner};
 use crate::RunError;
 use areev_core::error::Hash;
 use areev_core::types::{Workflow, WorkflowEdge};
 use areev_run_core::{
-    step, Command, EffectOutcome, EventIn, JournalKey, NodeExecutor, PlanGraph, RunOutcome,
-    SchedulerState, StepEnv,
+    step, Command, EffectOutcome, EventIn, FailCause, JournalKey, NodeExecutor, PlanGraph,
+    RunOutcome, SchedulerState, StepEnv,
 };
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 /// The plan to rehearse: a stored Workflow grain, or an unstored draft body
 /// (validated by `PlanGraph::build` before any run is touched).
@@ -36,6 +67,67 @@ use std::collections::BTreeSet;
 pub enum PlanCandidate {
     Hash(Hash),
     Body(Map<String, Value>),
+}
+
+/// How a rehearsal answers a bound node's effect (#277).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Reexecute {
+    /// Every effect is answered from the journal. The default, and the only
+    /// mode whose zero-execution guarantee is structural.
+    #[default]
+    Off,
+    /// A bound host node whose candidate Definition is a pure
+    /// `wasm32-areev` module runs in the sandbox on the input the replayed
+    /// state built; everything else is still answered from the journal.
+    Pure,
+}
+
+impl Reexecute {
+    /// The surface spelling — `"off"` / `"pure"`, and nothing else. An empty
+    /// string is refused rather than read as the default: absent means the
+    /// default, and a caller who wrote the key and left it blank is far more
+    /// likely to have a bug than an intent. Unknown values are the caller's
+    /// to refuse, with the caller's own message.
+    pub fn parse(s: &str) -> Option<Reexecute> {
+        match s.trim() {
+            "off" => Some(Reexecute::Off),
+            "pure" => Some(Reexecute::Pure),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Reexecute::Off => "off",
+            Reexecute::Pure => "pure",
+        }
+    }
+}
+
+/// Knobs on a plan rehearsal. A struct rather than an argument so a later
+/// knob does not re-point every caller — the bindings have no keyword
+/// arguments and would each grow a positional parameter.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ShadowOptions {
+    pub reexecute: Reexecute,
+}
+
+impl ShadowOptions {
+    pub fn reexecute(mode: Reexecute) -> Self {
+        ShadowOptions { reexecute: mode }
+    }
+}
+
+/// A node the rehearsal did NOT re-execute, and why.
+///
+/// The reason is the point: "I passed `reexecute: pure` and got
+/// `sandbox_executions: 0`" is otherwise undebuggable, and the causes —
+/// unpinned address, no sandbox configured, a native or capability runtime,
+/// a node that is not a bound host tool at all — need different fixes.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct NotReexecuted {
+    pub node: String,
+    pub why: String,
 }
 
 /// What one run spent — the sum over the journaled results a replay
@@ -86,6 +178,30 @@ pub struct ShadowPlanRun {
     /// What stopped the replay when it did not reach a terminal state.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// Nodes whose candidate module ran in the sandbox instead of being
+    /// answered from the journal. `None` unless `reexecute: "pure"` — every
+    /// field below is absent in the default mode, so a report taken without
+    /// the option is byte-identical to one taken before it existed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reexecuted: Option<Vec<String>>,
+    /// Nodes the mode could not re-execute, each with its reason.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub not_reexecuted: Option<Vec<NotReexecuted>>,
+    /// Sandbox invocations this run made. Distinct from `effect_dispatches`,
+    /// which stays 0: a pure module reaches nothing outside its own memory.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sandbox_executions: Option<u64>,
+    /// The terminal merged-context diff, incumbent → candidate, as RFC 6901
+    /// key paths. **Never values** — the report is safe on a control channel
+    /// that must not carry content. Present only when the replay reached a
+    /// terminal state with nothing out of support; a partial context would
+    /// diff as wholesale removal and read as a finding.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changed_keys: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub added_keys: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub removed_keys: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -119,10 +235,21 @@ pub struct ShadowPlanReport {
     pub no_worse: bool,
     /// Out-of-support runs over all runs, 0..1.
     pub out_of_support_fraction: f64,
-    /// Always 0 — stated in the artifact so the claim is explicit.
+    /// Always 0 — stated in the artifact so the claim is explicit. It means
+    /// **no external effect**, and it keeps that meaning under
+    /// `reexecute: "pure"`: a pure module has no clock, no filesystem and no
+    /// sockets, so running one dispatches nothing. What ran is counted as
+    /// `sandbox_executions` instead, never folded in here.
     pub effect_dispatches: u64,
     /// Always 0 — the replay path reaches no writer.
     pub writes: u64,
+    /// The re-execution mode, when it was not the default. Absent otherwise,
+    /// so the default report is byte-identical to the pre-#277 one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reexecute: Option<String>,
+    /// Sandbox invocations over every run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sandbox_executions: Option<u64>,
 }
 
 fn outcome_label(o: Option<&RunOutcome>) -> String {
@@ -139,6 +266,133 @@ fn outcome_label(o: Option<&RunOutcome>) -> String {
 fn key_label(k: &JournalKey) -> String {
     let path = if k.task_path.is_empty() { String::new() } else { format!("{}:", k.task_path) };
     format!("{path}{}@{}#{}/{}", k.node, k.attempt, k.effect_seq, k.kind.as_str())
+}
+
+/// The three key-path lists of a context diff.
+#[derive(Default)]
+struct KeyPaths {
+    changed: Vec<String>,
+    added: Vec<String>,
+    removed: Vec<String>,
+}
+
+impl KeyPaths {
+    fn sorted(mut self) -> Self {
+        for v in [&mut self.changed, &mut self.added, &mut self.removed] {
+            v.sort();
+            v.dedup();
+        }
+        self
+    }
+}
+
+/// RFC 6901 escaping: `~` → `~0`, `/` → `~1`, in that order.
+fn escape_pointer(key: &str) -> String {
+    key.replace('~', "~0").replace('/', "~1")
+}
+
+/// Walk two JSON values and record WHERE they differ, never HOW.
+///
+/// Objects are descended (that is what makes `/invoice/amount` readable);
+/// anything else — arrays, scalars — compares whole at its own path, because
+/// reporting an array index as a key path would leak the shape of the data
+/// without being any more actionable. A key present on one side only is one
+/// entry for the whole subtree, not one per leaf beneath it.
+fn diff_key_paths(a: &Value, b: &Value, at: &str, out: &mut KeyPaths) {
+    match (a, b) {
+        (Value::Object(x), Value::Object(y)) => {
+            for (k, av) in x {
+                let path = format!("{at}/{}", escape_pointer(k));
+                match y.get(k) {
+                    Some(bv) => diff_key_paths(av, bv, &path, out),
+                    None => out.removed.push(path),
+                }
+            }
+            for k in y.keys() {
+                if !x.contains_key(k) {
+                    out.added.push(format!("{at}/{}", escape_pointer(k)));
+                }
+            }
+        }
+        _ if a != b => out.changed.push(if at.is_empty() { "/".into() } else { at.into() }),
+        _ => {}
+    }
+}
+
+/// Record a node once, first-seen order. A node's eligibility is a property
+/// of its pin, so it is constant across attempts and cycles — listing it per
+/// dispatch would make a three-iteration loop look like three nodes.
+fn note_node(list: Option<&mut Vec<String>>, node: &str) {
+    if let Some(list) = list {
+        if !list.iter().any(|n| n == node) {
+            list.push(node.to_string());
+        }
+    }
+}
+
+fn note_refusal(list: Option<&mut Vec<NotReexecuted>>, node: &str, why: String) {
+    if let Some(list) = list {
+        if !list.iter().any(|n| n.node == node) {
+            list.push(NotReexecuted { node: node.to_string(), why });
+        }
+    }
+}
+
+/// May this node's CANDIDATE binding be re-executed under `Reexecute::Pure`?
+/// `Ok(uri)` names the blob to run; `Err(why)` is the sentence that goes in
+/// `not_reexecuted`.
+///
+/// Every arm is deny-by-default and host-side: the declaration replicates,
+/// the authorization to execute never does (see [`crate::executor::CodeExecutor`]).
+/// A rehearsal is not a weaker place to apply that rule than a run — it is
+/// the same act of running someone's code — so the pin and the sandbox
+/// configuration are checked here exactly as `Runner::start` checks them.
+fn pure_module(pin: Option<&PinnedTool>, executor: Option<&dyn HostToolExecutor>) -> Result<String, String> {
+    const PURE: &str = "wasm32-areev";
+    let Some(pin) = pin else {
+        return Err("the candidate manifest pinned nothing for this node".into());
+    };
+    if pin.executor != "host" {
+        return Err(format!("executes as {}, not as a bound host tool", pin.executor));
+    }
+    let Some(uri) = pin.executor_uri.as_deref() else {
+        return Err("binds no cas:// code blob, so there is nothing to re-execute".into());
+    };
+    match pin.runtime.as_deref() {
+        Some(PURE) => {}
+        Some("wasm32-areev-io") => {
+            return Err(
+                "declares runtime \"wasm32-areev-io\" — a capability module reaches the network \
+                 through the broker, so re-running it would be an external effect"
+                    .into(),
+            )
+        }
+        other => {
+            return Err(format!(
+                "declares runtime {:?} — only a pure wasm32-areev module is deterministic by \
+                 construction, so nothing else is re-executed",
+                other.unwrap_or("native")
+            ))
+        }
+    }
+    if pin.capabilities.is_some() {
+        return Err("pins a capability declaration, which a pure module does not have".into());
+    }
+    let Some(executor) = executor else {
+        return Err("this rehearsal was given no host executor".into());
+    };
+    if !executor.code_allowed(&pin.tool_hash, uri) {
+        return Err(format!(
+            "{uri} is not pinned by this host — pin it with --allow-executor {}",
+            crate::executor::strip_cas(uri)
+        ));
+    }
+    if !executor.runtime_supported(PURE) {
+        return Err(format!(
+            "this host cannot dispatch {PURE:?} — configure the sandbox with --sandbox-cmd"
+        ));
+    }
+    Ok(uri.to_string())
 }
 
 /// Read a Workflow out of a draft body, STRICTLY — a malformed edge fails
@@ -214,7 +468,28 @@ impl Runner {
         run_ids: &[String],
         candidate: &PlanCandidate,
     ) -> Result<ShadowPlanReport, RunError> {
-        shadow_plan_over(&self.facade, &self.ns, &self.principal, run_ids, candidate)
+        self.shadow_plan_with(run_ids, candidate, &ShadowOptions::default())
+    }
+
+    /// [`Runner::shadow_plan`] under [`ShadowOptions`] — `reexecute:
+    /// Reexecute::Pure` re-runs the candidate's pure `wasm32-areev` modules
+    /// through THIS runner's executor, so the host's `--allow-executor` pins
+    /// and `--sandbox-cmd` are what decide whether anything runs at all.
+    pub fn shadow_plan_with(
+        &self,
+        run_ids: &[String],
+        candidate: &PlanCandidate,
+        opts: &ShadowOptions,
+    ) -> Result<ShadowPlanReport, RunError> {
+        let runs: Vec<(String, String)> =
+            run_ids.iter().map(|id| (id.clone(), self.ns.clone())).collect();
+        ShadowCtx {
+            facade: &self.facade,
+            principal: &self.principal,
+            executor: Some(&self.executor),
+            opts: *opts,
+        }
+        .shadow_plan(&runs, candidate)
     }
 }
 
@@ -278,13 +553,31 @@ pub fn shadow_plan_scoped(
     runs: &[(String, String)],
     candidate: &PlanCandidate,
 ) -> Result<ShadowPlanReport, RunError> {
-    let ctx = ShadowCtx { facade, principal };
-    ctx.shadow_plan(runs, candidate)
+    ShadowCtx { facade, principal, executor: None, opts: ShadowOptions::default() }
+        .shadow_plan(runs, candidate)
+}
+
+/// [`shadow_plan_scoped`] under options, for a host that holds an executor
+/// but no [`Runner`] — `executor` is what `reexecute: "pure"` dispatches
+/// through, and `None` makes every node report as `not_reexecuted`.
+pub fn shadow_plan_scoped_with(
+    facade: &areev_cal::AreevFacade,
+    principal: &str,
+    runs: &[(String, String)],
+    candidate: &PlanCandidate,
+    opts: &ShadowOptions,
+    executor: Option<&Arc<dyn HostToolExecutor>>,
+) -> Result<ShadowPlanReport, RunError> {
+    ShadowCtx { facade, principal, executor, opts: *opts }.shadow_plan(runs, candidate)
 }
 
 struct ShadowCtx<'a> {
     facade: &'a areev_cal::AreevFacade,
     principal: &'a str,
+    /// The host's executor, present only on the paths that hold one. Pure
+    /// re-execution dispatches through it; every other mode never touches it.
+    executor: Option<&'a Arc<dyn HostToolExecutor>>,
+    opts: ShadowOptions,
 }
 
 impl ShadowCtx<'_> {
@@ -315,9 +608,15 @@ impl ShadowCtx<'_> {
             out_of_support_fraction: 0.0,
             effect_dispatches: 0,
             writes: 0,
+            reexecute: (self.opts.reexecute != Reexecute::Off)
+                .then(|| self.opts.reexecute.as_str().to_string()),
+            sandbox_executions: (self.opts.reexecute != Reexecute::Off).then_some(0),
         };
         for (run_id, ns) in runs {
             let row = self.shadow_one(run_id, ns, &plan, &cand_hash, draft_fields)?;
+            if let (Some(total), Some(n)) = (report.sandbox_executions.as_mut(), row.sandbox_executions) {
+                *total += n;
+            }
             let t = &mut report.totals;
             t.runs += 1;
             match row.verdict.as_str() {
@@ -358,6 +657,73 @@ impl ShadowCtx<'_> {
             .to_workflow()
             .map_err(|e| RunError::InvalidPlan { why: e.to_string() })?;
         PlanGraph::build(&wf)
+    }
+
+    /// Run one pure module in the sandbox and shape its answer exactly as the
+    /// live pool does — same `journal_bytes` accounting, same
+    /// `catch_unwind` rule, zero tokens and zero USD (a wasm module buys
+    /// nothing from a provider). The blob is read and digest-verified here,
+    /// through the facade, for the same reason `drive` reads it on the driver
+    /// thread: the executor never touches a store handle.
+    fn run_pure_module(
+        &self,
+        pin: &PinnedTool,
+        uri: &str,
+        key: &JournalKey,
+        input: &Value,
+    ) -> Result<EffectOutcome, RunError> {
+        let bytes = self
+            .facade
+            .with_store(|m| m.get_blob(uri))
+            .map_err(|e| RunError::Storage { detail: e.to_string() })?;
+        let code = PreparedCode {
+            uri: uri.to_string(),
+            bytes,
+            runtime: pin.runtime.clone(),
+            limits: pin.runtime_limits.clone(),
+            // A pure module declares none, and `pure_module` refused the pin
+            // if it did — restating it here means no path can hand the
+            // sandbox `--allow-fetch` off a rehearsal.
+            capabilities: None,
+        };
+        let idem = idempotency_key(key, input);
+        let executor = self.executor.expect("pure_module proves the executor is there");
+        let executed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            executor.execute_code(&pin.tool_name, &pin.tool_hash, &code, input, &idem)
+        }))
+        .unwrap_or_else(|p| {
+            let msg = p
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| p.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "executor panicked".into());
+            ExecResult::Err {
+                cause: FailCause::ExecutorError,
+                detail: format!("executor panicked: {msg}"),
+            }
+        });
+        Ok(match executed {
+            ExecResult::Ok(result) => {
+                let journal_bytes = crate::journal::outcome_journal_bytes(&EffectOutcome::Completed {
+                    result: result.clone(),
+                    journal_bytes: 0,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    usd_micros: 0,
+                });
+                EffectOutcome::Completed {
+                    result,
+                    journal_bytes,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    usd_micros: 0,
+                }
+            }
+            ExecResult::Err { cause, detail } => {
+                let journal_bytes = detail.len() as u64;
+                EffectOutcome::Failed { cause, detail, journal_bytes }
+            }
+        })
     }
 
     fn shadow_one(
@@ -430,13 +796,20 @@ impl ShadowCtx<'_> {
             llm_context_tokens: manifest.llm_context_tokens,
         };
 
-        // The incumbent's side of the ledger.
-        let incumbent_outcome = view
+        // The incumbent's side of the ledger. Deserialized ONCE: the terminal
+        // label and the terminal merged context both come off it, and a
+        // second parse of the same checkpoint could disagree with the first.
+        let incumbent_state = view
             .checkpoints
             .last()
-            .and_then(|c| serde_json::from_value::<SchedulerState>(c.scheduler.clone()).ok())
+            .and_then(|c| serde_json::from_value::<SchedulerState>(c.scheduler.clone()).ok());
+        let incumbent_outcome = incumbent_state
+            .as_ref()
             .map(|s| outcome_label(s.outcome()))
             .unwrap_or_else(|| "open".into());
+        let incumbent_context =
+            incumbent_state.as_ref().map(|s| s.context.clone()).unwrap_or(Value::Null);
+        let reexec = self.opts.reexecute == Reexecute::Pure;
         let mut incumbent_spent = ShadowSpend::default();
         for e in view.entries.values() {
             if let Some((_, o)) = &e.result {
@@ -474,6 +847,12 @@ impl ShadowCtx<'_> {
             identity: identity_plan.then_some(ShadowIdentity { checkpoints_compared: 0, consistent: true }),
             verdict: "out_of_support".into(),
             note: None,
+            reexecuted: reexec.then(Vec::new),
+            not_reexecuted: reexec.then(Vec::new),
+            sandbox_executions: reexec.then_some(0),
+            changed_keys: None,
+            added_keys: None,
+            removed_keys: None,
         };
         if view.checkpoints.is_empty() {
             row.note = Some("no checkpoints — nothing to rehearse".into());
@@ -509,7 +888,39 @@ impl ShadowCtx<'_> {
             for cmd in out.commands {
                 match cmd {
                     Command::WriteIntent { .. } | Command::Finish { .. } => {}
-                    Command::Dispatch { key, .. } => {
+                    Command::Dispatch { key, input, .. } => {
+                        // #277: under `reexecute: "pure"` a bound node whose
+                        // CANDIDATE Definition is a pure wasm32-areev module
+                        // runs, on the input the replayed state just built,
+                        // instead of being answered from the journal — which
+                        // is the only way a version whose plan is unchanged
+                        // and whose tool bytes are not can rehearse as
+                        // anything but `same`. It consults no journal row, so
+                        // it is never out of support and never `replayed`.
+                        let ran = if reexec {
+                            let pin = manifest.pinned.iter().find(|p| p.node == key.node);
+                            match pure_module(pin, self.executor.map(|e| e.as_ref())) {
+                                Ok(uri) => {
+                                    let pin = pin.expect("pure_module proves the pin is there");
+                                    let outcome = self.run_pure_module(pin, &uri, &key, &input)?;
+                                    note_node(row.reexecuted.as_mut(), &key.node);
+                                    if let Some(n) = row.sandbox_executions.as_mut() {
+                                        *n += 1;
+                                    }
+                                    Some(outcome)
+                                }
+                                Err(why) => {
+                                    note_refusal(row.not_reexecuted.as_mut(), &key.node, why);
+                                    None
+                                }
+                            }
+                        } else {
+                            None
+                        };
+                        if let Some(outcome) = ran {
+                            resolved.push(EventIn::EffectResolved { key, outcome });
+                            continue;
+                        }
                         match view.entries.get(&key).and_then(|e| e.result.as_ref().map(|(_, o)| o.clone())) {
                             Some(outcome) => {
                                 if consumed.insert(key.clone()) {
@@ -621,6 +1032,19 @@ impl ShadowCtx<'_> {
         } else {
             "out_of_support".into()
         };
+        // The answer a buyer is shown before an upgrade: WHICH fields of the
+        // terminal state the candidate would have produced differently. Only
+        // when the replay actually reached a terminal state — a context
+        // abandoned mid-run diffs as wholesale removal, which reads as a
+        // finding and is not one.
+        if reexec && row.out_of_support.is_empty() && st.is_terminal() {
+            let mut paths = KeyPaths::default();
+            diff_key_paths(&incumbent_context, &st.context, "", &mut paths);
+            let paths = paths.sorted();
+            row.changed_keys = Some(paths.changed);
+            row.added_keys = Some(paths.added);
+            row.removed_keys = Some(paths.removed);
+        }
         let score = |label: &str| if label == "completed" { 1 } else { 0 };
         row.verdict = if !row.out_of_support.is_empty() {
             "out_of_support".into()

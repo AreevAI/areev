@@ -36,6 +36,50 @@ fn plan_candidate(plan: Option<String>, plan_body: Option<String>) -> PyResult<O
     }
 }
 
+/// The `options` object a `run_shadow` takes (#277): the re-execution mode
+/// plus the host pins a pure re-execution needs, since re-running a
+/// candidate's module is the same act as running it — the authorization has
+/// to come from the host, never from the file.
+///
+/// snake_case is canonical (the report's own fields are), and the camelCase
+/// spelling is accepted too, so ONE documented object works from Python and
+/// from Node rather than two that drift.
+fn shadow_options(options: Option<String>) -> PyResult<(areev_run::ShadowOptions, ExecutorPin)> {
+    let Some(text) = options else {
+        return Ok((areev_run::ShadowOptions::default(), ExecutorPin::default()));
+    };
+    let v: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| err(format!("options: {e}")))?;
+    let obj = v.as_object().ok_or_else(|| err("options must be a JSON object"))?;
+    let pick = |snake: &str, camel: &str| obj.get(snake).or_else(|| obj.get(camel));
+    let string = |snake: &str, camel: &str| -> PyResult<Option<String>> {
+        match pick(snake, camel) {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(serde_json::Value::String(s)) => Ok(Some(s.clone())),
+            Some(_) => Err(err(format!("options.{snake} must be a string"))),
+        }
+    };
+    let reexecute = match string("reexecute", "reexecute")? {
+        None => areev_run::Reexecute::Off,
+        Some(mode) => areev_run::Reexecute::parse(&mode)
+            .ok_or_else(|| err(format!("options.reexecute takes 'pure' or 'off', not {mode:?}")))?,
+    };
+    let pin = ExecutorPin {
+        allow_executor: string("allow_executor", "allowExecutor")?,
+        executor_cache: string("executor_cache", "executorCache")?,
+        sandbox_cmd: string("sandbox_cmd", "sandboxCmd")?,
+        executor_timeout_secs: match pick("executor_timeout_secs", "executorTimeoutSecs") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(n) => Some(
+                n.as_u64()
+                    .ok_or_else(|| err("options.executor_timeout_secs must be a whole number"))?,
+            ),
+        },
+        tool_env: None,
+    };
+    Ok((areev_run::ShadowOptions::reexecute(reexecute), pin))
+}
+
 fn parse_duration_ms(s: &str) -> Option<i64> {
     let s = s.trim();
     let split = s.find(|c: char| !c.is_ascii_digit())?;
@@ -1899,21 +1943,37 @@ impl Areev {
     /// JSON object string) the same runs are instead re-driven under that
     /// CANDIDATE plan — the plan-change rehearsal: per run, the outcome under
     /// incumbent vs candidate, effects replayed and out of support, spend.
-    #[pyo3(signature = (run_ids, plan = None, plan_body = None))]
+    ///
+    /// `options` is a JSON object (#277). `{"reexecute": "pure"}` rehearses a
+    /// candidate VERSION rather than only a candidate plan: a bound node whose
+    /// candidate Definition is a pure `wasm32-areev` module is RE-RUN in the
+    /// sandbox on the replayed input instead of being answered from the
+    /// journal, so a patch that changes only a tool's bytes stops rehearsing
+    /// as `same`. That needs the same host authorization a run needs, carried
+    /// in the same object: `allow_executor`, `sandbox_cmd`, `executor_cache`,
+    /// `executor_timeout_secs`. Everything else still answers from the
+    /// journal and is reported under `not_reexecuted` with the reason.
+    #[pyo3(signature = (run_ids, plan = None, plan_body = None, options = None))]
     fn run_shadow(
         &self,
         py: Python<'_>,
         run_ids: Vec<String>,
         plan: Option<String>,
         plan_body: Option<String>,
+        options: Option<String>,
     ) -> PyResult<String> {
-        let runner = self.runner(None, None);
+        let (opts, pin) = shadow_options(options)?;
+        let runner = self.runner_pinned(None, None, pin, None, None);
         let candidate = plan_candidate(plan, plan_body)?;
         match candidate {
             Some(c) => {
-                let report = py.detach(|| runner.shadow_plan(&run_ids, &c)).map_err(err)?;
+                let report =
+                    py.detach(|| runner.shadow_plan_with(&run_ids, &c, &opts)).map_err(err)?;
                 serde_json::to_string(&report).map_err(|e| err(e.to_string()))
             }
+            None if opts.reexecute != areev_run::Reexecute::Off => Err(err(
+                "options.reexecute needs a candidate: pass plan or plan_body",
+            )),
             None => {
                 let report = py.detach(|| runner.shadow_eval(&run_ids));
                 serde_json::to_string(&report).map_err(|e| err(e.to_string()))

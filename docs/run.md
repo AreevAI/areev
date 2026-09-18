@@ -1070,12 +1070,70 @@ live driver saw is fed at the same superstep). The precedent is Dream-RSI
 (arXiv 2609.14858 §3): a completed discovery tree is a replay simulator, and
 replay can only answer effects it recorded.
 
+### Rehearsing a candidate *version* (`--reexecute pure`)
+
+Answering every effect from the journal by its key means the **binding is
+never consulted** — so a candidate that changes nothing but a tool's *bytes*
+(the same node, rebound to a Definition whose `executor_uri` names a
+different blob) replays the old blob's result and rehearses as `same` by
+construction. That is the patch class most likely to change an answer, and
+`--reexecute pure` is the opt-in that closes it:
+
+```bash
+areev run shadow --runs a,b,c --plan-file draft.json --reexecute pure \
+  --allow-executor <ADDR>,<ADDR> --sandbox-cmd areev-sandbox
+```
+
+A bound node whose **candidate** Definition is a `wasm32-areev` module — pure
+Tier C, whose frozen import set is exactly `areev::emit`: no clock, no
+filesystem, no sockets — is re-run in the sandbox under its pinned `fuel` and
+`max_pages`, on the input the replayed state built, instead of being answered
+from the journal. Everything else is still answered from the journal and
+listed under `not_reexecuted` with the reason: native blobs (a program, not a
+proof), `wasm32-areev-io` (a capability module reaches the network through the
+broker, so re-running it *would* be an external effect), client, abstract,
+subgraph and memory-read nodes, and any address this host has not pinned. The
+host authorization is the same one a run takes and it is checked the same way
+— a rehearsal is the same act of running someone's code, so `--allow-executor`
+and `--sandbox-cmd` are required and an unpinned candidate address is refused
+by name rather than silently run.
+
+The report then adds, per run: `reexecuted` (nodes that ran),
+`not_reexecuted` (`{node, why}`), `sandbox_executions`, and the terminal
+merged-context diff as **key paths only** —
+
+```json
+{ "changed_keys": ["/Amount", "/verdict"], "added_keys": [], "removed_keys": [] }
+```
+
+RFC 6901 pointers, **never values**, so the report can go on a control
+channel that must not carry content. Point the option at the *incumbent*
+plan and the rehearsal is also a verify: the module runs and every checkpoint
+still byte-compares, which is the Tier C table's "re-execution-provable" row
+cashed in rather than asserted — and what makes a reported `changed_keys`
+evidence about the candidate rather than noise about the sandbox. `effect_dispatches` stays `0` and keeps
+meaning *no external effect*: what ran is counted separately as
+`sandbox_executions`, never folded in. `writes` stays `0` too. Without the
+option the report is byte-identical to one taken before the option existed —
+every field above is absent, not empty. The diff is reported only when the
+replay reached a terminal state with nothing out of support; a context
+abandoned mid-run would diff as wholesale removal and read as a finding.
+
+The mode is available on `areev run shadow` and in the bindings
+(`options` / `optionsJson`). It is deliberately **not** on the MCP tool or
+the `/api/run/shadow` endpoint: those are reads served by hosts that hold no
+executor pin, and a read that executes code is not a read.
+
 The same rehearsal is reachable from `areev_run_verify` on MCP (pass `plan`
 and `runs`), from `GET /api/run/shadow?runs=…&plan=…` and `POST
 /api/run/shadow` (which also takes an unstored `plan_body`), from
-`run_shadow(run_ids, plan=…, plan_body=…)` / `runShadow(runIds, plan?,
-planBody?)` in the bindings, and from the Workflows canvas (**Rehearse**
-on a draft, against the last runs of the open plan). It is also what
+`run_shadow(run_ids, plan=…, plan_body=…, options=…)` /
+`runShadow(runIds, plan?, planBody?, optionsJson?)` in the bindings (the
+options object takes `reexecute` plus the pins a pure re-execution needs —
+`allow_executor`, `sandbox_cmd`, `executor_cache`, `executor_timeout_secs`;
+snake_case is canonical, camelCase is accepted), and from the Workflows
+canvas (**Rehearse** on a draft, against the last runs of the open plan). It
+is also what
 [Areev Loop](loop.md) attaches to a `plan_revision` proposal as its `replay`
 block, and what a `plan_replay` policy refuses an applicable revision on —
 see the `plan_replay` policy field there.
@@ -1558,7 +1616,7 @@ The same runtime on every surface — one journal, one set of rules:
 |---|---|
 | CLI | `areev run start/resume/respond/input/cancel/list/inspect/verify/fork/shadow/oversight-report/demo`, plus `areev run-trace` / `areev runs-touching` |
 | MCP | the seven `areev_run_*` tools ([reference](mcp-reference.md)); host tools only via `$AREEV_RUN_TOOL_CMD`; the acting principal is server-bound — `principal`/`responder` are never client-supplied |
-| Python | `db.run_start(workflow, run_id, input_json, tool_cmd, …, allow_executor=…, executor_cache=…, sandbox_cmd=…, executor_timeout_secs=…, on_event=…)`, `run_resume` (same tail), `run_respond(…, responder=…)`, `run_input`, `run_cancel`, `run_verify`, `run_shadow(run_ids, plan=…, plan_body=…)`, `run_fork`, `run_list`, `run_inspect`, `run_oversight_report(run_id=…, plan=…)`, `changes_since` — JSON strings out. `on_event` is a callable taking one JSON string: the same §6.10 line `--events` prints |
+| Python | `db.run_start(workflow, run_id, input_json, tool_cmd, …, allow_executor=…, executor_cache=…, sandbox_cmd=…, executor_timeout_secs=…, on_event=…)`, `run_resume` (same tail), `run_respond(…, responder=…)`, `run_input`, `run_cancel`, `run_verify`, `run_shadow(run_ids, plan=…, plan_body=…, options=…)`, `run_fork`, `run_list`, `run_inspect`, `run_oversight_report(run_id=…, plan=…)`, `changes_since` — JSON strings out. `on_event` is a callable taking one JSON string: the same §6.10 line `--events` prints |
 | Node | `await m.runStart(…, onEvent)` and the same set (`runRespond`, `runInput`, `runFork`, `runInspect`, `runOversightReport`, …) — promises, JSON strings out. `onEvent` is `(event: string) => void`, called from the event bus's own thread |
 | HTTP / console | `GET /api/run/list`, `GET /api/run/inspect`, `POST /api/run/respond` (per-principal credential required), `POST /api/run/cancel`; the console's Runs tab is the approval queue. The console's **Workflows** tab visualizes and edits plans themselves — an editable node/edge graph over the same Workflow grains, built entirely on `/api/browse` and `/api/cal` (`ADD workflow`), no dedicated route. It also draws what a plan does *not* contain: the Trigger grains that point at it (read-only, in their own lane) and, when a run is selected, a status rail per step from that run's journal grains — a client-side join on `mg:step_action:<node>`, not a new endpoint. The **Tools** tab is the other half of that picture: the Tool definitions a node can bind to, each with its schema, locked params and the plans that bind it, plus every execution grain grouped by run. A plan with a bounded-cycle edge or a per-node retry count opens view-only: `ADD`/`SUPERSEDE workflow` has no surface syntax yet to author either (`* N` populates `retries`, not `max_cycles`) — and for the same reason, connecting an edge that would close a cycle in an editable plan is refused rather than silently saved as an unbounded one |
 

@@ -364,8 +364,23 @@ COMMANDS:
            `$inbox`, so a person redirects a running run in band instead of
            through a human-gate ask;
            fork --run-id BASE --as-run NEW [--at N] [--plan HASH]
-           time-travels or migrates a run. `areev run demo` seeds the
-           10-minute proof
+           time-travels or migrates a run;
+           shadow [--runs a,b,c | --last N] [--plan HASH | --plan-file F]
+           [--reexecute pure] rehearses journaled runs. Bare, it re-drives
+           each under its OWN manifest and reports consistency; with a
+           candidate plan it re-drives them under that, answering every
+           effect from the journal — zero dispatches, zero writes — and
+           reports outcome, spend and out-of-support per run.
+           --reexecute pure additionally RE-RUNS the candidate's pure
+           wasm32-areev modules in the sandbox on the replayed input, so a
+           change to a tool's bytes stops rehearsing as `same`; the report
+           then names which terminal state keys moved (changed_keys /
+           added_keys / removed_keys — key paths, never values) and counts
+           sandbox_executions. Native, wasm32-areev-io, client and abstract
+           nodes still answer from the journal and are listed under
+           not_reexecuted with the reason, and a module still runs only if
+           this host --allow-executor pinned it and configured --sandbox-cmd.
+           `areev run demo` seeds the 10-minute proof
   run-trace --run-id ID [--limit N]   what a run recorded, and what it
                                       produced downstream (facts/lessons)
   runs-touching --hash H [--depth N]  which runs produced or refined a grain —
@@ -4485,10 +4500,32 @@ fn run_run(
                 }
                 (None, None) => None,
             };
+            // `--reexecute pure` (#277) rehearses a candidate VERSION rather
+            // than only a candidate plan: a bound node whose candidate
+            // Definition is a pure wasm32-areev module runs in the sandbox on
+            // the replayed input, so a patch that changes only a tool's bytes
+            // stops rehearsing as `same` by construction. Every other node
+            // still answers from the journal, and the module still has to be
+            // --allow-executor pinned with a --sandbox-cmd configured — a
+            // rehearsal is the same act of running someone's code as a run.
+            let reexecute = match flag(flags, "reexecute") {
+                None => areev_run::Reexecute::Off,
+                Some(mode) => areev_run::Reexecute::parse(&mode).ok_or_else(|| {
+                    format!("--reexecute takes 'pure' or 'off', not {mode:?}")
+                })?,
+            };
             if let Some(candidate) = candidate {
-                let report = runner.shadow_plan(&ids, &candidate).map_err(|e| e.to_string())?;
+                let opts = areev_run::ShadowOptions::reexecute(reexecute);
+                let report =
+                    runner.shadow_plan_with(&ids, &candidate, &opts).map_err(|e| e.to_string())?;
                 println!("{}", serde_json::to_string_pretty(&report).unwrap());
                 return Ok(());
+            }
+            if reexecute != areev_run::Reexecute::Off {
+                return Err(
+                    "--reexecute needs a candidate: add --plan HASH or --plan-file draft.json"
+                        .into(),
+                );
             }
             let report = runner.shadow_eval(&ids);
             println!("{}", serde_json::to_string_pretty(&report).unwrap());

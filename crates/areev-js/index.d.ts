@@ -567,8 +567,21 @@ export declare class Areev {
   runCancel(runId: string, because?: string | undefined | null): Promise<string>
   /** Journal-consistent replay; writes nothing. JSON report. */
   runVerify(runId: string): Promise<string>
-  /** Shadow evaluation over journaled runs — zero effect dispatches. */
-  runShadow(runIds: Array<string>, plan?: string | undefined | null, planBody?: string | undefined | null): Promise<string>
+  /**
+   * Shadow evaluation over journaled runs — zero effect dispatches.
+   *
+   * `optionsJson` is a JSON object (#277). `{"reexecute": "pure"}`
+   * rehearses a candidate VERSION rather than only a candidate plan: a
+   * bound node whose candidate Definition is a pure `wasm32-areev` module
+   * is RE-RUN in the sandbox on the replayed input instead of being
+   * answered from the journal, so a patch that changes only a tool's bytes
+   * stops rehearsing as `same`. That needs the same host authorization a
+   * run needs, carried in the same object: `allow_executor` /
+   * `allowExecutor`, `sandbox_cmd`, `executor_cache`,
+   * `executor_timeout_secs`. Everything else still answers from the
+   * journal and is reported under `not_reexecuted` with the reason.
+   */
+  runShadow(runIds: Array<string>, plan?: string | undefined | null, planBody?: string | undefined | null, optionsJson?: string | undefined | null): Promise<string>
   /**
    * §5.4 time-travel fork / migration: seed a new run from a base run's
    * checkpoint (optionally at a specific superstep, optionally onto a new

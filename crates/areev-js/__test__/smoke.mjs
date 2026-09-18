@@ -936,6 +936,18 @@ test('areev run runtime: start, respond as second principal, resume, verify, sha
   assert.equal(shadow.all_consistent, true)
   assert.equal(shadow.effect_dispatches, 0)
 
+  // #277: rehearsing a candidate VERSION. Nothing in this plan is a pure
+  // wasm32-areev module, so nothing re-executes — and the report says so per
+  // node with the reason, rather than quietly doing nothing.
+  const rehearsal = JSON.parse(await m.runShadow(['js-1'], wf, null, '{"reexecute":"pure"}'))
+  assert.equal(rehearsal.reexecute, 'pure')
+  assert.equal(rehearsal.sandbox_executions, 0)
+  assert.equal(rehearsal.effect_dispatches, 0)
+  assert.ok(rehearsal.runs[0].not_reexecuted.length > 0)
+  // The bare shadow is a consistency check, not a rehearsal.
+  await assert.rejects(m.runShadow(['js-1'], null, null, '{"reexecute":"pure"}'), /candidate/)
+  await assert.rejects(m.runShadow(['js-1'], wf, null, '{"reexecute":"sorta"}'), /pure/)
+
   // Inspect: manifest, budgets, phase, spend, pending asks, fork lineage —
   // same report `areev run inspect` prints, now in-process (issue #34).
   const inspected = JSON.parse(await m.runInspect('js-1'))

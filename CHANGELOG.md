@@ -8,6 +8,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Shadow a candidate *version*, not only a candidate plan** (#277).
+  `areev run shadow --reexecute pure` (bindings: `run_shadow(…, options=…)` /
+  `runShadow(…, optionsJson?)`) re-runs a bound node whose **candidate**
+  Definition is a pure `wasm32-areev` module in the sandbox, on the input the
+  replayed state built, instead of answering it from the journal. Until now
+  the rehearsal never consulted the binding, so the patch class most likely to
+  change an answer — a tool's *bytes* — rehearsed as `verdict: "same"` by
+  construction. Only that runtime re-executes, because its frozen import set
+  is exactly `areev::emit` (no clock, no filesystem, no sockets): native
+  blobs, `wasm32-areev-io` (a capability module reaches the network),
+  client/abstract/subgraph/memory nodes and any address this host has not
+  `--allow-executor` pinned still answer from the journal and are reported
+  under `not_reexecuted` with the reason. The report adds `reexecuted`,
+  `not_reexecuted`, `sandbox_executions`, and the terminal merged-context diff
+  as **key paths only** — `changed_keys` / `added_keys` / `removed_keys`, RFC
+  6901 pointers, never values — so it is safe on a control channel that must
+  not carry content. `effect_dispatches` stays `0` and keeps meaning *no
+  external effect*; `writes` stays `0`. Without the option the report is
+  byte-identical to before. The mode is not on the MCP tool or
+  `/api/run/shadow`: those are reads served by hosts that hold no executor
+  pin. `docs/run.md`, "Rehearsing a candidate version".
 - **A run can read its own memory: plan-declared `reads`** (#255). A Workflow
   grain's `reads` field names, per node, an `entity_at` (`subject`, `relation`,
   `at`, `axis`) or a `related` walk against the run's own namespace or a dotted

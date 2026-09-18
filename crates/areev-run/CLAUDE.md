@@ -57,6 +57,67 @@ time-travel fork the span back to the base is lineage, not downtime. Divergence 
 (`diff_fields`). Parked spans replay by feeding the stored close reading
 before `ResponseSettled` — see run-core's wall/elapsed pin for why.
 
+## Shadow (`shadow.rs`) — and re-executing a candidate VERSION (#277)
+
+`shadow_plan` re-drives journaled runs under a CANDIDATE plan, answering
+every effect from the journal by its exact `JournalKey`. That is also its
+blind spot, and it is structural rather than accidental: **the binding is
+never consulted**, so a candidate that changes nothing but a tool's *bytes* —
+the same node rebound to a Definition whose `executor_uri` names a different
+blob — replays the old blob's result and scores `same`. The patch class most
+likely to change an answer was the one class replay could not see.
+
+`ShadowOptions { reexecute: Reexecute::Pure }` closes it, and the eligibility
+rule carries the whole safety argument: only a bound **host** node whose
+CANDIDATE pin declares `wasm32-areev` re-executes. That runtime is pure Tier
+C — the frozen import set is exactly `areev::emit`, so no clock, no
+filesystem, no sockets — which is why running one is not an external effect
+and `effect_dispatches: 0` keeps its meaning. What ran is counted separately
+as `sandbox_executions` and never folded in. Every other node still answers
+from the journal and lands in `not_reexecuted` **with a reason**, because
+"I asked for re-execution and got `sandbox_executions: 0`" has four different
+causes (unpinned address, no `--sandbox-cmd`, a native or `-io` runtime, a
+node that is not a bound host tool) that need four different fixes.
+
+- **`wasm32-areev-io` is excluded on purpose, not by omission.** It is the
+  same isolation with one more gate (`areev::fetch`, answered by the
+  credential broker), which makes it deterministic *modulo journaled effects*
+  rather than provable by re-execution — the exact reason #101 gave it a
+  separate runtime name instead of a flag on the first.
+- **The host pin is re-checked here, in full.** `pure_module` runs
+  `code_allowed` and `runtime_supported` exactly as `Runner::start` does. A
+  rehearsal is the same act of running someone else's code as a run, so it is
+  not a weaker place to apply "the declaration replicates, the authorization
+  to execute never does". `capabilities` is forced to `None` on the
+  `PreparedCode` as well, so no path can hand the sandbox `--allow-fetch` off
+  a rehearsal.
+- **A re-executed node consults no journal row**, so it is never `replayed`,
+  never `out_of_support`, and contributes nothing to `candidate_spent` (a
+  wasm module buys nothing from a provider). `journal_bytes` is computed with
+  `journal::outcome_journal_bytes`, the same call the pool makes, so an
+  identity rehearsal still byte-compares.
+- **The diff is key paths, never values** (`changed_keys` / `added_keys` /
+  `removed_keys`, RFC 6901). The report has to be safe on a control channel
+  that must not carry content — that is what Areev Cloud puts an upgrade
+  decision on. Objects are descended; arrays and scalars compare whole at
+  their own path. It is emitted only when the replay reached a terminal state
+  with nothing out of support: a context abandoned mid-run diffs as wholesale
+  removal and would read as a finding.
+- **Every new field is `Option` + `skip_serializing_if`.** With the mode off
+  the report is byte-identical to the pre-#277 one — pinned by
+  `a_pure_module_rehearses_the_candidate_bytes_and_reports_which_keys_moved`,
+  which asserts the plain report contains none of the new keys AND that it
+  still scores the version change `same` (the defect, kept visible so a
+  regression reads as one).
+- **Surfaces**: `areev run shadow --reexecute pure`, and the bindings'
+  `options` / `optionsJson` object (`reexecute` plus `allow_executor`,
+  `sandbox_cmd`, `executor_cache`, `executor_timeout_secs`; snake_case
+  canonical, camelCase accepted). Deliberately NOT on the MCP tool or
+  `/api/run/shadow`: those are reads served by hosts holding no executor pin,
+  and a read that executes code is not a read. `shadow_plan_scoped` (the
+  loop's substrate adapter) passes no executor, so the mode there reports
+  every node as not re-executed rather than pretending.
+
 ## The clock-reading contract on cancellation
 
 `step()`'s doc comment: "any call that may open or close a superstep

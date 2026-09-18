@@ -1772,6 +1772,65 @@ person or model, and nothing against that host's operator. Rotation is adding
 a key to the document; revocation is removing one, after which its
 attestations read as `unknown key`.
 
+## 26. Rehearse an upgrade against your own runs
+
+Before you move a deployment to a new version of a plan — or of a *tool* —
+replay the runs you already paid for under the candidate, and see what it
+would have answered differently. Nothing is dispatched and nothing is
+written; the runs are read out of the journal.
+
+```bash
+# The plan-shape rehearsal: retries, cycle bounds, edges, conditions.
+areev run shadow --db ops.db --runs job-91,job-92,job-93 \
+  --plan-file candidate-plan.json
+#   -> per run: incumbent vs candidate outcome, supersteps, effects replayed,
+#      spend, verdict same|better|worse|out_of_support; effect_dispatches: 0
+```
+
+That answers by **journal key**, so it never consults the bindings — a
+candidate whose only change is a tool's code scores `same`. To rehearse the
+code too, add `--reexecute pure` and the pins this host would run it under:
+
+```bash
+areev run shadow --db ops.db --last 10 --plan-file candidate-plan.json \
+  --reexecute pure \
+  --allow-executor 9f2c…,4ab1… --sandbox-cmd areev-sandbox
+#   "reexecute": "pure",
+#   "sandbox_executions": 10,
+#   "effect_dispatches": 0,
+#   "runs": [{ "run_id": "job-91",
+#              "reexecuted": ["extract_rows"],
+#              "not_reexecuted": [{"node": "file_to_ledger",
+#                                  "why": "declares runtime \"native\" — …"}],
+#              "changed_keys": ["/Amount"], "added_keys": [], "removed_keys": [] }]
+```
+
+Read that as: *on your last ten jobs, this upgrade would have filed a
+different `Amount` on one of them.* Three things to know before you rely on
+it:
+
+- **Only pure `wasm32-areev` modules re-run.** That runtime's frozen import
+  set is exactly `areev::emit` — no clock, no filesystem, no sockets — which
+  is why running one is not an external effect and `effect_dispatches` stays
+  `0`. Native blobs, `wasm32-areev-io` capability modules, client and
+  abstract nodes still answer from the journal and appear under
+  `not_reexecuted` **with the reason**, so `sandbox_executions: 0` is never
+  a mystery.
+- **You must pin the candidate's address.** Re-running a module is running
+  code, so `--allow-executor` and `--sandbox-cmd` are required exactly as
+  they are for `areev run start`; an unpinned candidate is reported by name
+  with the pin to add, not run.
+- **The diff is key paths, never values** (`changed_keys` and friends are RFC
+  6901 pointers), so the report is safe to ship to a control plane that must
+  not carry customer content.
+
+The same rehearsal is in the bindings —
+`db.run_shadow(run_ids, plan_body=…, options='{"reexecute": "pure", …}')` and
+`await m.runShadow(runIds, null, planBody, optionsJson)`. It is deliberately
+absent from the MCP tool and `/api/run/shadow`: those are reads, and a read
+that executes code is not a read. Full reference:
+[`run.md`](run.md#verify-and-shadow).
+
 ## See also
 
 - [`../ARCHITECTURE.md`](../ARCHITECTURE.md) — how Areev is built

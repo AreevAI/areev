@@ -323,3 +323,323 @@ fn a_canceled_run_shadows_as_canceled_under_a_candidate() {
     assert_eq!((r.incumbent_outcome.as_str(), r.candidate_outcome.as_str(), r.verdict.as_str()), ("canceled", "canceled", "same"), "{r:?}");
     let _ = Mutex::new(());
 }
+
+// ---- #277: shadowing a candidate VERSION, not only a candidate plan --------
+//
+// Answering every effect from the journal by its key means the binding is
+// never consulted — so a candidate that rebinds one node to a Definition
+// carrying DIFFERENT BYTES replays the old bytes' result and rehearses as
+// `same`. `reexecute: "pure"` closes that for the one class of tool where
+// re-running is provably free of external effect: a `wasm32-areev` module,
+// whose frozen import set is exactly `areev::emit`.
+//
+// The sandbox here is a shell script standing in for `areev-sandbox`, the
+// same fixture `codeexec_tests.rs` uses: what is under test is the
+// rehearsal's plumbing — which node runs, which is answered from the
+// journal, and what the report says changed — not wasmtime.
+
+/// A rig with blobs and a sandbox.
+struct CodeFx {
+    _dir: TempDir,
+    dir: std::path::PathBuf,
+    facade: Arc<AreevFacade>,
+}
+
+#[cfg(unix)]
+impl CodeFx {
+    fn new() -> Self {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+        let m = Areev::open(dir.path().join("m.db").to_str().unwrap()).unwrap();
+        CodeFx { _dir: dir, dir: path, facade: Arc::new(AreevFacade::new(m)) }
+    }
+
+    fn put_blob(&self, bytes: &[u8]) -> String {
+        self.facade.with_store(|m| m.put_blob(bytes)).unwrap()
+    }
+
+    /// A `file` Definition naming `uri`, optionally under a declared runtime.
+    /// `created_at` is bumped per version so two Definitions of one name are
+    /// two grains.
+    fn def(&self, uri: &str, runtime: Option<&str>, caps: Option<Value>, at: i64) -> String {
+        let mut def = Tool::new("file")
+            .kind(ToolKind::Definition)
+            .tool_description("reads a total off a document")
+            .executor_uri(uri)
+            .created_at(at)
+            .namespace("ops");
+        if let Some(rt) = runtime {
+            def = def.runtime(rt).runtime_limits(json!({"fuel": 5000, "max_pages": 64}));
+        }
+        if let Some(c) = caps {
+            def = def.capabilities(c);
+        }
+        self.facade.with_store(|m| m.add(&def)).unwrap().to_hex()
+    }
+
+    fn plan(&self, def_hex: &str) -> Hash {
+        let wf = Workflow::new(vec!["file".into()])
+            .bind("file", def_hex)
+            .created_at(600)
+            .namespace("ops");
+        self.facade.with_store(|m| m.add(&wf)).unwrap()
+    }
+
+    fn body(&self, def_hex: &str) -> Map<String, Value> {
+        let mut m = Map::new();
+        m.insert("nodes".into(), json!(["file"]));
+        m.insert("edges".into(), json!([]));
+        m.insert("bindings".into(), json!({"file": def_hex}));
+        m
+    }
+
+    /// A shell script standing in for `areev-sandbox`: argv is
+    /// `--module PATH [--fuel N] [--max-pages N]`, so `$2` is the blob, whose
+    /// bytes it reports as the node's `total`.
+    fn sandbox(&self) -> std::path::PathBuf {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        let path = self.dir.join("fake-sandbox.sh");
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(b"#!/bin/sh\nprintf '{\"total\":%s}' \"$(cat \"$2\")\"\n").unwrap();
+        let mut perm = f.metadata().unwrap().permissions();
+        perm.set_mode(0o700);
+        f.set_permissions(perm).unwrap();
+        path
+    }
+
+    fn runner(&self, exec: Arc<dyn HostToolExecutor>) -> Runner {
+        Runner {
+            facade: Arc::clone(&self.facade),
+            clock: Arc::new(ScriptedClock::new(
+                (0..400).map(|i| 1_757_000_000_000 + i * 10).collect(),
+            )),
+            executor: exec,
+            llm: None,
+            observer: None,
+            ns: "ops".into(),
+            principal: "user:runner".into(),
+        }
+    }
+}
+
+/// The ticket's shape: one node, one plan, two module versions. Without the
+/// option the rehearsal cannot see the difference; with it, the report names
+/// the state key that moved — and names only the key, never the value.
+#[cfg(unix)]
+#[test]
+fn a_pure_module_rehearses_the_candidate_bytes_and_reports_which_keys_moved() {
+    let fx = CodeFx::new();
+    let a = fx.put_blob(b"1");
+    let b = fx.put_blob(b"2");
+    let v1 = fx.def(&a, Some("wasm32-areev"), None, 500);
+    let v2 = fx.def(&b, Some("wasm32-areev"), None, 501);
+    let plan = fx.plan(&v1);
+    let exec = areev_run::CodeExecutor::new(Exec::new(0, 1))
+        .allow(&a)
+        .allow(&b)
+        .cache_dir(fx.dir.join("cache"))
+        .sandbox_cmd(fx.sandbox().to_str().unwrap());
+    let runner = fx.runner(Arc::new(exec));
+    assert_eq!(run(&runner, &plan, "r1"), RunOutcome::Completed);
+    let ops = fx.facade.with_store(|m| m.stats()).unwrap().ops;
+
+    // Today's answer: the binding is never consulted, so the version change
+    // is invisible. This is the defect, pinned so a regression reads as one.
+    let plain = runner.shadow_plan(&["r1".into()], &PlanCandidate::Body(fx.body(&v2))).unwrap();
+    assert_eq!((plain.runs[0].verdict.as_str(), plain.runs[0].effects_replayed), ("same", 1));
+    let json = serde_json::to_string(&plain).unwrap();
+    for absent in ["reexecut", "sandbox_executions", "changed_keys", "added_keys", "removed_keys"] {
+        assert!(!json.contains(absent), "the default report must not grow a field: {json}");
+    }
+
+    let report = runner
+        .shadow_plan_with(
+            &["r1".into()],
+            &PlanCandidate::Body(fx.body(&v2)),
+            &areev_run::ShadowOptions::reexecute(areev_run::Reexecute::Pure),
+        )
+        .unwrap();
+    let r = &report.runs[0];
+    assert_eq!(r.candidate_outcome, "completed", "{r:?}");
+    assert_eq!(r.reexecuted.as_deref(), Some(&["file".to_string()][..]), "{r:?}");
+    assert_eq!(r.not_reexecuted.as_ref().map(Vec::len), Some(0), "{r:?}");
+    assert_eq!(r.sandbox_executions, Some(1));
+    assert_eq!(r.effects_replayed, 0, "the node ran; no journal row was consumed: {r:?}");
+    assert_eq!(r.changed_keys.as_deref(), Some(&["/total".to_string()][..]), "{r:?}");
+    assert_eq!(r.added_keys.as_ref().map(Vec::len), Some(0));
+    assert_eq!(r.removed_keys.as_ref().map(Vec::len), Some(0));
+    assert_eq!(report.sandbox_executions, Some(1));
+    assert_eq!(report.reexecute.as_deref(), Some("pure"));
+    assert_eq!((report.effect_dispatches, report.writes), (0, 0));
+    // Key paths only: the values 1 and 2 are nowhere in the artifact.
+    let json = serde_json::to_string(&report).unwrap();
+    assert!(json.contains("\"changed_keys\":[\"/total\"]"), "{json}");
+    assert!(!json.contains("\"total\":1") && !json.contains("\"total\":2"), "{json}");
+    assert_eq!(fx.facade.with_store(|m| m.stats()).unwrap().ops, ops, "a rehearsal writes nothing");
+
+    // Re-running the SAME module version changes nothing, which is what makes
+    // a reported change evidence rather than noise.
+    let same = runner
+        .shadow_plan_with(
+            &["r1".into()],
+            &PlanCandidate::Body(fx.body(&v1)),
+            &areev_run::ShadowOptions::reexecute(areev_run::Reexecute::Pure),
+        )
+        .unwrap();
+    assert_eq!(same.runs[0].changed_keys.as_ref().map(Vec::len), Some(0), "{:?}", same.runs[0]);
+    assert_eq!(same.runs[0].sandbox_executions, Some(1));
+}
+
+/// A `native` blob is the ticket's second acceptance case: it is a program,
+/// not a proof — it may read a clock, a file or a socket — so it is answered
+/// from the journal and says so.
+#[cfg(unix)]
+#[test]
+fn a_native_tool_is_answered_from_the_journal_and_listed_as_not_reexecuted() {
+    let fx = CodeFx::new();
+    let a = fx.put_blob(b"#!/bin/sh\necho '{\"total\":1}'\n");
+    let b = fx.put_blob(b"#!/bin/sh\necho '{\"total\":9}'\n");
+    let v1 = fx.def(&a, None, None, 500);
+    let v2 = fx.def(&b, None, None, 501);
+    let plan = fx.plan(&v1);
+    let exec = areev_run::CodeExecutor::new(Exec::new(0, 1))
+        .allow(&a)
+        .allow(&b)
+        .cache_dir(fx.dir.join("cache"))
+        .sandbox_cmd(fx.sandbox().to_str().unwrap());
+    let runner = fx.runner(Arc::new(exec));
+    assert_eq!(run(&runner, &plan, "r1"), RunOutcome::Completed);
+
+    let report = runner
+        .shadow_plan_with(
+            &["r1".into()],
+            &PlanCandidate::Body(fx.body(&v2)),
+            &areev_run::ShadowOptions::reexecute(areev_run::Reexecute::Pure),
+        )
+        .unwrap();
+    let r = &report.runs[0];
+    assert_eq!(r.reexecuted.as_ref().map(Vec::len), Some(0), "{r:?}");
+    assert_eq!(r.sandbox_executions, Some(0));
+    assert_eq!(report.sandbox_executions, Some(0));
+    assert_eq!(r.effects_replayed, 1, "the journal answered it: {r:?}");
+    let refused = r.not_reexecuted.as_ref().expect("the mode reports its refusals");
+    assert_eq!(refused.len(), 1);
+    assert_eq!(refused[0].node, "file");
+    assert!(refused[0].why.contains("native"), "{:?}", refused[0]);
+    // Answered from the journal ⇒ the terminal context is the incumbent's.
+    assert_eq!(r.changed_keys.as_ref().map(Vec::len), Some(0), "{r:?}");
+    assert_eq!(r.verdict, "same");
+}
+
+/// The two fail-closed arms, both host-side: an address this host never
+/// pinned, and a capability runtime. The declaration replicates; the
+/// authorization to execute never does — and a rehearsal is the same act of
+/// running someone's code as a run, so it is not a weaker place to say so.
+#[cfg(unix)]
+#[test]
+fn an_unpinned_or_capability_candidate_is_never_reexecuted() {
+    let fx = CodeFx::new();
+    let a = fx.put_blob(b"1");
+    let b = fx.put_blob(b"2");
+    let v1 = fx.def(&a, Some("wasm32-areev"), None, 500);
+    let v2 = fx.def(&b, Some("wasm32-areev"), None, 501);
+    let io = fx.def(
+        &b,
+        Some("wasm32-areev-io"),
+        Some(json!([{"http": {"hosts": ["https://api.example.com"], "methods": ["GET"]}}])),
+        502,
+    );
+    let plan = fx.plan(&v1);
+    // Only v1's address is pinned: the candidate's bytes are code this host
+    // never vouched for.
+    let exec = areev_run::CodeExecutor::new(Exec::new(0, 1))
+        .allow(&a)
+        .cache_dir(fx.dir.join("cache"))
+        .sandbox_cmd(fx.sandbox().to_str().unwrap());
+    let runner = fx.runner(Arc::new(exec));
+    assert_eq!(run(&runner, &plan, "r1"), RunOutcome::Completed);
+    let opts = areev_run::ShadowOptions::reexecute(areev_run::Reexecute::Pure);
+
+    let report = runner
+        .shadow_plan_with(&["r1".into()], &PlanCandidate::Body(fx.body(&v2)), &opts)
+        .unwrap();
+    let why = &report.runs[0].not_reexecuted.as_ref().unwrap()[0].why;
+    assert!(why.contains("not pinned by this host"), "{why}");
+    assert!(why.contains("--allow-executor"), "the fix must be a copy-paste: {why}");
+    assert_eq!(report.sandbox_executions, Some(0));
+    assert_eq!(report.runs[0].effects_replayed, 1, "still answered from the journal");
+
+    let report = runner
+        .shadow_plan_with(&["r1".into()], &PlanCandidate::Body(fx.body(&io)), &opts)
+        .unwrap();
+    let why = &report.runs[0].not_reexecuted.as_ref().unwrap()[0].why;
+    assert!(why.contains("wasm32-areev-io"), "{why}");
+    assert_eq!(report.sandbox_executions, Some(0));
+}
+
+/// A rehearsal with no executor behind it (the loop's substrate adapter, the
+/// console) reports every node as not re-executed rather than pretending the
+/// mode did something.
+#[cfg(unix)]
+#[test]
+fn a_rehearsal_with_no_executor_reexecutes_nothing_and_says_why() {
+    let fx = CodeFx::new();
+    let a = fx.put_blob(b"1");
+    let v1 = fx.def(&a, Some("wasm32-areev"), None, 500);
+    let plan = fx.plan(&v1);
+    let exec = areev_run::CodeExecutor::new(Exec::new(0, 1))
+        .allow(&a)
+        .cache_dir(fx.dir.join("cache"))
+        .sandbox_cmd(fx.sandbox().to_str().unwrap());
+    let runner = fx.runner(Arc::new(exec));
+    assert_eq!(run(&runner, &plan, "r1"), RunOutcome::Completed);
+
+    let report = areev_run::shadow::shadow_plan_scoped_with(
+        &fx.facade,
+        "user:runner",
+        &[("r1".to_string(), "ops".to_string())],
+        &PlanCandidate::Body(fx.body(&v1)),
+        &areev_run::ShadowOptions::reexecute(areev_run::Reexecute::Pure),
+        None,
+    )
+    .unwrap();
+    let why = &report.runs[0].not_reexecuted.as_ref().unwrap()[0].why;
+    assert!(why.contains("no host executor"), "{why}");
+    assert_eq!(report.sandbox_executions, Some(0));
+}
+
+/// Under the incumbent plan itself, pure re-execution is ALSO a verify: the
+/// module actually runs and every checkpoint still byte-compares. That is the
+/// `wasm32-areev` row of the Tier C table ("re-execution-provable") cashed in
+/// rather than asserted — and it is what makes a reported `changed_keys`
+/// evidence about the candidate rather than noise about the sandbox.
+#[cfg(unix)]
+#[test]
+fn an_identity_rehearsal_under_pure_reexecution_still_byte_compares() {
+    let fx = CodeFx::new();
+    let a = fx.put_blob(b"1");
+    let v1 = fx.def(&a, Some("wasm32-areev"), None, 500);
+    let plan = fx.plan(&v1);
+    let exec = areev_run::CodeExecutor::new(Exec::new(0, 1))
+        .allow(&a)
+        .cache_dir(fx.dir.join("cache"))
+        .sandbox_cmd(fx.sandbox().to_str().unwrap());
+    let runner = fx.runner(Arc::new(exec));
+    assert_eq!(run(&runner, &plan, "r1"), RunOutcome::Completed);
+
+    let report = runner
+        .shadow_plan_with(
+            &["r1".into()],
+            &PlanCandidate::Hash(plan),
+            &areev_run::ShadowOptions::reexecute(areev_run::Reexecute::Pure),
+        )
+        .unwrap();
+    let r = &report.runs[0];
+    let id = r.identity.as_ref().expect("the candidate IS the incumbent plan");
+    assert!(id.consistent && id.checkpoints_compared > 0, "{r:?}");
+    assert_eq!(id.checkpoints_compared, runner.verify("r1").unwrap().steps.len());
+    assert_eq!(r.sandbox_executions, Some(1), "it really ran: {r:?}");
+    assert_eq!(r.changed_keys.as_ref().map(Vec::len), Some(0), "{r:?}");
+    assert_eq!(r.verdict, "same");
+}

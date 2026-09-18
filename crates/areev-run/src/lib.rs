@@ -31,7 +31,10 @@ pub mod shadow;
 pub mod stream;
 
 pub use clock::{Clock, ScriptedClock, SystemClock};
-pub use shadow::{PlanCandidate, ShadowIdentity, ShadowPlanReport, ShadowPlanRun, ShadowPlanTotals, ShadowSpend};
+pub use shadow::{
+    NotReexecuted, PlanCandidate, Reexecute, ShadowIdentity, ShadowOptions, ShadowPlanReport,
+    ShadowPlanRun, ShadowPlanTotals, ShadowSpend,
+};
 pub use broker::{
     BlobRead, Broker, CallerGrant, CapabilityLimits, Credential, CredentialDenied,
     CredentialSource, EgressCall, EgressGrants, DEFAULT_CREDENTIAL_TTL,

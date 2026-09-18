@@ -2170,7 +2170,9 @@ through the sans-IO scheduler under a **candidate** plan: a manifest is
 resolved for the candidate the way `fork --plan` does, seeded from the run's
 recorded input, and every requested effect is answered from the journal by
 its exact key. The path holds no executor and no model, so zero dispatches
-and zero writes are properties of the type, not of a flag. The one scope
+and zero writes are properties of the type, not of a flag — in the default
+mode; the one opt-in that runs anything is the next decision, and it keeps
+`effect_dispatches: 0` true. The one scope
 rule is stated in every report rather than papered over: replay can only
 answer effects the journal recorded, so a candidate that asks for anything
 else — a renamed or rebound node, a branch the live run never took — is
@@ -2188,6 +2190,42 @@ outcomes, through a prefix-only read view that refuses writes by type. The
 two together are the roadmap item `docs/loop-explainer.md` §16 listed first;
 `docs/run.md` "Verify and shadow" and `docs/loop.md` "Replay" are the
 references.
+
+### A rehearsal may re-run a pure module, and nothing else
+
+**Decision (2026-09-18, #277):** answering every effect by its journal key
+means the rehearsal above never consults the **binding**, so a candidate that
+changes nothing but a tool's *bytes* — the same node, rebound to a Definition
+whose `executor_uri` names a different blob — replays the old blob's result
+and scores `same`. That is the patch class most likely to change an answer,
+and it was the one class the rehearsal could not see. `areev run shadow
+--reexecute pure` (bindings: an `options` object) re-runs such a node instead
+of answering it, and the eligibility rule carries the whole argument:
+
+> a bound **host** node whose CANDIDATE pin declares `wasm32-areev` — pure
+> Tier C, whose frozen import set is exactly `areev::emit`: no clock, no
+> filesystem, no sockets — runs in the sandbox under its pinned fuel and
+> pages, on the input the replayed state built. Nothing else runs.
+
+So `effect_dispatches: 0` keeps meaning **no external effect** rather than
+becoming a smaller claim, and what ran is counted separately as
+`sandbox_executions`. `wasm32-areev-io` is excluded deliberately, not by
+omission: it is the same isolation with one more gate (`areev::fetch`,
+answered by the credential broker), which makes it deterministic *modulo
+journaled effects* rather than provable by re-execution — the reason it got
+its own runtime name in the first place. The host pin is re-checked in full
+here, because a rehearsal is the same act of running someone else's code as a
+run, and "the declaration replicates, the authorization to execute never
+does" is not weaker on a read-shaped path. Every other node still answers
+from the journal and is reported under `not_reexecuted` with its reason.
+
+The report's diff of the terminal merged context is **key paths only**
+(`changed_keys` / `added_keys` / `removed_keys`, RFC 6901), never values, so
+the artifact a host puts an upgrade decision on can travel a control channel
+that must not carry content. The mode is on the CLI and the bindings and
+deliberately **not** on the MCP tool or `/api/run/shadow`: those are reads
+served by hosts that hold no executor pin, and a read that executes code is
+not a read. `docs/run.md` "Rehearsing a candidate version" is the reference.
 
 ### A run reads its own memory through the plan, never through a tool
 
