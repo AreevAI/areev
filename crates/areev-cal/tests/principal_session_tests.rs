@@ -7,7 +7,7 @@
 //! staying untouched, and the extended `record_tool_call` reaching typed
 //! fields end to end through the facade.
 
-use areev_cal::AreevFacade;
+use areev_cal::{AreevFacade, CalExecutor, CalExecutorConfig};
 use areev_core::authz::{AUTHZ_NS, REL_PERMITS};
 use areev_core::types::{Fact, Grain};
 use areev_store::Areev;
@@ -222,4 +222,196 @@ fn malformed_run_ids_are_refused() {
             .unwrap_err();
         assert!(err.to_string().contains("run_id"), "{bad:?}: {err}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// #302 — a session authorizes READS as itself too
+// ---------------------------------------------------------------------------
+
+/// A memory where amy may read `a` and bob may read `b`, with one grain in
+/// each.
+fn two_principal_rig(dir: &TempDir) -> AreevFacade {
+    let mut m = Areev::open(dir.path().join("two.db").to_str().unwrap()).unwrap();
+    for (i, (p, obj)) in [
+        ("user:amy", "read,write ON a"),
+        ("user:bob", "read,write ON b"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        m.add(
+            &Fact::new(p, REL_PERMITS, obj)
+                .namespace(AUTHZ_NS)
+                .created_at(1_000 + i as i64),
+        )
+        .unwrap();
+    }
+    m.add(&Fact::new("deal:1", "stage", "in-a").namespace("a").created_at(2_000))
+        .unwrap();
+    m.add(&Fact::new("deal:2", "stage", "in-b").namespace("b").created_at(2_001))
+        .unwrap();
+    AreevFacade::with_session(m, Some("a".to_string()), None)
+}
+
+fn recall_through(session: &areev_cal::PrincipalSession<'_>, cal: &str) -> Result<usize, String> {
+    let ex = CalExecutor::new(CalExecutorConfig::default());
+    match ex.execute(cal, session) {
+        Ok(r) => {
+            let v = serde_json::to_value(r.payload_json().unwrap()).unwrap();
+            Ok(v["grains"].as_array().map(Vec::len).unwrap_or(0))
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[test]
+fn session_reads_use_the_sessions_own_rights() {
+    let dir = TempDir::new().unwrap();
+    let f = two_principal_rig(&dir);
+    let amy = f.principal_session("user:amy").unwrap();
+    let bob = f.principal_session("user:bob").unwrap();
+
+    // amy cannot read b; bob can.
+    let err = recall_through(&amy, r#"RECALL facts WHERE namespace = "b" LIMIT 10"#).unwrap_err();
+    assert!(err.contains("AUT-E001"), "{err}");
+    assert_eq!(
+        recall_through(&bob, r#"RECALL facts WHERE namespace = "b" LIMIT 10"#).unwrap(),
+        1
+    );
+    // And the reverse.
+    assert_eq!(
+        recall_through(&amy, r#"RECALL facts WHERE namespace = "a" LIMIT 10"#).unwrap(),
+        1
+    );
+    let err = recall_through(&bob, r#"RECALL facts WHERE namespace = "a" LIMIT 10"#).unwrap_err();
+    assert!(err.contains("AUT-E001"), "{err}");
+
+    // The facade's shared slot is untouched: still the owner.
+    assert!(f.authz().is_owner(), "a session never writes the shared slot");
+}
+
+#[test]
+fn session_covers_every_gated_read() {
+    let dir = TempDir::new().unwrap();
+    let f = two_principal_rig(&dir);
+    let amy = f.principal_session("user:amy").unwrap();
+    let ex = CalExecutor::new(CalExecutorConfig::default());
+
+    // A grain amy may not read, by hash.
+    let in_b = f
+        .with_store(|m| m.recall("b", "deal:2", None, 1))
+        .unwrap()
+        .first()
+        .map(|g| g.hash)
+        .unwrap();
+    let hex = in_b.to_hex();
+
+    for (label, cal, must_refuse) in [
+        ("exists", format!("EXISTS sha256:{hex}"), true),
+        ("history", format!("HISTORY sha256:{hex}"), true),
+        (
+            "recall-in-a",
+            r#"RECALL facts WHERE namespace = "a" LIMIT 5"#.to_string(),
+            false,
+        ),
+    ] {
+        let got = ex.execute(&cal, &amy);
+        let refused = match &got {
+            Err(e) => e.to_string().contains("AUT-E"),
+            Ok(r) => serde_json::to_value(r.payload_json().unwrap())
+                .unwrap()
+                .to_string()
+                .contains("AUT-E"),
+        };
+        assert_eq!(refused, must_refuse, "{label}: {got:?}");
+    }
+}
+
+#[test]
+fn concurrent_read_sessions_never_cross() {
+    // The race `bind_principal` has is that it swaps ONE process-wide slot.
+    // A session's rights are installed per thread for the duration of its
+    // own call, so two threads alternating principals over ONE facade can
+    // never see each other's.
+    let dir = TempDir::new().unwrap();
+    let f = std::sync::Arc::new(two_principal_rig(&dir));
+    let mut handles = Vec::new();
+    for t in 0..8 {
+        let f = std::sync::Arc::clone(&f);
+        handles.push(std::thread::spawn(move || {
+            for _ in 0..50 {
+                let (who, ns, expect_ok) = if t % 2 == 0 {
+                    ("user:amy", "a", true)
+                } else {
+                    ("user:bob", "a", false)
+                };
+                let s = f.principal_session(who).unwrap();
+                let got = recall_through(&s, &format!(r#"RECALL facts WHERE namespace = "{ns}" LIMIT 5"#));
+                assert_eq!(
+                    got.is_ok(),
+                    expect_ok,
+                    "{who} reading {ns} must be {}: {got:?}",
+                    if expect_ok { "allowed" } else { "refused" }
+                );
+            }
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+    assert!(f.authz().is_owner());
+}
+
+#[test]
+fn session_default_namespace_scopes_graph_reads() {
+    let dir = TempDir::new().unwrap();
+    let f = two_principal_rig(&dir);
+    // Without an override, bob's namespace-defaulting reads use the
+    // facade's "a" — which bob may not read.
+    let bob = f.principal_session("user:bob").unwrap();
+    let ex = CalExecutor::new(CalExecutorConfig::default());
+    let got = ex.execute(r#"RELATED "deal:2" VIA "related_to" DEPTH 1"#, &bob);
+    let refused = match &got {
+        Err(e) => e.to_string().contains("AUT-E"),
+        Ok(r) => serde_json::to_value(r.payload_json().unwrap())
+            .unwrap()
+            .to_string()
+            .contains("AUT-E"),
+    };
+    assert!(refused, "the facade default is a, which bob cannot read: {got:?}");
+
+    // With one, they walk their own namespace.
+    let bob = f.principal_session("user:bob").unwrap().in_namespace("b");
+    let got = ex.execute(r#"RELATED "deal:2" VIA "related_to" DEPTH 1"#, &bob);
+    assert!(got.is_ok(), "{got:?}");
+}
+
+#[test]
+fn a_session_never_hands_out_the_unscoped_facade() {
+    // A downcast to `AreevFacade` would let a caller read past this
+    // session's grants, which is the whole thing the type prevents.
+    use areev_cal::CalStoreFacade;
+    let dir = TempDir::new().unwrap();
+    let f = two_principal_rig(&dir);
+    let amy = f.principal_session("user:amy").unwrap();
+    assert!(amy.as_any().is_none());
+}
+
+#[test]
+fn the_session_scope_is_popped_even_when_a_call_fails() {
+    // A refusal must not leave one principal's rights installed for the
+    // next call on this thread.
+    let dir = TempDir::new().unwrap();
+    let f = two_principal_rig(&dir);
+    {
+        let bob = f.principal_session("user:bob").unwrap();
+        let _ = recall_through(&bob, r#"RECALL facts WHERE namespace = "a" LIMIT 5"#);
+    }
+    // The facade, used directly again, is the owner.
+    let ex = CalExecutor::new(CalExecutorConfig::default());
+    let r = ex
+        .execute(r#"RECALL facts WHERE namespace = "a" LIMIT 5"#, &f)
+        .unwrap();
+    let v = serde_json::to_value(r.payload_json().unwrap()).unwrap();
+    assert_eq!(v["grains"].as_array().unwrap().len(), 1);
 }

@@ -828,6 +828,17 @@ pub struct ForgetStmt {
     /// only).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub text_mentions: bool,
+    /// `WITH override_hold` — destroy in a namespace under a legal hold
+    /// (D10, #278).
+    ///
+    /// Explicit, never a default, and `BECAUSE` becomes mandatory with it on
+    /// BOTH forms: a hold exists because someone decided records must not be
+    /// destroyed, so destroying them anyway is a second decision and it has
+    /// an author and a ground. Authorization requires `admin` on the
+    /// namespace in addition to `erase`/`delete` — a principal who may erase
+    /// is not automatically one who may override a hold.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub override_hold: bool,
     #[serde(skip)]
     pub span: Option<Span>,
 }
@@ -910,6 +921,15 @@ pub struct EntityAtStmt {
     /// `world` (default) | `knowledge`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub axis: Option<String>,
+    /// `WHERE namespace IN ("a", "b")` — the namespace SET this read covers
+    /// (#303). Empty means the session's own namespace, exactly as before.
+    ///
+    /// Exact names only: a pattern is refused, as it is on every point read.
+    /// Each named namespace is `read`-checked as itself before anything is
+    /// read, and one ungranted term refuses the statement — never a partial
+    /// walk, which would be an answer that silently means something else.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub namespaces: Vec<String>,
     #[serde(skip)]
     pub span: Option<Span>,
 }
@@ -978,6 +998,15 @@ pub struct RelatedStmt {
     pub depth: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
+    /// `WHERE namespace IN ("a", "b")` — the namespace SET this read covers
+    /// (#303). Empty means the session's own namespace, exactly as before.
+    ///
+    /// Exact names only: a pattern is refused, as it is on every point read.
+    /// Each named namespace is `read`-checked as itself before anything is
+    /// read, and one ungranted term refuses the statement — never a partial
+    /// walk, which would be an answer that silently means something else.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub namespaces: Vec<String>,
     #[serde(skip)]
     pub span: Option<Span>,
 }

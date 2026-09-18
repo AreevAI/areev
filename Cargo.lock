@@ -151,7 +151,7 @@ dependencies = [
 
 [[package]]
 name = "areev"
-version = "1.8.5"
+version = "1.9.0"
 dependencies = [
  "areev-cal",
  "areev-context",
@@ -168,6 +168,7 @@ dependencies = [
  "chrono",
  "getrandom 0.4.3",
  "hex",
+ "serde",
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
@@ -176,7 +177,7 @@ dependencies = [
 
 [[package]]
 name = "areev-bench"
-version = "1.8.5"
+version = "1.9.0"
 dependencies = [
  "areev-cal",
  "areev-context",
@@ -194,7 +195,7 @@ dependencies = [
 
 [[package]]
 name = "areev-cal"
-version = "1.8.5"
+version = "1.9.0"
 dependencies = [
  "areev-core",
  "areev-store",
@@ -215,7 +216,7 @@ dependencies = [
 
 [[package]]
 name = "areev-conformance"
-version = "1.8.5"
+version = "1.9.0"
 dependencies = [
  "areev-cal",
  "areev-core",
@@ -228,7 +229,7 @@ dependencies = [
 
 [[package]]
 name = "areev-context"
-version = "1.8.5"
+version = "1.9.0"
 dependencies = [
  "areev-cal",
  "areev-core",
@@ -241,7 +242,7 @@ dependencies = [
 
 [[package]]
 name = "areev-core"
-version = "1.8.5"
+version = "1.9.0"
 dependencies = [
  "hex",
  "insta",
@@ -257,7 +258,7 @@ dependencies = [
 
 [[package]]
 name = "areev-llm"
-version = "1.8.5"
+version = "1.9.0"
 dependencies = [
  "areev-core",
  "areev-loop",
@@ -269,7 +270,7 @@ dependencies = [
 
 [[package]]
 name = "areev-loop"
-version = "1.8.5"
+version = "1.9.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -277,7 +278,7 @@ dependencies = [
 
 [[package]]
 name = "areev-loop-adapter"
-version = "1.8.5"
+version = "1.9.0"
 dependencies = [
  "areev-cal",
  "areev-core",
@@ -292,7 +293,7 @@ dependencies = [
 
 [[package]]
 name = "areev-mcp"
-version = "1.8.5"
+version = "1.9.0"
 dependencies = [
  "areev-cal",
  "areev-core",
@@ -306,7 +307,7 @@ dependencies = [
 
 [[package]]
 name = "areev-py"
-version = "1.8.5"
+version = "1.9.0"
 dependencies = [
  "areev-cal",
  "areev-core",
@@ -322,7 +323,7 @@ dependencies = [
 
 [[package]]
 name = "areev-run"
-version = "1.8.5"
+version = "1.9.0"
 dependencies = [
  "areev-cal",
  "areev-core",
@@ -340,7 +341,7 @@ dependencies = [
 
 [[package]]
 name = "areev-run-core"
-version = "1.8.5"
+version = "1.9.0"
 dependencies = [
  "areev-core",
  "serde",
@@ -350,7 +351,7 @@ dependencies = [
 
 [[package]]
 name = "areev-server"
-version = "1.8.5"
+version = "1.9.0"
 dependencies = [
  "areev-cal",
  "areev-core",
@@ -372,7 +373,7 @@ dependencies = [
 
 [[package]]
 name = "areev-store"
-version = "1.8.5"
+version = "1.9.0"
 dependencies = [
  "aes-gcm 0.11.1",
  "areev-core",
@@ -398,7 +399,7 @@ dependencies = [
 
 [[package]]
 name = "areev-trigger"
-version = "1.8.5"
+version = "1.9.0"
 dependencies = [
  "areev-cal",
  "areev-core",
@@ -406,6 +407,7 @@ dependencies = [
  "areev-run-core",
  "areev-store",
  "chrono",
+ "chrono-tz",
  "croner",
  "serde",
  "serde_json",
@@ -790,6 +792,16 @@ dependencies = [
  "num-traits",
  "wasm-bindgen",
  "windows-link",
+]
+
+[[package]]
+name = "chrono-tz"
+version = "0.10.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6139a8597ed92cf816dfb33f5dd6cf0bb93a6adc938f11039f371bc5bcd26c3"
+dependencies = [
+ "chrono",
+ "phf 0.12.1",
 ]
 
 [[package]]
@@ -2531,12 +2543,30 @@ dependencies = [
 
 [[package]]
 name = "phf"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "913273894cec178f401a31ec4b656318d95473527be05c0752cc41cdc32be8b7"
+dependencies = [
+ "phf_shared 0.12.1",
+]
+
+[[package]]
+name = "phf"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c1562dc717473dbaa4c1f85a36410e03c047b2e7df7f45ee938fbef64ae7fadf"
 dependencies = [
- "phf_shared",
+ "phf_shared 0.13.1",
  "serde",
+]
+
+[[package]]
+name = "phf_shared"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06005508882fb681fd97892ecff4b7fd0fee13ef1aa569f8695dae7ab9099981"
+dependencies = [
+ "siphasher",
 ]
 
 [[package]]
@@ -3865,7 +3895,7 @@ dependencies = [
  "log",
  "parking_lot",
  "percent-encoding",
- "phf",
+ "phf 0.13.1",
  "pin-project-lite",
  "postgres-protocol",
  "postgres-types",

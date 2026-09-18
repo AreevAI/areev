@@ -20,7 +20,7 @@ which column a control is in.
 |---|---|---|
 | Lives in | the memory's `meta` table | the process |
 | Travels with a copy, sync, restore | **yes** | **no** |
-| Examples | `anonymize set`, `retention set`, `retention floor`, `hold set`, saved queries, triggers | `--anonymize-egress`, `--anonymize-cmd`, `--no-destructive-ops`, `--read-only`, `--passphrase-env`, `--anon-key-env`, `--allow-host` |
+| Examples | `anonymize set`, `retention set`, `retention floor`, `hold set` (holds ride a bundle and apply on a point-in-time import, so a restored replica comes back HELD), saved queries, triggers | `--anonymize-egress`, `--anonymize-cmd`, `--no-destructive-ops`, `--read-only`, `--passphrase-env`, `--anon-key-env`, `--allow-host` |
 
 The rule that follows: **anything you must still be true after the file is
 copied has to be a file-truth.** A host floor is a cap for *this* process — it
@@ -239,11 +239,20 @@ areev retention floor --db ledger.db --ns accounting --min-days 2555 \
   --because "7-year records retention"
 areev retention floors --db ledger.db
 
-# 2. Legal hold: suspends ALL age-based destruction on a namespace. Both ends
-#    take a mandatory --because and land in `areev audit export`.
+# 2. Legal hold: suspends EVERY deletion path on a namespace — the age-based
+#    sweeps, FORGET by hash, FORGET SUBJECT, the memory tool's delete/rename,
+#    the loop's rollback, and (on Postgres) DROP SCHEMA. Refusals carry
+#    STO-E009 and are themselves recorded. Both ends take a mandatory
+#    --because and land in `areev audit export`.
 areev hold set     --db ledger.db --ns accounting --because "litigation 2026-114"
 areev hold list    --db ledger.db
 areev hold release --db ledger.db --ns accounting --because "matter closed"
+
+#    Overriding a hold is a SECOND decision: it needs `admin` on the
+#    namespace as well as erase/delete, a mandatory reason, and the audit
+#    record names the hold it overrode.
+areev forget-subject acme --db ledger.db --ns accounting --yes \
+  --override-hold --because "regulator ordered destruction"
 
 # 3. Approvals name a person, and cannot be the person who asked.
 areev ui --db ledger.db --auth creds.json          # never --token-env here

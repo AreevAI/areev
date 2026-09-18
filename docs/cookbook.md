@@ -246,6 +246,24 @@ Because grains are content-addressed and imports are idempotent, concurrent edit
 that arrive out of order become **branches (heads)** with a deterministic
 provisional head rather than lost writes.
 
+### Tail one tenant's changes, tombstones included
+
+For a projection or a per-tenant outbox, `log` is the raw change feed and
+`--ns` narrows it. Every row carries the namespace it belongs to — **the
+tombstones too**, which resolving a forget's hash could never tell you,
+because the grain is gone:
+
+```bash
+areev log --db memory.db --ns acme            # one tenant
+areev log --db memory.db --ns acme,globex     # a set
+areev log --db memory.db --ns acme --since 1420 --limit 500
+```
+
+`op_seq` stays the memory-wide sequence, so a scoped cursor is still
+comparable with an unscoped one and you can move between them without
+replaying. Rows written before 1.9.0 carry no namespace and are returned by
+the unscoped feed only.
+
 ---
 
 ## 7. Use the Python bindings
@@ -842,6 +860,56 @@ older than the window are dropped whole:
 areev stream --db memory.db --to /var/lib/areev/archive --checkpoint --retain 30d
 ```
 
+### When a legal hold is in the way (Art. 17(3))
+
+If the namespace is under a hold, step 2 refuses with `STO-E009` and names
+who placed it and why — and the **refusal is itself recorded**, which is what
+you answer the request with when the ground for deferral is a retention
+obligation:
+
+```bash
+areev hold list --db memory.db
+# cases  litigation 2026-114  counsel:jane
+
+areev forget-subject "pat" --db memory.db --ns cases --yes --because "Art. 17 #42"
+# STO-E009: namespace 'cases' is under a legal hold placed by counsel:jane
+#           (litigation 2026-114) — destruction refuses until the hold is
+#           released, or is overridden explicitly
+
+areev audit export --db memory.db | tail -1
+# {"trail":"destruction","verb":"erase.refused","grains_erased":0,
+#  "hold":{"ns":"cases","placed_by":"counsel:jane",...},...}
+```
+
+Two ways forward, and they are different decisions. Release the hold when the
+matter is closed (`areev hold release --db memory.db --ns cases --because
+"matter closed"`), or override it for this one erasure — which needs `admin`
+on the namespace on top of `erase`, a mandatory reason, and names the hold it
+overrode in the audit record:
+
+```bash
+areev forget-subject "pat" --db memory.db --ns cases --yes \
+     --override-hold --because "regulator ordered destruction"
+```
+
+An override is not a release: the hold is still there afterwards, and the
+next destruction refuses again.
+
+The scrub in step 2 does not reach one row: a **zero-result** free-text query
+names no grain hash and need not contain the erased identity, so the recall
+telemetry can retain query text about a person nothing was found for. Reach
+it by namespace, or stop retaining query text at all:
+
+```bash
+areev telemetry scrub --db memory.db --ns caller --yes   # after an erasure
+areev recall --db memory.db --ns caller --subject pat \
+     --telemetry aggregate-hashed   # …or never retain it in the first place
+```
+
+`aggregate-hashed` keeps the same rollups with the key HMAC'd under a subkey
+derived from the memory's own AEAD key, keeps no sample, and writes no ring
+log — the rollups stay useful and the text is not there to erase.
+
 Full obligation map, deployment requirements, and honest limits:
 [`gdpr.md`](gdpr.md).
 
@@ -1059,6 +1127,31 @@ checksum-gated (Singapore NRIC/FIN weighted mod-11, UAE Emirates ID Luhn +
 `784` prefix), and MRN is cue-gated on a nearby `MRN` / `medical record
 number`, because matching bare digit runs would redact every quantity in a
 clinical note.
+
+**Which detectors are checksum-, structure- or cue-gated**, so a fixture set
+can pin the right negatives:
+
+| Category | Gate |
+|---|---|
+| `credit_card` | Luhn |
+| `iban` | mod-97 |
+| `sg_nric` | weighted mod-11 check letter, per era prefix |
+| `ae_eid` | `784` issuer prefix **and** Luhn |
+| `us_ssn` | structure (area ≠ 000/666, < 900; group ≠ 00; serial ≠ 0000). Dashed/spaced forms match unconditionally; a **bare** nine-digit run needs an SSN cue within 40 characters |
+| `us_itin` | the SSN shapes with area 9xx and an IRS group range (50–65, 70–88, 90–92, 94–99) — disjoint from `us_ssn` by construction. Bare runs are cue-gated |
+| `aba_routing` | Federal Reserve district prefix **and** the 3-7-1 checksum, and **always** cue-gated: the checksum passes about one random nine-digit run in ten |
+| `mrn` | cue only (`MRN`, `medical record number`, …) within 40 characters |
+
+The US detectors (1.9.0, #281) also fixed a leak: a dashed SSN matched the
+phone pattern and was reported as `phone`, so a policy allowing business
+contact numbers — a common and reasonable choice — passed SSNs through, and
+no policy could count or treat them separately. Overlap resolution now
+prefers a **validator-backed** category over a shape-only one at equal
+severity and length. Detection stays additive, so a policy that redacts
+`phone` and allows everything else still redacts `123-45-6789`. Worth adding
+to `must_not_redact`: `EBITDA 123456789`, `ref 021000022` (bad checksum),
+`invoice 021000021` (no cue), and a real NANP number like `(212) 555-0142`,
+which must stay `phone`.
 
 ### Redact on context, not just on category
 

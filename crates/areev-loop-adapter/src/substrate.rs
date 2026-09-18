@@ -83,6 +83,11 @@ impl AreevSubstrate {
     pub fn into_store(self) -> Areev {
         self.facade.into_inner()
     }
+
+    /// The session's rights, for the coverage filter (#312).
+    pub fn authz(&self) -> areev_core::authz::AuthzSet {
+        self.facade.authz()
+    }
 }
 
 /// An Areev-backed substrate that borrows a facade (bindings path). Construct
@@ -888,6 +893,20 @@ fn validate_cal(cal: &str) -> WResult<()> {
         }
     }
     Ok(())
+}
+
+/// The loop's persisted state, read straight off an open store.
+///
+/// The read-only half of [`load_state`], for surfaces that hold a `&mut
+/// Areev` rather than a facade — `areev audit export --with-outcomes`
+/// (#319), above all. `Value::Null` when the loop has never run.
+pub fn loop_state_of(m: &mut areev_store::Areev) -> WResult<Value> {
+    let head = m.latest(LOOP_NS, STATE_SUBJECT, STATE_RELATION).map_err(we)?;
+    match head.as_ref().and_then(|g| g.get_str("object")) {
+        Some(json) => serde_json::from_str(json)
+            .map_err(|e| WErr::Substrate(format!("decode loop state: {e}"))),
+        None => Ok(Value::Null),
+    }
 }
 
 fn load_state(f: &AreevFacade) -> WResult<Value> {

@@ -132,6 +132,11 @@ pub struct RunResult {
     /// backend is attached.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llm_funnel: Option<LlmFunnel>,
+    /// Open recommendations this pass withdrew because their premise moved
+    /// (#317). `#[serde(default)]` so a report written before this existed
+    /// still deserializes.
+    #[serde(default)]
+    pub withdrawn: u64,
 }
 
 /// The DISCOVER pipeline's attrition, counted.
@@ -206,6 +211,7 @@ impl RunResult {
             llm_funnel: None,
             analyzers_run: vec![],
             analyzers_skipped: vec![],
+            withdrawn: 0,
         }
     }
 
@@ -371,8 +377,17 @@ impl Engine {
         // and, under policy, asks the gate's second question: does each
         // applied recommendation's PREMISE still stand?
         let mut outcome_inputs = measure_outcomes(sub, &mut persisted, &self.policy, now_ms)?;
+        let mut withdrawn = 0u64;
         if self.policy.premise_drift {
             outcome_inputs.extend(detect_premise_drift(sub, &mut persisted, now_ms)?);
+            // …and the same question of the OPEN queue (#317), which is where
+            // a reviewer is actually being asked to decide something.
+            withdrawn = withdraw_drifted_open(
+                sub,
+                &mut persisted,
+                self.policy.premise_drift_open_all,
+                now_ms,
+            )?;
         }
 
         let AnalysisPass {
@@ -451,6 +466,7 @@ impl Engine {
             analyzers_run,
             analyzers_skipped,
             llm_funnel,
+            withdrawn,
         })
     }
 
@@ -585,7 +601,7 @@ impl Engine {
                 Ok(drafts) => {
                     analyzers_run.push(m.id.clone());
                     for draft in drafts {
-                        match stamp(m, &params, draft, now_ms) {
+                        match stamp(m, &params, draft, now_ms, ns_slice) {
                             Ok(rec) => candidates.push(rec),
                             Err(e) => analyzers_skipped.push(AnalyzerSkip {
                                 id: m.id.clone(),
@@ -956,7 +972,9 @@ impl Engine {
         // main llm (the proposer≠scorer independence is on VERIFY, not GROUND).
         let ground = self.ground_llm.as_deref().unwrap_or(&**llm);
         let outcome_metric = self.outcome_metric_template(sub);
-        self.verify_drafts(sub, &**llm, ground, validated, &evidence, outcome_metric, now_ms, funnel)
+        self.verify_drafts(
+            sub, &**llm, ground, validated, &evidence, outcome_metric, now_ms, funnel, namespaces,
+        )
     }
 
     /// The metric an applicable LLM-authored proposal will be re-measured by,
@@ -1018,6 +1036,9 @@ impl Engine {
         outcome_metric: Option<crate::recommendation::MetricSnapshot>,
         now_ms: i64,
         funnel: &mut LlmFunnel,
+        // The namespaces this pass was run over (#312), stamped on every
+        // draft the verifier admits.
+        scope: &[String],
     ) -> Vec<Recommendation> {
         use crate::llm::*;
         let ev_by_hash: std::collections::BTreeMap<&str, &EvidenceItem> =
@@ -1156,6 +1177,7 @@ impl Engine {
                         v.resolved,
                         conf,
                         now_ms,
+                        scope,
                     );
                     if let Some(best) = near.first() {
                         // The summary says so, and names the closest rule.
@@ -2047,7 +2069,9 @@ impl Engine {
                 RecStatus::Pending => m.pending += 1,
                 RecStatus::Approved | RecStatus::Applied | RecStatus::RolledBack => m.approved += 1,
                 RecStatus::Rejected => m.rejected += 1,
-                RecStatus::Expired => {}
+                // Neither a win nor a loss for the LLM: nobody decided.
+                // Time ran out, or the premise moved (#317).
+                RecStatus::Expired | RecStatus::Withdrawn => {}
             }
         }
         let decided = m.approved + m.rejected;
@@ -3470,6 +3494,7 @@ fn resolve_proposal<S: OmsSubstrate>(
 /// class this vocabulary can reach except `memory` is auto-appliable at all
 /// (`Policy::grants_auto_apply`). The only path into the agent is a human
 /// review with a BECAUSE followed by an explicit apply.
+#[allow(clippy::too_many_arguments)]
 fn stamp_llm(
     model: &str,
     d: &crate::llm::LlmDraft,
@@ -3478,6 +3503,7 @@ fn stamp_llm(
     resolved: Option<ResolvedProposal>,
     confidence: f64,
     now_ms: i64,
+    scope: &[String],
 ) -> Recommendation {
     let summary_text = crate::llm::cap(&d.summary, crate::llm::MAX_SUMMARY_LEN);
     let guidance = if d.guidance.trim().is_empty() {
@@ -3570,6 +3596,10 @@ fn stamp_llm(
         evalset_hash,
         near_duplicate_of: Vec::new(),
         replay,
+        // Engine-stamped (#312). A model DRAFT that supplied a scope would
+        // be widening its own audience, so the field is overwritten here
+        // with the namespaces the pass was actually run over.
+        scope: crate::recommendation::normalize_scope(scope),
         status: RecStatus::Pending,
     }
 }
@@ -3933,6 +3963,102 @@ fn detect_premise_drift<S: OmsSubstrate>(
     Ok(out)
 }
 
+/// How many of a recommendation's cited grains have MOVED — retracted, or
+/// superseded by a different value.
+///
+/// `own` excludes an apply's own supersessions, which are not drift.
+fn moved_premises<S: OmsSubstrate>(
+    sub: &S,
+    rec: &Recommendation,
+    own: &[String],
+) -> Result<(u64, u64)> {
+    let total = rec.evidence.len() as u64;
+    let mut moved = 0u64;
+    for e in &rec.evidence {
+        match sub.grain(e)? {
+            None => moved += 1, // retracted or gone
+            Some(g) => {
+                let Some(newer) = &g.superseded_by else { continue };
+                if own.iter().any(|c| c == newer) {
+                    continue;
+                }
+                match sub.grain(newer)? {
+                    None => moved += 1,
+                    Some(n) => {
+                        if !same_value(&g, &n) {
+                            moved += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok((moved, total))
+}
+
+/// Withdraw OPEN recommendations whose premise has moved (#317).
+///
+/// `detect_premise_drift` asked this question of APPLIED recommendations
+/// only, so a pending finding whose every cited grain had been retracted
+/// stayed pending — and could still be approved. A reviewer was being
+/// offered, and could act on, a finding with no remaining evidence; if they
+/// applied it, the next pass proposed its revert.
+///
+/// Governed by the same `premise_drift` policy switch, with the same
+/// definition of "moved". The default is `"all"`: every cited grain must have
+/// moved before the engine withdraws, because a finding derived from six
+/// grains of which one changed is weakened, not baseless — that is a
+/// reviewer's judgement, not the engine's.
+///
+/// A withdrawal is NOT a rejection: it strikes no cooldown and is excluded
+/// from the dedup keys, so the same finding on new evidence is proposed
+/// normally on the next pass.
+fn withdraw_drifted_open<S: OmsSubstrate>(
+    sub: &mut S,
+    p: &mut LoopPersisted,
+    require_all: bool,
+    now_ms: i64,
+) -> Result<u64> {
+    let open: Vec<String> = p
+        .status_index
+        .iter()
+        .filter(|(_, st)| matches!(st, RecStatus::Pending | RecStatus::Approved))
+        .map(|(h, _)| h.clone())
+        .collect();
+    let mut withdrawn = 0u64;
+    for rec_hash in open {
+        let Ok(rec) = load_rec(sub, &rec_hash) else { continue };
+        if rec.evidence.is_empty() {
+            continue;
+        }
+        let (moved, total) = moved_premises(sub, &rec, &[])?;
+        let enough = if require_all { moved >= total } else { moved > 0 };
+        if moved == 0 || !enough {
+            continue;
+        }
+        let from = p.status_index.get(&rec_hash).copied().unwrap_or(RecStatus::Pending);
+        let prev = p.audit_heads.get(&rec_hash).cloned();
+        let audit = AuditRecord {
+            rec_hash: rec_hash.clone(),
+            from: Some(from),
+            to: RecStatus::Withdrawn,
+            actor: "engine:loop.premise_drift".into(),
+            observer_type: ObserverType::System,
+            because: format!(
+                "{moved} of {total} cited grains were superseded by a different value                  or retracted"
+            ),
+            previous_audit_hash: prev,
+            gating: None,
+            at_ms: now_ms,
+        };
+        let audit_hash = sub.put_grain(&audit.to_grain_spec(LOOP_NS))?;
+        p.audit_heads.insert(rec_hash.clone(), audit_hash);
+        p.status_index.insert(rec_hash, RecStatus::Withdrawn);
+        withdrawn += 1;
+    }
+    Ok(withdrawn)
+}
+
 /// Does the superseding grain say the same thing as the one it replaced? A
 /// fact compares its object; anything else compares its text body. Two grains
 /// that cannot be compared are treated as different — the fail-closed
@@ -4207,6 +4333,7 @@ fn stamp(
     params: &crate::manifest::Params,
     d: crate::recommendation::RecDraft,
     now_ms: i64,
+    scope: &[String],
 ) -> Result<Recommendation> {
     let target = TargetRef::parse(&d.target_ref)?;
     // Rule E1 at the door (§7.4): an unpinned code revision, a pinned
@@ -4274,6 +4401,11 @@ fn stamp(
         evalset_hash: d.evalset_hash,
         near_duplicate_of: Vec::new(),
         replay: None,
+        // Engine-stamped (#312), never draft-supplied: a scope an analyzer
+        // could set is a scope an external command or a model draft could
+        // widen, and the whole point is that it names what was actually
+        // read.
+        scope: crate::recommendation::normalize_scope(scope),
         status: RecStatus::Pending,
     })
 }
@@ -4428,6 +4560,13 @@ fn existing_dedup_keys<S: SubstrateRead>(sub: &S, p: &LoopPersisted) -> Result<B
         // caused (`strike_cooldown` at the revert apply); an operator's own
         // rollback and expiry may legitimately re-propose (the situation
         // returned).
+        //
+        // WITHDRAWN is deliberately absent too (#317): the engine withdrew it
+        // because the evidence moved, not because anyone decided against the
+        // finding. The same finding on NEW evidence is a new question, and
+        // suppressing it — or striking a cooldown for it, which withdrawal
+        // also does not do — would silence exactly the case the sweep
+        // exists to surface.
         if matches!(
             status,
             RecStatus::Pending | RecStatus::Approved | RecStatus::Applied

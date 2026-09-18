@@ -298,6 +298,14 @@ macro_rules! for_each_conformance_case {
         $per_case!(store_recall_still_returns_retracted_grains);
         // isolation (#181): memories in one process share nothing
         $per_case!(memories_in_one_process_share_nothing);
+        // legal holds, scoped feed + scoped graph reads (1.9.0)
+        $per_case!(a_hold_refuses_every_deletion_path);
+        $per_case!(a_hold_override_destroys_and_names_the_hold);
+        $per_case!(holds_replicate_and_survive_a_pitr_restore);
+        $per_case!(a_replicated_tombstone_applies_under_a_local_hold);
+        $per_case!(the_change_feed_is_namespace_scoped_including_tombstones);
+        $per_case!(scoped_graph_and_as_of_reads_span_a_namespace_set);
+        $per_case!(the_world_axis_is_write_order_independent);
     };
 }
 

@@ -116,6 +116,45 @@ This document is the requirement record for them.
   error, never a silent partial answer (a partial DSAR response is a
   compliance failure, not a degraded read).
 
+- **REQ-ERASE-10 (a legal hold takes precedence over every deletion path).**
+  A namespace under a legal hold refuses EVERY destruction — not only the
+  age-based ones. `Areev::forget` and the identity selector are the choke
+  points, so CAL `FORGET <hash>` and `FORGET SUBJECT`, the MCP tool, the
+  bindings, the console, the memory tool's `delete`/`rename`, the mem0
+  importer's DELETE events and the loop's rollback all inherit it; the
+  Postgres `drop_postgres_schema` reads `hold:` rows before `DROP SCHEMA …
+  CASCADE`. The check runs INSIDE the erasure transaction, after
+  `reserve_write`, so a hold placed concurrently by a second handle cannot
+  lose the race against a delete.
+
+  The refusal is `STO-E009`, its own code rather than a validation error,
+  because "deferred by a hold" is an EXPECTED, reportable outcome a
+  records-retention obligation produces — a host must be able to record it
+  without parsing a message. A refusal erases **nothing**: `subject_report`
+  is unchanged afterwards, which is REQ-ERASE-4 applied to the deferral.
+
+  Overriding a hold is a **second decision, and it has an author**: CAL
+  `FORGET <hash> WITH override_hold BECAUSE "…"` and `FORGET SUBJECT "<id>"
+  [WITH text_mentions] WITH override_hold BECAUSE "…"`, CLI
+  `--override-hold --because`, store `forget_overriding` /
+  `forget_subject_overriding`. `BECAUSE` is mandatory with it on both forms.
+  Authorization requires `admin` on the namespace **in addition to**
+  `erase`/`delete` — a principal who may erase is not automatically one who
+  may override a records-retention hold — and the Tier-2 record carries
+  `context.hold_overridden = {ns, placed_by, because}`, so the audit says
+  WHAT was overridden, not merely that something was. A REFUSED attempt is
+  recorded too (`erase.refused` / `delete.refused`, `grains_erased: 0`,
+  subject still a fingerprint per REQ-ERASE-5): the record a controller
+  needs to answer an Art. 17 request on an Art. 17(3) ground.
+
+  **Replication is convergence, not a new decision.** Bundle import applies a
+  replicated tombstone even under a local hold, counting it in
+  `ImportStats::forgets_under_hold`. A hold binds the memory where destruction
+  is DECIDED; a follower that aborted mid-import would diverge from its leader
+  permanently, and a hold that produced a divergent replica would be worse than
+  no hold. `hold:` rows themselves replicate (and apply on a point-in-time
+  import), so a restored or synced memory comes back HELD.
+
 ## The OMS deviation, stated plainly
 
 OMS models removal as per-grain tombstones and treats grain immutability +

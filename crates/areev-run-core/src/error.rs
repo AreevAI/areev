@@ -100,6 +100,30 @@ pub enum RunError {
     /// refused the transcript — the limit was learned from the rejection
     /// rather than predicted.
     ContextExceeded { node: String, tokens: u64, ceiling: Option<u64> },
+    /// RUN-E025 — the model configuration this run STARTED under is not the
+    /// one on offer now (#287).
+    ///
+    /// Raised before the lease is taken and before any grain is written: a
+    /// resume that would have finished a parked run on a different model,
+    /// provider or region simply does not begin. `areev run fork` is the
+    /// sanctioned way through — a fork writes a new manifest carrying the new
+    /// pin and records what it forked from, so the change is a recorded
+    /// decision rather than an undocumented drift.
+    ModelMismatch { pinned: String, offered: String },
+    /// RUN-E026 — this run was written by a scheduler generation whose
+    /// decisions differ from this build's (#288).
+    ///
+    /// A patch upgrade must not strand parked approval runs, so the VERSION
+    /// string is not what is compared — only the scheduler epoch, which moves
+    /// exactly when a change makes an existing journal replay differently.
+    EngineMismatch { written_by: String, epoch: u32, this_epoch: u32 },
+    /// RUN-E027 — starting this run would exceed a concurrency cap (#296).
+    ///
+    /// RETRYABLE by nature: the cap is a backstop beneath the host's own
+    /// dispatcher, not a verdict on the run. Nothing is written under the run
+    /// id, so the same id starts once a slot frees, and a trigger firing
+    /// refused here leaves its item unconsumed (the #129 rule for RUN-E018).
+    ConcurrencyLimit { scope: String, limit: u32 },
 }
 
 /// The budget axes (§6.7). `Supersteps` is the global backstop too.
@@ -112,6 +136,14 @@ pub enum BudgetAxis {
     Usd,
     WallMs,
     Storage,
+    /// Settled effects across the WHOLE run (#295). `--max-effects` bounds
+    /// one node ATTEMPT; a run's total was bounded only by
+    /// nodes × retries × cycles × fan-out × that number.
+    Effects,
+    /// Host tool calls across the whole run (#295) — plan-bound or
+    /// model-issued. Client asks and memory reads do not count: an ask is a
+    /// person, and a memory read is not an outbound call.
+    ToolCalls,
 }
 
 impl BudgetAxis {
@@ -122,6 +154,8 @@ impl BudgetAxis {
             Self::Usd => "usd",
             Self::WallMs => "wall_ms",
             Self::Storage => "storage",
+            Self::Effects => "effects",
+            Self::ToolCalls => "tool_calls",
         }
     }
 }
@@ -154,6 +188,9 @@ impl RunError {
             Self::EgressRefused { .. } => "RUN-E022",
             Self::AnonReplayUnsafe { .. } => "RUN-E023",
             Self::ContextExceeded { .. } => "RUN-E024",
+            Self::ModelMismatch { .. } => "RUN-E025",
+            Self::EngineMismatch { .. } => "RUN-E026",
+            Self::ConcurrencyLimit { .. } => "RUN-E027",
         }
     }
 }
@@ -272,6 +309,29 @@ impl fmt::Display for RunError {
                              request against"
                         .to_string(),
                 }
+            ),
+            Self::ModelMismatch { pinned, offered } => write!(
+                f,
+                "{code}: this run started under {pinned} and is being resumed \
+                 under {offered} — a parked run must finish on the \
+                 configuration it started on. Resume under the pinned model, \
+                 or `areev run fork` to continue under the new one (the fork \
+                 records both)"
+            ),
+            Self::EngineMismatch { written_by, epoch, this_epoch } => write!(
+                f,
+                "{code}: this run was written by engine {written_by} at \
+                 scheduler epoch {epoch}, and this build is at epoch \
+                 {this_epoch} — the two schedulers do not make the same \
+                 decisions, so resuming would produce a journal neither can \
+                 verify whole. Run it on an engine at epoch {epoch}, or \
+                 `areev run fork` to continue under this one"
+            ),
+            Self::ConcurrencyLimit { scope, limit } => write!(
+                f,
+                "{code}: {limit} concurrent runs already executing for \
+                 {scope} — nothing was written, so this run id is still free. \
+                 Retry once a slot frees, or raise the cap"
             ),
         }
     }

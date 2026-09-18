@@ -27,6 +27,23 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # and strum, dragging in the syn/quote/proc-macro2 chain — which is exactly the
 # kind of growth the dependency-light policy exists to stop.
 croner = { version = ">=2.2, <3", default-features = false }
+# IANA zone data for cron-in-a-firm's-time-zone (#297). Behind a feature
+# because it is ~800 KB of tables that a UTC-only deployment has no use for,
+# and because a build WITHOUT it must keep refusing a non-UTC zone by name
+# rather than silently evaluating it somewhere else. Enabled by the CLI and
+# both binding builds — the three hosts that evaluate triggers — because a
+# memory is evaluated by several hosts, and they must agree on when a trigger
+# is due.
+#
+# System zoneinfo is deliberately not an option: two hosts reading two
+# different `/usr/share/zoneinfo` snapshots would disagree about the same
+# declaration, which is the failure a content-addressed declaration exists
+# to make impossible.
+chrono-tz = { version = "0.10", default-features = false, optional = true }
+
+[features]
+default = []
+tz = ["dep:chrono-tz"]
 
 [dev-dependencies]
 tempfile = "3"

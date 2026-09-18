@@ -7,6 +7,24 @@ driver (`areev-run`) owns the store, clock, executors, journal — it feeds
 `EventIn`s and performs `Command`s. **Replay IS this function**: feed the
 journaled events back, assert the same commands come out.
 
+## The scheduler epoch (#288)
+
+`SCHEDULER_EPOCH` is this crate's replay generation. Bump it **exactly when a
+change makes an existing journal replay differently** — the #251 class, where
+1.8.3's dotted-tool fix meant a run recorded by 1.8.2 no longer verified and
+no fix was possible without keeping the defect alive behind a per-run epoch.
+A verifier holding such a run must be able to tell tampering from "written by
+an older scheduler", and the package version cannot say that: most releases
+change nothing here.
+
+Every bump gets a CHANGELOG line. The driver stamps it into
+`RunManifest.engine`; `resume` refuses across epochs (`RUN-E026`) and `verify`
+labels the divergence as expected rather than silently accepting it.
+
+A change that only ADDS behaviour behind a manifest field nobody set — the
+1.9.0 budget axes, for instance — does **not** bump it: an existing journal
+replays identically, which is exactly what the epoch is about.
+
 ## Purity is enforced, not aspirational
 
 - CI (`ci.yml` clippy job) fails if `cargo tree -p areev-run-core` contains

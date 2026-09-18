@@ -43,6 +43,16 @@ pub fn drop_postgres_schema(url: String, schema: String) -> napi::Result<()> {
     areev_store::pg::drop_postgres_schema(&url, &schema).map_err(err)
 }
 
+/// Split a namespace argument that may be a single name or a comma list
+/// (#303, #307). Trimmed, non-empty — so `"a, b"` and `"a,b"` agree, and a
+/// trailing comma is not a namespace.
+fn split_ns_list(ns: &str) -> Vec<String> {
+    ns.split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
 fn err<E: std::fmt::Display>(e: E) -> napi::Error {
     napi::Error::from_reason(e.to_string())
 }
@@ -429,6 +439,7 @@ fn status_from_str(s: &str) -> Option<RecStatus> {
         "applied" => Some(RecStatus::Applied),
         "rolled_back" => Some(RecStatus::RolledBack),
         "expired" => Some(RecStatus::Expired),
+        "withdrawn" => Some(RecStatus::Withdrawn),
         _ => None,
     }
 }
@@ -1853,8 +1864,19 @@ impl Areev {
                 napi::Error::from_reason("direction must be one of: out, in, both")
             })?;
             let refs: Vec<&str> = rels.iter().map(String::as_str).collect();
+            // #303: a comma list walks the SET. A walk is not composable from
+            // per-namespace calls, so a host doing it itself re-implements
+            // the BFS and its depth and cap mean something different from
+            // Areev's.
+            let scope = split_ns_list(&ns);
             let reached = facade
-                .with_store(|m| m.related(&ns, &start, &refs, dir, depth, limit))
+                .with_store(|m| {
+                    if scope.len() > 1 {
+                        m.related_scoped(&scope, &start, &refs, dir, depth, limit)
+                    } else {
+                        m.related(&ns, &start, &refs, dir, depth, limit)
+                    }
+                })
                 .map_err(err)?;
             Ok(json!({"start": start, "reached": reached}).to_string())
         })
@@ -2377,7 +2399,8 @@ impl Areev {
             // The handle's actor — the same identity review/apply stamp — so
             // the trigger of an LLM/external finding cannot approve it.
             triggering_actor: Some(self.actor.clone()),
-        };
+        ..Default::default()
+    };
         // The longest call on this surface — a sweep plus, optionally, several
         // LLM round trips. Blocking the event loop across that was the worst
         // case of the old synchronous surface.
@@ -2484,7 +2507,14 @@ impl Areev {
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
         let sub = BorrowedSubstrate::new(&facade);
-        let recs = Engine::with_builtins().recommendations(&sub, status).map_err(err)?;
+        // Coverage-filtered (#312).
+        let recs = areev_loop_adapter::visible_recommendations(
+            &Engine::with_builtins(),
+            &sub,
+            &facade.authz(),
+            status,
+        )
+        .map_err(err)?;
         let rows: Vec<_> = recs
             .iter()
             .map(|r| {
@@ -3206,30 +3236,76 @@ impl Areev {
     }
 
     /// Op-log cursor read — the change feed the audit/evidence story rides.
-    /// Returns `[{op_seq, hlc, op, hash}...]`, ascending; pass the last
+    /// Returns `[{op_seq, hlc, op, hash, ns}...]`, ascending; pass the last
     /// `op_seq` back as the next cursor. `hlc` is a STRING: HLC values
     /// exceed 2^53 and would silently lose bits in `JSON.parse`.
+    ///
+    /// `ns` (a name or a comma list) narrows the feed to those namespaces
+    /// and attributes every row, TOMBSTONES INCLUDED (#307) — resolving a
+    /// forget's hash cannot, because the grain is gone. `op_seq` stays the
+    /// memory-wide sequence, so a scoped cursor is still comparable with an
+    /// unscoped one.
     #[napi(ts_return_type = "Promise<string>")]
     pub fn changes_since(
         &self,
         after_op_seq: Option<i64>,
         limit: Option<u32>,
+        ns: Option<String>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
         let after = after_op_seq.unwrap_or(0);
         let limit = (limit.unwrap_or(500) as usize).clamp(1, 10_000);
+        let scope = ns.map(|n| split_ns_list(&n)).unwrap_or_default();
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
             let rows = facade
-                .with_store(|m| m.changes_since(after, limit))
+                .with_store(|m| m.changes_since_scoped(after, &scope, limit))
                 .map_err(err)?;
             let out: Vec<serde_json::Value> = rows
                 .into_iter()
                 .map(|r| {
-                    json!({"op_seq": r.op_seq, "hlc": r.hlc.to_string(), "op": r.op, "hash": r.hash.to_hex()})
+                    json!({"op_seq": r.op_seq, "hlc": r.hlc.to_string(), "op": r.op,
+                           "hash": r.hash.to_hex(), "ns": r.ns})
                 })
                 .collect();
             serde_json::to_string(&out).map_err(err)
+        })
+    }
+
+    /// Drop every recall-telemetry row for one exact namespace (#306).
+    ///
+    /// Reaches the row no other scrub can: a zero-result free-text query
+    /// names no grain hash, so the per-hash scrub cannot find it, and the
+    /// per-subject scrub only reaches it if the erased identity happens to
+    /// appear in the text.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn telemetry_scrub_namespace(
+        &self,
+        ns: String,
+    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            facade
+                .with_store(|m| m.telemetry_scrub_namespace(&ns))
+                .map_err(err)?;
+            Ok(json!({"scrubbed": ns}).to_string())
+        })
+    }
+
+    /// A value that changes whenever this memory's authorization policy does
+    /// (#309) — a single indexed read a host caching bound sessions makes
+    /// per request instead of re-resolving grants. A CHANGE DETECTOR:
+    /// compare for equality, never for ordering.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn authz_epoch(&self) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let epoch = facade.authz_epoch().map_err(err)?;
+            // A STRING, like `hlc`: the value can exceed 2^53 and would
+            // silently lose bits in `JSON.parse`.
+            Ok(json!({"epoch": epoch.to_string()}).to_string())
         })
     }
 
@@ -3973,6 +4049,7 @@ fn js_run_options_full(
             max_usd_micros: u("maxUsdMicros", max_usd_micros)?,
             max_wall_ms: u("maxWallMs", max_wall_ms)?,
             max_storage_bytes: None,
+            ..Default::default()
         },
         ask_ttl_sec,
         workers: 4,
@@ -3982,6 +4059,7 @@ fn js_run_options_full(
         llm_tool_result_chars: limits.llm_tool_result_chars.map(|n| n as usize),
         llm_context_tokens: u("llmContextTokens", limits.llm_context_tokens)?,
         inject_crash: None,
+        ..Default::default()
     })
 }
 

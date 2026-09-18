@@ -66,6 +66,7 @@ capture  (tool calls, facts, events)        — record_tool_call / add / import
   → govern    (review / policy auto-apply)   — four gates, hash-chained audit
   → apply     (undoable supersession)        — scope-checked at execution
   → measure   (outcome review)               — re-run the metric, revert on regression
+  → withdraw  (premise drift)                — the evidence moved; leave the queue
 ```
 
 The loop closes **without requiring an LLM** — a floor that always runs, not
@@ -76,6 +77,73 @@ and `--llm-cmd` adds verified reflection on top where judgement needs
 language. Whichever runs, the guarantees are the same: every recommendation
 cites the grains it was computed from; every apply stores its inverse (or is
 marked non-rollbackable up front); every decision carries a written reason.
+
+### The lifecycle, and `withdrawn`
+
+`pending → approved → applied → rolled_back` are human (or policy)
+decisions; `expired` says time ran out. Since 1.9.0 there is one more, and
+the ENGINE is its only author:
+
+**`withdrawn` (#317)** — every grain the recommendation cited has moved:
+retracted, or superseded by a different value. Premise drift used to be
+checked on APPLIED recommendations only, so a pending finding whose entire
+evidence had been destroyed stayed pending and could still be approved — a
+reviewer was offered, and could act on, a finding with nothing left behind
+it, and applying it produced a recommendation to revert it on the next pass.
+
+- Governed by the existing `premise_drift` policy switch, with the same
+  definition of "moved" and the same `same_value` comparison, so a
+  value-identical consolidation is not drift.
+- `premise_drift_open_all` (default `true`) requires **every** cited grain to
+  have moved. A finding derived from six grains of which one changed is
+  weakened, not baseless — that is a reviewer's judgement, not the engine's.
+  `false` is the stricter sweep.
+- A withdrawal writes a hash-chained audit record with a templated reason
+  ("N of M cited grains were superseded by a different value or retracted"),
+  observer `System`, actor `engine:loop.premise_drift`.
+- It **strikes no cooldown** and is excluded from the dedup keys, so the same
+  finding on NEW evidence is proposed normally on the next pass. The engine
+  withdrew it because the evidence moved, not because anyone decided against
+  the finding.
+- `RunResult.withdrawn` counts them; `loop list --status withdrawn` shows
+  them; `review` of one returns `LOP-E020`.
+
+`expired` remains **reserved**: the state machine admits it, and nothing
+assigns it. It says "time ran out", which is a different claim from "the
+premise moved".
+
+### The queue is namespace-scoped (#312)
+
+The loop's INPUTS were namespace-grant-gated and its OUTPUTS were not: every
+recommendation went to one namespace, `areev-loop`, and rights were checked
+against that one namespace. A recommendation's summary, proposal content,
+guidance and evidence hashes are **derived content**, so one
+`read ON areev-loop` grant disclosed all of it for every namespace in the
+memory, one `loop.review` grant decided all of it, and a reject struck a
+memory-wide cooldown keyed on the finding.
+
+Since 1.9.0 a `Recommendation` carries **`scope`**: the normalized, sorted
+namespace list the producing analyzer was run over, stamped by the engine
+where `dedup_key` and `origin` are — so an analyzer, an external command or
+a model draft cannot set it.
+
+A principal **covers** a recommendation when its grants allow the verb on
+**every** namespace in that scope: `read` to list or show, `loop.review` to
+approve or reject, `loop.apply` to apply or roll back. Two deliberate escape
+hatches keep existing deployments working unchanged:
+
+- a grant on `areev-loop` itself (or `*`) still means the **whole queue**, so
+  owner sessions and today's operator grants behave exactly as before;
+- an **empty** scope — an unscoped pass, and every recommendation written
+  before this existed — is covered only by such a whole-queue grant. Fail
+  closed: "derived from we-don't-know-where" must not be readable by someone
+  holding one namespace.
+
+A recommendation the caller does not cover answers **`LOP-E040` not found**,
+not "not authorized", so its existence is not disclosed. Listing goes through
+ONE filtered read (`areev_loop_adapter::visible_recommendations`) that the
+CLI, the server, MCP, both bindings and `DESCRIBE LOOP` all call, so a
+surface added later cannot forget the check.
 
 ## The four gates
 
@@ -239,9 +307,28 @@ can see memory *utility*, not just internal consistency.
 - **Encrypted under the same key** as the main file (crypto-erasure covers it),
   **never syncs** (bundles carry the memory file only), **rebuildable** —
   losing it costs evidence detail, never state. `FORGET` synchronously scrubs
-  it. Modes: `off` | `aggregate` (rollups) | `full` (+ a per-recall ring log).
-  A host-scoped `run_id` may be attached to full rows for trajectory joins; it
-  is deliberately excluded from intent-rollup keys.
+  it. Modes: `off` | `aggregate` (rollups) | `aggregate-hashed` | `full`
+  (+ a per-recall ring log). A host-scoped `run_id` may be attached to full
+  rows for trajectory joins; it is deliberately excluded from intent-rollup
+  keys.
+- **`aggregate-hashed` keeps the rollups and none of the query TEXT** (1.9.0,
+  #306). What a person types while working in one namespace is content:
+  under `aggregate` it is retained memory-wide in `telem_query_stat.qkey` and
+  `.sample`, and copied into `areev-loop` recommendations by `coverage_gap`.
+  Here the key is the hex digest of the same intent key — HMAC'd under a key
+  derived from the memory's own AEAD key, because query strings are
+  low-entropy and a bare digest would hand an attacker an offline guessing
+  oracle — the sample is empty, and the ring log is not written.
+  `cold_grains`, `coverage_gap` and `budget_pressure` keep working: they need
+  counts and distinctness, not the text.
+- **`areev telemetry scrub --ns NS --yes`** (and
+  `Areev::telemetry_scrub_namespace`) drops every `telem_*` row for one exact
+  namespace, plus the buffered events that have not reached them. It reaches
+  the row nothing else could: a **zero-result free-text query** names no
+  grain hash, so the per-hash scrub cannot find it, and the per-subject scrub
+  only reaches it if the erased identity happens to appear in the text.
+  Erasing a namespace should take its recall evidence with it, and every
+  `telem_*` row carries `ns`, so it can.
 
 The console **Sessions** view visualizes it; `GET /api/loop/telemetry` serves it.
 
@@ -678,6 +765,44 @@ division by zero, never zero); anything else is read from the summary your
 harness wrote, e.g. `evalset:abc123:category_accuracy`. `areev eval run`
 writes `effects` and `wall_ms` on every run and `input_tokens` /
 `output_tokens` on the `--model` path from the provider's reported usage.
+
+**A `--tool-cmd` grader can report its own field metrics and usage** (1.9.0,
+#313). `areev eval run` names a scratch file in `$AREEV_EVAL_REPORT` beside
+`$AREEV_EVALSET` and `$AREEV_EVAL_CASE`; the command may write one JSON
+object there:
+
+```json
+{"metrics": {"unit_ok": 1, "period_ok": 0},
+ "usage": {"input_tokens": 1200, "output_tokens": 300, "usd_micros": 900}}
+```
+
+Off stdout on purpose — `equals` / `contains` scoring reads stdout, and a
+reserved trailer would change what every existing grader prints. Each
+metric's **mean** across the cases that reported it lands in the summary as
+`<name>` beside `<name>_n`, so a 0/1 field result reads as a ratio, which is
+what `min_effect.points` assumes of a host-defined field; usage sums into
+`input_tokens` / `output_tokens` / `usd_micros`. `outcome_evalset.field` can
+then name a critical field directly instead of `passed`.
+
+Read **fail-closed**, like the cost keys: a report that is present and
+malformed FAILS the case with the reason, a non-integer usage value is an
+error rather than a zero, and a metric name colliding with a key the verb
+owns (`run_id`, `passed`, `failed`, `effects`, `wall_ms`, `input_tokens`,
+`output_tokens`, `usd_micros`, `model`, `case_ns`) refuses the run before
+anything is journaled. A command that writes nothing produces a summary
+byte-identical to before.
+
+**Where the cases live** (#314). `areev eval create|run --case-ns NS` puts
+the evalset Fact and every case's Tool grain — its input and the executor's
+output — in `NS`, while the `mg:eval_run` summary and the re-acceptance Fact
+stay in `agent:harness` carrying only ids, counts and cost (plus `case_ns`,
+so `areev run-trace --ns NS --run-id eval-…` finds the cases). Evaluation
+cases are built from a firm's own confidential documents; without the flag
+they went to the memory-wide harness, outside the grants, retention and
+erasure of the namespace they came from. It is an explicit flag rather than
+the global `--ns` so no existing invocation changes placement. This is the
+split `areev run` already makes: effect grains in the run's namespace,
+evidence ABOUT the run in the harness.
 **A harness that journals its own runs must write `passed` and `failed` as
 integer counts** (`1`/`0` for a single graded task): the reader is
 fail-closed and drops a summary whose counts are missing or non-integer — a

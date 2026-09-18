@@ -156,3 +156,210 @@ fn declarations_validate_their_inputs() {
     assert!(m.place_hold("ns", "", "who", 0).is_err());
     assert!(m.place_hold("ns", "why", " ", 0).is_err());
 }
+
+// ---------------------------------------------------------------------------
+// #278: a hold binds EVERY deletion path, not just the age-based ones.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_hold_refuses_forget_by_hash() {
+    let (mut m, _d) = open_mem();
+    let h = m
+        .add(&Fact::new("acme", "signed", "nda").namespace("cases"))
+        .unwrap();
+    m.place_hold("cases", "lit", "counsel:jane", 1_000).unwrap();
+
+    let err = m.forget(&h).unwrap_err();
+    assert_eq!(err.code(), "STO-E009", "got {err}");
+    assert!(err.to_string().contains("counsel:jane"), "{err}");
+    // Refused means untouched: the grain is still readable.
+    assert!(m.has(&h).unwrap());
+
+    m.release_hold("cases").unwrap();
+    m.forget(&h).unwrap();
+    assert!(!m.has(&h).unwrap());
+}
+
+#[test]
+fn a_hold_refuses_forget_subject_and_erases_nothing() {
+    let (mut m, _d) = open_mem();
+    m.add(&Fact::new("acme", "signed", "nda").namespace("cases"))
+        .unwrap();
+    m.add(&Fact::new("acme", "paid", "fee").namespace("cases"))
+        .unwrap();
+    m.add(&Fact::new("acme", "signed", "nda").namespace("free"))
+        .unwrap();
+    m.place_hold("cases", "lit", "counsel:jane", 1_000).unwrap();
+
+    let before = m.subject_report("cases", "acme").unwrap();
+    let err = m.forget_subject("cases", "acme").unwrap_err();
+    assert_eq!(err.code(), "STO-E009", "got {err}");
+    // REQ-ERASE-4: a refusal erases nothing at all — not even a partial pass.
+    let after = m.subject_report("cases", "acme").unwrap();
+    assert_eq!(before.grains.len(), after.grains.len());
+    assert!(!after.grains.is_empty());
+
+    // An unheld namespace still erases.
+    let rep = m.forget_subject("free", "acme").unwrap();
+    assert_eq!(rep.grains_erased, 1);
+}
+
+#[test]
+fn override_hold_erases_and_names_the_hold() {
+    use areev_store::{ErasureOptions, HoldOverride};
+    let (mut m, _d) = open_mem();
+    let h = m
+        .add(&Fact::new("acme", "signed", "nda").namespace("cases"))
+        .unwrap();
+    m.place_hold("cases", "lit", "counsel:jane", 1_000).unwrap();
+    let over = HoldOverride::new("gc:sam", "regulator ordered destruction").unwrap();
+
+    let named = m.forget_overriding(&h, &over).unwrap().unwrap();
+    assert_eq!(named.ns, "cases");
+    assert_eq!(named.placed_by, "counsel:jane");
+    assert_eq!(named.because, "lit");
+    assert!(!m.has(&h).unwrap());
+    // The hold itself is untouched — an override is one destruction, not a
+    // release.
+    assert_eq!(m.holds().unwrap().len(), 1);
+
+    m.add(&Fact::new("beta", "signed", "nda").namespace("cases"))
+        .unwrap();
+    let (rep, named) = m
+        .forget_subject_overriding("cases", "beta", ErasureOptions::default(), &over)
+        .unwrap();
+    assert_eq!(rep.grains_erased, 1);
+    assert_eq!(named.unwrap().placed_by, "counsel:jane");
+}
+
+#[test]
+fn an_override_needs_an_authority_and_a_reason() {
+    use areev_store::HoldOverride;
+    assert!(HoldOverride::new("", "why").is_err());
+    assert!(HoldOverride::new("who", "   ").is_err());
+}
+
+#[test]
+fn the_memory_tool_delete_path_honours_a_hold() {
+    // `memory_tool`'s delete/rename go through `Areev::forget`, so the
+    // choke-point guard covers them with no per-surface work.
+    let (mut m, _d) = open_mem();
+    let h = m
+        .add(&Fact::new("acme", "signed", "nda").namespace("cases"))
+        .unwrap();
+    m.place_hold("cases", "lit", "counsel:jane", 1_000).unwrap();
+    assert_eq!(m.forget(&h).unwrap_err().code(), "STO-E009");
+}
+
+// ---------------------------------------------------------------------------
+// #279: holds ride a bundle.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn hold_rides_a_full_bundle() {
+    let d = TempDir::new().unwrap();
+    let src = d.path().join("a.db");
+    let dst = d.path().join("b.db");
+    {
+        let mut m = Areev::open(src.to_str().unwrap()).unwrap();
+        m.add(&Fact::new("acme", "signed", "nda").namespace("cases"))
+            .unwrap();
+        m.set_retention_floor("cases", 183.0, "Art. 12").unwrap();
+        m.place_hold("cases", "lit", "counsel:jane", 1_000).unwrap();
+        let bundle = d.path().join("full.mgb");
+        m.bundle_since(0, bundle.to_str().unwrap()).unwrap();
+        let mut n = Areev::open(dst.to_str().unwrap()).unwrap();
+        n.import_bundle(bundle.to_str().unwrap()).unwrap();
+    }
+    let mut n = Areev::open(dst.to_str().unwrap()).unwrap();
+    let holds = n.holds().unwrap();
+    assert_eq!(holds.len(), 1, "the hold must ride the bundle");
+    assert_eq!(holds[0], ("cases".into(), "lit".into(), "counsel:jane".into()));
+    // And it BINDS on the replica, which is the point.
+    assert_eq!(
+        n.forget_older_than(Some("cases"), i64::MAX, None)
+            .unwrap_err()
+            .code(),
+        "STO-E009"
+    );
+}
+
+#[test]
+fn hold_never_clobbers_a_local_hold() {
+    let d = TempDir::new().unwrap();
+    let src = d.path().join("a.db");
+    let dst = d.path().join("b.db");
+    let bundle = d.path().join("clobber.mgb");
+    {
+        let mut m = Areev::open(src.to_str().unwrap()).unwrap();
+        m.add(&Fact::new("acme", "signed", "nda").namespace("cases"))
+            .unwrap();
+        m.place_hold("cases", "incoming", "counsel:jane", 1_000)
+            .unwrap();
+        m.bundle_since(0, bundle.to_str().unwrap()).unwrap();
+    }
+    let mut n = Areev::open(dst.to_str().unwrap()).unwrap();
+    n.place_hold("cases", "local", "counsel:local", 5_000).unwrap();
+    n.import_bundle(bundle.to_str().unwrap()).unwrap();
+    let holds = n.holds().unwrap();
+    assert_eq!(holds[0].1, "local", "a local hold is never overwritten");
+    assert_eq!(holds[0].2, "counsel:local");
+}
+
+#[test]
+fn pitr_import_still_applies_holds() {
+    // A point-in-time import skips the registry — saved queries, templates,
+    // retention policies — because it reconstructs a past. A hold is a
+    // present-day stop, so it applies anyway (#279).
+    let d = TempDir::new().unwrap();
+    let src = d.path().join("a.db");
+    let dst = d.path().join("b.db");
+    let bundle = d.path().join("pitr.mgb");
+    let cut = {
+        let mut m = Areev::open(src.to_str().unwrap()).unwrap();
+        m.add(&Fact::new("acme", "signed", "nda").namespace("cases"))
+            .unwrap();
+        m.meta_put("qry:brief", r#"{"body":"RECALL facts","updated_at":100}"#)
+            .unwrap();
+        m.place_hold("cases", "lit", "counsel:jane", 1_000).unwrap();
+        let cut = m.changes_since(0, 10).unwrap().last().unwrap().hlc;
+        m.bundle_since(0, bundle.to_str().unwrap()).unwrap();
+        cut
+    };
+    let mut n = Areev::open(dst.to_str().unwrap()).unwrap();
+    n.import_bundle_until(bundle.to_str().unwrap(), Some(cut)).unwrap();
+    assert_eq!(n.holds().unwrap().len(), 1, "a hold applies on a PITR import");
+    assert!(
+        n.meta_get("qry:brief").unwrap().is_none(),
+        "the rest of the registry still stays out of a PITR import"
+    );
+}
+
+#[test]
+fn a_follower_under_a_hold_still_applies_a_replicated_tombstone() {
+    // #278 item 4: convergence, not a new decision. A follower that aborted
+    // here would diverge from the leader permanently.
+    let d = TempDir::new().unwrap();
+    let src = d.path().join("a.db");
+    let dst = d.path().join("b.db");
+    let mut m = Areev::open(src.to_str().unwrap()).unwrap();
+    let h = m
+        .add(&Fact::new("acme", "signed", "nda").namespace("cases"))
+        .unwrap();
+    let first = d.path().join("one.mgb");
+    m.bundle_since(0, first.to_str().unwrap()).unwrap();
+    let mut n = Areev::open(dst.to_str().unwrap()).unwrap();
+    n.import_bundle(first.to_str().unwrap()).unwrap();
+    n.place_hold("cases", "local litigation", "counsel:local", 1)
+        .unwrap();
+
+    m.forget(&h).unwrap();
+    let second = d.path().join("two.mgb");
+    m.bundle_since(0, second.to_str().unwrap()).unwrap();
+    let stats = n.import_bundle(second.to_str().unwrap()).unwrap();
+    assert!(!n.has(&h).unwrap(), "the tombstone applied");
+    assert_eq!(
+        stats.forgets_under_hold, 1,
+        "and it is counted, so an operator can reconcile it"
+    );
+}

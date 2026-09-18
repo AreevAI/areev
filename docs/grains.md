@@ -150,6 +150,18 @@ separately. The rule that falls out is sharp:
 - a **variation** — a new state that coexists with the old one in its own
   time window — is an **`add`**. The world axis picks among *live* grains by
   their validity window, so both windows must stay live.
+
+  **Among the windows that contain T, the one that took effect most recently
+  in WORLD time wins** (1.9.0, #305): the order is
+  `COALESCE(valid_from, created_at) DESC`, with write order only breaking an
+  exact tie. That matters the moment two windows are OPEN-ENDED — the
+  ordinary shape when a state's end is only known as "the next state began",
+  and what every out-of-order backfill produces. Ordering by write sequence
+  alone answered a world-time question with a system-time tie-break: two
+  open-ended windows both contain every instant after the later start, so the
+  answer was whichever was written last, and a CRM history imported in
+  arrival order read the wrong stage forever with nothing warning. A memory
+  that never sets `valid_from` keeps exactly its previous answers.
 - a **restatement** — you were wrong, or you learned late — is a
   **`supersede`**. The knowledge axis walks the supersession chain, so a
   correction has to be linked to what it corrects.

@@ -1994,6 +1994,33 @@ fn serve_one(
                 .to_string(),
             )
         }
+        // #298: a body that is not UTF-8 text is an error with the reason
+        // named, not a 200 with an empty body. The caller can then fall back
+        // to its own executor for that endpoint; it could not even detect the
+        // old failure.
+        Dispatched::NotText { final_url, detail } => {
+            note_refusal(
+                refusals,
+                EgressRefusal {
+                    caller: caller.clone(),
+                    destination: final_url,
+                    reason: format!("response body is not UTF-8 text: {detail}"),
+                },
+            );
+            respond(
+                &mut stream,
+                502,
+                &serde_json::json!({
+                    "error": format!(
+                        "upstream: response body is not UTF-8 text ({detail}) — the \
+                         broker carries text bodies only, and refuses rather than \
+                         handing back an empty one with the upstream's status"
+                    ),
+                    "code": refusal_code
+                })
+                .to_string(),
+            )
+        }
         Dispatched::Upstream(e) => respond(
             &mut stream,
             502,
@@ -2082,8 +2109,27 @@ enum Dispatched {
     /// answer: a silent truncation to nothing, which is the exact failure mode
     /// the cap exists to make loud.
     TooLarge { final_url: String },
+    /// The upstream answered with a status the caller is entitled to see, but
+    /// the body could not be decoded as UTF-8 text (#298).
+    ///
+    /// A typed outcome for exactly the reason `TooLarge` is one. Both error
+    /// paths used to fall through to an empty string with the REAL status
+    /// attached — so a brokered connector fetching a PDF received
+    /// `{"status":200,"body":""}` and the audit grain recorded a 0-byte
+    /// success. That is a silent wrong answer, and `docs/run.md` rules out
+    /// its shape for overruns in the same words: an overrun is an error,
+    /// never a truncation.
+    NotText { final_url: String, detail: String },
     /// The transport failed.
     Upstream(String),
+}
+
+/// Why a response body could not be handed back (#298).
+enum BodyErr {
+    /// Over the caller's ceiling; the read was abandoned at the cap.
+    TooLarge,
+    /// Not decodable as UTF-8 text.
+    NotText(String),
 }
 
 /// Perform the call, following redirects **by hand** so the allowlist governs
@@ -2191,19 +2237,30 @@ fn dispatch(
     // header for good once the chain leaves the origin; this matches them.
     let mut left_origin = false;
     // The cap bounds what is READ: ureq abandons the body at the limit and
-    // reports it as `BodyExceedsLimit`, which surfaces as `Err(())` here so an
-    // overrun becomes a typed refusal — never an empty or truncated body
-    // passed off as the upstream's answer. Other mid-body read failures keep
-    // the pre-#101 behaviour (empty body with the real status).
-    let read_body = |resp: &mut ureq::http::Response<ureq::Body>| -> std::result::Result<String, ()> {
+    // reports it as `BodyExceedsLimit`, which surfaces as `BodyErr::TooLarge`
+    // here so an overrun becomes a typed refusal — never an empty or
+    // truncated body passed off as the upstream's answer.
+    //
+    // Every OTHER mid-body failure is typed too since #298. It used to map to
+    // an empty string, which meant a non-UTF-8 body (a PDF, an image, any
+    // binary attachment) came back as `{"status":200,"body":""}` with the
+    // audit grain recording a 0-byte success. Carrying binary bodies is a
+    // separate, larger change; refusing them is what makes the current
+    // behaviour honest.
+    let read_body = |resp: &mut ureq::http::Response<ureq::Body>| -> std::result::Result<String, BodyErr> {
         match max_response_bytes {
             Some(n) => match resp.body_mut().with_config().limit(n as u64 + 1).read_to_string() {
-                Ok(text) if text.len() > n => Err(()),
+                Ok(text) if text.len() > n => Err(BodyErr::TooLarge),
                 Ok(text) => Ok(text),
-                Err(ureq::Error::BodyExceedsLimit(_)) => Err(()),
-                Err(_) => Ok(String::new()),
+                Err(ureq::Error::BodyExceedsLimit(_)) => Err(BodyErr::TooLarge),
+                // Every other read failure — a non-UTF-8 body above all — is
+                // its own error now (#298), never an empty success.
+                Err(e) => Err(BodyErr::NotText(e.to_string())),
             },
-            None => Ok(resp.body_mut().read_to_string().unwrap_or_default()),
+            None => match resp.body_mut().read_to_string() {
+                Ok(text) => Ok(text),
+                Err(e) => Err(BodyErr::NotText(e.to_string())),
+            },
         }
     };
 
@@ -2248,7 +2305,10 @@ fn dispatch(
                     redirects: hops,
                     credential_sent: send_credential,
                 },
-                Err(()) => Dispatched::TooLarge { final_url: url },
+                Err(BodyErr::TooLarge) => Dispatched::TooLarge { final_url: url },
+                Err(BodyErr::NotText(detail)) => {
+                    Dispatched::NotText { final_url: url, detail }
+                }
             };
         };
         let Some(location) = location else {
@@ -2262,7 +2322,10 @@ fn dispatch(
                     redirects: hops,
                     credential_sent: send_credential,
                 },
-                Err(()) => Dispatched::TooLarge { final_url: url },
+                Err(BodyErr::TooLarge) => Dispatched::TooLarge { final_url: url },
+                Err(BodyErr::NotText(detail)) => {
+                    Dispatched::NotText { final_url: url, detail }
+                }
             };
         };
         let Some(next_url) = crate::egress::resolve_location(&url, &location) else {

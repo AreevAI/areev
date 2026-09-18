@@ -6,7 +6,295 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.9.0] — 2026-09-18
+
+The **Rounic governance wave**: 41 issues raised against 1.8.5 by a
+multi-tenant product for investment firms built on Areev, closed together.
+Three themes — destruction that every path honours, runs that stay verifiable
+for years, and a tenancy boundary that holds on the OUTPUT side as well as the
+input side.
+
+### Fixed
+
+- **The Anthropic tool-calling adapter no longer sends `temperature`** to
+  models that reject it (#283). Claude Opus 4.7 and later, Sonnet 5 and the
+  Fable 5 models return HTTP 400 for any sampling parameter, and a 400 is
+  terminal here — so every abstract-node turn on a current Claude model died
+  on its first try. The legacy set that still accepts the field is CLOSED by
+  construction (Claude 3.x/4.0/4.1/4.5/4.6 and `claude-haiku-4-5`), so unlike
+  a growing per-model table it cannot go stale, and it fails safe: a model
+  wrongly left out runs at the provider default. Nothing changes on legacy
+  models. Telemetry no longer claims a temperature that was not sent —
+  `ToolCallLlm::effective_temperature` is the new defaulted seam, and
+  `gen_ai.request.temperature` is absent where nothing was sent.
+- **`tags EXCLUDE […]` actually excludes** (#318). The filter parsed, was
+  advertised as filterable by `DESCRIBE FIELDS`, was marked consumed by
+  push-down — and was read by nothing, so `tags EXCLUDE ["label:restricted"]`
+  returned exactly the grains it was asked to exclude, and `areev corpus
+  --select` wrote them into the export under an immutable manifest recording
+  the exclusion. Both set forms now filter where the sibling `subject_in` /
+  `relation_in` / `object_in` sets do. The dead `needs_payload_postfilter`
+  helper and its dangling doc reference are gone.
+- **World-axis `ENTITY … AT` orders by world time** (#305). Two OPEN-ENDED
+  windows both contain every instant after the later start, so the answer was
+  whichever was written last — a system-time tie-break on a world-time
+  question, and exactly what an out-of-order backfill produces. Ordering is
+  now `COALESCE(valid_from, created_at) DESC, seq DESC`: among windows
+  containing T, the one that took effect most recently wins, and write order
+  only breaks an exact tie. A memory that never sets `valid_from` keeps
+  today's answers.
+- **A refused self-approval is journaled** (#292). `docs/run.md` promised
+  every rejected response is journaled before the error returns; the
+  separation-of-duties refusal — the most audit-relevant one the runtime makes
+  — returned `RUN-E012` without writing it. So is a `run.respond` grant
+  refusal, which now loads the run first so the record carries `run_id`.
+- **A brokered non-UTF-8 response body is an error, not an empty 200** (#298).
+  Both body-read paths mapped a decode failure to an empty string with the
+  REAL status attached, so a connector fetching a PDF received
+  `{"status":200,"body":""}` and the audit grain recorded a 0-byte success.
+  Now a typed `502` naming the decode failure, and a recorded refusal.
+- **`areev reindex` backfills `osp` rows** for a relation declared after the
+  grains exist (#310). `osp` rows are written on the add path only when the
+  relation is already in `entity_relations`, so years of history stayed
+  invisible to every reverse walk and nothing backfilled them — the re-stamp
+  only warned. A rebuild now replays every triple's reverse row, inserting it
+  when the relation is declared and removing it when it has left the set. The
+  warning names the fix.
+- **A run is priced** (#291). `usd_micros` was a hard-coded `0` at every
+  producer, so a positive `--max-usd` could never exhaust, the `run_outcome`
+  spend flag never raised, and the Verify gate read an unpriced run as costing
+  `$0` — `0 > 0 × ratio` evaluates `within`, not `not_measurable`.
+  `ToolCallLlm::price_usd_micros` is the new defaulted seam; a priced effect
+  carries `usd_priced: true`, which keeps UNPRICED distinct from free. No
+  journal format change: `verify` and `shadow` replay the journaled figure and
+  never re-price, so a later rate change cannot diverge an old run.
+- **A principal's grants past the cap are reported, not silently truncated**
+  (#309). `authz_grants` read at most 256 heads and returned the first 256, so
+  a live grant on the 257th namespace simply stopped working — fail-closed,
+  but undiagnosable. Now a coded refusal naming the cap.
+
+- **`shadow` of a draft plan honours the draft's own fields.** A candidate
+  body (`--plan-file`, a loop-drafted `plan_revision`) is not in the store, and
+  resolution read `reducers` from the store alone, patching them in afterwards;
+  anything else the body declared was invisible to the rehearsal. Resolution now
+  takes the body's fields directly (`RunManifest::resolve_with_fields`), so a
+  draft's `reads` rehearse as reads rather than as LLM steps out of support.
+
 ### Added
+
+- **Legal holds bind every deletion path** (#278, #279). The hold check moved
+  to the store choke points — `Areev::forget` and `erase_where`'s identity
+  selector — and runs INSIDE the transaction after `reserve_write`, so a hold
+  placed concurrently on Postgres cannot lose the race. CAL `FORGET <hash>`,
+  the MCP tool, the bindings, the console, the memory tool's `delete`/`rename`,
+  the mem0 importer and the loop's rollback all inherit it; `drop_postgres_schema`
+  reads `hold:` rows before `DROP SCHEMA … CASCADE`. New `STO-E009`, used on
+  the age path too. The D10 override ships explicit and audited: CAL
+  `FORGET … WITH override_hold BECAUSE "…"`, CLI `--override-hold --because`,
+  store `forget_overriding` / `forget_subject_overriding` — requiring `admin`
+  on the namespace in addition to `erase`/`delete`, and naming the overridden
+  hold in `context.hold_overridden`. A REFUSED attempt is recorded too
+  (`erase.refused` / `delete.refused`, `grains_erased: 0`), which is the
+  evidence a controller needs to answer an Art. 17 request on an Art. 17(3)
+  ground. `hold:` rows now ride a bundle and apply on a point-in-time import,
+  so a restored or synced memory comes back HELD; bundle replay applies a
+  replicated tombstone even under a local hold and counts it in
+  `ImportStats::forgets_under_hold` — a hold binds the memory where destruction
+  is DECIDED, and a follower that aborted would diverge permanently.
+- **The destruction audit trail is hash-chained** (#280). `Areev::append_audit`
+  puts every Tier-2 record on ONE chain per memory — `derived_from` names the
+  predecessor, `context.seq` makes a GAP detectable, which `derived_from`
+  alone cannot do once an interior record has been forgotten. Shared by the
+  CAL facade and the CLI writers, so the shapes stay identical. `audit export`
+  verifies it, emits `seq` / `previous_audit` / `chain_root`, distinguishes a
+  window edge (`previous_outside_window`) from a break, and reports pre-chain
+  records as `unchained` rather than as breaks. A chained record is no longer
+  forgettable by hash; an age-based purge of the audit namespace stays
+  possible. `docs/procurement.md`'s claim is now true.
+- **US identifier detectors** (#281): `us_ssn`, `us_itin` and `aba_routing`,
+  structure- or checksum-validated and cue-gated where shape alone is a bare
+  digit run. A dashed SSN was reported as `phone`, so a policy allowing
+  business contact numbers leaked it; a bare SSN and both routing numbers were
+  not detected at all. Overlap resolution gains a specificity tiebreak so a
+  validator-backed category beats a shape-only one — detection stays additive,
+  so a phone-redacting policy still covers the span.
+- **Thinking blocks survive the tool boundary** (#284). `ToolCallResponse` and
+  `ChatMessage::Assistant` carry `provider_content`: the assistant turn's
+  content exactly as returned, opaque to Areev. The Anthropic adapter captures
+  `thinking` / `redacted_thinking` blocks (streaming included, reassembled
+  from `thinking_delta` / `signature_delta` and never streamed to `on_token`)
+  and replays a present `provider_content` BYTE-IDENTICALLY. The run journal
+  and the scheduler transcript carry it through, so a `resume` after a crash
+  between turns replays it. Absent for every provider that has none, so
+  existing runs journal and verify unchanged. `ToolCallResponse::new(…)` is
+  the constructor to use, so the next optional field is not another source
+  break.
+- **Per-endpoint request profiles** (#285). `RequestProfile` selects
+  `max_tokens` vs `max_completion_tokens`, sends or omits `temperature`, and
+  passes ARBITRARY extra top-level fields through untouched — `store`,
+  `reasoning_effort`, OpenRouter's `provider`, Anthropic's `thinking` /
+  `output_config` / `inference_geo`. Keys the adapter owns are refused at
+  CONSTRUCTION, naming the key, so a misconfiguration is a startup error
+  rather than a failed run. The default profile produces today's bytes
+  exactly. `--llm-token-field`, `--llm-no-temperature`, `--llm-extra-body`.
+- **The credential seam can sign a request** (#286). `Credential::authorize`
+  is a defaulted method taking `{method, url, body}` and returning the exact
+  headers to send — which is what AWS SigV4 needs and what minting a string
+  could not give. The adapters serialize the body ONCE and send the same
+  bytes they handed the credential. `Anthropic::with_auth_scheme` covers the
+  common case (`x-api-key` or `Bearer`). An `Err` is terminal and nothing is
+  sent.
+- **The model and the engine are frozen with the run** (#287, #288).
+  `RunManifest.llm` (provider, model, region, host tag, request-profile
+  digest) and `RunManifest.engine` (version + `SCHEDULER_EPOCH`). `resume`
+  refuses a mismatch before the lease is taken and before any grain is
+  written — `RUN-E025` / `RUN-E026`, pointing at `areev run fork`, which
+  writes a new manifest carrying the new pin. Only the epoch is compared for
+  the engine, so a patch upgrade does not strand parked approval runs.
+  `ToolCallResponse.served_model` / `served_region` record what the provider
+  says it actually served, so an alias or a router resolving elsewhere is no
+  longer invisible. Manifests without the fields serialize byte-identically
+  and resume under anything.
+- **Batched, asymmetric embeddings** (#290). `EmbedBackend::embed_as(text,
+  EmbedInput)` and `embed_batch`, both defaulted. Query sites embed as
+  `Query`, the write path hoists embedding out of per-grain prep into ONE
+  `embed_batch` per write — N grains was N sequential model calls, and with
+  `CommandEmbed` N process spawns. `CommandEmbed` passes
+  `AREEV_EMBED_INPUT=document|query` to the child. A wrong count or dimension
+  refuses the whole write with nothing stored.
+- **`initiator`, and confirmation asks** (#293, #294). A run started by a
+  service on a person's behalf can name that person, and the approval check
+  refuses them as well as `principal`. A Tool Definition may declare
+  `ask_kind: "confirmation"` — an ask the run's own initiator may answer —
+  frozen in the manifest so a mid-run supersession cannot downgrade a parked
+  approval, and refused at START unless the host passed
+  `--allow-confirmation-asks`: a Definition can arrive in a bundle or a pack,
+  and a weakening delivered with the thing it weakens is not a permission.
+- **Run-level ceilings and concurrency caps** (#295, #296). `BudgetAxis::Effects`
+  and `ToolCalls` bound a WHOLE run (`--max-run-effects`, `--max-tool-calls`);
+  `--max-concurrent` and `--max-concurrent-per-principal` claim CAS'd slot rows
+  beside the run lease, so the cap is hard under races (counting then acquiring
+  is not). Exhaustion is a resumable `BudgetExhausted`, never a node failure;
+  a refusal at the cap is the retryable `RUN-E027` with nothing written. A run
+  with no cap keeps a byte-identical `Spent` and verifies unchanged.
+- **Cron in a firm's own time zone** (#297), behind areev-trigger's `tz`
+  feature (enabled by the CLI and both bindings). The DST policy is DECLARED
+  and test-pinned: a time skipped by spring-forward fires once at the first
+  valid instant after the gap; a repeated time fires once, at the earlier
+  occurrence; `next_due_after` is strictly-after, searching past the fold so
+  the catch-up loop cannot stall. An unknown zone name is refused in every
+  build — a typo must never fall back to UTC and fire at the wrong hour while
+  looking correct.
+- **A configurable, mid-superstep-renewed run lease and a host-qualified
+  holder** (#299, #300). `--lease SECS` / `$AREEV_RUN_LEASE` with a 5 s floor,
+  renewed after every result rather than only at superstep boundaries — which
+  is what makes a short TTL safe, and what the fixed ten minutes was hiding: a
+  healthy driver could already outlive its own lease inside one abstract
+  node's superstep. The holder is now `{principal}#{host}/{pid}`
+  (`--node` / `$AREEV_NODE_ID`); two containers running as PID 1 under one
+  service principal were the SAME holder and did not exclude each other.
+  `RunLease::peek` reports the holder and expiry for `run inspect`.
+- **Run evidence can follow the run's namespace** (#301).
+  `--input-placement run-ns` stores the run's input as its own grain in the
+  run's namespace, the manifest keeping only `input_ref`; a missing input
+  grain refuses rather than replaying against `null`. `--harness-ns` writes
+  fold summaries and egress/blob records to `agent:harness.<run_ns>` — a
+  dotted child, so they stay out of the agent's own recall scope while
+  becoming separately grantable, retainable and erasable. Ids and counters
+  stay in `agent:harness`, so `run list`, cancel and the lease paths are
+  unchanged.
+- **A `PrincipalSession` IS a CAL facade** (#302). `CalExecutor::execute(cal,
+  &session)` now runs ANY statement — read or write — under the session's own
+  fail-closed rights, so one process can serve many signed-in people without a
+  facade per principal (which the embedded backend refuses outright).
+  Implemented as a thread-local scope rather than a second shared slot:
+  `bind_principal`'s race is that it swaps a PROCESS-WIDE value, and a
+  thread-local cannot race by construction. `PrincipalSession::in_namespace`
+  points namespace-defaulting reads at the caller's own namespace.
+- **Graph and as-of reads across a namespace SET** (#303).
+  `RELATED "…" VIA "…" WHERE namespace IN ("a","b")` and the same clause on
+  `ENTITY … AT`; store `related_scoped` / `entity_at_scoped`. A walk is not
+  composable from per-namespace calls — the frontier, `seen`, depth and cap
+  are shared state. Every named namespace is read-checked as itself and one
+  ungranted term refuses the statement whole; patterns are refused; the
+  100-term `CAL-E011` cap is the shared one.
+- **`DERIVED FROM` answers what the session can read** (#304). It required
+  `read ON *`, so the only way to offer reverse provenance to a person holding
+  exact namespace grants was a wide-open service principal with the host
+  post-filtering its results — the authorization decision moved out of the
+  engine. Now: the PARENT must be readable, and children are narrowed to
+  readable namespaces with NO count of what was withheld (a count would
+  disclose that another namespace derived something from this grain).
+  Authorization refusals surface as `CAL-E121`, not as `unsupported`.
+- **Telemetry that keeps no query text, and a namespace scrub** (#306).
+  `--telemetry aggregate-hashed` keeps the same rollups with the key hashed
+  (HMAC under a key derived from the memory's own AEAD key), no sample, and no
+  ring log. `areev telemetry scrub --ns NS --yes` and
+  `Areev::telemetry_scrub_namespace` reach the row nothing else could: a
+  ZERO-RESULT free-text query names no grain hash and need not contain the
+  erased identity.
+- **A namespace-scoped change feed** (#307). `oplog` gains a nullable `ns`
+  column (backfilled on open from the grains, written at every insert site
+  including `OP_FORGET`), `Areev::changes_since_scoped`, `OpRecord.ns`, and
+  `areev log --ns a,b`. A tombstone is now ATTRIBUTABLE, which resolving its
+  hash could never do because the grain is gone. `op_seq` stays the
+  memory-wide sequence, so cursors remain comparable. Postgres schema version 2.
+- **`areev provision --check`** (#308): a SELECT-only report of every stamp's
+  found-vs-wanted value and what is pending, plus
+  `rolling_deploy: safe | drain_writers_first | unknown` from the new
+  `PG_ROLLING_SAFE_FROM` constant. Exit 0 current, 2 pending. Library entry
+  point `areev_store::pg::check_provision`.
+- **An atomic grant transition and a policy epoch** (#309).
+  `AreevFacade::set_grants(principal, &[Grant], because)` makes a principal's
+  live grants EQUAL the desired set in one pass — superseding heads in place
+  where it can, retiring the rest — so narrowing a packed grant no longer
+  means a window with no access or a window with too much. An equal set writes
+  nothing. `AreevFacade::authz_epoch` is a single indexed read that changes
+  whenever the memory's policy does.
+- **The loop's queue is namespace-scoped** (#312). A `Recommendation` carries
+  an engine-stamped `scope`: the namespaces the producing analyzer was run
+  over, stamped where `dedup_key` and `origin` are, so an analyzer, an
+  external command or a model draft cannot set it. A principal covers a
+  recommendation when its grants allow the verb on every namespace in that
+  scope; a grant on `areev-loop` or `*` still means the whole queue, and an
+  empty scope is covered only by such a grant (fail closed). One filtered read
+  (`visible_recommendations`) that the CLI, the server, MCP, both bindings and
+  `DESCRIBE LOOP` all go through, so a surface added later cannot forget it.
+- **A grader can report field metrics and usage** (#313). `areev eval run
+  --tool-cmd` sets `$AREEV_EVAL_REPORT` beside `$AREEV_EVAL_CASE`; a command
+  may write `{"metrics": {…}, "usage": {…}}` there. Each metric's MEAN lands
+  in the `mg:eval_run` summary as `<name>` beside `<name>_n` — which the
+  Verify gate already reads as a host-defined field — and usage sums into
+  `input_tokens` / `output_tokens` / `usd_micros`. Read fail-closed: a
+  malformed report fails the case, and a metric colliding with a reserved key
+  refuses. A command that writes nothing produces today's summary exactly.
+- **`areev eval --case-ns NS`** (#314): the evalset and every case's input and
+  output go to NS, while the summary and the re-acceptance record stay in
+  `agent:harness` — the split `areev run` already makes. Confidential
+  evaluation cases are then governed by the namespace they came from, and go
+  when its sources do.
+- **`areev pack validate|install` are a library** (#315, #316).
+  `areev::pack::{validate_pack, install_pack}` over a typed `PackReport` and a
+  `PCK` error domain, so a Rust host installs an agent without shipping and
+  spawning the binary; `install_pack` takes the CALLER's facade, so it runs
+  under their bound principal, and writes through `cal_add_batch` so a refusal
+  leaves no partial agent. The two verbs are now printers over these.
+  `export` stays CLI-only on purpose: it is an authoring step against a memory
+  you own, not something a provisioning path runs per tenant. The manifest
+  surface gains warned unknown top-level keys, a reserved `"host"` object
+  returned verbatim, and evalset validation shared with `areev eval create`.
+- **The engine withdraws a recommendation whose premise moved** (#317).
+  `RecStatus::Withdrawn`, reachable from `Pending` and `Approved` by the
+  engine only. Premise drift was checked on APPLIED recommendations only, so a
+  pending finding whose every cited grain had been retracted stayed pending
+  and could still be approved — and applying it produced a recommendation to
+  revert it. A withdrawal strikes no cooldown and is excluded from the dedup
+  keys, so the same finding on new evidence is proposed normally.
+- **`audit export` carries the gating edge and, on request, the outcomes**
+  (#319). Loop rows gain `gating: {evalset, run_id, passed, failed}` — in the
+  parsed body all along and dropped — and `--with-outcomes` adds the Verify
+  gate's measured checkpoints, marked `chained: false` because they come from
+  the rebuildable state blob rather than hash-chained grains.
 
 - **Shadow a candidate *version*, not only a candidate plan** (#277).
   `areev run shadow --reexecute pure` (bindings: `run_shadow(…, options=…)` /
@@ -50,14 +338,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   "Memory read" and opens such plans view-only. `docs/run.md`, "Reading the
   run's own memory".
 
-### Fixed
+### Changed
 
-- **`shadow` of a draft plan honours the draft's own fields.** A candidate
-  body (`--plan-file`, a loop-drafted `plan_revision`) is not in the store, and
-  resolution read `reducers` from the store alone, patching them in afterwards;
-  anything else the body declared was invisible to the rehearsal. Resolution now
-  takes the body's fields directly (`RunManifest::resolve_with_fields`), so a
-  draft's `reads` rehearse as reads rather than as LLM steps out of support.
+- **`areev-run` depends on `areev-llm` with `default-features = false`**
+  (#289). Cargo unifies features, so the runtime's dependency edge compiled
+  the openai, anthropic and ollama factory arms into every crate downstream of
+  it — and a host declaring `areev-llm` with `default-features = false` got
+  all three anyway. The feature flags exist so a regulated build can state
+  which model endpoints its artifact can REACH; that statement was not true
+  through this edge. The no-feature build is now clippy-clean and tested.
+- `docs/gdpr.md`'s Art. 33 row no longer says `audit export` answers "what was
+  accessed" (#282). It answers what was DESTROYED, REVEALED or HELD; access
+  logging is the host's responsibility, and the same page has always said reads
+  write no audit grain.
 
 ## [1.8.5] — 2026-09-17
 

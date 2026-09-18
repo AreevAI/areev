@@ -20,7 +20,7 @@ mod governance;
 mod substrate;
 
 pub use governance::LoopGovernance;
-pub use substrate::{BorrowedSubstrate, AreevSubstrate};
+pub use substrate::{loop_state_of, AreevSubstrate, BorrowedSubstrate};
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -48,6 +48,85 @@ pub fn scopes_for(authz: &areev_core::authz::AuthzSet) -> areev_loop::ScopeSet {
         }
     }
     areev_loop::ScopeSet::of(&scopes)
+}
+
+/// The scopes a session holds over ONE recommendation, given the namespaces
+/// it was derived from (#312).
+///
+/// The loop's reads are namespace-grant-gated; its outputs were not — every
+/// recommendation went to one namespace, `areev-loop`, and rights were
+/// checked against that one namespace. So one `read ON areev-loop` grant
+/// disclosed the summary, proposal, guidance and evidence hashes of findings
+/// derived from every namespace in the memory, and one `loop.review` grant
+/// decided all of them, striking a memory-wide cooldown each time.
+///
+/// The rule: a principal covers a recommendation when its grants allow the
+/// verb on EVERY namespace in the recommendation's scope.
+///
+/// Two deliberate escape hatches, both of which keep existing deployments
+/// working unchanged:
+///
+/// * A grant on `areev-loop` itself (or `*`) means the WHOLE queue, so owner
+///   sessions and today's operator grants behave exactly as before.
+/// * An EMPTY scope — an unscoped pass, and every recommendation written
+///   before this existed — is covered only by such a whole-queue grant. Fail
+///   closed: "derived from we-don't-know-where" must not be readable by
+///   someone holding one namespace.
+pub fn scopes_for_rec(
+    authz: &areev_core::authz::AuthzSet,
+    scope: &[String],
+) -> areev_loop::ScopeSet {
+    use areev_core::authz::Verb;
+    use areev_loop::Scope;
+    use areev_loop::LOOP_NS;
+    // The whole-queue grant short-circuits: unchanged behaviour.
+    let whole_queue = scopes_for(authz);
+    if scope.is_empty() {
+        return whole_queue;
+    }
+    let mut scopes = Vec::new();
+    for (verb, s) in [
+        (Verb::Read, Scope::Read),
+        (Verb::Write, Scope::Write),
+        (Verb::LoopReview, Scope::Review),
+        (Verb::LoopApply, Scope::Apply),
+        (Verb::Admin, Scope::Admin),
+    ] {
+        // Either the whole queue, or coverage of every namespace the
+        // finding was derived from. Never a partial read: a finding derived
+        // from `a` and `b` discloses both, so holding `a` alone is not
+        // enough.
+        if authz.allows(verb, LOOP_NS) || scope.iter().all(|ns| authz.allows(verb, ns)) {
+            scopes.push(s);
+        }
+    }
+    areev_loop::ScopeSet::of(&scopes)
+}
+
+/// Whether this session may SEE a recommendation with this scope (#312).
+///
+/// A recommendation the caller does not cover answers "not found" rather
+/// than "not authorized", so its existence is not disclosed — the same
+/// reasoning `recall` applies when it declines to name a sibling namespace
+/// in a refusal.
+pub fn covers_rec(authz: &areev_core::authz::AuthzSet, scope: &[String]) -> bool {
+    scopes_for_rec(authz, scope).has(areev_loop::Scope::Read)
+}
+
+/// Every recommendation a session may SEE, filtered by coverage (#312).
+///
+/// ONE filtered read that every surface goes through — the CLI, the server,
+/// MCP, both bindings and `DESCRIBE LOOP` — so a surface added later cannot
+/// forget the check by calling `Engine::recommendations` directly and
+/// listing the whole namespace.
+pub fn visible_recommendations<S: areev_loop::OmsSubstrate>(
+    engine: &areev_loop::Engine,
+    sub: &S,
+    authz: &areev_core::authz::AuthzSet,
+    status: Option<areev_loop::RecStatus>,
+) -> areev_loop::Result<Vec<areev_loop::Recommendation>> {
+    let all = engine.recommendations(sub, status)?;
+    Ok(all.into_iter().filter(|r| covers_rec(authz, &r.scope)).collect())
 }
 
 /// The observer type an actor label implies, used where no credential record
@@ -89,6 +168,93 @@ pub fn now_ms() -> i64 {
 mod authz_mapping_tests {
     use super::*;
     use areev_core::authz::{AuthzSet, Grant, Verb};
+
+    fn granted(principal: &str, verbs: Vec<Verb>, ns: &[&str]) -> AuthzSet {
+        AuthzSet::restricted(
+            principal,
+            vec![Grant {
+                verbs,
+                namespaces: ns.iter().map(|s| (*s).to_string()).collect(),
+            }],
+        )
+    }
+
+    // ---- #312: coverage over a recommendation's own scope ----------------
+
+    #[test]
+    fn a_namespace_grant_covers_a_finding_derived_from_that_namespace() {
+        // The new capability: a reviewer granted on the namespace they work
+        // in can read and decide findings derived from it — without a grant
+        // on `areev-loop`, which would hand them the whole queue.
+        let amy = granted("user:amy", vec![Verb::Read, Verb::LoopReview], &["a"]);
+        let s = scopes_for_rec(&amy, &["a".into()]);
+        assert!(s.has(areev_loop::Scope::Read));
+        assert!(s.has(areev_loop::Scope::Review));
+        assert!(covers_rec(&amy, &["a".into()]));
+    }
+
+    #[test]
+    fn a_namespace_grant_does_not_cover_another_namespaces_finding() {
+        let amy = granted("user:amy", vec![Verb::Read, Verb::LoopReview], &["a"]);
+        assert!(!covers_rec(&amy, &["b".into()]));
+        let s = scopes_for_rec(&amy, &["b".into()]);
+        assert!(!s.has(areev_loop::Scope::Read));
+        assert!(!s.has(areev_loop::Scope::Review));
+    }
+
+    #[test]
+    fn coverage_needs_every_namespace_a_finding_was_derived_from() {
+        // A finding derived from `a` and `b` discloses both, so holding `a`
+        // alone is not enough — it is not a partial read.
+        let amy = granted("user:amy", vec![Verb::Read], &["a"]);
+        assert!(!covers_rec(&amy, &["a".into(), "b".into()]));
+        let both = granted("user:both", vec![Verb::Read], &["a", "b"]);
+        assert!(covers_rec(&both, &["a".into(), "b".into()]));
+    }
+
+    #[test]
+    fn a_whole_queue_grant_still_means_the_whole_queue() {
+        // Owner sessions and existing operator grants are unchanged.
+        let op = granted(
+            "user:op",
+            vec![Verb::Read, Verb::LoopReview],
+            &[areev_loop::LOOP_NS],
+        );
+        assert!(covers_rec(&op, &["a".into()]));
+        assert!(covers_rec(&op, &["a".into(), "b".into()]));
+        assert!(scopes_for_rec(&op, &["zzz".into()]).has(areev_loop::Scope::Review));
+        assert!(covers_rec(&AuthzSet::owner("user:local"), &["a".into()]));
+    }
+
+    #[test]
+    fn an_unscoped_finding_needs_a_whole_queue_grant() {
+        // An unscoped pass — and every recommendation written before the
+        // scope existed — is "derived from we-don't-know-where". Fail closed.
+        let amy = granted("user:amy", vec![Verb::Read, Verb::LoopReview], &["a"]);
+        assert!(!covers_rec(&amy, &[]));
+        let op = granted("user:op", vec![Verb::Read], &[areev_loop::LOOP_NS]);
+        assert!(covers_rec(&op, &[]));
+        assert!(covers_rec(&AuthzSet::owner("user:local"), &[]));
+    }
+
+    #[test]
+    fn coverage_is_per_verb() {
+        // Read but not review: they can see it, and cannot decide it.
+        let amy = granted("user:amy", vec![Verb::Read], &["a"]);
+        let s = scopes_for_rec(&amy, &["a".into()]);
+        assert!(s.has(areev_loop::Scope::Read));
+        assert!(!s.has(areev_loop::Scope::Review));
+        assert!(!s.has(areev_loop::Scope::Apply));
+    }
+
+    #[test]
+    fn scope_normalization_is_order_and_duplicate_independent() {
+        use areev_loop::normalize_scope;
+        assert_eq!(
+            normalize_scope(&["b".into(), "a".into(), "a".into(), "  ".into()]),
+            vec!["a".to_string(), "b".to_string()]
+        );
+    }
 
     #[test]
     fn owner_maps_to_every_scope() {

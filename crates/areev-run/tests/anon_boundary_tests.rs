@@ -85,12 +85,12 @@ impl ToolCallLlm for ScriptedLlm {
 }
 
 fn done(text: &str) -> ToolCallResponse {
-    ToolCallResponse {
-        text: Some(text.into()),
-        tool_calls: vec![],
-        stop_reason: StopReason::EndTurn,
-        usage: Usage { input_tokens: 4, output_tokens: 2, cache_read_tokens: None },
-    }
+    ToolCallResponse::new(
+        Some(text.into()),
+        vec![],
+        StopReason::EndTurn,
+        Usage { input_tokens: 4, output_tokens: 2, cache_read_tokens: None },
+    )
 }
 
 struct Rig {

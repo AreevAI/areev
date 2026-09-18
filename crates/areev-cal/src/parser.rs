@@ -5402,9 +5402,12 @@ impl Parser {
                 "SUBJECT" => {
                     self.advance();
                     let user_id = self.parse_string_literal()?;
-                    // Optional `WITH text_mentions`.
+                    // Optional `WITH text_mentions` and `WITH override_hold`
+                    // (#278), in either order and repeatable as separate
+                    // clauses.
                     let mut text_mentions = false;
-                    if self.at_exact(&Token::With) {
+                    let mut override_hold = false;
+                    while self.at_exact(&Token::With) {
                         self.advance();
                         match self.peek() {
                             Some(SpannedToken { token: Token::Ident(opt), .. })
@@ -5413,16 +5416,22 @@ impl Parser {
                                 self.advance();
                                 text_mentions = true;
                             }
+                            Some(SpannedToken { token: Token::Ident(opt), .. })
+                                if opt.eq_ignore_ascii_case("override_hold") =>
+                            {
+                                self.advance();
+                                override_hold = true;
+                            }
                             other => {
                                 return Err(CalError::UnexpectedToken {
-                                    expected: "text_mentions".into(),
+                                    expected: "text_mentions or override_hold".into(),
                                     found: other
                                         .map(|t| t.token.description())
                                         .unwrap_or_else(|| "end of input".into()),
                                     span: other.map(|t| t.span),
                                     suggestion: Some(
-                                        "FORGET SUBJECT supports exactly one option: \
-                                         WITH text_mentions"
+                                        "FORGET SUBJECT supports two options: \
+                                         WITH text_mentions and WITH override_hold"
                                             .into(),
                                     ),
                                 });
@@ -5443,6 +5452,7 @@ impl Parser {
                         target: ForgetTarget::User { user_id },
                         reason: Some(reason),
                         text_mentions,
+                        override_hold,
                         span: Some(Span::new(
                             span_start.start,
                             span_end.end,
@@ -5469,12 +5479,41 @@ impl Parser {
         }
 
         let hash = self.parse_hash_literal()?;
+        // `WITH override_hold` on the hash form too (#278).
+        let mut override_hold = false;
+        while self.at_exact(&Token::With) {
+            self.advance();
+            match self.peek() {
+                Some(SpannedToken { token: Token::Ident(opt), .. })
+                    if opt.eq_ignore_ascii_case("override_hold") =>
+                {
+                    self.advance();
+                    override_hold = true;
+                }
+                other => {
+                    return Err(CalError::UnexpectedToken {
+                        expected: "override_hold".into(),
+                        found: other
+                            .map(|t| t.token.description())
+                            .unwrap_or_else(|| "end of input".into()),
+                        span: other.map(|t| t.span),
+                        suggestion: Some(
+                            "FORGET <hash> supports one option: WITH override_hold".into(),
+                        ),
+                    });
+                }
+            }
+        }
         // BECAUSE is optional on the hash form (it predates the requirement)
-        // but recorded when given.
+        // but recorded when given — and MANDATORY when overriding a hold: an
+        // override with no stated ground is indistinguishable from a mistake.
         let reason = if self.at_exact(&Token::Reason) || self.at_exact(&Token::Because) {
             self.advance();
             Some(self.parse_string_literal()?)
         } else {
+            if override_hold {
+                return Err(CalError::MissingReason { span: Some(self.current_span()) });
+            }
             None
         };
         let span_end = self.prev_span();
@@ -5482,6 +5521,7 @@ impl Parser {
             target: ForgetTarget::Hash { hash },
             reason,
             text_mentions: false,
+            override_hold,
             span: Some(Span::new(
                 span_start.start,
                 span_end.end,
@@ -6207,6 +6247,71 @@ impl Parser {
         }))
     }
 
+
+    /// `WHERE namespace IN ("a", "b")` — the optional trailing namespace set
+    /// on `RELATED` and `ENTITY … AT` (#303).
+    ///
+    /// Uses the existing IN-set parser, so the 100-term cap (`CAL-E011`) and
+    /// the value grammar are shared. Exact names only: a PATTERN is refused
+    /// here rather than at the facade, because a walk that quietly covered
+    /// more than it was asked to is an answer nobody can audit.
+    fn parse_trailing_namespace_set(&mut self) -> CalResult<Vec<String>> {
+        if !self.at_exact(&Token::Where) {
+            return Ok(Vec::new());
+        }
+        self.advance();
+        match self.peek() {
+            Some(SpannedToken { token: Token::Ident(w), .. })
+                if w.eq_ignore_ascii_case("namespace") => {}
+            other => {
+                return Err(CalError::UnexpectedToken {
+                    expected: "namespace".into(),
+                    found: other
+                        .map(|t| t.token.description())
+                        .unwrap_or_else(|| "end of input".into()),
+                    span: other.map(|t| t.span),
+                    suggestion: Some(
+                        "the only WHERE clause these statements take is \
+                         WHERE namespace IN (\"a\", \"b\")"
+                            .into(),
+                    ),
+                });
+            }
+        }
+        self.advance();
+        self.expect_exact(&Token::In)?;
+        let values = self.parse_value_list()?;
+        let mut out = Vec::with_capacity(values.len());
+        for v in values {
+            let name = match v {
+                Value::String { value } => value,
+                other => {
+                    return Err(CalError::UnexpectedToken {
+                        expected: "a quoted namespace name".into(),
+                        found: format!("{other:?}"),
+                        span: Some(self.prev_span()),
+                        suggestion: None,
+                    })
+                }
+            };
+            if name.contains('*') {
+                return Err(CalError::UnexpectedToken {
+                    expected: "an exact namespace name".into(),
+                    found: name,
+                    span: Some(self.prev_span()),
+                    suggestion: Some(
+                        "a graph or as-of read takes exact namespaces, never a \
+                         prefix scope — every named namespace is read-checked as \
+                         itself"
+                            .into(),
+                    ),
+                });
+            }
+            out.push(name);
+        }
+        Ok(out)
+    }
+
     /// Parse `RELATED "<start>" VIA "<r1,r2>" [DIRECTION out|in|both]
     /// [DEPTH <n>] [LIMIT <n>]` — the bounded graph walk.
     fn parse_related(&mut self) -> CalResult<CalStatement> {
@@ -6248,6 +6353,7 @@ impl Parser {
         }
         let depth = self.parse_word_number("DEPTH")?;
         let limit = self.parse_word_number("LIMIT")?;
+        let namespaces = self.parse_trailing_namespace_set()?;
         let span_end = self.prev_span();
         Ok(CalStatement::Related(RelatedStmt {
             start,
@@ -6255,6 +6361,7 @@ impl Parser {
             direction,
             depth,
             limit,
+            namespaces,
             span: Some(Span::new(span_start.start, span_end.end, span_start.line, span_start.col)),
         }))
     }
@@ -6385,8 +6492,10 @@ impl Parser {
                 }
             }
         }
+        let namespaces = self.parse_trailing_namespace_set()?;
         let span_end = self.prev_span();
         Ok(CalStatement::EntityAt(EntityAtStmt {
+            namespaces,
             subject,
             relation,
             at_ms,

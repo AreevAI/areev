@@ -1108,6 +1108,31 @@ authenticating *data* at the format level, which remains out of scope below.
 - Forged grain provenance when syncing with an untrusted peer (integrity is
   guaranteed; authenticity is not, until signing lands).
 
+## Multi-principal hosts: one process, many people
+
+`AreevFacade::bind_principal` swaps ONE process-wide rights slot, and its own
+documentation says it is safe only for hosts that serialize requests — two
+concurrent requests race, and the loser executes under the winner's rights.
+
+`principal_session(p)` is the race-free path, and since 1.9.0 (#302) a
+`PrincipalSession` **is** a CAL facade: `CalExecutor::execute(cal, &session)`
+runs ANY statement — read or write — under the session's own fail-closed
+`AuthzSet`. Before, it carried per-principal rights for WRITES only; every
+gated read went to the shared slot, so the only race-free way to read as N
+principals was N facades over N store handles — and on the embedded backend a
+second handle is refused (`STO-E002`), so it was not possible at all.
+
+It is implemented as a **thread-local scope**, not a second shared slot, and
+that is the point: CAL execution is synchronous on the calling thread (it
+serializes on the store mutex anyway), so a session's rights are visible
+exactly for the duration of its own call and to nobody else. A guard pops the
+scope on drop, so a refusal or a panic cannot leave one principal's rights
+installed for the next call. `PrincipalSession::in_namespace(ns)` points the
+namespace-defaulting reads — `RELATED`, `ENTITY … AT`, `NOVELTY` — at the
+caller's own namespace, which a facade-construction-time default could not
+express. `as_any()` deliberately returns `None`: a downcast to the unscoped
+facade would let a caller read past the session's grants.
+
 ## Areev Loop (self-improvement) trust boundary
 
 Areev Loop lets an agent change its own memory, so its governance *is* a security
@@ -1130,6 +1155,30 @@ boundary. See [`loop.md`](loop.md) for the surfaces; the invariants:
   per grain, and `agent:*`/loop namespaces are excluded from implicit
   analyzer input entirely (governance and harness state are not analyzer
   fodder). Regression-tested in `areev-loop-adapter/tests/adapter.rs`.
+- **Substrate WRITES are namespace-grant-gated too** (1.9.0, #312). This was
+  the asymmetry: the loop's reads honoured namespace grants and its outputs
+  did not. Every recommendation and audit grain goes to one namespace,
+  `areev-loop`, and rights were checked against that one namespace — so one
+  `read ON areev-loop` grant disclosed the summary, proposal, guidance and
+  evidence hashes of findings derived from **every** namespace in the memory,
+  one `loop.review` grant decided all of them, and a reject struck a
+  memory-wide cooldown on a finding the reviewer could not read the evidence
+  for. A `Recommendation` now carries an **engine-stamped `scope`** — the
+  namespaces the producing analyzer was run over, stamped where `dedup_key`
+  and `origin` are, so an analyzer, an external command or a model draft
+  cannot set it. A principal covers a recommendation when its grants allow
+  the verb on every namespace in that scope; a grant on `areev-loop` or `*`
+  still means the whole queue (so existing deployments are unchanged), and an
+  empty scope is covered only by such a grant — fail closed. A recommendation
+  the caller does not cover answers `LOP-E040` **not found**, never "not
+  authorized", so its existence is not disclosed. One filtered read serves
+  every surface.
+- **Query text need not be retained** (1.9.0, #306). `coverage_gap` copies
+  the recall-telemetry sample into a recommendation's args, data and target,
+  and the engine writes those as immutable, replicating grains. Under
+  `--telemetry aggregate-hashed` the sample is empty and the rollup key is a
+  keyed digest, so the analyzer emits a digest and counts instead. See
+  [`loop.md`](loop.md) §"Recall telemetry".
 - **The laundering threat.** The deterministic path can carry attacker text:
   tool-failure clustering derives a signature from attacker-controlled tool
   output. So auto-apply is restricted to SUPERSEDE-only structural curation

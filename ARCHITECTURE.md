@@ -2259,6 +2259,70 @@ anything richer is a saved query and a trigger's `--context-query`, or a new
 operation with its own decision. `docs/run.md` "Reading the run's own memory"
 is the reference.
 
+### A hold binds the memory where destruction is decided (1.9.0, #278, #279)
+
+A legal hold used to be read by exactly one guard — the age-based sweep —
+so `FORGET <hash>`, `FORGET SUBJECT`, the memory tool's `delete`, the loop's
+rollback and `DROP SCHEMA` all walked past it. The check now lives at the
+store's CHOKE POINTS (`Areev::forget` and the identity selector), inside the
+erasure transaction after `reserve_write`, so every surface inherits it and a
+hold placed concurrently on Postgres cannot lose the race against a delete.
+
+Three consequences that are decisions rather than mechanics:
+
+- **A refusal is evidence.** `STO-E009` is its own code, and the surfaces
+  record the deferral (`erase.refused`, `grains_erased: 0`). "The request was
+  made and an obligation deferred it" is what a controller answers an
+  Art. 17(3) case with; silence is not.
+- **An override is a second decision with an author.** It needs `admin` on
+  the namespace on top of `erase`/`delete`, a mandatory reason, and the audit
+  record names the hold it overrode. A principal who may erase is not
+  automatically one who may override a records-retention hold.
+- **Replication carries the decision; it does not re-take it.** Bundle import
+  applies a replicated tombstone even under a local hold and counts it. A
+  follower that refused would diverge from its leader permanently, and a hold
+  that produced a divergent replica would be worse than no hold. Holds
+  themselves replicate — and apply on a point-in-time import — so a restored
+  memory comes back HELD, which is the whole claim `compliance-profiles.md`
+  makes for a file-truth.
+
+### The destruction trail is one chain per memory (1.9.0, #280)
+
+Tier-2 audit records were standalone Observations: no predecessor, no
+sequence. Forgetting one left the export clean, which is the opposite of what
+`procurement.md` claimed. `Areev::append_audit` now puts every record — from
+CAL and from the CLI alike — on ONE chain, and both halves matter:
+`derived_from` lets a provenance walk reach the predecessor, and
+`context.seq` is what makes a **gap** detectable, which `derived_from` alone
+cannot do once an interior record is gone and its successor's predecessor
+simply fails to resolve.
+
+Verification distinguishes three things that look alike in a window: a
+predecessor missing from the STORE (a break), a predecessor outside `--since`
+(a window edge, not a break — otherwise an hourly incremental import is noise
+nobody reads), and a record written before chaining existed (`unchained`, not
+a break — absence of a link in an older build's record is not evidence of
+tampering).
+
+### The tenancy boundary holds on the output side too (1.9.0, #301, #312)
+
+Areev had a recurring asymmetry: subsystems read under namespace grants and
+wrote everything to one shared namespace. The loop read per grant and filed
+every finding in `areev-loop`; the runtime journaled effect grains in the
+run's namespace and put the run's INPUT, its fold summaries and its outbound
+call records in the memory-wide `agent:harness`. In both cases one grant over
+the shared namespace disclosed derived content from every namespace in the
+memory, and erasing a namespace left that content behind.
+
+The fix is the same shape in both: stamp the ORIGIN, and authorize against
+it. A recommendation carries the namespaces its analyzer was run over,
+engine-stamped so no draft can widen it; a run may carry its input by
+reference in its own namespace and its content-bearing harness records in
+`agent:harness.<run_ns>`. Ids and counters stay shared, because listing runs
+and counting outcomes are not disclosures. A grant on the shared namespace
+still means everything, so existing deployments are unchanged, and an
+unstamped record is covered only by such a grant — fail closed.
+
 ### Portability and provenance over lock-in
 
 Grains are content-addressed, immutable, and hash-linked; authenticity is a

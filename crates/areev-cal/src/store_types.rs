@@ -1121,47 +1121,6 @@ impl RecallParams {
         Self::default()
     }
 
-    /// Whether the PRIMARY recall tail must run the payload-dependent
-    /// post-filter pass (`Areev::payload_postfilters_match`).
-    /// A cheap `Option` scan (ADR-014 §2): `true` when any payload-only /
-    /// tail-only filter is set. Column-backed filters (`user_id`, `importance`,
-    /// `created_at` range, exact `namespace`, `grain_type`) are NOT listed —
-    /// they are enforced in SQL, so they alone do not require the tail.
-    ///
-    /// The GDPR Art. 18 restriction membership check is gated SEPARATELY on the
-    /// policy flag (`policy_requires_restriction_check`) at the call site, so it
-    /// is intentionally not part of this predicate — a restriction-free memory
-    /// issues zero extra queries even when this returns `true`, and a restricted
-    /// memory runs the tail regardless of this predicate.
-    pub fn needs_payload_postfilter(&self) -> bool {
-        self.confidence_threshold.is_some()
-            || self.namespaces.is_some()
-            || self.tags.is_some()
-            || self.exclude_tags.is_some()
-            || self.subject_contains.is_some()
-            || self.object_contains.is_some()
-            || self.include_contradicted == Some(false)
-            || self.entity.is_some()
-            || self.subject.is_some()
-            || self.relation.is_some()
-            || self.object.is_some()
-            || self.subject_in.is_some()
-            || self.relation_in.is_some()
-            || self.object_in.is_some()
-            || self.min_proficiency.is_some()
-            || self.skill_domain.is_some()
-            || self.skill_transferable.is_some()
-            || self.holder_did.is_some()
-            // EventDate / Both time range reads payload `valid_from` (CreatedAt
-            // range is SQL-pushed). Any time bound with a non-CreatedAt field
-            // needs the tail.
-            || ((self.time_start.is_some() || self.time_end.is_some())
-                && !matches!(
-                    self.temporal_field.unwrap_or_default(),
-                    TemporalField::CreatedAt
-                ))
-    }
-
     pub fn query(mut self, q: &str) -> Self {
         self.query = Some(q.to_string());
         self

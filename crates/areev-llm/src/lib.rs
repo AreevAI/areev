@@ -30,6 +30,7 @@
 pub mod cred;
 pub mod extract;
 pub mod llm_detect;
+pub mod profile;
 pub mod pseudonymize;
 pub mod toolcall;
 mod toolcall_stream;
@@ -210,6 +211,9 @@ pub struct OpenAiCompat {
     /// ride this one OpenAI-compatible transport, and only the code that
     /// chose the endpoint knows which is which.
     pub(crate) provider_name: &'static str,
+    /// How this endpoint wants its request body shaped (#285). The default
+    /// profile produces byte-for-byte today's request.
+    pub(crate) profile: crate::profile::RequestProfile,
 }
 
 impl OpenAiCompat {
@@ -234,6 +238,7 @@ impl OpenAiCompat {
             cred,
             model: model.into(),
             provider_name: "openai",
+            profile: crate::profile::RequestProfile::default(),
         }
     }
 
@@ -242,6 +247,20 @@ impl OpenAiCompat {
     pub fn with_provider_name(mut self, name: &'static str) -> Self {
         self.provider_name = name;
         self
+    }
+
+    /// Shape this endpoint's request body (#285) — which token-limit field it
+    /// takes, whether it accepts a temperature, and any extra top-level
+    /// fields it needs (`store`, `reasoning_effort`, OpenRouter's
+    /// `provider`, …).
+    pub fn with_request_profile(mut self, p: crate::profile::RequestProfile) -> Self {
+        self.profile = p;
+        self
+    }
+
+    /// The profile this endpoint was configured with.
+    pub fn request_profile(&self) -> &crate::profile::RequestProfile {
+        &self.profile
     }
 
     fn build_body(&self, system: &str, user: &str, op: &str, use_schema: bool) -> Value {
@@ -305,6 +324,12 @@ pub struct Anthropic {
     pub(crate) cred: Box<dyn crate::cred::Credential>,
     pub(crate) model: String,
     pub(crate) base_url: String,
+    /// See [`OpenAiCompat::profile`] (#285).
+    pub(crate) profile: crate::profile::RequestProfile,
+    /// Which header carries the credential (#286). The native API takes
+    /// `x-api-key`; a gateway fronting the same wire format inside a firm's
+    /// own tenant commonly takes a bearer token instead.
+    pub(crate) auth_scheme: crate::cred::AuthScheme,
 }
 
 impl Anthropic {
@@ -321,11 +346,32 @@ impl Anthropic {
             cred,
             model: model.into(),
             base_url: "https://api.anthropic.com".into(),
+            profile: crate::profile::RequestProfile::default(),
+            auth_scheme: crate::cred::AuthScheme::default(),
         }
     }
 
     /// Override the endpoint (gateways, fixtures). Production callers never
     /// need this; the default is the public API.
+    /// See [`OpenAiCompat::with_request_profile`] (#285). On this wire
+    /// format the pass-through fields are `thinking`, `output_config`,
+    /// `inference_geo` and anything Anthropic adds later.
+    pub fn with_request_profile(mut self, p: crate::profile::RequestProfile) -> Self {
+        self.profile = p;
+        self
+    }
+
+    /// The profile this endpoint was configured with.
+    pub fn request_profile(&self) -> &crate::profile::RequestProfile {
+        &self.profile
+    }
+
+    /// Which header carries the credential (#286).
+    pub fn with_auth_scheme(mut self, scheme: crate::cred::AuthScheme) -> Self {
+        self.auth_scheme = scheme;
+        self
+    }
+
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
         self.base_url = base_url.into();
         self
@@ -428,6 +474,10 @@ impl LlmBackend for Ollama {
 // ---- the factory -----------------------------------------------------------
 
 /// The environment variable a provider reads its key from by default.
+///
+/// Only reachable from a factory arm, so a build with every provider feature
+/// off has no caller for it (#289).
+#[cfg(any(feature = "anthropic", feature = "openai"))]
 fn default_key_env(provider: &str) -> &'static str {
     match provider {
         "anthropic" | "claude" => "ANTHROPIC_API_KEY",
@@ -435,6 +485,7 @@ fn default_key_env(provider: &str) -> &'static str {
     }
 }
 
+#[cfg(any(feature = "anthropic", feature = "openai"))]
 fn read_key(key_env: Option<&str>, provider: &str) -> Result<String> {
     let var = key_env.unwrap_or_else(|| default_key_env(provider));
     let k = std::env::var(var).map_err(|_| {
@@ -474,12 +525,23 @@ fn split_spec(spec: &str) -> (String, String) {
 /// loop's `LlmBackend`) and `resolve_toolcall` (the runtime's `ToolCallLlm`);
 /// every concrete provider implements both traits.
 enum Provider {
+    #[cfg(feature = "anthropic")]
     Anthropic(Anthropic),
+    #[cfg(feature = "openai")]
     OpenAi(OpenAiCompat),
+    #[cfg(feature = "ollama")]
     Ollama(Ollama),
 }
 
-fn build_provider(spec: &str, base_url: Option<&str>, key_env: Option<&str>) -> Result<Provider> {
+fn build_provider(
+    spec: &str,
+    #[cfg_attr(not(feature = "openai"), allow(unused_variables))] base_url: Option<&str>,
+    #[cfg_attr(
+        not(any(feature = "anthropic", feature = "openai")),
+        allow(unused_variables)
+    )]
+    key_env: Option<&str>,
+) -> Result<Provider> {
     let (provider, model) = split_spec(spec);
     if model.is_empty() {
         return Err(Error::LlmBackend("--model: empty model name".into()));
@@ -629,9 +691,15 @@ fn build_provider(spec: &str, base_url: Option<&str>, key_env: Option<&str>) -> 
 /// the key is read from. Keys are read from the environment, never taken on the
 /// command line.
 pub fn resolve(spec: &str, base_url: Option<&str>, key_env: Option<&str>) -> Result<Box<dyn LlmBackend>> {
+    // With no provider feature compiled in, `build_provider` can only refuse
+    // — the enum has no variants, so there is nothing to match (#289).
+    #[allow(unreachable_code)]
     Ok(match build_provider(spec, base_url, key_env)? {
+        #[cfg(feature = "anthropic")]
         Provider::Anthropic(p) => Box::new(p),
+        #[cfg(feature = "openai")]
         Provider::OpenAi(p) => Box::new(p),
+        #[cfg(feature = "ollama")]
         Provider::Ollama(p) => Box::new(p),
     })
 }
@@ -644,9 +712,13 @@ pub fn resolve_toolcall(
     base_url: Option<&str>,
     key_env: Option<&str>,
 ) -> Result<std::sync::Arc<dyn toolcall::ToolCallLlm>> {
+    #[allow(unreachable_code)]
     Ok(match build_provider(spec, base_url, key_env)? {
+        #[cfg(feature = "anthropic")]
         Provider::Anthropic(p) => std::sync::Arc::new(p),
+        #[cfg(feature = "openai")]
         Provider::OpenAi(p) => std::sync::Arc::new(p),
+        #[cfg(feature = "ollama")]
         Provider::Ollama(p) => std::sync::Arc::new(p),
     })
 }
@@ -716,6 +788,9 @@ mod tests {
     }
 
     #[test]
+    // Exercises the provider factory, so it needs the providers compiled in
+    // (#289: a no-default-features build has no factory arms at all).
+    #[cfg(all(feature = "openai", feature = "anthropic", feature = "ollama"))]
     fn resolve_routes_by_prefix_and_explicit_provider() {
         std::env::set_var("ANTHROPIC_API_KEY", "test-key");
         assert_eq!(resolve("claude-sonnet", None, None).unwrap().model(), "claude-sonnet");
@@ -792,6 +867,9 @@ mod tests {
     }
 
     #[test]
+    // Exercises the provider factory, so it needs the providers compiled in
+    // (#289: a no-default-features build has no factory arms at all).
+    #[cfg(all(feature = "openai", feature = "anthropic", feature = "ollama"))]
     fn resolve_reports_missing_key() {
         // `Box<dyn LlmBackend>` isn't Debug, so match rather than unwrap_err.
         let e = match resolve("openai:gpt-x", None, Some("DEFINITELY_UNSET_VAR_XYZ")) {
@@ -854,5 +932,50 @@ mod provider_gate_tests {
             };
             assert_eq!(b.model(), "google/gemini-2.0-flash");
         }
+    }
+}
+
+#[cfg(test)]
+mod no_default_features_tests {
+    //! #289: a build that compiles no provider must refuse every spec BY
+    //! NAME, so an operator reading the error learns which feature is
+    //! missing rather than "unknown provider".
+    use super::*;
+
+    #[test]
+    #[cfg(not(any(feature = "openai", feature = "anthropic", feature = "ollama")))]
+    fn every_builtin_spec_names_the_feature_it_needs() {
+        for (spec, feature) in [
+            ("openai:x", "openai"),
+            ("anthropic:x", "anthropic"),
+            ("ollama:x", "ollama"),
+        ] {
+            let err = match resolve(spec, None, None) {
+                Err(e) => e.to_string(),
+                Ok(_) => panic!("{spec} must not resolve in a no-provider build"),
+            };
+            assert!(
+                err.contains("not compiled into this build"),
+                "{spec}: {err}"
+            );
+            assert!(err.contains(feature), "{spec} must name {feature}: {err}");
+            let err = match resolve_toolcall(spec, None, None) {
+                Err(e) => e.to_string(),
+                Ok(_) => panic!("{spec} must not resolve in a no-provider build"),
+            };
+            assert!(err.contains(feature), "{spec} (toolcall): {err}");
+        }
+    }
+
+    #[test]
+    #[cfg(all(feature = "openai", feature = "anthropic", feature = "ollama"))]
+    fn the_default_build_still_resolves_all_three() {
+        // The hosts that call the factory keep their defaults, so this is
+        // what `cargo test --workspace` exercises.
+        std::env::set_var("OPENAI_API_KEY", "k");
+        std::env::set_var("ANTHROPIC_API_KEY", "k");
+        assert!(resolve_toolcall("openai:gpt-4", None, None).is_ok());
+        assert!(resolve_toolcall("anthropic:claude-opus-5", None, None).is_ok());
+        assert!(resolve_toolcall("ollama:llama3", None, None).is_ok());
     }
 }

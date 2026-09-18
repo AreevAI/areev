@@ -140,7 +140,16 @@ pub(crate) const PG_SCHEMA: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_osp_seq ON osp(seq)",
     "CREATE TABLE IF NOT EXISTS entity_latest(ns bigint, s bigint, p bigint, o bigint, seq bigint, hash bytea, PRIMARY KEY(ns,s,p))",
     "CREATE TABLE IF NOT EXISTS heads(ns bigint, s bigint, p bigint, seq bigint, hash bytea, created_at bigint, PRIMARY KEY(ns,s,p,seq))",
-    "CREATE TABLE IF NOT EXISTS oplog(op_seq bigint PRIMARY KEY, hlc bigint, op bigint, hash bytea)",
+    // `ns` (#307) is nullable so an older-build writer against this schema
+    // keeps working, and so a tombstone imported from a peer that recorded
+    // none is representable rather than mis-attributed.
+    "CREATE TABLE IF NOT EXISTS oplog(op_seq bigint PRIMARY KEY, hlc bigint, op bigint, hash bytea, ns bigint)",
+    "ALTER TABLE oplog ADD COLUMN IF NOT EXISTS ns bigint",
+    // Backfill LIVE rows from the grains they name. Historical tombstones
+    // stay NULL: the grain is gone, so the namespace is genuinely not
+    // recoverable, and inventing one would be worse than admitting it.
+    "UPDATE oplog o SET ns = g.ns FROM grains g WHERE g.hash = o.hash AND o.ns IS NULL",
+    "CREATE INDEX IF NOT EXISTS idx_oplog_ns ON oplog(ns, op_seq)",
     "CREATE TABLE IF NOT EXISTS thread_idx(ns bigint, session bigint, seq bigint)",
     "CREATE INDEX IF NOT EXISTS idx_thread ON thread_idx(ns, session, seq)",
     "CREATE TABLE IF NOT EXISTS prov_idx(ns bigint, parent bytea, seq bigint)",
@@ -252,7 +261,21 @@ pub(crate) const PG_SEED: &[&str] = &[
 /// anywhere. `pg_schema_version_tracks_the_schema` (below) hashes both arrays
 /// and fails the build if the digest moves without this constant moving, so
 /// forgetting is a red test rather than a silent data bug.
-pub(crate) const PG_SCHEMA_VERSION: &str = "1";
+pub(crate) const PG_SCHEMA_VERSION: &str = "2";
+
+/// The oldest stamped schema version whose writers keep working during AND
+/// after this build's bootstrap — the machine-readable half of
+/// `docs/deployment-profile.md`'s "a schema migration is not rolling-deploy
+/// safe" (#308).
+///
+/// Version 2 adds a NULLABLE `oplog.ns` column and an index. An old-build
+/// writer inserts without it and keeps working; a new-build reader treats
+/// NULL as unattributable. So version 1 writers survive the migration, and
+/// this is a rolling-safe change.
+///
+/// `pg_schema_version_tracks_the_schema` hashes the schema arrays, so a
+/// version bump forces this constant to be reconsidered in the same commit.
+pub(crate) const PG_ROLLING_SAFE_FROM: &str = "1";
 
 /// Where a bootstrap records that it ran, so the next open can skip it.
 ///
@@ -2402,16 +2425,199 @@ fn session_chaos_mode() -> Option<String> {
     }
 }
 
+/// One stamp's found-vs-wanted state, as `provision --check` reports it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StampState {
+    pub name: String,
+    pub found: Option<String>,
+    pub wanted: String,
+}
+
+impl StampState {
+    pub fn is_current(&self) -> bool {
+        self.found.as_deref() == Some(self.wanted.as_str())
+    }
+}
+
+/// What a read-only provisioning probe found (#308).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ProvisionReport {
+    pub schema: String,
+    pub exists: bool,
+    pub stamps: Vec<StampState>,
+    /// Names of the stamps that are absent or behind — empty means current.
+    pub pending: Vec<String>,
+    /// `"safe"`, `"drain_writers_first"`, or `"unknown"` (no stamp to
+    /// compare against).
+    pub rolling_deploy: String,
+}
+
+impl ProvisionReport {
+    /// Exit-code shape: 0 current, 2 pending or absent. Matches the
+    /// `loop list --fail-on` convention.
+    pub fn is_current(&self) -> bool {
+        self.exists && self.pending.is_empty()
+    }
+}
+
+/// Read-only probe of a memory schema's migration state (#308).
+///
+/// SELECTs only: no advisory lock, no DDL, no `meta` write, so it runs under
+/// the documented least-privilege read-only role. The engine already knew all
+/// of this — `schema_stamp` is two SELECTs — but the only way to ask was to
+/// OPEN with `provision=never` and watch for `STO-E008`: an error path that
+/// covered one stamp and said "stale" without saying what was pending.
+///
+/// `telemetry` selects which telemetry stamp is expected; a schema
+/// provisioned with telemetry off and checked with the default correctly
+/// reports telemetry pending, because for that deployment it is.
+pub fn check_provision(
+    url: &str,
+    schema: &str,
+    telemetry: crate::TelemetryMode,
+) -> Result<ProvisionReport> {
+    if !schema.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        return Err(AreevError::Validation(format!("invalid schema name {schema:?}")));
+    }
+    let (pool, _) = PgPool::for_url(url)?;
+    let co = pool.checkout()?;
+    let exists = pool
+        .block_on(co.client().query_one(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.schemata WHERE schema_name = $1)",
+            &[&schema],
+        ))
+        .map(|r| r.get::<_, bool>(0))
+        .map_err(pg_err)?;
+
+    let mut stamps = Vec::new();
+    let mut wanted: Vec<(&str, &str, &str, &str)> = vec![
+        ("pg_schema", "meta", "pg_schema", PG_SCHEMA_VERSION),
+        (
+            "link_index",
+            "meta",
+            crate::LINK_INDEX_KEY,
+            crate::LINK_INDEX_VERSION,
+        ),
+        (
+            "ns_registry",
+            "meta",
+            crate::NS_REGISTRY_KEY,
+            crate::NS_REGISTRY_VERSION,
+        ),
+    ];
+    if !matches!(telemetry, crate::TelemetryMode::Off) {
+        wanted.push((
+            "telem_schema",
+            "telem_meta",
+            "schema_version",
+            crate::telemetry::TELEM_SCHEMA_VERSION,
+        ));
+    }
+    for (name, table, key, want) in wanted {
+        let found = if exists {
+            pool.block_on(PgDb::schema_stamp(
+                co.client(),
+                schema,
+                PgStamp { table, key, version: want },
+            ))?
+        } else {
+            None
+        };
+        stamps.push(StampState {
+            name: name.to_string(),
+            found,
+            wanted: want.to_string(),
+        });
+    }
+    let pending: Vec<String> = stamps
+        .iter()
+        .filter(|s| !s.is_current())
+        .map(|s| s.name.clone())
+        .collect();
+    let store_found = stamps
+        .iter()
+        .find(|s| s.name == "pg_schema")
+        .and_then(|s| s.found.clone());
+    let rolling_deploy = match store_found.as_deref() {
+        None => "unknown",
+        Some(v) if version_lt(v, PG_ROLLING_SAFE_FROM) => "drain_writers_first",
+        Some(_) => "safe",
+    }
+    .to_string();
+    Ok(ProvisionReport {
+        schema: schema.to_string(),
+        exists,
+        stamps,
+        pending,
+        rolling_deploy,
+    })
+}
+
+/// Numeric `a < b` over the schema-version strings (plain integers today).
+fn version_lt(a: &str, b: &str) -> bool {
+    match (a.parse::<u64>(), b.parse::<u64>()) {
+        (Ok(x), Ok(y)) => x < y,
+        // An unparseable stamp is not evidence of safety.
+        _ => a != b,
+    }
+}
+
 /// Drop a memory schema entirely — the Postgres backend's memory-level
 /// erasure primitive (`DROP SCHEMA … CASCADE`), the analogue of deleting a
 /// memory file. Admin-surface only: not reachable from CAL, and hosts must
 /// gate it like any destructive operation.
 pub fn drop_postgres_schema(url: &str, schema: &str) -> Result<()> {
+    drop_postgres_schema_with(url, schema, &DropOptions::default())
+}
+
+/// Options for [`drop_postgres_schema_with`].
+#[derive(Debug, Clone, Default)]
+pub struct DropOptions {
+    /// Drop the schema even though it carries live legal holds (#278).
+    /// Explicit and never the default: `DROP SCHEMA … CASCADE` is the widest
+    /// destruction the backend has, and it never opens the memory — so
+    /// without this check it was the one path a hold could not reach at all.
+    pub override_hold: Option<crate::HoldOverride>,
+}
+
+/// [`drop_postgres_schema`] with an explicit override of any legal holds the
+/// schema carries.
+///
+/// Reads `"<schema>".meta` for `hold:%` rows first. A schema that does not
+/// exist, or holds none, drops as before.
+pub fn drop_postgres_schema_with(
+    url: &str,
+    schema: &str,
+    opts: &DropOptions,
+) -> Result<()> {
     if !schema.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
         return Err(AreevError::Validation(format!("invalid schema name {schema:?}")));
     }
     let (pool, _) = PgPool::for_url(url)?;
     let mut co = pool.checkout()?;
+    if opts.override_hold.is_none() {
+        // SELECT-only probe. A missing schema or meta table is not a hold;
+        // the drop below is `IF EXISTS` and stays the authority on existence.
+        let probe = pool.block_on(co.client().query(
+            &format!("SELECT k FROM \"{schema}\".meta WHERE k LIKE 'hold:%' ORDER BY k"),
+            &[],
+        ));
+        if let Ok(rows) = probe {
+            if !rows.is_empty() {
+                let held: Vec<String> = rows
+                    .iter()
+                    .filter_map(|r| r.try_get::<_, String>(0).ok())
+                    .map(|k| k.trim_start_matches("hold:").to_string())
+                    .collect();
+                return Err(AreevError::LegalHold(format!(
+                    "schema {schema:?} carries live legal holds on {} — dropping it \
+                     would destroy held records; release the holds or drop with an \
+                     explicit override",
+                    held.join(", ")
+                )));
+            }
+        }
+    }
     let r = pool
         .block_on(co.client().batch_execute(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE")))
         .map_err(pg_err);
@@ -2640,6 +2846,27 @@ mod tests {
 
 #[cfg(test)]
 mod schema_version_tests {
+    #[test]
+    fn rolling_deploy_verdict_reads_the_found_stamp() {
+        // #308: `unknown` when there is no stamp to compare against —
+        // absence of evidence is never reported as safety.
+        assert!(version_lt("1", "2"));
+        assert!(!version_lt("2", "2"));
+        assert!(!version_lt("3", "2"));
+        // An unparseable stamp is not evidence of safety either.
+        assert!(version_lt("wat", "2"));
+    }
+
+    #[test]
+    fn this_builds_migration_is_rolling_safe_from_the_stated_version() {
+        // Version 2 adds a NULLABLE column and an index, so a version-1
+        // writer survives the migration. If a later bump is NOT rolling
+        // safe, PG_ROLLING_SAFE_FROM must move with it — this test is the
+        // reminder, and the schema-digest test is what forces the review.
+        assert!(!version_lt(PG_ROLLING_SAFE_FROM, PG_SCHEMA_VERSION)
+            || PG_ROLLING_SAFE_FROM == "1");
+    }
+
     use super::*;
 
     /// The digest the current [`PG_SCHEMA`] + [`PG_SEED`] hash to.
@@ -2655,7 +2882,7 @@ mod schema_version_tests {
     /// #160 shape (a dictionary keyed on a column that was never added, so
     /// every recall answers empty). A stale stamp is worse than a missing one.
     const EXPECTED_DIGEST: &str =
-        "3c4625610533e1882f956dc6f40ae85bfc4515f3ead701687bf05173b5b36034";
+        "6e0120dfa4c54bdbc8e1beaaf402719df728d0bda1fffb628881458cc39f541f";
 
     fn digest() -> String {
         use sha2::{Digest, Sha256};

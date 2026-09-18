@@ -1,71 +1,71 @@
 {
-  "line_coverage": 82.3,
-  "lines_covered": 51760,
-  "lines_total": 62893,
-  "files": 163,
+  "line_coverage": 82.9,
+  "lines_covered": 58828,
+  "lines_total": 70984,
+  "files": 173,
   "global_floor": 75.0,
   "per_crate": [
     {
       "name": "areev-conformance",
-      "line_coverage": 97.5,
-      "lines_covered": 1419,
-      "lines_total": 1456,
+      "line_coverage": 97.9,
+      "lines_covered": 1857,
+      "lines_total": 1897,
       "floor": 95.0
     },
     {
       "name": "areev-loop",
-      "line_coverage": 94.2,
-      "lines_covered": 8359,
-      "lines_total": 8872,
+      "line_coverage": 94.5,
+      "lines_covered": 10383,
+      "lines_total": 10988,
       "floor": 90.0
     },
     {
       "name": "areev-run-core",
-      "line_coverage": 92.3,
-      "lines_covered": 1411,
-      "lines_total": 1528,
+      "line_coverage": 91.6,
+      "lines_covered": 1638,
+      "lines_total": 1788,
       "floor": 89.0
     },
     {
       "name": "areev-trigger",
-      "line_coverage": 90.5,
-      "lines_covered": 1336,
-      "lines_total": 1476,
+      "line_coverage": 89.8,
+      "lines_covered": 1429,
+      "lines_total": 1592,
       "floor": 89.0
     },
     {
       "name": "areev-run",
-      "line_coverage": 87.0,
-      "lines_covered": 4482,
-      "lines_total": 5150,
+      "line_coverage": 88.4,
+      "lines_covered": 6033,
+      "lines_total": 6826,
       "floor": 79.0
     },
     {
-      "name": "areev-loop-adapter",
-      "line_coverage": 84.4,
-      "lines_covered": 710,
-      "lines_total": 841,
-      "floor": 78.0
-    },
-    {
       "name": "areev-store",
-      "line_coverage": 84.4,
-      "lines_covered": 6781,
-      "lines_total": 8034,
+      "line_coverage": 85.0,
+      "lines_covered": 7767,
+      "lines_total": 9136,
       "floor": 83.0
     },
     {
       "name": "areev-core",
-      "line_coverage": 84.1,
-      "lines_covered": 5681,
-      "lines_total": 6759,
+      "line_coverage": 84.4,
+      "lines_covered": 5872,
+      "lines_total": 6956,
       "floor": 80.0
+    },
+    {
+      "name": "areev-loop-adapter",
+      "line_coverage": 84.3,
+      "lines_covered": 809,
+      "lines_total": 960,
+      "floor": 78.0
     },
     {
       "name": "areev-server",
       "line_coverage": 82.1,
-      "lines_covered": 975,
-      "lines_total": 1187,
+      "lines_covered": 1027,
+      "lines_total": 1251,
       "floor": 75.0
     },
     {
@@ -76,37 +76,37 @@
       "floor": 79.0
     },
     {
+      "name": "areev-llm",
+      "line_coverage": 79.4,
+      "lines_covered": 1339,
+      "lines_total": 1687,
+      "floor": 73.0
+    },
+    {
       "name": "areev-mcp",
-      "line_coverage": 78.8,
-      "lines_covered": 834,
-      "lines_total": 1059,
+      "line_coverage": 79.3,
+      "lines_covered": 876,
+      "lines_total": 1104,
       "floor": 71.0
     },
     {
       "name": "areev-cli",
-      "line_coverage": 76.3,
-      "lines_covered": 4405,
-      "lines_total": 5770,
+      "line_coverage": 75.9,
+      "lines_covered": 5044,
+      "lines_total": 6642,
       "floor": 70.0
     },
     {
-      "name": "areev-llm",
-      "line_coverage": 75.8,
-      "lines_covered": 1008,
-      "lines_total": 1329,
-      "floor": 73.0
-    },
-    {
       "name": "areev-cal",
-      "line_coverage": 73.2,
-      "lines_covered": 13083,
-      "lines_total": 17876,
+      "line_coverage": 72.5,
+      "lines_covered": 13478,
+      "lines_total": 18601,
       "floor": 70.0
     }
   ],
   "comparisons": {
-    "same_scope_with_test_code": 86.0,
-    "whole_unfiltered_trace": 81.4
+    "same_scope_with_test_code": 86.3,
+    "whole_unfiltered_trace": 81.8
   },
   "excluded_from_scope": [
     {

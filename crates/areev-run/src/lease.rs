@@ -41,7 +41,49 @@ const RUN_LEASE_PREFIX: &str = "runlease:";
 ///
 /// Generous on purpose: a lease shorter than a slow superstep causes takeovers
 /// mid-flight, which is the failure this exists to prevent.
+///
+/// It is now a DEFAULT rather than the only value (#299). Ten minutes was the
+/// whole story, and it had to be: the lease was renewed only at superstep
+/// boundaries, so nothing shorter was safe — an abstract node's turns and
+/// tool calls all happen inside ONE superstep, and with a 300 s tool timeout
+/// and sixteen effects a healthy driver could already outlive 600 s and lose
+/// its own run mid-flight. Renewing inside the superstep is what makes a
+/// short TTL safe, which is why the two ship together.
 pub const DEFAULT_RUN_LEASE_MS: i64 = 600_000;
+
+/// The shortest lease this build accepts (#299).
+///
+/// Below this, ordinary scheduling jitter between two renewals starts to look
+/// like a dead driver, and a takeover mid-flight is worse than a slow
+/// recovery — it is the failure the lease exists to prevent.
+pub const MIN_RUN_LEASE_MS: i64 = 5_000;
+
+/// A stable-ish identity for this driver: host plus pid (#300).
+///
+/// The holder used to be `principal#pid`, which two containers running as
+/// PID 1 under one service principal produce IDENTICALLY — the normal
+/// Kubernetes shape. `RunLease::acquire` re-enters an equal holder by design,
+/// so the second pod acquired a LIVE lease, bumped the fence, and both
+/// drivers dispatched the open superstep's effects; the first learned of the
+/// takeover only at its next renewal, and the dangling-intent default is
+/// redelivery.
+///
+/// The trigger evaluator has included the host since #36; this is the same
+/// helper, now shared.
+pub fn default_node_id() -> String {
+    let host = std::env::var("HOSTNAME")
+        .or_else(|_| std::env::var("COMPUTERNAME"))
+        .unwrap_or_else(|_| "node".into());
+    format!("{host}/{}", std::process::id())
+}
+
+/// The lease holder string for one driver.
+pub fn holder_for(principal: &str, node: Option<&str>) -> String {
+    let node = node
+        .map(str::to_string)
+        .unwrap_or_else(default_node_id);
+    format!("{principal}#{node}")
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -126,11 +168,189 @@ impl RunLease {
         Ok(())
     }
 
+    /// The holder string and expiry currently recorded for `run_id`, if any
+    /// (#299 item 4) — so a status surface can say WHEN takeover becomes
+    /// possible instead of "recovering, up to ten minutes".
+    pub fn peek(
+        facade: &AreevFacade,
+        run_id: &str,
+    ) -> Result<Option<(String, i64)>, RunError> {
+        let key = format!("{RUN_LEASE_PREFIX}{run_id}");
+        let raw = facade
+            .with_store(|m| m.meta_get(&key))
+            .map_err(|e| RunError::Storage { detail: e.to_string() })?;
+        Ok(raw.and_then(|raw| {
+            serde_json::from_str::<LeaseRow>(&raw)
+                .ok()
+                .map(|r| (r.holder, r.until_ms))
+        }))
+    }
+
+    /// This lease's TTL, so the driver can pick a renewal interval from it.
+    pub fn lease_ms(&self) -> i64 {
+        self.lease_ms
+    }
+
     /// Give the lease up, so the run can be resumed immediately rather than
     /// after the lease times out. Best-effort: failing to release is harmless,
     /// because the lease expires anyway.
     pub fn release(self, facade: &AreevFacade) {
         let _ = facade.with_store(|m| m.meta_delete(&self.key));
+    }
+}
+
+/// `meta` key prefix for run CONCURRENCY slots (#296). Host-local like the
+/// lease, and never replicated.
+const RUN_SLOT_PREFIX: &str = "runslot:";
+
+/// One claimed concurrency slot, beside the run lease (#296).
+///
+/// The run lease is keyed on the run id, so it excludes two drivers on ONE
+/// run and nothing else: a bug or a second entry point could start unbounded
+/// model spend in a tenant, and the only thing standing in the way was the
+/// product's own dispatcher.
+///
+/// N CAS'd rows is what makes the cap hard under races. Count-then-acquire
+/// does not: two starters both read N-1 and both proceed. Each slot is
+/// claimed by winning a compare-and-set on a specific `runslot:<scope>:<k>`
+/// row, so at most one starter can hold slot `k`.
+///
+/// The cap is HOST configuration, not a file truth: how many runs a
+/// deployment may execute at once is a property of the deployment, and
+/// writing it into the memory would make it replicate to hosts with
+/// different capacity.
+pub struct RunSlots {
+    held: Vec<(String, String)>,
+    lease_ms: i64,
+}
+
+impl RunSlots {
+    /// Claim one slot in each configured scope, or refuse.
+    ///
+    /// Refuses BEFORE anything is written, so a run turned away at the cap
+    /// leaves nothing behind and its id stays free to start once a slot
+    /// frees.
+    pub fn claim(
+        facade: &AreevFacade,
+        run_id: &str,
+        principal: &str,
+        now_ms: i64,
+        lease_ms: i64,
+        max_memory: Option<u32>,
+        max_principal: Option<u32>,
+    ) -> Result<RunSlots, RunError> {
+        let mut slots = RunSlots { held: Vec::new(), lease_ms };
+        let scopes = [
+            (max_memory, "mem".to_string(), "this memory".to_string()),
+            (
+                max_principal,
+                format!("principal:{principal}"),
+                format!("principal '{principal}'"),
+            ),
+        ];
+        for (cap, scope, describe) in scopes {
+            let Some(cap) = cap else { continue };
+            match slots.claim_one(facade, run_id, &scope, now_ms, cap) {
+                Ok(()) => {}
+                Err(e) => {
+                    // Release whatever we already took, so a refusal in the
+                    // second scope does not strand a slot in the first.
+                    slots.release(facade);
+                    return Err(match e {
+                        RunError::Storage { detail } => RunError::Storage { detail },
+                        _ => RunError::ConcurrencyLimit {
+                            scope: describe,
+                            limit: cap,
+                        },
+                    });
+                }
+            }
+        }
+        Ok(slots)
+    }
+
+    fn claim_one(
+        &mut self,
+        facade: &AreevFacade,
+        run_id: &str,
+        scope: &str,
+        now_ms: i64,
+        cap: u32,
+    ) -> Result<(), RunError> {
+        for k in 0..cap {
+            let key = format!("{RUN_SLOT_PREFIX}{scope}:{k}");
+            let existing = facade
+                .with_store(|m| m.meta_get(&key))
+                .map_err(|e| RunError::Storage { detail: e.to_string() })?;
+            if let Some(raw) = &existing {
+                let row: LeaseRow = serde_json::from_str(raw).unwrap_or_default();
+                // A live slot held by another run is taken. A crashed
+                // holder's slot is reclaimable once its TTL passes — the
+                // same rule the run lease follows.
+                if row.until_ms > now_ms && row.holder != run_id {
+                    continue;
+                }
+            }
+            let row = LeaseRow {
+                holder: run_id.to_string(),
+                fence: 0,
+                until_ms: now_ms + self.lease_ms,
+            };
+            let json = serde_json::to_string(&row).unwrap_or_default();
+            let won = facade
+                .with_store(|m| m.meta_cas(&key, existing.as_deref(), &json))
+                .map_err(|e| RunError::Storage { detail: e.to_string() })?;
+            if won {
+                self.held.push((key, json));
+                return Ok(());
+            }
+            // Lost the CAS — another starter took this slot between our read
+            // and our write. Try the next one.
+        }
+        Err(RunError::ConcurrencyLimit { scope: scope.to_string(), limit: cap })
+    }
+
+    /// Extend every held slot, alongside the run lease.
+    pub fn renew(&mut self, facade: &AreevFacade, run_id: &str, now_ms: i64) {
+        for (key, seen) in self.held.iter_mut() {
+            let row = LeaseRow {
+                holder: run_id.to_string(),
+                fence: 0,
+                until_ms: now_ms + self.lease_ms,
+            };
+            let json = serde_json::to_string(&row).unwrap_or_default();
+            // Best-effort: a lost slot renewal is not a reason to fail a run
+            // mid-flight. The run LEASE is the authority on who may write.
+            if facade
+                .with_store(|m| m.meta_cas(key, Some(seen.as_str()), &json))
+                .unwrap_or(false)
+            {
+                *seen = json;
+            }
+        }
+    }
+
+    /// Give every held slot back. A parked run holds no slot — it releases
+    /// the run lease too — so a queue of parked approvals never starves live
+    /// work.
+    pub fn release(&mut self, facade: &AreevFacade) {
+        for (key, _) in std::mem::take(&mut self.held) {
+            let _ = facade.with_store(|m| m.meta_delete(&key));
+        }
+    }
+
+    /// Current occupancy, for `run list` (#296 item 5).
+    pub fn occupancy(facade: &AreevFacade, now_ms: i64) -> Result<Vec<(String, String)>, RunError> {
+        let rows = facade
+            .with_store(|m| m.meta_scan(RUN_SLOT_PREFIX))
+            .map_err(|e| RunError::Storage { detail: e.to_string() })?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(k, raw)| {
+                let row: LeaseRow = serde_json::from_str(&raw).ok()?;
+                (row.until_ms > now_ms).then_some((k, row.holder))
+            })
+            .collect())
     }
 }
 

@@ -12,6 +12,12 @@ homepage.workspace = true
 keywords = ["memory", "cli", "ai-agents", "llm", "database"]
 categories = ["command-line-utilities", "database-implementations"]
 
+# The binary is the product; the library is the host-callable surface a Rust
+# service needs so it does not have to ship and spawn the binary (#315).
+[lib]
+name = "areev"
+path = "src/lib.rs"
+
 [[bin]]
 name = "areev"
 path = "src/main.rs"
@@ -38,6 +44,8 @@ oidc = ["areev-server/oidc"]
 areev-core = { path = "../areev-core", version = "1.8.3" }
 areev-store = { path = "../areev-store", version = "1.8.3" }
 areev-cal = { path = "../areev-cal", version = "1.8.3" }
+# Already in the tree via every other crate; adds no new package.
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
 hex = "0.4"
@@ -56,7 +64,7 @@ areev-loop = { path = "../areev-loop", version = "1.8.3" }
 areev-loop-adapter = { path = "../areev-loop-adapter", version = "1.8.3" }
 areev-llm = { path = "../areev-llm", version = "1.8.3" }
 areev-run = { path = "../areev-run", version = "1.8.3" }
-areev-trigger = { path = "../areev-trigger", version = "1.8.3" }
+areev-trigger = { path = "../areev-trigger", version = "1.8.3", features = ["tz"] }
 areev-run-core = { path = "../areev-run-core", version = "1.8.3" }
 
 [dev-dependencies]

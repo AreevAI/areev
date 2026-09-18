@@ -51,6 +51,22 @@ pub struct Spent {
     pub wall_ms: u64,
     pub storage_bytes: u64,
     pub journal_grains: u64,
+    /// Host tool calls dispatched across the whole run (#295).
+    ///
+    /// `skip_serializing_if` zero, and incremented ONLY when the manifest
+    /// sets the cap: `Spent` is serialized whole into every checkpoint and
+    /// `verify` byte-compares checkpoints, so an unconditional new counter
+    /// would make every pre-existing run diverge with RUN-E009.
+    ///
+    /// The effects axis needs no new state at all — `journal_grains / 2` is
+    /// already the settled-effect count (an intent grain and a result grain
+    /// per effect), with overshoot bounded by one wave.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub tool_calls: u64,
+}
+
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
 }
 
 /// The run's phase within the BSP cycle.

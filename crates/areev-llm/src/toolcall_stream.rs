@@ -29,16 +29,14 @@ fn transport(msg: impl Into<String>) -> ToolCallError {
 /// 4xx terminal, transport faults retryable.
 pub(crate) fn post_stream_lines(
     url: &str,
-    headers: &[(&str, &str)],
-    body: &Value,
+    headers: &[(String, String)],
+    body_bytes: &[u8],
 ) -> ToolCallResult<impl Iterator<Item = std::io::Result<String>>> {
     let mut req = crate::stream_agent().post(url).header("Content-Type", "application/json");
     for (k, v) in headers {
-        req = req.header(*k, *v);
+        req = req.header(k.as_str(), v.as_str());
     }
-    let body_text = serde_json::to_string(body)
-        .map_err(|e| terminal(format!("encode request: {e}")))?;
-    match req.send(&body_text) {
+    match req.send(body_bytes) {
         Ok(resp) => {
             let reader = std::io::BufReader::new(resp.into_body().into_reader());
             Ok(reader.lines())
@@ -148,12 +146,12 @@ pub(crate) fn openai_accumulate(
              usage cannot serve budgeted runs)",
         )
     })?;
-    Ok(ToolCallResponse {
-        text: (!text.is_empty()).then_some(text),
+    Ok(ToolCallResponse::new(
+        (!text.is_empty()).then_some(text),
         tool_calls,
         stop_reason,
         usage,
-    })
+    ))
 }
 
 // ---- Anthropic (SSE, typed data events) ------------------------------------
@@ -169,6 +167,15 @@ pub(crate) fn anthropic_accumulate(
         name: String,
         text: String,
         partial_json: String,
+        /// `thinking` block text and its signature (#284), reassembled from
+        /// `thinking_delta` / `signature_delta`. Deliberately NOT routed to
+        /// `on_token`: a thinking delta is not answer text, and a caller
+        /// streaming to a user would print the model's scratchpad.
+        thinking: String,
+        signature: String,
+        /// Any other block type, kept whole so an unmodelled one still
+        /// replays verbatim rather than being dropped.
+        raw: Option<Value>,
     }
     let mut blocks: BTreeMap<u64, Block> = BTreeMap::new();
     let mut stop_reason: Option<String> = None;
@@ -210,6 +217,20 @@ pub(crate) fn anthropic_accumulate(
                             b.text.push_str(t);
                         }
                     }
+                    // Seed the thinking/signature accumulators and keep the
+                    // whole block for any type this adapter does not model.
+                    if let Some(t) = cb.get("thinking").and_then(|t| t.as_str()) {
+                        b.thinking.push_str(t);
+                    }
+                    if let Some(sig) = cb.get("signature").and_then(|t| t.as_str()) {
+                        b.signature.push_str(sig);
+                    }
+                    if !matches!(
+                        b.kind.as_str(),
+                        "text" | "tool_use" | "thinking" | "redacted_thinking"
+                    ) {
+                        b.raw = Some(cb.clone());
+                    }
                 }
             }
             Some("content_block_delta") => {
@@ -227,6 +248,20 @@ pub(crate) fn anthropic_accumulate(
                             ev.pointer("/delta/partial_json").and_then(|j| j.as_str())
                         {
                             b.partial_json.push_str(j);
+                        }
+                    }
+                    // #284: reassembled, never streamed to `on_token`.
+                    Some("thinking_delta") => {
+                        if let Some(t) = ev.pointer("/delta/thinking").and_then(|t| t.as_str())
+                        {
+                            b.thinking.push_str(t);
+                        }
+                    }
+                    Some("signature_delta") => {
+                        if let Some(sig) =
+                            ev.pointer("/delta/signature").and_then(|t| t.as_str())
+                        {
+                            b.signature.push_str(sig);
                         }
                     }
                     _ => {}
@@ -253,16 +288,47 @@ pub(crate) fn anthropic_accumulate(
     }
     let mut text = String::new();
     let mut tool_calls = Vec::new();
+    // Rebuild the assistant turn's content array in ORDER, so an opaque
+    // replay puts thinking blocks back where the API expects them (#284).
+    let mut content: Vec<Value> = Vec::new();
+    let mut has_opaque = false;
     for b in blocks.into_values() {
         match b.kind.as_str() {
-            "text" => text.push_str(&b.text),
+            "text" => {
+                text.push_str(&b.text);
+                content.push(serde_json::json!({"type": "text", "text": b.text}));
+            }
             "tool_use" => {
                 // An empty accumulated input is a no-argument call ({}).
                 let raw = if b.partial_json.is_empty() { "{}".into() } else { b.partial_json };
                 let (arguments, arguments_raw) = args_pair(raw);
+                content.push(serde_json::json!({
+                    "type": "tool_use",
+                    "id": b.id,
+                    "name": b.name,
+                    "input": arguments,
+                }));
                 tool_calls.push(ToolCallOut { id: b.id, name: b.name, arguments, arguments_raw });
             }
-            _ => {}
+            kind @ ("thinking" | "redacted_thinking") => {
+                has_opaque = true;
+                let mut blk = serde_json::json!({"type": kind});
+                if kind == "thinking" {
+                    blk["thinking"] = serde_json::json!(b.thinking);
+                } else {
+                    blk["data"] = serde_json::json!(b.thinking);
+                }
+                if !b.signature.is_empty() {
+                    blk["signature"] = serde_json::json!(b.signature);
+                }
+                content.push(blk);
+            }
+            _ => {
+                if let Some(raw) = b.raw {
+                    has_opaque = true;
+                    content.push(raw);
+                }
+            }
         }
     }
     let stop_reason = match stop_reason.as_deref() {
@@ -277,12 +343,15 @@ pub(crate) fn anthropic_accumulate(
             "anthropic stream carried no usage — cannot serve budgeted runs",
         ));
     }
-    Ok(ToolCallResponse {
-        text: (!text.is_empty()).then_some(text),
+    Ok(ToolCallResponse::new(
+        (!text.is_empty()).then_some(text),
         tool_calls,
         stop_reason,
-        usage: Usage { input_tokens, output_tokens, cache_read_tokens: cache_read },
-    })
+        Usage { input_tokens, output_tokens, cache_read_tokens: cache_read },
+    )
+    // Only when the turn actually held opaque content, so a stream of plain
+    // text and tool calls journals exactly what it did before #284.
+    .with_provider_content(has_opaque.then_some(Value::Array(content))))
 }
 
 // ---- Ollama (NDJSON) -------------------------------------------------------
@@ -355,12 +424,12 @@ pub(crate) fn ollama_accumulate(
     };
     let usage = usage
         .ok_or_else(|| terminal("ollama stream carried no eval counts — cannot serve budgeted runs"))?;
-    Ok(ToolCallResponse {
-        text: (!text.is_empty()).then_some(text),
+    Ok(ToolCallResponse::new(
+        (!text.is_empty()).then_some(text),
         tool_calls,
         stop_reason,
         usage,
-    })
+    ))
 }
 
 #[cfg(test)]

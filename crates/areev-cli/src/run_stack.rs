@@ -336,6 +336,11 @@ pub fn run_options(flags: &HashMap<String, String>) -> areev_run::RunOptions {
                 .map(|usd| (usd * 1_000_000.0) as u64),
             max_wall_ms: flag(flags, "max-wall-ms").and_then(|v| v.parse().ok()),
             max_storage_bytes: flag(flags, "max-storage").and_then(|v| v.parse().ok()),
+            // #295. `--max-effects` already means PER ATTEMPT, so the
+            // run-level twin has to be spelled differently rather than
+            // quietly changing what an existing flag bounds.
+            max_effects: flag(flags, "max-run-effects").and_then(|v| v.parse().ok()),
+            max_tool_calls: flag(flags, "max-tool-calls").and_then(|v| v.parse().ok()),
         },
         ask_ttl_sec: flag(flags, "ask-ttl").and_then(|v| v.parse().ok()),
         workers: flag(flags, "workers").and_then(|v| v.parse().ok()).unwrap_or(4),
@@ -346,6 +351,43 @@ pub fn run_options(flags: &HashMap<String, String>) -> areev_run::RunOptions {
             .and_then(|v| v.parse().ok()),
         llm_context_tokens: flag(flags, "llm-context-tokens").and_then(|v| v.parse().ok()),
         inject_crash: None,
+        // Every one of these has an environment twin for the same reason the
+        // executor pin does: a run started from a cron line, a launchd plist
+        // or a k8s CronJob is configured out of band, and the operator is
+        // not standing in front of the argument list.
+        initiator: flag_or_env(flags, "initiator", "AREEV_RUN_INITIATOR"),
+        harness_ns: flag_or_env(flags, "harness-ns", "AREEV_RUN_HARNESS_NS"),
+        allow_confirmation_asks: flag_or_env(
+            flags,
+            "allow-confirmation-asks",
+            "AREEV_RUN_ALLOW_CONFIRMATION_ASKS",
+        )
+        .map(|v| v != "false" && v != "0")
+        .unwrap_or(false),
+        input_in_run_namespace: flag_or_env(
+            flags,
+            "input-placement",
+            "AREEV_RUN_INPUT_PLACEMENT",
+        )
+        .as_deref()
+            == Some("run-ns"),
+        // `--lease SECS`, spelled as on `trigger run`; stored as ms.
+        lease_ms: flag_or_env(flags, "lease", "AREEV_RUN_LEASE")
+            .and_then(|v| v.parse::<i64>().ok())
+            .map(|secs| secs * 1000),
+        node: flag_or_env(flags, "node", "AREEV_NODE_ID"),
+        max_run_effects: flag_or_env(flags, "max-run-effects", "AREEV_RUN_MAX_RUN_EFFECTS")
+            .and_then(|v| v.parse().ok()),
+        max_tool_calls: flag_or_env(flags, "max-tool-calls", "AREEV_RUN_MAX_TOOL_CALLS")
+            .and_then(|v| v.parse().ok()),
+        max_concurrent_runs: flag_or_env(flags, "max-concurrent", "AREEV_RUN_MAX_CONCURRENT")
+            .and_then(|v| v.parse().ok()),
+        max_concurrent_runs_per_principal: flag_or_env(
+            flags,
+            "max-concurrent-per-principal",
+            "AREEV_RUN_MAX_CONCURRENT_PER_PRINCIPAL",
+        )
+        .and_then(|v| v.parse().ok()),
     }
 }
 

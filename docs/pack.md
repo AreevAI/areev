@@ -28,7 +28,8 @@ areev pack export   --db agent.db --ns ops --out ./pack
     { "file": "grains/020-workflow.json", "expected_hash": "8f2c…" }
   ],
   "queries":   { "triage_ctx": { "body": "RECALL facts WHERE …" } },
-  "templates": { "brief": { "body": "…" } }
+  "templates": { "brief": { "body": "…" } },
+  "host":      { "config_schema": { "type": "object" }, "fixtures": ["…"] }
 }
 ```
 
@@ -42,6 +43,69 @@ exercises.
 `namespace` fills in for any grain that does not name one. `queries` and
 `templates` are the file-truths that are not grains — a pack without them
 installs a trigger whose `context_query` names a query that is not there.
+
+**Unknown top-level keys are warned, not dropped in silence** (1.9.0, #316).
+A misspelled `"templats"` used to validate with `"ok": true, "warnings": []`
+and install nothing — the exact failure the paragraph above warns about, with
+no symptom. `validate` and `install` now list every key this build does not
+read. They warn rather than refuse, so an existing pack keeps installing.
+
+**`"host"` is reserved for the host and never interpreted.** It comes back
+verbatim in the validate/install report, and no future manifest key will be
+added inside it — so a product's per-install configuration schema and its
+fixture metadata live in the pack instead of in a second artifact with its
+own version number. (A first-class `config_schema` that Areev interprets is
+deliberately NOT offered: install-time configuration cannot flow into hashed
+grains without breaking `expected_hash`.)
+
+**An evalset shipped in a pack is checked.** A `fact` grain with relation
+`mg:evalset`, referenced from a Tool Definition as
+`"evalset_hash": "grain:<id>"`, is how a pack carries its own gating set.
+`pack validate` used to check only tools, so an evalset whose cases had
+neither `input` nor `expect` addressed cleanly although `areev eval create`
+would have refused it. Both now share ONE validator, so they cannot drift.
+
+## From Rust — `areev::pack`
+
+`areev pack validate|install` are **printers** over a library (1.9.0,
+#315). A Rust service
+that provisions a memory per tenant and installs versioned agent packs no
+longer has to ship the binary into its image, spawn
+`areev pack install … --format json`, parse the stdout and map string errors
+back to causes:
+
+```rust
+use areev::pack::{validate_pack, install_pack, InstallOptions, PackError};
+
+// CI: no store at all — content addressing needs no memory.
+let report = validate_pack(Path::new("packs/invoice-to-accounting"))?;
+
+// Provisioning: through the CALLER's facade, so the install runs under
+// whatever principal the service bound.
+let report = install_pack(&facade, dir, &InstallOptions::default())?;
+```
+
+`export` is deliberately **not** in the library: it is an authoring step a
+person runs against a memory they own, not something a provisioning path
+does per tenant, and it writes a directory tree rather than returning a
+value. `areev pack export` stays the way to build one.
+
+Two properties the subprocess form could not give:
+
+- **It runs under the caller's bound principal.** The previous entry point
+  consumed an owner `Areev`, which a host with an already-open handle could
+  not supply at all. A principal without `write` on the pack's namespace now
+  gets `AUT-E001` and the memory's op-log is unchanged.
+- **The grains are written all-or-nothing** (`cal_add_batch`). Writing one
+  at a time meant a pack refused halfway had already seeded the tools of an
+  agent whose plan never arrived.
+
+Refusals are typed (`PCK-E001`–`PCK-E004`; see
+[`ERROR_CODES.md`](../ERROR_CODES.md)), so a host branches on the CAUSE — an
+`expected_hash` mismatch is a deployment decision, a dangling reference is an
+authoring bug, and a store refusal is neither. Store and authorization errors
+pass through unchanged. `PackReport` carries exactly the fields
+`--format json` prints.
 
 ## References are symbolic, because an address is a measurement
 

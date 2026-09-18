@@ -1061,8 +1061,18 @@ fn mask_value(value: &str) -> String {
 }
 
 /// Overlap resolution (proposal §5): repeatedly take the best remaining span
-/// by (action severity, length, earliest start, category), evicting whatever
-/// it overlaps. O(n²) on the per-text detection count, which is small.
+/// by (action severity, length, specificity, earliest start, category),
+/// evicting whatever it overlaps. O(n²) on the per-text detection count,
+/// which is small.
+///
+/// The specificity rank (#281) breaks the tie a same-span collision creates:
+/// `123-45-6789` matches both the dashed-phone shape and the structurally
+/// validated `us_ssn`, at identical length and — under the default policy —
+/// identical severity. Without the rank the alphabetically-first category
+/// wins, which is `phone`, and a policy that treats business contact numbers
+/// as allowable would leak the SSN. The loser is only evicted, never
+/// suppressed at detection time, so a policy that redacts `phone` and allows
+/// everything else still redacts the span.
 fn resolve_overlaps(mut detections: Vec<Detection>, policy: &AnonPolicy) -> Vec<Detection> {
     let mut survivors: Vec<Detection> = Vec::new();
     while !detections.is_empty() {
@@ -1072,8 +1082,11 @@ fn resolve_overlaps(mut detections: Vec<Detection>, policy: &AnonPolicy) -> Vec<
             .max_by(|(_, a), (_, b)| {
                 let sa = policy.action_for(&a.category).severity();
                 let sb = policy.action_for(&b.category).severity();
+                let va = u8::from(detect::category_is_validated(&a.category));
+                let vb = u8::from(detect::category_is_validated(&b.category));
                 sa.cmp(&sb)
                     .then((a.end - a.start).cmp(&(b.end - b.start)))
+                    .then(va.cmp(&vb))
                     .then(b.start.cmp(&a.start))
                     .then(b.category.cmp(&a.category))
             })
@@ -1115,7 +1128,7 @@ fn derive_mapping_id(
 
 /// RFC 2104 HMAC-SHA256, hand-rolled over the sha2 dependency the crate
 /// already carries (dependency-light: no hmac crate for twenty lines).
-fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
+pub fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
     const BLOCK: usize = 64;
     let mut key_block = [0u8; BLOCK];
     if key.len() > BLOCK {

@@ -545,3 +545,208 @@ fn tool_provenance_chains_the_executor_blob() {
     let report: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
     assert!(report.get("executor").is_none(), "{out}");
 }
+
+// ---------------------------------------------------------------------------
+// #313 — a grader's field metrics and usage reach the summary
+// ---------------------------------------------------------------------------
+
+/// A grader that echoes stdin (so `expect` still scores it) and writes an
+/// out-of-band report to `$AREEV_EVAL_REPORT`.
+#[cfg(not(windows))]
+fn grader(dir: &TempDir, body: &str) -> String {
+    let p = dir.path().join("grade.sh");
+    std::fs::write(&p, format!("#!/bin/sh\ncat\n{body}\n")).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    format!("sh {}", p.to_str().unwrap())
+}
+
+#[cfg(not(windows))]
+fn run_with_grader(db: &str, evalset: &str, cmd: &str) -> (bool, String, String) {
+    areev(&[
+        "eval", "run", "--db", db, "--evalset", evalset, "--tool-cmd", cmd, "--format", "json",
+    ])
+}
+
+#[cfg(not(windows))]
+fn seed(dir: &TempDir, db: &str) -> String {
+    let cases = write_cases(
+        dir,
+        "m-cases.json",
+        r#"[{"name": "a", "input": {"q": 1}, "expect": {"equals": {"q": 1}}},
+            {"name": "b", "input": {"q": 2}, "expect": {"equals": {"q": 2}}}]"#,
+    );
+    let (ok, out, err) =
+        areev(&["eval", "create", "--db", db, "--name", "gate", "--cases", &cases]);
+    assert!(ok, "{err}");
+    stored_hash(&out)
+}
+
+#[cfg(not(windows))]
+#[test]
+fn a_grader_report_reaches_the_summary_as_means_and_counts() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("m.db").to_str().unwrap().to_string();
+    let evalset = seed(&dir, &db);
+    // unit_ok = 1 on both cases, period_ok = 1 then 0 → mean 0.5.
+    let cmd = grader(
+        &dir,
+        r#"if [ "$AREEV_EVAL_CASE" = "a" ]; then P=1; else P=0; fi
+printf '{"metrics":{"unit_ok":1,"period_ok":%s},"usage":{"input_tokens":1200,"output_tokens":300}}' "$P" > "$AREEV_EVAL_REPORT""#,
+    );
+    let (ok, out, err) = run_with_grader(&db, &evalset, &cmd);
+    assert!(ok, "stdout={out} stderr={err}");
+    let v: serde_json::Value = serde_json::from_str(&out).expect(&out);
+    assert_eq!(v["passed"], 2, "{out}");
+    assert_eq!(v["unit_ok"], 1.0, "{out}");
+    assert_eq!(v["unit_ok_n"], 2, "{out}");
+    assert_eq!(v["period_ok"], 0.5, "a 0/1 field result reads as a ratio: {out}");
+    assert_eq!(v["period_ok_n"], 2, "{out}");
+    assert_eq!(v["input_tokens"], 2400, "{out}");
+    assert_eq!(v["output_tokens"], 600, "{out}");
+    // And per case.
+    assert_eq!(v["cases"][0]["metrics"]["period_ok"], 1.0, "{out}");
+    assert_eq!(v["cases"][1]["metrics"]["period_ok"], 0.0, "{out}");
+    assert_eq!(v["cases"][0]["usage"]["input_tokens"], 1200, "{out}");
+}
+
+#[cfg(not(windows))]
+#[test]
+fn a_command_that_writes_no_report_produces_todays_summary() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("m.db").to_str().unwrap().to_string();
+    let evalset = seed(&dir, &db);
+    let (ok, out, err) = run_with_grader(&db, &evalset, "cat");
+    assert!(ok, "stdout={out} stderr={err}");
+    let v: serde_json::Value = serde_json::from_str(&out).expect(&out);
+    assert_eq!(v["passed"], 2);
+    assert!(v.get("unit_ok").is_none());
+    // The tool-cmd path reports no tokens when nothing reported any.
+    assert!(v["input_tokens"].is_null(), "{out}");
+    assert!(v["cases"][0].get("metrics").is_none(), "{out}");
+}
+
+#[cfg(not(windows))]
+#[test]
+fn a_malformed_report_fails_the_case_rather_than_reading_as_zero() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("m.db").to_str().unwrap().to_string();
+    let evalset = seed(&dir, &db);
+    // A string where an integer belongs: reading it as 0 would report a
+    // model call as free.
+    let cmd = grader(
+        &dir,
+        r#"printf '{"usage":{"input_tokens":"1200"}}' > "$AREEV_EVAL_REPORT""#,
+    );
+    let (ok, out, _err) = run_with_grader(&db, &evalset, &cmd);
+    assert!(!ok, "a malformed report must fail the run: {out}");
+    let v: serde_json::Value = serde_json::from_str(&out).expect(&out);
+    assert_eq!(v["failed"], 2, "{out}");
+}
+
+#[cfg(not(windows))]
+#[test]
+fn a_metric_colliding_with_a_reserved_key_fails_the_case() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("m.db").to_str().unwrap().to_string();
+    let evalset = seed(&dir, &db);
+    let cmd = grader(
+        &dir,
+        r#"printf '{"metrics":{"passed":1}}' > "$AREEV_EVAL_REPORT""#,
+    );
+    let (ok, out, _err) = run_with_grader(&db, &evalset, &cmd);
+    assert!(!ok, "a metric named `passed` would overwrite the gate's count: {out}");
+    assert!(out.contains("reserved") || out.contains("passed"), "{out}");
+}
+
+// ---------------------------------------------------------------------------
+// #314 — case content follows its namespace
+// ---------------------------------------------------------------------------
+
+#[cfg(not(windows))]
+#[test]
+fn case_ns_keeps_confidential_case_content_out_of_the_harness() {
+    const MARKER: &str = "zz-subscription-doc-zz";
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("m.db").to_str().unwrap().to_string();
+    let cases = write_cases(
+        &dir,
+        "ns-cases.json",
+        &format!(
+            r#"[{{"name": "a", "input": {{"doc": "{MARKER}"}}, "expect": {{"contains": "{MARKER}"}}}}]"#
+        ),
+    );
+    let (ok, out, err) = areev(&[
+        "eval", "create", "--db", &db, "--name", "g", "--cases", &cases, "--case-ns", "deal.alpha",
+    ]);
+    assert!(ok, "{err}");
+    let evalset = stored_hash(&out);
+    let (ok, out, err) = areev(&[
+        "eval", "run", "--db", &db, "--evalset", &evalset, "--tool-cmd", "cat",
+        "--case-ns", "deal.alpha", "--format", "json",
+    ]);
+    assert!(ok, "stdout={out} stderr={err}");
+    let v: serde_json::Value = serde_json::from_str(&out).expect(&out);
+    assert_eq!(v["passed"], 1, "{out}");
+    assert_eq!(v["case_ns"], "deal.alpha", "the summary says where the content went");
+
+    // The harness holds the numbers and none of the content.
+    let (ok, harness, err) = areev(&[
+        "cal", "--db", &db,
+        r#"RECALL tools WHERE namespace = "agent:harness" LIMIT 500"#,
+    ]);
+    assert!(ok, "{err}");
+    let (_ok2, harness_facts, _e2) = areev(&[
+        "cal", "--db", &db,
+        r#"RECALL facts WHERE namespace = "agent:harness" LIMIT 500"#,
+    ]);
+    assert!(
+        !harness.contains(MARKER) && !harness_facts.contains(MARKER),
+        "no case content in agent:harness: {harness}{harness_facts}"
+    );
+    // And the namespace holds the cases.
+    let (ok, scoped, err) = areev(&[
+        "cal", "--db", &db,
+        r#"RECALL tools WHERE namespace = "deal.alpha" LIMIT 500"#,
+    ]);
+    assert!(ok, "{err}");
+    assert!(scoped.contains(MARKER), "the cases are in deal.alpha: {scoped}");
+}
+
+#[cfg(not(windows))]
+#[test]
+fn without_the_flag_placement_is_unchanged() {
+    const MARKER: &str = "zz-ordinary-zz";
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("m.db").to_str().unwrap().to_string();
+    let cases = write_cases(
+        &dir,
+        "plain.json",
+        &format!(
+            r#"[{{"name": "a", "input": {{"doc": "{MARKER}"}}, "expect": {{"contains": "{MARKER}"}}}}]"#
+        ),
+    );
+    let (ok, out, err) =
+        areev(&["eval", "create", "--db", &db, "--name", "g", "--cases", &cases]);
+    assert!(ok, "{err}");
+    let evalset = stored_hash(&out);
+    let (ok, out, err) = areev(&[
+        "eval", "run", "--db", &db, "--evalset", &evalset, "--tool-cmd", "cat", "--format", "json",
+    ]);
+    assert!(ok, "stdout={out} stderr={err}");
+    let v: serde_json::Value = serde_json::from_str(&out).expect(&out);
+    assert!(v.get("case_ns").is_none(), "no flag, no key: {out}");
+    let (ok, harness, err) = areev(&[
+        "cal", "--db", &db,
+        r#"RECALL tools WHERE namespace = "agent:harness" LIMIT 500"#,
+    ]);
+    assert!(ok, "{err}");
+    let (_ok2, harness_facts, _e2) = areev(&[
+        "cal", "--db", &db,
+        r#"RECALL facts WHERE namespace = "agent:harness" LIMIT 500"#,
+    ]);
+    assert!(
+        harness.contains(MARKER) || harness_facts.contains(MARKER),
+        "unchanged placement: {harness}{harness_facts}"
+    );
+}

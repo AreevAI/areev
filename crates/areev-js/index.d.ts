@@ -590,11 +590,33 @@ export declare class Areev {
   runFork(baseRunId: string, newRunId: string, atSuperstep?: number | undefined | null, plan?: string | undefined | null): Promise<string>
   /**
    * Op-log cursor read — the change feed the audit/evidence story rides.
-   * Returns `[{op_seq, hlc, op, hash}...]`, ascending; pass the last
+   * Returns `[{op_seq, hlc, op, hash, ns}...]`, ascending; pass the last
    * `op_seq` back as the next cursor. `hlc` is a STRING: HLC values
    * exceed 2^53 and would silently lose bits in `JSON.parse`.
+   *
+   * `ns` (a name or a comma list) narrows the feed to those namespaces
+   * and attributes every row, TOMBSTONES INCLUDED (#307) — resolving a
+   * forget's hash cannot, because the grain is gone. `op_seq` stays the
+   * memory-wide sequence, so a scoped cursor is still comparable with an
+   * unscoped one.
    */
-  changesSince(afterOpSeq?: number | undefined | null, limit?: number | undefined | null): Promise<string>
+  changesSince(afterOpSeq?: number | undefined | null, limit?: number | undefined | null, ns?: string | undefined | null): Promise<string>
+  /**
+   * Drop every recall-telemetry row for one exact namespace (#306).
+   *
+   * Reaches the row no other scrub can: a zero-result free-text query
+   * names no grain hash, so the per-hash scrub cannot find it, and the
+   * per-subject scrub only reaches it if the erased identity happens to
+   * appear in the text.
+   */
+  telemetryScrubNamespace(ns: string): Promise<string>
+  /**
+   * A value that changes whenever this memory's authorization policy does
+   * (#309) — a single indexed read a host caching bound sessions makes
+   * per request instead of re-resolving grants. A CHANGE DETECTOR:
+   * compare for equality, never for ordering.
+   */
+  authzEpoch(): Promise<string>
   /** Recent run ids, newest first. JSON list string. */
   runList(limit?: number | undefined | null): Promise<string>
   /**

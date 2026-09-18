@@ -71,6 +71,15 @@ pub struct PinnedTool {
     /// for every other pin, so existing manifests serialize byte-identically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub read: Option<serde_json::Value>,
+    /// The Definition's `ask_kind` (#294): `"approval"` (absent = this) or
+    /// `"confirmation"`. Valid only on a `client` pin.
+    ///
+    /// Frozen here beside `executor_uri` and `runtime`, for the same reason:
+    /// a mid-run supersession must not be able to downgrade an approval a
+    /// person is already parked on. Absent for every ordinary pin, so
+    /// existing manifests serialize byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask_kind: Option<String>,
 }
 
 /// The manifest, as serialized into the run-config State grain.
@@ -123,6 +132,123 @@ pub struct RunManifest {
     /// Present exactly when this run is a §5.4 fork.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fork_of: Option<ForkBase>,
+    /// Who or what this run was started ON BEHALF OF (#293).
+    ///
+    /// Event, poll and schedule runs execute under an agent's SERVICE
+    /// principal, so `principal` alone cannot name the person behind the
+    /// work — and the approval check, which compares a responder against
+    /// `principal`, could not refuse them. Free-form attribution: a value
+    /// that names no principal (a trigger occurrence id, say) simply never
+    /// matches a responder.
+    ///
+    /// Frozen here so a park-and-resume days later judges against the same
+    /// answer. Absent on every manifest written before this existed, and
+    /// `skip_serializing_if` keeps those byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initiator: Option<String>,
+    /// The model configuration this run STARTED under (#287).
+    ///
+    /// Everything else that shapes a run is frozen — tool resolutions,
+    /// runtime, capabilities, reads, reducers, every LLM ceiling — but the
+    /// model was not, so a run parked on a human approval could finish days
+    /// later on a different model, provider or region with nothing in the
+    /// journal saying so. `resume` compares this against the transport it is
+    /// offered and refuses a mismatch; `fork` is the sanctioned way to move a
+    /// run to a new model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm: Option<LlmPin>,
+    /// The engine that WROTE this run (#288).
+    ///
+    /// Investment-adviser records are kept five years and more, and a
+    /// scheduler change can make an older journal replay differently — 1.8.3
+    /// (#251) is the recorded case. A verifier holding such a run sees a
+    /// divergence and cannot tell tampering from "written by 1.8.2". This
+    /// makes the run say so itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<EnginePin>,
+    /// Where this run's INPUT lives (#301).
+    ///
+    /// `None` (the default) means by value in [`input`](Self::input), which
+    /// puts it in the memory-wide `agent:harness` namespace — outside the
+    /// grants, retention and erasure of the namespace the run belongs to.
+    /// `Some(hash)` means the input is its own grain in the run's own
+    /// namespace and this is its address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_ref: Option<String>,
+    /// The namespace this run's CONTENT-BEARING harness records go to
+    /// (#301): fold summaries, egress call records, blob reads.
+    ///
+    /// `None` keeps them in `agent:harness` as before. `Some(ns)` — set by
+    /// the host at start and frozen here — writes them to
+    /// `agent:harness.<run_ns>`, which keeps them out of the agent's own
+    /// recall scope (the reason they are not simply written to the run
+    /// namespace) while making one namespace's run evidence separately
+    /// grantable, retainable and erasable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_ns: Option<String>,
+    /// Whether this run may settle a `confirmation` ask from its own
+    /// initiator (#294). Host opt-in, frozen so a mid-run change cannot
+    /// weaken a parked approval.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_confirmation_asks: bool,
+}
+
+/// The model configuration a run is pinned to (#287).
+///
+/// `tag` is an opaque host string — a configuration hash, typically — so a
+/// host wrapping its own transport can have Areev enforce the host's own
+/// notion of "the same configuration", without Areev having to model it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LlmPin {
+    pub provider: String,
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    /// Content address of the request profile (#285) — what was actually
+    /// sent is part of what a run ran under.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+}
+
+impl LlmPin {
+    /// Whether `other` is the same configuration this run was pinned to.
+    pub fn matches(&self, other: &LlmPin) -> bool {
+        self == other
+    }
+
+    /// One-line rendering for an error message.
+    pub fn describe(&self) -> String {
+        let mut s = format!("{}:{}", self.provider, self.model);
+        if let Some(r) = &self.region {
+            s.push_str(&format!(" region={r}"));
+        }
+        if let Some(t) = &self.tag {
+            s.push_str(&format!(" tag={t}"));
+        }
+        if let Some(p) = &self.profile {
+            s.push_str(&format!(" profile={}", &p[..p.len().min(12)]));
+        }
+        s
+    }
+}
+
+/// The engine that wrote a run (#288).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EnginePin {
+    pub version: String,
+    pub scheduler_epoch: u32,
+}
+
+impl EnginePin {
+    /// This build's pin.
+    pub fn current() -> Self {
+        EnginePin {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            scheduler_epoch: areev_run_core::SCHEDULER_EPOCH,
+        }
+    }
 }
 
 /// Serializable twin of the core's `Budgets` (kept separate so the manifest
@@ -134,6 +260,15 @@ pub struct BudgetsSpec {
     pub max_usd_micros: Option<u64>,
     pub max_wall_ms: Option<u64>,
     pub max_storage_bytes: Option<u64>,
+    /// Settled effects across the whole run (#295). `skip_serializing_if`
+    /// because `BudgetsSpec` serializes nulls today and the manifest golden
+    /// pins that shape — a new always-present key would change every
+    /// manifest's bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_effects: Option<u64>,
+    /// Host tool calls across the whole run (#295).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tool_calls: Option<u64>,
 }
 
 impl BudgetsSpec {
@@ -144,6 +279,8 @@ impl BudgetsSpec {
             max_usd_micros: self.max_usd_micros,
             max_wall_ms: self.max_wall_ms,
             max_storage_bytes: self.max_storage_bytes,
+            max_effects: self.max_effects,
+            max_tool_calls: self.max_tool_calls,
         }
     }
 }
@@ -251,6 +388,7 @@ impl RunManifest {
                     runtime_limits: None,
                     capabilities: None,
                     read: Some(spec),
+                    ask_kind: None,
                 });
                 continue;
             }
@@ -274,6 +412,7 @@ impl RunManifest {
                             runtime_limits: None,
                             capabilities: None,
                             read: None,
+                            ask_kind: None,
                         }
                     } else {
                         pin_from_definition(node, &h, &g)?
@@ -318,6 +457,7 @@ impl RunManifest {
                             runtime_limits: None,
                             capabilities: None,
                             read: None,
+                            ask_kind: None,
                         },
                         None => return Err(RunError::NoToolLlm { node: node.clone() }),
                     }
@@ -364,7 +504,48 @@ impl RunManifest {
             llm_context_tokens: None,
             reducers,
             fork_of: None,
+            initiator: None,
+            llm: None,
+            engine: None,
+            input_ref: None,
+            harness_ns: None,
+            allow_confirmation_asks: false,
         })
+    }
+
+    /// Freeze the model configuration this run starts under (#287).
+    ///
+    /// A builder beside [`with_limits`](Self::with_limits) rather than a new
+    /// `resolve` argument, for the reason that method already gives: none of
+    /// this affects resolution, and an eleventh positional argument is how
+    /// two call sites come to disagree about which knobs they passed.
+    pub fn with_llm_pin(mut self, pin: Option<LlmPin>) -> Self {
+        self.llm = pin;
+        self
+    }
+
+    /// Stamp the engine that is writing this run (#288).
+    pub fn with_engine_pin(mut self) -> Self {
+        self.engine = Some(EnginePin::current());
+        self
+    }
+
+    /// Freeze the initiator (#293), the input placement and the harness
+    /// namespace (#301), and the confirmation opt-in (#294).
+    pub fn with_attribution(mut self, opts: &crate::RunOptions) -> Self {
+        self.initiator = opts.initiator.clone();
+        self.harness_ns = opts.harness_ns.clone();
+        self.allow_confirmation_asks = opts.allow_confirmation_asks;
+        self
+    }
+
+    /// Record that the input lives in its own grain (#301).
+    pub fn with_input_ref(mut self, hash: String) -> Self {
+        self.input_ref = Some(hash);
+        // The manifest no longer carries the content itself. `input` keeps a
+        // `#[serde(default)]` so a manifest with neither still loads.
+        self.input = serde_json::Value::Null;
+        self
     }
 
     /// Freeze the caller's run-level LLM limits into the manifest.
@@ -445,6 +626,8 @@ impl RunManifest {
                 "client" => NodeExecutor::Client {
                     tool_hash: p.tool_hash.clone(),
                     tool_name: p.tool_name.clone(),
+                    // Absent means approval — the stricter reading (#294).
+                    approval: p.ask_kind.as_deref() != Some(ASK_KIND_CONFIRMATION),
                 },
                 "subgraph" => NodeExecutor::Subgraph { workflow_hash: p.tool_hash.clone() },
                 // Never Host, even for a pin whose declaration went missing:
@@ -480,7 +663,44 @@ impl RunManifest {
     /// after the fact, over an already-truncated page (#165). Returns
     /// (config hash, link hash).
     pub fn persist_in_namespace(&self, m: &mut Areev, ns: &str) -> Result<(Hash, Hash)> {
-        let config = serde_json::to_value(json!({ "areev_run": self }))
+        self.persist_with_input(m, ns, None)
+    }
+
+    /// Persist the manifest, optionally storing the run's INPUT as its own
+    /// grain in the run's namespace first (#301).
+    ///
+    /// The manifest is written to the memory-wide `agent:harness`, and it
+    /// carries the input BY VALUE — so `read ON agent:harness`, which
+    /// anything that lists or inspects runs needs, disclosed the inputs of
+    /// every namespace in the memory, retention and erasure of a namespace
+    /// left them behind, and no grant could say "the run records of this
+    /// namespace only".
+    ///
+    /// Under `input_ns`, the input is a State grain in that namespace and the
+    /// manifest keeps only its address. `input` then serializes as `null`,
+    /// which is why it carries `#[serde(default)]`: a manifest with an
+    /// `input_ref` and no value must still load.
+    pub fn persist_with_input(
+        &self,
+        m: &mut Areev,
+        ns: &str,
+        input_ns: Option<&str>,
+    ) -> Result<(Hash, Hash)> {
+        let mut manifest = self.clone();
+        if let Some(input_ns) = input_ns {
+            let mut grain = areev_core::types::State::new(self.input.clone())
+                .namespace(input_ns)
+                .created_at(0);
+            grain.common.author_did = Some(self.principal.clone());
+            grain
+                .common
+                .extra_fields
+                .insert("run_id".into(), serde_json::json!(self.run_id));
+            let h = m.add(&grain)?;
+            manifest = manifest.with_input_ref(h.to_hex());
+        }
+        let this = &manifest;
+        let config = serde_json::to_value(json!({ "areev_run": this }))
             .expect("manifest serializes");
         let mut state = areev_core::types::State::new(config)
             .namespace(areev_core::authz::HARNESS_NS)
@@ -541,9 +761,42 @@ impl RunManifest {
             .ok_or_else(|| RunError::ManifestMismatch {
                 why: "config State carries no areev_run manifest".into(),
             })?;
-        serde_json::from_value(manifest).map_err(|e| RunError::ManifestMismatch {
-            why: format!("manifest does not parse: {e}"),
-        })
+        let mut manifest: RunManifest =
+            serde_json::from_value(manifest).map_err(|e| RunError::ManifestMismatch {
+                why: format!("manifest does not parse: {e}"),
+            })?;
+        manifest.resolve_input(m)?;
+        Ok(manifest)
+    }
+
+    /// Hydrate an input stored by reference (#301).
+    ///
+    /// A missing input grain is a REFUSAL, not a `null` input: replaying a
+    /// run against `null` because its input was erased would produce a
+    /// different run wearing the same id, and `verify` would call it a
+    /// journal integrity failure rather than a missing premise.
+    fn resolve_input(&mut self, m: &mut Areev) -> std::result::Result<(), RunError> {
+        let Some(hex) = self.input_ref.clone() else {
+            return Ok(());
+        };
+        let h = Hash::from_hex(&hex).map_err(|_| RunError::ManifestMismatch {
+            why: format!("input_ref {hex:?} is not a content address"),
+        })?;
+        let grain = m.get(&h).map_err(|_| RunError::UnresolvedRef {
+            what: format!(
+                "run '{}' stores its input as grain {hex}, which is no longer readable \
+                 — the input a run replays from cannot be reconstructed, so verify and \
+                 resume refuse rather than replay against a different run",
+                self.run_id
+            ),
+        })?;
+        self.input = grain
+            .fields
+            .get("context")
+            .or_else(|| grain.fields.get("context_data"))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        Ok(())
     }
 }
 
@@ -690,6 +943,34 @@ pub fn pin_from_definition(
             ),
         });
     }
+    // `ask_kind` (#294). Valid only on a client tool — an approval boundary
+    // is a PERSON answering, and a host tool has no person — and refused by
+    // name for any other value, the way an unknown runtime is: a grain can
+    // arrive by sync or in a pack from an implementation we do not vouch
+    // for, and a value this build does not understand must not silently
+    // fall through to the weaker reading.
+    let ask_kind = match g.get_str("ask_kind") {
+        None | Some(ASK_KIND_APPROVAL) => None,
+        Some(_) if executor != "client" => {
+            return Err(RunError::InvalidPlan {
+                why: format!(
+                    "node '{node}' declares ask_kind on a {executor} tool — only a \
+                     client tool is answered by a person, so only a client tool has \
+                     an ask kind"
+                ),
+            })
+        }
+        Some(ASK_KIND_CONFIRMATION) => Some(ASK_KIND_CONFIRMATION.to_string()),
+        Some(other) => {
+            return Err(RunError::InvalidPlan {
+                why: format!(
+                    "node '{node}' declares ask_kind {other:?}, which this build does \
+                     not understand — accepted: {ASK_KIND_APPROVAL}, \
+                     {ASK_KIND_CONFIRMATION}"
+                ),
+            })
+        }
+    };
     Ok(PinnedTool {
         node: node.to_string(),
         tool_hash: h.to_hex(),
@@ -700,8 +981,18 @@ pub fn pin_from_definition(
         runtime_limits,
         capabilities,
         read: None,
+        ask_kind,
     })
 }
+
+/// A Client ask a SECOND person must answer — the default, and what every
+/// Client ask meant before #294.
+pub const ASK_KIND_APPROVAL: &str = "approval";
+/// A Client ask the run's own initiator may answer, when the host has opted
+/// in. For a REVERSIBLE write a firm may decide the person who requested it
+/// can confirm it; the alternative today is a prepare run, a separate commit
+/// run under the confirmer, and a product ledger joining the two.
+pub const ASK_KIND_CONFIRMATION: &str = "confirmation";
 
 /// Newest Definition with this tool_name, or None. Definitions are few; a
 /// bounded scan of the namespace's Tool grains is the v1 catalogue (a
@@ -818,6 +1109,12 @@ mod tests {
             llm_context_tokens: None,
             reducers: BTreeMap::new(),
             fork_of: None,
+            initiator: None,
+            llm: None,
+            engine: None,
+            input_ref: None,
+            harness_ns: None,
+            allow_confirmation_asks: false,
         }
     }
 
@@ -832,6 +1129,7 @@ mod tests {
             runtime_limits: None,
             capabilities: None,
             read: None,
+            ask_kind: None,
         }
     }
 
@@ -853,6 +1151,7 @@ mod tests {
                 runtime_limits: None,
                 capabilities: None,
                 read: None,
+                ask_kind: None,
             },
             host_pin("reply_done", "reply_email"),
             host_pin("reply_rejected", "reply_email"),
@@ -896,6 +1195,7 @@ mod tests {
             runtime_limits: None,
             capabilities: None,
             read,
+            ask_kind: None,
         };
         let mut m = bare();
         m.pinned = vec![

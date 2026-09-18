@@ -1,6 +1,6 @@
 [package]
 name = "areev-js"
-version = "1.8.5"
+version = "1.9.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["MindGryd Software Private Limited"]
@@ -21,7 +21,7 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-areev-core = { path = "../areev-core", version = "1.8.5" }
+areev-core = { path = "../areev-core", version = "1.9.0" }
 # The postgres backend ships ON in the binding: it is a server-side surface,
 # and `new Areev("postgres://…?schema=<name>")` must work from a stock
 # `npm install @areev/areev`. The dependency-light default stays with the CLI/store.
@@ -29,12 +29,12 @@ areev-core = { path = "../areev-core", version = "1.8.5" }
 # an addon installer cannot recompile to add a cargo feature. rustls is already
 # in this crate's graph via areev-llm's HTTP client.
 areev-store = { path = "../areev-store", version = "1.8.0", features = ["postgres", "postgres-tls"] }
-areev-cal = { path = "../areev-cal", version = "1.8.5" }
+areev-cal = { path = "../areev-cal", version = "1.9.0" }
 areev-loop = { path = "../areev-loop" }
 areev-loop-adapter = { path = "../areev-loop-adapter" }
 areev-llm = { path = "../areev-llm" }
 areev-run = { path = "../areev-run" }
-areev-trigger = { path = "../areev-trigger" }
+areev-trigger = { path = "../areev-trigger", features = ["tz"] }
 serde_json = "1"
 napi = { version = "3", features = ["napi9"] }
 napi-derive = "3"

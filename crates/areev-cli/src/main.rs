@@ -3,7 +3,9 @@
 //! Thin shell over areev-store + areev-cal. One memory = one file.
 
 mod corpus;
-mod pack;
+// `pack` lives in the library half of this crate (#315), so a Rust host
+// can install an agent without shipping and spawning this binary.
+use areev::pack;
 mod run_stack;
 mod tune;
 mod trigger_cli;
@@ -82,7 +84,8 @@ COMMANDS:
                                       partition keys, history — as JSONL
                                       (stdout or --out), and optionally a
                                       portable .mgb bundle (--bundle)
-  forget-subject <subject> [--ns NS] [--text-mentions] [--because \"why\"] --yes
+  forget-subject <subject> [--ns NS] [--text-mentions] [--because \"why\"]
+                 [--override-hold] --yes
                                       erase EVERY grain referencing an
                                       identity (--because rides the audit
                                       record) — exact +
@@ -90,7 +93,13 @@ COMMANDS:
                                       included, + its dictionary entries;
                                       --text-mentions also erases grains whose
                                       indexed text mentions the identity;
-                                      replicates as tombstones
+                                      replicates as tombstones.
+                                      A namespace under a legal hold refuses
+                                      (STO-E009) and the refusal is itself
+                                      recorded; --override-hold --because
+                                      destroys anyway, names the hold in the
+                                      audit record, and needs admin on the
+                                      namespace as well as erase
   purge-older-than <days> [--ns NS] [--type event] --yes   retention sweep:
                                       erase grains older than N days
                                       (--ns \"\" sweeps every namespace)
@@ -105,8 +114,11 @@ COMMANDS:
                                       destruction younger than it refuses
   hold     <set|release|list> [--ns NS] --because \"why\" [--by PRINCIPAL]
                                       legal hold: while one is live on a
-                                      namespace, ALL age-based destruction
-                                      there refuses with the hold on record.
+                                      namespace, EVERY destruction path there
+                                      refuses (STO-E009) with the hold on
+                                      record — the age sweeps, FORGET by hash,
+                                      FORGET SUBJECT, the memory tool, the
+                                      loop rollback, and DROP SCHEMA.
                                       A file-truth; `set` and `release` both
                                       demand a reason and both land in
                                       `areev audit export`
@@ -208,15 +220,36 @@ COMMANDS:
                                       sidecar encryption landed (needs the
                                       memory's key; new blobs are sealed on
                                       write). Idempotent
-  audit export [--since MS] [--until MS] [--out FILE]   accountability
-                                      evidence as JSONL: every destructive
-                                      op (who/what/why/how many) + the loop
-                                      lifecycle chain, hash-chain verified
+  audit export [--since MS] [--until MS] [--out FILE] [--with-outcomes]
+                                      accountability evidence as JSONL: every
+                                      destructive op (who/what/why/how many)
+                                      + the loop lifecycle with its gating
+                                      edge. BOTH trails hash-chained and
+                                      verified — a missing predecessor is a
+                                      chain_break, one merely outside --since
+                                      is previous_outside_window, and a
+                                      pre-chain record is unchained, never a
+                                      break. --with-outcomes adds the Verify
+                                      gate's measured checkpoints, marked
+                                      chained: false. It contains NO read
+                                      records: access logging is the host's
   novelty  --text T [--subject S] [--relation R] [-k N] [--ns NS]
                                       nearest existing grains
                                       (paraphrase check; needs --embed-cmd)
            --ns accepts a prefix scope 'org.*' like recall does
-  log      [--since OP] [--limit N]   op-log (change feed)
+  log      [--since OP] [--limit N] [--ns a,b]
+                                      op-log (change feed). --ns narrows it to
+                                      those namespaces and attributes every
+                                      row, TOMBSTONES INCLUDED — resolving a
+                                      forget's hash cannot, because the grain
+                                      is gone. op_seq stays the memory-wide
+                                      sequence, so a scoped cursor is still
+                                      comparable with an unscoped one
+  telemetry scrub --ns NS --yes       drop every recall-telemetry row for one
+                                      namespace, plus buffered events. Reaches
+                                      the row no other scrub can: a
+                                      zero-result free-text query names no
+                                      grain hash
   bundle   --out FILE [--since OP]    incremental backup (git-shaped)
   import   --bundle FILE              apply a bundle (fast-forward)
   pack     validate DIR               check a pack without opening a memory:
@@ -268,12 +301,22 @@ COMMANDS:
   follow   --from DIR [--interval-ms N] [--once]  subscribe: apply new segments
                                                   (org/category distribution)
   related  --start TERM --relations R1,R2 [--direction out|in|both]
-           [--depth N] [--limit N]    walk the entity graph (bounded k-hop).
+           [--depth N] [--limit N] [--ns a,b]
+                                      walk the entity graph (bounded k-hop).
                                       in/both only see relations the file
-                                      declares entity-valued
-  entity-at --subject S --relation R --at MS [--axis world|knowledge]
+                                      declares entity-valued. --ns with a
+                                      comma list walks the SET: a walk is not
+                                      composable from per-namespace calls, and
+                                      every named namespace is read-checked as
+                                      itself
+  entity-at --subject S --relation R --at MS [--axis world|knowledge] [--ns a,b]
                                       as-of read: what was true at T (world)
-                                      or what was known at T (knowledge)
+                                      or what was known at T (knowledge).
+                                      The world axis prefers the window that
+                                      took effect most recently, so an
+                                      out-of-order backfill reads correctly.
+                                      --ns with a comma list answers each
+                                      namespace independently
   step-actions --workflow HASH [--node ID] [--limit N]
                                       execution records for a workflow —
                                       which grains ran which of its nodes
@@ -285,7 +328,16 @@ COMMANDS:
            re-accepts against a recorded run within N percentage points,
            the Verify gate's own regression rule), journals each case under an
            eval- run id, and records the summary `areev loop apply
-           --gating-run` loads
+           --gating-run` loads.
+           --case-ns NS puts the evalset and every case's input and output in
+           NS instead of agent:harness, so confidential cases are governed by
+           the namespace they came from; the summary stays in the harness.
+           A grader may report field metrics and usage out of band by writing
+           a JSON object with `metrics` and `usage` members to
+           $AREEV_EVAL_REPORT — each metric's MEAN lands in the summary as
+           <name> beside <name>_n, which the Verify gate reads like any
+           host-defined field, and usage sums into input_tokens /
+           output_tokens / usd_micros
   tool     provenance <hash> [--depth N]   one-command code forensics: the
            recommendations targeting this code, each transition's approver +
            BECAUSE + gating edge, the runs that touched it, and the executor
@@ -309,7 +361,23 @@ COMMANDS:
            [--tool-env VAR,...]
            [--credential NAME=ENV_VAR[@PRINCIPAL],...] [--allow-host URL,...]
            [--tool-egress TOOL:CRED[@HOST]+...:METHOD+METHOD,...]
-           [--credential-ttl SECS] [--resolver-env VAR,...];
+           [--credential-ttl SECS] [--resolver-env VAR,...]
+           [--initiator WHO] [--allow-confirmation-asks]
+           [--input-placement manifest|run-ns] [--harness-ns NS]
+           [--max-run-effects N] [--max-tool-calls N]
+           [--max-concurrent N] [--max-concurrent-per-principal N]
+           [--lease SECS] [--node ID]
+           [--llm-token-field max_tokens|max_completion_tokens]
+           [--llm-no-temperature] [--llm-extra-body JSON];
+           --initiator names who a run is started ON BEHALF OF: frozen in the
+           manifest, and an approval ask refuses them as well as the run's
+           principal. A resume refuses a model or scheduler-epoch mismatch
+           (RUN-E025/E026) before taking the lease — `run fork` is the way
+           through. --input-placement run-ns and --harness-ns move the run's
+           content-bearing records into the run's own namespace, so they are
+           governed by it rather than by the memory-wide agent:harness.
+           Every one of these has an $AREEV_RUN_* twin, because a run started
+           from a cron line is configured out of band.
            --credential/--allow-host/--tool-egress broker a tool's outbound
            calls: it gets the broker's address and a capability token, never
            the secret. A tool with no grant gets nothing, and a grant naming
@@ -471,7 +539,8 @@ COMMANDS:
                                       NAME drops one credential without
                                       touching the principal's others
                                       (restart `areev ui` to apply)
-  provision --db DSN [--schema NAME] [--telemetry off|aggregate|full]
+  provision [--check [--format json]] --db DSN [--schema NAME]
+            [--telemetry off|aggregate|aggregate-hashed|full]
                                       create/migrate a postgres memory's
                                       schema AHEAD of use, so no request ever
                                       pays for bootstrap DDL. Postgres only
@@ -485,7 +554,15 @@ COMMANDS:
                                       DSN's ?schema=. It also provisions the
                                       telemetry tables, since --telemetry
                                       defaults to aggregate on every verb —
-                                      pass --telemetry off to skip them
+                                      pass --telemetry off to skip them.
+                                      --check is the READ-ONLY probe: SELECTs
+                                      only, no lock, no DDL, no meta write, so
+                                      it runs under a least-privilege role. It
+                                      reports every stamp's found-vs-wanted
+                                      value, what is pending, and
+                                      rolling_deploy: safe |
+                                      drain_writers_first | unknown. Exit 0
+                                      current, 2 pending or absent
   ui       [--addr HOST:PORT] [--allow-remote] [--allow-origin ORIGIN[,ORIGIN...]]
            [--token-env VAR] [--no-destructive-ops] [--tls-cert PATH --tls-key PATH]
            [--sso-header NAME --sso-secret-env VAR [--sso-secret-env-next VAR]]
@@ -609,7 +686,16 @@ skips schema/table bootstrap, so a role holding only CONNECT + USAGE + SELECT
 grants can open an existing, already-migrated memory — see
 docs/deployment-profile.md for the grant recipe. --read-only combined with an
 explicit --index-text is refused up front (--index-text always re-stamps the
-file's declaration, which read-only mode cannot do).";
+file's declaration, which read-only mode cannot do).
+
+Recall telemetry: add --telemetry off|aggregate|aggregate-hashed|full to any
+command. Default aggregate (off under --read-only unless asked for
+explicitly). It is HOST config, never a file-truth. aggregate-hashed keeps the
+same rollups with the query key HMAC'd under a subkey derived from the
+memory's own AEAD key, keeps no sample and writes no ring log — so what a
+person typed is never retained and there is nothing to erase later. full adds
+a per-recall ring log. `areev telemetry scrub --ns NS --yes` reaches the rows
+a namespace erasure cannot.";
 
 fn flag(args: &HashMap<String, String>, k: &str) -> Option<String> {
     args.get(k).cloned()
@@ -809,6 +895,8 @@ fn write_erasure_audit(
     target: &str,
     count: usize,
     stale_exports: &[areev_store::CorpusExportRegistry],
+    // The legal hold this destruction overrode (#278), when it overrode one.
+    overridden: Option<&areev_store::HoldRecord>,
 ) {
     let principal = flag(flags, "as").unwrap_or_else(|| "local:owner".to_string());
     let now = std::time::SystemTime::now()
@@ -881,7 +969,23 @@ fn write_erasure_audit(
             );
         }
     }
-    if let Err(e) = m.add(&obs) {
+    if let Some(hold) = overridden {
+        let ctx = obs.common.context.get_or_insert_with(|| serde_json::json!({}));
+        if let Some(o) = ctx.as_object_mut() {
+            o.insert(
+                "hold_overridden".into(),
+                serde_json::json!({
+                    "ns": hold.ns,
+                    "placed_by": hold.placed_by,
+                    "because": hold.because,
+                }),
+            );
+        }
+    }
+    // Appended to the memory's ONE destruction chain (#280), not added
+    // standalone: a record with no predecessor and no sequence is a record
+    // whose deletion leaves the export looking clean.
+    if let Err(e) = m.append_audit(&mut obs) {
         eprintln!("areev: warning: erasure succeeded but its audit record failed to write: {e}");
     }
 }
@@ -1887,7 +1991,9 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
     // applies.
     let tel_mode = match flag(&flags, "telemetry") {
         Some(v) => areev_store::TelemetryMode::parse(&v)
-            .ok_or_else(|| format!("--telemetry: unknown mode '{v}' (off|aggregate|full)"))?,
+            .ok_or_else(|| {
+                format!("--telemetry: unknown mode '{v}' (off|aggregate|aggregate-hashed|full)")
+            })?,
         None if read_only => areev_store::TelemetryMode::Off,
         None => areev_store::TelemetryMode::Aggregate,
     };
@@ -2280,15 +2386,62 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
         "log" => {
             let since: i64 = flag(&flags, "since").and_then(|v| v.parse().ok()).unwrap_or(0);
             let limit: usize = flag(&flags, "limit").and_then(|v| v.parse().ok()).unwrap_or(50);
-            for op in m.changes_since(since, limit).map_err(|e| e.to_string())? {
+            // #307: `--ns a,b` narrows the feed to those namespaces and
+            // attributes every row, TOMBSTONES INCLUDED. A per-namespace
+            // projector previously had to read every operation in the memory
+            // and resolve each hash to find its namespace — and could not
+            // attribute a forget at all, because its grain is gone. `op_seq`
+            // stays the memory-wide sequence, so a scoped cursor is still
+            // comparable with the unscoped one.
+            let scope: Vec<String> = flag(&flags, "ns")
+                .map(|v| {
+                    v.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let ops = m
+                .changes_since_scoped(since, &scope, limit)
+                .map_err(|e| e.to_string())?;
+            for op in ops {
                 let kind = match op.op {
                     areev_store::OP_ADD => "add",
                     areev_store::OP_SUPERSEDE => "supersede",
                     areev_store::OP_FORGET => "forget",
                     _ => "?",
                 };
-                println!("{:>6}  {:>20}  {:<9}  {}", op.op_seq, op.hlc, kind, op.hash.to_hex());
+                println!(
+                    "{:>6}  {:>20}  {:<9}  {}  {}",
+                    op.op_seq,
+                    op.hlc,
+                    kind,
+                    op.hash.to_hex(),
+                    op.ns.as_deref().unwrap_or("-")
+                );
             }
+        }
+        "telemetry" => {
+            // #306: erasing a namespace should take its recall evidence with
+            // it. The per-hash and per-subject scrubs cannot reach a
+            // ZERO-RESULT free-text query — it names no grain and need not
+            // contain the erased identity — and that is precisely the row
+            // that retains what a person typed.
+            let action = positional.first().map(String::as_str).unwrap_or("");
+            if action != "scrub" {
+                return Err(
+                    "usage: areev telemetry scrub --ns NS --yes".into()
+                );
+            }
+            let ns = need(&flags, "ns")?;
+            if !flags.contains_key("yes") {
+                return Err(format!(
+                    "refusing to scrub telemetry for {ns:?} without --yes — this removes \
+                     recall evidence permanently"
+                ));
+            }
+            m.telemetry_scrub_namespace(&ns).map_err(|e| e.to_string())?;
+            println!("scrubbed telemetry for namespace {ns:?}");
         }
         "stream" => {
             // Litestream-shaped: a full snapshot as segment 0 of each
@@ -2588,9 +2741,20 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
                 .map_or(Ok(64), |l| l.parse())
                 .map_err(|_| "--limit must be a number")?;
             let refs: Vec<&str> = rels.iter().map(String::as_str).collect();
-            let reached = m
-                .related(&ns, &start, &refs, dir, depth, cap)
-                .map_err(|e| e.to_string())?;
+            // #303: `--ns a,b` walks the SET. A walk is not composable from
+            // per-namespace calls — the frontier, `seen`, depth and cap are
+            // shared state.
+            let scope: Vec<String> = ns
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            let reached = if scope.len() > 1 {
+                m.related_scoped(&scope, &start, &refs, dir, depth, cap)
+            } else {
+                m.related(&ns, &start, &refs, dir, depth, cap)
+            }
+            .map_err(|e| e.to_string())?;
             if reached.is_empty() {
                 println!("(nothing reachable from {start})");
             }
@@ -2607,6 +2771,29 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
                 .map_err(|_| "--at must be epoch milliseconds")?;
             let axis = Axis::parse(&flag(&flags, "axis").unwrap_or_default())
                 .ok_or("--axis must be one of: world, knowledge")?;
+            // #303: `--ns a,b` answers each namespace INDEPENDENTLY, paired
+            // with the namespace it came from. No cross-namespace precedence
+            // is invented, because there is none to invent.
+            let scope: Vec<String> = ns
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if scope.len() > 1 {
+                let rows = m
+                    .entity_at_scoped(&scope, &subject, &relation, at, axis)
+                    .map_err(|e| e.to_string())?;
+                if rows.is_empty() {
+                    println!("(nothing known for {subject} {relation} at {at})");
+                } else {
+                    let out: Vec<_> = rows
+                        .iter()
+                        .map(|(n, g)| serde_json::json!({"namespace": n, "grain": g}))
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+                }
+                return Ok(());
+            }
             match m
                 .entity_at(&ns, &subject, &relation, at, axis)
                 .map_err(|e| e.to_string())?
@@ -3673,7 +3860,52 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
                     .check(areev_core::authz::Verb::Erase, &ns)
                     .map_err(|e| e.to_string())?;
             }
-            let rep = m.forget_subject_with(&ns, &subject, opts).map_err(|e| e.to_string())?;
+            // #278: `--override-hold` destroys in a HELD namespace. Explicit
+            // and audited: the Tier-2 record names the hold it overrode, and
+            // a refusal without the flag is recorded too — the evidence a
+            // controller needs to answer an Art. 17 request on an Art. 17(3)
+            // ground.
+            let override_hold = flags.contains_key("override-hold");
+            let audit_target = format!(
+                "subject:{} ns:{ns}",
+                areev_core::authz::subject_fingerprint(&subject)
+            );
+            let (rep, overridden) = if override_hold {
+                let because = flag(&flags, "because").ok_or_else(|| {
+                    "--override-hold requires --because: destroying records someone \
+                     placed a hold on is a decision, and it has a ground"
+                        .to_string()
+                })?;
+                let who = flag(&flags, "as").unwrap_or_else(|| "local:owner".to_string());
+                let over = areev_store::HoldOverride::new(who, because)
+                    .map_err(|e| e.to_string())?;
+                m.forget_subject_overriding(&ns, &subject, opts, &over)
+                    .map_err(|e| e.to_string())?
+            } else {
+                match m.forget_subject_with(&ns, &subject, opts) {
+                    Ok(r) => (r, None),
+                    Err(e) => {
+                        if e.code() == "STO-E009" {
+                            let mut obs = areev_core::authz::audit_observation(
+                                &flag(&flags, "as").unwrap_or_else(|| "local:owner".into()),
+                                "erase.refused",
+                                &audit_target,
+                                Some(&e.to_string()),
+                                0,
+                                areev_core::time::now_ms(),
+                            );
+                            let _ = m.append_audit(&mut obs);
+                        }
+                        return Err(e.to_string());
+                    }
+                }
+            };
+            if let Some(hold) = &overridden {
+                eprintln!(
+                    "areev: overrode the legal hold on '{}' placed by {} ({})",
+                    hold.ns, hold.placed_by, hold.because
+                );
+            }
             let stale_exports = m
                 .corpus_exports_touching_subject(&subject)
                 .unwrap_or_else(|e| {
@@ -3690,12 +3922,10 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
                 "erase",
                 // A fingerprint, never the identity — the audit grain
                 // outlives the erasure and replicates.
-                &format!(
-                    "subject:{} ns:{ns}",
-                    areev_core::authz::subject_fingerprint(&subject)
-                ),
+                &audit_target,
                 rep.grains_erased,
                 &stale_exports,
+                overridden.as_ref(),
             );
             println!(
                 "erased {} grains ({} dictionary entries, {} vocabulary tokens, {} blobs reclaimed)",
@@ -3768,6 +3998,7 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
                 ),
                 rep.grains_erased,
                 &stale_exports,
+                None,
             );
             println!(
                 "erased {} grains ({} vocabulary tokens, {} blobs reclaimed)",
@@ -4156,7 +4387,8 @@ fn run_retention(
                                 &format!("retention:{days}d ns:{pns}"),
                                 rep.grains_erased,
                                 &stale_exports,
-                            );
+                None,
+            );
                         }
                     }
                 }
@@ -4768,8 +5000,22 @@ fn run_eval(
     flags: &HashMap<String, String>,
     positional: &[String],
 ) -> Result<(), String> {
+    // Where the NUMBERS live. `areev_loop::eval` reads `mg:eval_run` Facts
+    // from here, and `Engine::gating_evidence` goes through the same reader,
+    // so the summary and the re-acceptance record must not move.
     const EVAL_NS: &str = "agent:harness";
     let sub_cmd = positional.first().map(|s| s.as_str()).unwrap_or("");
+    // Where the CONTENT lives (#314). Evaluation cases are built from a
+    // firm's own confidential documents, and `run_eval` wrote the evalset,
+    // every case's input and every case's output to the memory-wide
+    // `agent:harness` — outside the grants, retention and erasure of the
+    // namespace they came from — while ignoring the global `--ns` entirely.
+    //
+    // An explicit flag rather than the global `--ns`, so no existing
+    // invocation changes placement under anyone's feet. The split is the one
+    // `areev run` already makes: effect grains in the run's namespace,
+    // evidence ABOUT the run in the harness.
+    let case_ns = flag(flags, "case-ns").unwrap_or_else(|| EVAL_NS.to_string());
     let facade = AreevFacade::with_session(m, Some(EVAL_NS.to_string()), None);
     let need = |key: &str, usage: &str| -> Result<String, String> {
         flag(flags, key).ok_or_else(|| format!("usage: {usage}"))
@@ -4803,7 +5049,7 @@ fn run_eval(
                 "mg:evalset",
                 &payload.to_string(),
             )
-            .namespace(EVAL_NS);
+            .namespace(&case_ns);
             fact.common.extra_fields.insert("evalset_name".into(), serde_json::json!(name));
             let h = facade.with_store(|m| m.add(&fact)).map_err(|e| e.to_string())?;
             println!("evalset '{name}' stored: {h} ({} cases)", cases.len());
@@ -4874,12 +5120,26 @@ fn run_eval(
             // cost bound reads fail-closed.
             let (mut effects, mut wall_ms) = (0u64, 0u64);
             let (mut input_tokens, mut output_tokens) = (0u64, 0u64);
+            // #313: host-graded FIELD metrics and usage, reported by the
+            // grader out of band and aggregated here.
+            //
+            // A `--tool-cmd` case could only say pass or fail: the per-case
+            // row was `{"case","ok"}` and the summary carried no tokens at
+            // all, so a grader scoring value/period/unit/basis per extracted
+            // figure had no way into `mg:eval_run` — although the Verify gate
+            // already reads host-defined summary fields. The only route was
+            // to bypass the verb and journal the Facts by hand.
+            let mut metric_totals: std::collections::BTreeMap<String, (f64, u64)> =
+                std::collections::BTreeMap::new();
+            let mut usd_micros = 0u64;
+            let mut reported_usage = false;
             let mut rows = Vec::new();
             for case in &cases {
                 let cname = case.get("name").and_then(|v| v.as_str()).unwrap_or("case");
                 let input = case.get("input").cloned().unwrap_or(serde_json::json!({}));
                 let expect = case.get("expect").cloned().unwrap_or(serde_json::json!({}));
                 let started = std::time::Instant::now();
+                let mut case_report: Option<Result<EvalCaseReport, String>> = None;
                 let (ok, got) = match &llm {
                     Some(llm) => {
                         let (ok, got, usage) =
@@ -4890,22 +5150,61 @@ fn run_eval(
                         }
                         (ok, got)
                     }
-                    None => run_eval_case(
-                        cmd.as_deref().unwrap_or_default(),
-                        &evalset_hex,
-                        cname,
-                        &input,
-                        &expect,
-                    ),
+                    None => {
+                        let (ok, got, report) = run_eval_case(
+                            cmd.as_deref().unwrap_or_default(),
+                            &evalset_hex,
+                            cname,
+                            &input,
+                            &expect,
+                        );
+                        case_report = report;
+                        (ok, got)
+                    }
                 };
+                // Read fail-closed, the way the cost keys are: a report that
+                // is present and malformed FAILS the case with the reason. A
+                // grader that produced garbage graded nothing.
+                let mut ok = ok;
+                let mut got = got;
+                if let Some(Err(why)) = &case_report {
+                    ok = false;
+                    got = format!("{got}\n[eval report rejected: {why}]");
+                }
                 effects += 1;
                 wall_ms += started.elapsed().as_millis() as u64;
                 if ok { passed += 1 } else { failed += 1 };
+                let mut case_metrics = serde_json::Map::new();
+                let mut case_usage = serde_json::Map::new();
+                if let Some(Ok(report)) = &case_report {
+                    for (name, v) in &report.metrics {
+                        let e = metric_totals.entry(name.clone()).or_insert((0.0, 0));
+                        e.0 += v;
+                        e.1 += 1;
+                        case_metrics.insert(name.clone(), serde_json::json!(v));
+                    }
+                    if let Some(n) = report.input_tokens {
+                        input_tokens += n;
+                        reported_usage = true;
+                        case_usage.insert("input_tokens".into(), serde_json::json!(n));
+                    }
+                    if let Some(n) = report.output_tokens {
+                        output_tokens += n;
+                        reported_usage = true;
+                        case_usage.insert("output_tokens".into(), serde_json::json!(n));
+                    }
+                    if let Some(n) = report.usd_micros {
+                        usd_micros += n;
+                        reported_usage = true;
+                        case_usage.insert("usd_micros".into(), serde_json::json!(n));
+                    }
+                }
                 // Each case is journaled — the gate run is inspectable with
                 // `areev run-trace --run-id <eval id>` like any other run.
                 facade
                     .record_tool_call(
-                        EVAL_NS,
+                        // The case's input and output are CONTENT (#314).
+                        &case_ns,
                         &format!("eval:{cname}"),
                         Some(&input.to_string()),
                         &got,
@@ -4921,7 +5220,14 @@ fn run_eval(
                         None,
                     )
                     .map_err(|e| e.to_string())?;
-                rows.push(serde_json::json!({"case": cname, "ok": ok}));
+                let mut row = serde_json::json!({"case": cname, "ok": ok});
+                if !case_metrics.is_empty() {
+                    row["metrics"] = serde_json::Value::Object(case_metrics);
+                }
+                if !case_usage.is_empty() {
+                    row["usage"] = serde_json::Value::Object(case_usage);
+                }
+                rows.push(row);
             }
             // The summary Fact — the RECORDED edge apply-gating loads. The
             // grading model rides beside the stats: for an adapter gate,
@@ -4934,6 +5240,24 @@ fn run_eval(
                 summary["model"] = serde_json::json!(spec);
                 summary["input_tokens"] = serde_json::json!(input_tokens);
                 summary["output_tokens"] = serde_json::json!(output_tokens);
+            }
+            // #314: the summary stays in the harness — ids, counts and cost
+            // only — and says where the content went, so `run-trace --ns NS`
+            // finds the cases.
+            if case_ns != EVAL_NS {
+                summary["case_ns"] = serde_json::json!(case_ns);
+            }
+            // #313: host-graded field metrics and usage, aggregated.
+            for (name, (sum, n)) in &metric_totals {
+                summary[name.as_str()] = serde_json::json!(sum / *n as f64);
+                summary[format!("{name}_n")] = serde_json::json!(n);
+            }
+            if reported_usage {
+                summary["input_tokens"] = serde_json::json!(input_tokens);
+                summary["output_tokens"] = serde_json::json!(output_tokens);
+                if usd_micros > 0 {
+                    summary["usd_micros"] = serde_json::json!(usd_micros);
+                }
             }
             let mut fact = areev_core::types::Fact::new(
                 &format!("evalset:{evalset_hex}"),
@@ -5017,14 +5341,22 @@ fn run_eval(
 
             println!(
                 "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "evalset": evalset_hex, "run_id": run_id,
-                    "passed": passed, "failed": failed, "cases": rows,
-                    "effects": effects, "wall_ms": wall_ms,
-                    "input_tokens": model.as_ref().map(|_| input_tokens),
-                    "output_tokens": model.as_ref().map(|_| output_tokens),
-                    "reacceptance": reacceptance,
-                }))
+                // Derived from the STORED summary rather than rebuilt, so the
+                // printed JSON and the `mg:eval_run` Fact cannot drift on
+                // what a run recorded (#313).
+                serde_json::to_string_pretty(&{
+                    let mut printed = summary.clone();
+                    printed["evalset"] = serde_json::json!(evalset_hex);
+                    printed["cases"] = serde_json::Value::Array(rows.clone());
+                    printed["reacceptance"] = reacceptance.clone();
+                    if !reported_usage && model.is_none() {
+                        // Nothing reported usage: say so with null rather
+                        // than an unearned zero.
+                        printed["input_tokens"] = serde_json::Value::Null;
+                        printed["output_tokens"] = serde_json::Value::Null;
+                    }
+                    printed
+                })
                 .unwrap()
             );
             if failed > 0 {
@@ -5053,14 +5385,110 @@ fn json_from_facade_recall(
         .collect())
 }
 
-/// One eval case through the subprocess seam. Returns (passed, output text).
+/// What a grader may report OUT OF BAND about one case (#313).
+///
+/// Off stdout on purpose: `equals` / `contains` scoring reads stdout, and a
+/// reserved trailer or an envelope would change what every existing grader
+/// has to print. The command writes one JSON object to the file named by
+/// `$AREEV_EVAL_REPORT` instead, and a grader that writes nothing produces a
+/// summary byte-identical to today's.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct EvalCaseReport {
+    /// Field metrics, each a finite number. A 0/1 field result reads as a
+    /// ratio once averaged, which is what `min_effect.points` assumes of a
+    /// host-defined summary field.
+    pub(crate) metrics: std::collections::BTreeMap<String, f64>,
+    pub(crate) input_tokens: Option<u64>,
+    pub(crate) output_tokens: Option<u64>,
+    pub(crate) usd_micros: Option<u64>,
+}
+
+/// Summary keys the verb owns. A metric may not collide with one — a metric
+/// named `passed` would overwrite the count the gate reads.
+pub(crate) const RESERVED_EVAL_KEYS: &[&str] = &[
+    "run_id",
+    "passed",
+    "failed",
+    "effects",
+    "wall_ms",
+    "input_tokens",
+    "output_tokens",
+    "usd_micros",
+    "model",
+    "case_ns",
+];
+
+/// Parse a grader's report. Fail-closed throughout: a non-integer usage
+/// value is an ERROR, never a zero — reading a malformed cost as free is the
+/// failure `areev_loop::eval` is explicit about refusing.
+pub(crate) fn parse_eval_report(text: &str) -> Result<EvalCaseReport, String> {
+    let v: serde_json::Value = serde_json::from_str(text.trim())
+        .map_err(|e| format!("$AREEV_EVAL_REPORT is not valid JSON: {e}"))?;
+    let obj = v
+        .as_object()
+        .ok_or_else(|| "$AREEV_EVAL_REPORT must be a JSON object".to_string())?;
+    let mut out = EvalCaseReport::default();
+    if let Some(metrics) = obj.get("metrics") {
+        let metrics = metrics
+            .as_object()
+            .ok_or_else(|| "\"metrics\" must be an object".to_string())?;
+        for (name, value) in metrics {
+            if !name
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_lowercase())
+                || !name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            {
+                return Err(format!(
+                    "metric name {name:?} must match [a-z][a-z0-9_]*"
+                ));
+            }
+            if RESERVED_EVAL_KEYS.contains(&name.as_str()) {
+                return Err(format!(
+                    "metric name {name:?} collides with a summary key this verb owns \
+                     (reserved: {})",
+                    RESERVED_EVAL_KEYS.join(", ")
+                ));
+            }
+            let n = value
+                .as_f64()
+                .filter(|n| n.is_finite())
+                .ok_or_else(|| format!("metric {name:?} must be a finite number"))?;
+            out.metrics.insert(name.clone(), n);
+        }
+    }
+    if let Some(usage) = obj.get("usage") {
+        let usage = usage
+            .as_object()
+            .ok_or_else(|| "\"usage\" must be an object".to_string())?;
+        for (key, slot) in [
+            ("input_tokens", &mut out.input_tokens),
+            ("output_tokens", &mut out.output_tokens),
+            ("usd_micros", &mut out.usd_micros),
+        ] {
+            if let Some(v) = usage.get(key) {
+                *slot = Some(
+                    v.as_u64()
+                        .ok_or_else(|| format!("usage.{key} must be a non-negative integer"))?,
+                );
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// One eval case through the subprocess seam. Returns (passed, output text,
+/// the grader's optional out-of-band report).
+#[allow(clippy::type_complexity)]
 fn run_eval_case(
     cmd: &str,
     evalset: &str,
     case: &str,
     input: &serde_json::Value,
     expect: &serde_json::Value,
-) -> (bool, String) {
+) -> (bool, String, Option<Result<EvalCaseReport, String>>) {
     use areev_core::proc::{self, SpawnPolicy};
     use std::process::Command;
     // The platform shell: /bin/sh -c on unix, cmd /C on Windows. The
@@ -5077,20 +5505,43 @@ fn run_eval_case(
         use std::os::windows::process::CommandExt;
         shell.raw_arg("/C").raw_arg(cmd);
     }
+    // The report file is created empty and named to the child, beside
+    // `AREEV_EVALSET` and `AREEV_EVAL_CASE` (#313). A grader that ignores it
+    // behaves exactly as before.
+    let report_dir = std::env::temp_dir();
+    let report_path = report_dir.join(format!(
+        "areev-eval-{}-{}.json",
+        std::process::id(),
+        case.chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect::<String>()
+    ));
+    let _ = std::fs::remove_file(&report_path);
+    let report_env = report_path.to_string_lossy().to_string();
     let out = match proc::run(
         shell,
         Some(input.to_string().as_bytes()),
-        &[("AREEV_EVALSET", evalset), ("AREEV_EVAL_CASE", case)],
+        &[
+            ("AREEV_EVALSET", evalset),
+            ("AREEV_EVAL_CASE", case),
+            ("AREEV_EVAL_REPORT", report_env.as_str()),
+        ],
         &SpawnPolicy::default(),
     ) {
         Ok(o) => o,
-        Err(e) => return (false, format!("spawn failed: {e}")),
+        Err(e) => return (false, format!("spawn failed: {e}"), None),
     };
+    let report = match std::fs::read_to_string(&report_path) {
+        Ok(text) if !text.trim().is_empty() => Some(parse_eval_report(&text)),
+        // Absent or empty: the grader did not report, which is not an error.
+        _ => None,
+    };
+    let _ = std::fs::remove_file(&report_path);
     let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if let Some(why) = out.failure("eval case") {
-        return (false, why);
+        return (false, why, report);
     }
-    (eval_expect_matches(expect, &stdout), stdout)
+    (eval_expect_matches(expect, &stdout), stdout, report)
 }
 
 /// The ONE scorer, shared by the tool-cmd and model paths: `expect.equals`
@@ -5142,6 +5593,7 @@ fn eval_model_messages(
             "assistant" => messages.push(ChatMessage::Assistant {
                 text: Some(content.to_string()),
                 tool_calls: vec![],
+                provider_content: None,
             }),
             other => return Err(format!("message {i} has unsupported role {other:?}")),
         }
@@ -5200,7 +5652,7 @@ fn audit_hold(
     by: &str,
     now: i64,
 ) -> Result<(), String> {
-    let obs = areev_core::authz::audit_observation(
+    let mut obs = areev_core::authz::audit_observation(
         by,
         verb,
         &format!("hold ns:{ns}"),
@@ -5208,13 +5660,16 @@ fn audit_hold(
         0,
         now,
     );
-    m.add(&obs).map(|_| ()).map_err(|e| e.to_string())
+    m.append_audit(&mut obs).map(|_| ()).map_err(|e| e.to_string())
 }
 
 /// `areev hold` — legal holds (governed-agents §5.4): while a hold is live on
-/// a namespace, ALL age-based destruction there refuses; sweeps skip it
-/// with the refusal on record. Erasure-vs-hold precedence (D10's
-/// `--override-hold` on FORGET SUBJECT) ships with the compliance wave.
+/// a namespace, EVERY destruction path there refuses with `STO-E009`
+/// (#278) — the age-based sweeps, `forget` by hash, identity erasure, the
+/// memory tool, the loop's rollback, and on Postgres the schema drop. Sweeps
+/// skip a held namespace with the refusal on record, and a refused erasure
+/// is itself recorded. D10's override shipped in 1.9.0:
+/// `--override-hold --because`, requiring `admin` on the namespace.
 fn run_hold(
     m: &mut Areev,
     ns: &str,
@@ -5357,6 +5812,7 @@ fn status_filter(flags: &HashMap<String, String>) -> Option<RecStatus> {
         Some("applied") => Some(RecStatus::Applied),
         Some("rolled_back") => Some(RecStatus::RolledBack),
         Some("expired") => Some(RecStatus::Expired),
+        Some("withdrawn") => Some(RecStatus::Withdrawn),
         Some("all") => None,
         _ => Some(RecStatus::Pending),
     }
@@ -5683,12 +6139,93 @@ fn run_provision(flags: &HashMap<String, String>) -> Result<(), String> {
     }
     let tel_mode = match flag(flags, "telemetry") {
         Some(v) => areev_store::TelemetryMode::parse(&v)
-            .ok_or_else(|| format!("--telemetry: unknown mode '{v}' (off|aggregate|full)"))?,
+            .ok_or_else(|| {
+                format!("--telemetry: unknown mode '{v}' (off|aggregate|aggregate-hashed|full)")
+            })?,
         // Matches the default every other verb resolves to, so provisioning
         // covers what the request path will actually open.
         None => areev_store::TelemetryMode::Aggregate,
     };
+    // #308: `--check` is the READ-ONLY probe. SELECTs only — no advisory
+    // lock, no DDL, no `meta` write — so it runs under the documented
+    // least-privilege read-only role, and a release pipeline can decide
+    // between a rolling swap and a drain window per deployment instead of
+    // diffing three version constants out of source.
+    if flags.contains_key("check") || flags.contains_key("dry-run") {
+        return check_provision_cmd(
+            &db,
+            flag(flags, "schema").as_deref(),
+            tel_mode,
+            flag(flags, "format").as_deref() == Some("json"),
+        );
+    }
     provision_postgres(&db, flag(flags, "schema").as_deref(), tel_mode)
+}
+
+/// Exit code 2 means "pending or absent" (the `loop list --fail-on`
+/// convention), 1 an error, 0 current — so a pipeline branches on the code
+/// and reads the JSON only when it wants detail. Gated with its one caller:
+/// a build without the `postgres` feature has no provisioning command.
+#[cfg(feature = "postgres")]
+pub(crate) const EXIT_PENDING: i32 = 2;
+
+#[cfg(feature = "postgres")]
+fn check_provision_cmd(
+    db: &str,
+    schema_override: Option<&str>,
+    tel_mode: areev_store::TelemetryMode,
+    json_out: bool,
+) -> Result<(), String> {
+    let dsn = areev_store::pg::strip_provision(db);
+    let (url, dsn_schema) = match schema_override {
+        Some(_) => (areev_store::pg::strip_schema(&dsn), String::new()),
+        None => areev_store::pg::split_schema_url(&dsn).map_err(|e| e.to_string())?,
+    };
+    let schema = schema_override.map(str::to_string).unwrap_or(dsn_schema);
+    if schema.is_empty() {
+        return Err("areev provision --check: name the schema with --schema NAME or ?schema=NAME".into());
+    }
+    let report = areev_store::pg::check_provision(&url, &schema, tel_mode)
+        .map_err(|e| e.to_string())?;
+    if json_out {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
+        );
+    } else {
+        println!(
+            "schema {:?}: {}",
+            report.schema,
+            if report.exists { "exists" } else { "ABSENT" }
+        );
+        for st in &report.stamps {
+            println!(
+                "  {:14} found {:8} wanted {:8} {}",
+                st.name,
+                st.found.as_deref().unwrap_or("-"),
+                st.wanted,
+                if st.is_current() { "ok" } else { "PENDING" }
+            );
+        }
+        println!("  rolling_deploy: {}", report.rolling_deploy);
+        if !report.pending.is_empty() {
+            println!("  pending: {}", report.pending.join(", "));
+        }
+    }
+    if !report.is_current() {
+        std::process::exit(EXIT_PENDING);
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "postgres"))]
+fn check_provision_cmd(
+    _db: &str,
+    _schema_override: Option<&str>,
+    _tel_mode: areev_store::TelemetryMode,
+    _json_out: bool,
+) -> Result<(), String> {
+    Err("this build lacks the postgres backend — rebuild with --features postgres-tls".into())
 }
 
 #[cfg(feature = "postgres")]
@@ -5973,22 +6510,45 @@ fn load_policy(flags: &HashMap<String, String>) -> Result<Option<Policy>, String
     }
 }
 
-/// `areev audit export [--since MS] [--until MS] [--out FILE]` — the
-/// accountability evidence bundle (GDPR Art. 5(2)/30, and the Art. 33
-/// breach-notification input).
+/// `areev audit export [--since MS] [--until MS] [--out FILE]
+/// [--with-outcomes]` — the accountability evidence bundle (GDPR Art.
+/// 5(2)/30, and the Art. 33 breach-notification input).
 ///
-/// Two hash-chained trails already exist as grains; this formats them,
-/// nothing more. Tier-2 destruction Observations live in `agent:authz`
-/// (one per FORGET / FORGET SUBJECT / PURGE, from CAL or the CLI alike),
-/// and the loop's lifecycle audit rides as `loop_audit` Facts in
-/// `areev-loop`. Output is JSONL — one record per line, oldest first — so
-/// extracting a window is a pipe, not a parser.
+/// Two hash-chained trails exist as grains; this formats them, nothing more.
+/// Tier-2 destruction Observations live in `agent:authz` (one per FORGET /
+/// FORGET SUBJECT / PURGE / hold / reveal, from CAL or the CLI alike), and
+/// the loop's lifecycle audit rides as `loop_audit` Facts in `areev-loop`.
+/// Output is JSONL — one record per line, oldest first — so extracting a
+/// window is a pipe, not a parser.
 ///
-/// **The chain is verified, not assumed.** Each loop audit record carries
-/// `derived_from = [rec_hash, previous_audit_hash]`; a record whose
-/// predecessor is absent from the export means the trail was truncated,
-/// and evidence that cannot say so is worse than none. Breaks are reported
-/// on stderr and marked on the record.
+/// **What it does NOT contain: read records.** No read writes an audit
+/// grain (the obligation is on destruction, not access, and a read that
+/// recorded the identity would re-introduce the reference an erasure just
+/// removed). Access logging is the host's responsibility (#282).
+///
+/// **Both chains are verified, not assumed** (#280). Every Tier-2 record
+/// carries `context.seq` and names its predecessor; every loop record
+/// carries `derived_from = [rec_hash, previous_audit_hash]`. Three
+/// distinctions that make the verification usable rather than noisy:
+///
+/// * a predecessor absent from the STORE is a `chain_break` — the trail was
+///   truncated, and evidence that cannot say so is worse than none;
+/// * a predecessor still in the store but outside `--since` is
+///   `previous_outside_window`, NOT a break, so an hourly incremental import
+///   is not full of false alarms;
+/// * a record written before chaining existed exports as `unchained` —
+///   absence of a link in an older build's record is not evidence of
+///   tampering.
+///
+/// A gap in `seq` is a break too, which is what catches a record whose
+/// successor was deleted along with it. Breaks are reported on stderr and
+/// marked on the record.
+///
+/// Loop rows carry the recorded `gating` edge — which evaluation run
+/// admitted a change, and what it scored (#319). `--with-outcomes` adds the
+/// Verify gate's measured checkpoints, marked `chained: false` because they
+/// come from the rebuildable state blob rather than from hash-chained
+/// grains.
 fn run_audit(
     m: &mut Areev,
     flags: &HashMap<String, String>,
@@ -6016,6 +6576,9 @@ fn run_audit(
 
     // Tier-2 destruction audit: Observations in the reserved authz namespace.
     let mut rows: Vec<(i64, serde_json::Value)> = Vec::new();
+    let mut breaks = 0usize;
+    let mut tier2: Vec<(i64, serde_json::Value, serde_json::Value)> = Vec::new();
+    let mut seen_tier2: std::collections::HashSet<String> = std::collections::HashSet::new();
     let authz = m
         .recent(
             areev_core::authz::AUTHZ_NS,
@@ -6032,27 +6595,88 @@ fn run_audit(
         if !in_window(at) {
             continue;
         }
-        rows.push((
-            at,
-            serde_json::json!({
-                "trail": "destruction",
-                "hash": g.hash.to_hex(),
-                "at_ms": at,
-                "principal": g.fields.get("observer_id"),
-                "observer_type": g.fields.get("observer_type"),
-                "verb": ctx.get("verb"),
-                // For subject erasures this is `subject:<fingerprint> ns:<ns>`:
-                // verify it against a candidate identity by recomputing
-                // sha256(id)[..8] in hex; it deliberately cannot be mined
-                // for who was erased. `subject_ref` names the scheme.
-                "target": ctx.get("target"),
-                "subject_ref": ctx.get("subject_ref"),
-                "because": ctx.get("because"),
-                "grains_erased": ctx.get("grains_erased"),
-                "stale_corpora": ctx.get("stale_corpora"),
-                "stale_adapters": ctx.get("stale_adapters"),
-            }),
-        ));
+        let mut row = serde_json::json!({
+            "trail": "destruction",
+            "hash": g.hash.to_hex(),
+            "at_ms": at,
+            "principal": g.fields.get("observer_id"),
+            "observer_type": g.fields.get("observer_type"),
+            "verb": ctx.get("verb"),
+            // For subject erasures this is `subject:<fingerprint> ns:<ns>`:
+            // verify it against a candidate identity by recomputing
+            // sha256(id)[..8] in hex; it deliberately cannot be mined
+            // for who was erased. `subject_ref` names the scheme.
+            "target": ctx.get("target"),
+            "subject_ref": ctx.get("subject_ref"),
+            "because": ctx.get("because"),
+            "grains_erased": ctx.get("grains_erased"),
+            "stale_corpora": ctx.get("stale_corpora"),
+            "stale_adapters": ctx.get("stale_adapters"),
+        });
+        // #278: an override of a legal hold names the hold it overrode.
+        if let Some(h) = ctx.get("hold_overridden") {
+            row["hold_overridden"] = h.clone();
+        }
+        // #280: the chain. A record written before chaining existed carries
+        // neither `seq` nor a predecessor, and is exported as `unchained` —
+        // never as a break. Absence of a link in a record an older build
+        // wrote is not evidence of tampering.
+        match ctx.get("seq").and_then(|v| v.as_u64()) {
+            None => {
+                row["unchained"] = serde_json::json!(true);
+            }
+            Some(seq) => {
+                row["seq"] = serde_json::json!(seq);
+                if let Some(p) = ctx.get("previous_audit").and_then(|v| v.as_str()) {
+                    row["previous_audit"] = serde_json::json!(p);
+                }
+                if ctx.get("chain_root").and_then(|v| v.as_bool()) == Some(true) {
+                    row["chain_root"] = serde_json::json!(true);
+                }
+            }
+        }
+        seen_tier2.insert(g.hash.to_hex());
+        tier2.push((at, row, ctx.clone()));
+    }
+    // Verify the destruction chain the same way the loop trail is verified
+    // (#280). Two independent signals, because `derived_from` alone cannot
+    // tell a forgotten interior record from a window edge:
+    //
+    //   * a named predecessor that is not in the store → a BREAK;
+    //   * a named predecessor that IS in the store but falls outside
+    //     `--since` → `previous_outside_window`, which is not a break. A
+    //     windowed export that flagged every straddling chain made an hourly
+    //     incremental import noisy enough to be ignored, which is worse than
+    //     not verifying at all.
+    //   * a gap in `seq` → a break, which is what catches a record whose
+    //     successor was deleted along with it.
+    let mut prev_seq: Option<u64> = None;
+    for (at, mut row, ctx) in tier2 {
+        if let Some(p) = ctx.get("previous_audit").and_then(|v| v.as_str()) {
+            if !seen_tier2.contains(p) {
+                let exists = areev_core::error::Hash::from_hex(p)
+                    .ok()
+                    .map(|h| m.has(&h).unwrap_or(false))
+                    .unwrap_or(false);
+                if exists {
+                    row["previous_outside_window"] = serde_json::json!(true);
+                } else {
+                    breaks += 1;
+                    row["chain_break"] = serde_json::json!(true);
+                }
+            }
+        }
+        if let (Some(prev), Some(seq)) = (prev_seq, row.get("seq").and_then(|v| v.as_u64())) {
+            if seq > prev + 1 {
+                breaks += 1;
+                row["chain_break"] = serde_json::json!(true);
+                row["missing_seq"] = serde_json::json!(seq - prev - 1);
+            }
+        }
+        if let Some(seq) = row.get("seq").and_then(|v| v.as_u64()) {
+            prev_seq = Some(seq);
+        }
+        rows.push((at, row));
     }
 
     // Loop lifecycle audit: `loop_audit` Facts carrying the engine's
@@ -6096,6 +6720,18 @@ fn run_audit(
                 "observer_type": body.get("observer_type"),
                 "because": body.get("because"),
                 "previous_audit": prev.clone(),
+                // #319: the recorded gating edge — which evaluation run
+                // admitted this change, and what it scored. It was in the
+                // parsed body all along and dropped here.
+                "gating": body.get("gating_run_id").map(|run| serde_json::json!({
+                    "evalset": body.get("gating_evalset"),
+                    "run_id": run,
+                    "passed": body.get("gating_passed"),
+                    "failed": body.get("gating_failed"),
+                })),
+                // #312: the namespaces the finding was derived from, so an
+                // export can later be filtered by them.
+                "scope": body.get("scope"),
             }),
             prev,
         ));
@@ -6103,15 +6739,69 @@ fn run_audit(
     // Chain verification: a named predecessor absent from this export means
     // the trail is truncated. Report it rather than emitting a clean-looking
     // file.
-    let mut breaks = 0usize;
     for (at, mut row, prev) in loop_rows {
         if let Some(p) = prev {
             if !chain_prev.contains(&p) {
-                breaks += 1;
-                row["chain_break"] = serde_json::json!(true);
+                // Same window-edge distinction as the destruction trail
+                // (#280): a predecessor still in the store is not a break.
+                let exists = areev_core::error::Hash::from_hex(&p)
+                    .ok()
+                    .map(|h| m.has(&h).unwrap_or(false))
+                    .unwrap_or(false);
+                if exists {
+                    row["previous_outside_window"] = serde_json::json!(true);
+                } else {
+                    breaks += 1;
+                    row["chain_break"] = serde_json::json!(true);
+                }
             }
         }
         rows.push((at, row));
+    }
+
+    // #319: the Verify gate's outcomes, on request.
+    //
+    // A gated apply records `gating_evalset` / `gating_run_id` /
+    // `gating_passed` / `gating_failed` on the audit grain, and the export
+    // dropped all four — so "which run admitted this change" could not be
+    // answered from the evidence bundle at all, only by reading `loop_audit`
+    // Facts directly. The outcomes are worse still: they live in the loop's
+    // state blob and were in no export.
+    if flags.contains_key("with-outcomes") {
+        let state = areev_loop_adapter::loop_state_of(m).map_err(|e| e.to_string())?;
+        let outcomes: Vec<areev_loop::OutcomeResult> = if state.is_null() {
+            Vec::new()
+        } else {
+            areev_loop::config::LoopPersisted::from_value(state)
+                .map(|p| p.outcomes.into_values().flatten().collect())
+                .unwrap_or_default()
+        };
+        {
+            for o in outcomes {
+                if !in_window(o.measured_at_ms) {
+                    continue;
+                }
+                rows.push((
+                    o.measured_at_ms,
+                    serde_json::json!({
+                        "trail": "loop_outcome",
+                        "rec_hash": o.rec_hash,
+                        "metric": o.metric,
+                        "verdict": o.verdict,
+                        "baseline": o.baseline,
+                        "current": o.current,
+                        "baseline_run_id": o.baseline_run_id,
+                        "current_run_id": o.current_run_id,
+                        "cost": o.cost,
+                        "measured_at_ms": o.measured_at_ms,
+                        // Said honestly: these come from the rebuildable
+                        // state blob, not from hash-chained grains. A
+                        // consumer must not treat them as tamper-evident.
+                        "chained": false,
+                    }),
+                ));
+            }
+        }
     }
 
     rows.sort_by_key(|(at, _)| *at);
@@ -6232,7 +6922,16 @@ fn run_loop(
         }
         "list" => {
             let filter = status_filter(flags);
-            let recs = engine.recommendations(&sub, filter).map_err(|e| e.to_string())?;
+            // Coverage-filtered (#312). An owner session — the CLI's ordinary
+            // local-root-of-trust case — holds the whole queue, so nothing
+            // changes for it.
+            let recs = areev_loop_adapter::visible_recommendations(
+                &engine,
+                &sub,
+                &sub.authz(),
+                filter,
+            )
+            .map_err(|e| e.to_string())?;
             if json {
                 let rows: Vec<_> = recs
                     .iter()

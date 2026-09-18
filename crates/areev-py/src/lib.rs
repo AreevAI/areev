@@ -129,6 +129,7 @@ fn status_from_str(s: &str) -> Option<RecStatus> {
         "applied" => Some(RecStatus::Applied),
         "rolled_back" => Some(RecStatus::RolledBack),
         "expired" => Some(RecStatus::Expired),
+        "withdrawn" => Some(RecStatus::Withdrawn),
         _ => None,
     }
 }
@@ -195,6 +196,16 @@ fn open_postgres_from_dsn(
              install it; plain `postgres` alone refuses any DSN carrying sslmode=, which most \
              managed Postgres (Azure, RDS, Cloud SQL) requires".into(),
     ))
+}
+
+/// Split a namespace argument that may be a single name or a comma list
+/// (#303, #307). Trimmed, non-empty — so `"a, b"` and `"a,b"` agree, and a
+/// trailing comma is not a namespace.
+fn split_ns_list(ns: &str) -> Vec<String> {
+    ns.split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 fn err<E: std::fmt::Display>(e: E) -> PyErr {
@@ -1421,11 +1432,20 @@ impl Areev {
         }
         let dir = Direction::parse(&direction)
             .ok_or_else(|| PyValueError::new_err("direction must be one of: out, in, both"))?;
+        // #303: a comma list walks the SET. A walk is not composable from
+        // per-namespace calls, so a host doing it itself re-implements the
+        // BFS and its depth and cap mean something different from Areev's.
+        let scope = split_ns_list(&ns);
         let reached = py
             .detach(|| {
                 let refs: Vec<&str> = rels.iter().map(String::as_str).collect();
-                self.facade
-                    .with_store(|m| m.related(&ns, &start, &refs, dir, depth, limit))
+                self.facade.with_store(|m| {
+                    if scope.len() > 1 {
+                        m.related_scoped(&scope, &start, &refs, dir, depth, limit)
+                    } else {
+                        m.related(&ns, &start, &refs, dir, depth, limit)
+                    }
+                })
             })
             .map_err(err)?;
         Ok(json!({"start": start, "reached": reached}).to_string())
@@ -2043,19 +2063,60 @@ impl Areev {
 
     /// Op-log cursor read — the change feed the audit/evidence story rides
     /// (same shape as `areev changes-since` and `GET /api/changes`). Returns
-    /// `[{op_seq, hlc, op, hash}...]`, ascending; pass the last `op_seq`
+    /// `[{op_seq, hlc, op, hash, ns}...]`, ascending; pass the last `op_seq`
     /// back as the next cursor.
-    #[pyo3(signature = (after_op_seq = 0, limit = 500))]
-    fn changes_since(&self, py: Python<'_>, after_op_seq: i64, limit: usize) -> PyResult<String> {
+    ///
+    /// `ns` (a name or a comma list) narrows the feed to those namespaces
+    /// and attributes every row, TOMBSTONES INCLUDED (#307) — resolving a
+    /// forget's hash cannot, because the grain is gone. `op_seq` stays the
+    /// memory-wide sequence, so a scoped cursor is still comparable with an
+    /// unscoped one.
+    #[pyo3(signature = (after_op_seq = 0, limit = 500, ns = None))]
+    fn changes_since(
+        &self,
+        py: Python<'_>,
+        after_op_seq: i64,
+        limit: usize,
+        ns: Option<String>,
+    ) -> PyResult<String> {
         let limit = limit.clamp(1, 10_000);
+        let scope = ns.map(|n| split_ns_list(&n)).unwrap_or_default();
         let rows = py
-            .detach(|| self.facade.with_store(|m| m.changes_since(after_op_seq, limit)))
+            .detach(|| {
+                self.facade
+                    .with_store(|m| m.changes_since_scoped(after_op_seq, &scope, limit))
+            })
             .map_err(err)?;
         let out: Vec<serde_json::Value> = rows
             .into_iter()
-            .map(|r| json!({"op_seq": r.op_seq, "hlc": r.hlc, "op": r.op, "hash": r.hash.to_hex()}))
+            .map(|r| {
+                json!({"op_seq": r.op_seq, "hlc": r.hlc, "op": r.op,
+                       "hash": r.hash.to_hex(), "ns": r.ns})
+            })
             .collect();
         serde_json::to_string(&out).map_err(|e| err(e.to_string()))
+    }
+
+    /// Drop every recall-telemetry row for one exact namespace (#306).
+    ///
+    /// Reaches the row no other scrub can: a zero-result free-text query
+    /// names no grain hash, so the per-hash scrub cannot find it, and the
+    /// per-subject scrub only reaches it if the erased identity happens to
+    /// appear in the text.
+    fn telemetry_scrub_namespace(&self, py: Python<'_>, ns: String) -> PyResult<()> {
+        py.detach(|| {
+            self.facade
+                .with_store(|m| m.telemetry_scrub_namespace(&ns))
+        })
+        .map_err(err)
+    }
+
+    /// A value that changes whenever this memory's authorization policy does
+    /// (#309) — a single indexed read a host caching bound sessions makes
+    /// per request instead of re-resolving grants. A CHANGE DETECTOR:
+    /// compare for equality, never for ordering.
+    fn authz_epoch(&self, py: Python<'_>) -> PyResult<i64> {
+        py.detach(|| self.facade.authz_epoch()).map_err(err)
     }
 
     /// Which runs produced or refined this grain — the reverse join.
@@ -2441,7 +2502,13 @@ impl Areev {
         let recs = py
             .detach(|| {
                 let sub = BorrowedSubstrate::new(&self.facade);
-                Engine::with_builtins().recommendations(&sub, status)
+                // Coverage-filtered (#312).
+                areev_loop_adapter::visible_recommendations(
+                    &Engine::with_builtins(),
+                    &sub,
+                    &self.facade.authz(),
+                    status,
+                )
             })
             .map_err(err)?;
         let rows: Vec<_> = recs
@@ -3492,6 +3559,7 @@ fn run_options(
             max_usd_micros,
             max_wall_ms,
             max_storage_bytes: None,
+            ..Default::default()
         },
         ask_ttl_sec,
         workers: 4,
@@ -3501,6 +3569,7 @@ fn run_options(
         llm_tool_result_chars: limits.llm_tool_result_chars,
         llm_context_tokens: limits.llm_context_tokens,
         inject_crash: None,
+        ..Default::default()
     }
 }
 

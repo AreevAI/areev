@@ -657,6 +657,16 @@ pub enum RecStatus {
     Applied,
     RolledBack,
     Expired,
+    /// The engine withdrew it: every grain it cited has moved (#317).
+    ///
+    /// Distinct from `Expired`, which says "time ran out", and from
+    /// `Rejected`, which is a human decision. A reviewer was being offered —
+    /// and could approve — findings whose entire evidence had been
+    /// superseded by a different value or retracted, and applying one then
+    /// produced a recommendation to revert it on the next pass.
+    ///
+    /// Reachable from `Pending` and `Approved`, by the ENGINE only.
+    Withdrawn,
 }
 
 impl RecStatus {
@@ -668,6 +678,7 @@ impl RecStatus {
             RecStatus::Applied => "applied",
             RecStatus::RolledBack => "rolled_back",
             RecStatus::Expired => "expired",
+            RecStatus::Withdrawn => "withdrawn",
         }
     }
 
@@ -683,6 +694,11 @@ impl RecStatus {
             (Applied, RolledBack) => true,
             // `expired` is computed from valid_to, applied to still-open recs.
             (Pending, Expired) | (Approved, Expired) => true,
+            // `withdrawn` is computed from premise drift, applied to
+            // still-open recs (#317). Terminal: a withdrawn finding is not
+            // re-opened, because the evidence that is gone does not come
+            // back — a fresh finding on NEW evidence is proposed instead.
+            (Pending, Withdrawn) | (Approved, Withdrawn) => true,
             _ => false,
         }
     }
@@ -824,8 +840,39 @@ pub struct Recommendation {
     /// no journaled runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replay: Option<Value>,
+    /// The namespaces the producing analyzer was RUN OVER (#312) —
+    /// normalized and sorted, stamped by the engine.
+    ///
+    /// The loop's inputs are namespace-grant-gated; its OUTPUTS were not. A
+    /// recommendation's summary, proposal, guidance and evidence hashes are
+    /// derived content, so one `read ON areev-loop` grant disclosed all of it
+    /// for every namespace in the memory, and one `loop.review` grant decided
+    /// all of it — including striking a memory-wide cooldown on a finding the
+    /// reviewer could not read the evidence for.
+    ///
+    /// Stamped where `dedup_key` and `origin` are, so an analyzer, an
+    /// external command or a model draft cannot set it.
+    /// `skip_serializing_if` empty, so stored recommendations read back
+    /// unchanged and an UNSCOPED pass produces an empty scope — which is
+    /// covered only by a whole-queue grant (fail closed).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scope: Vec<String>,
     #[serde(skip)]
     pub status: RecStatus,
+}
+
+/// Normalize a namespace list for [`Recommendation::scope`]: trimmed,
+/// non-empty, deduplicated, sorted — so two passes over the same set stamp
+/// the same scope and the coverage check is order-independent.
+pub fn normalize_scope(namespaces: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = namespaces
+        .iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// The recorded evalset-run edge (§7.4): what an apply of a code revision
@@ -1118,6 +1165,7 @@ mod tests {
             near_duplicate_of: Vec::new(),
             replay: None,
             status: RecStatus::Pending,
+            scope: Vec::new(),
         };
         let spec = rec.to_grain_spec("ns").unwrap();
         assert!(Recommendation::from_fields("h", &spec.fields).is_err());
@@ -1155,6 +1203,7 @@ mod tests {
             near_duplicate_of: Vec::new(),
             replay: None,
             status: RecStatus::Pending,
+            scope: Vec::new(),
         };
         let spec = rec.to_grain_spec("ns").unwrap();
         // hash and status are excluded from the immutable body.

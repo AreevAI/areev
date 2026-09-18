@@ -686,14 +686,43 @@ refused with `TRG-E005`.
 
 ## Timezones
 
-**This release evaluates cron in UTC only.** A non-UTC `--timezone` is refused
-with `TRG-E006` rather than mishandled.
+Since 1.9.0 (#297) cron evaluates in the trigger's declared IANA zone:
 
-That is deliberate rather than unfinished. Real implementations disagree about
-what a cron expression means in a DST gap — AWS EventBridge and robfig/cron skip
-the occurrence, Vixie cron fires it immediately — and they only agree on the
-fall-back fold. Firing at the wrong local hour and being believed is worse than
-refusing, so the choice is being made explicitly rather than guessed.
+```bash
+areev trigger add --cron "0 8 * * 1" --timezone America/New_York …
+```
+
+**The DST policy is declared here and pinned by tests**, because real
+implementations disagree and a silent guess is the wrong move:
+
+| Case | What Areev does | Why |
+|---|---|---|
+| **Gap** (spring forward) — 02:30 does not exist | Fire **once**, at the first valid instant after the gap | AWS EventBridge and robfig/cron skip the occurrence entirely; Vixie cron fires it immediately. A daily job that simply does not run on one day a year is a silent missed obligation, so Areev fires it late rather than not at all |
+| **Fold** (fall back) — 01:30 happens twice | Fire **once**, at the EARLIER occurrence | Everyone agrees on this one |
+| Missed occurrences while the host was down | Collapse per the trigger's own `catchup` policy | Unchanged |
+
+Wildcard and step minute fields are evaluated on local **wall** time, which
+is what "every 15 minutes" means to the person who wrote it.
+
+**The fold hazard, and why `next_due_after` is strictly-after.** Evaluating
+in local wall time means an instant inside the repeated hour maps to two UTC
+instants, and the earlier one wins — so `30 1 * * *` asked from 01:10 EST
+resolves to 01:30 EDT, an instant BEFORE the question.
+`advance_after_firing`'s `Some(n) if n > next` guard would then break out of
+its catch-up loop and leave the schedule stuck. The contract is therefore
+"strictly after `after_ms`", enforced by searching forward past the fold
+rather than trusting the zone-aware search to be monotonic.
+
+**Zone data is a cargo feature** (`areev-trigger/tz`, enabled by the CLI and
+both bindings). A build without it keeps refusing a non-UTC zone with
+`TRG-E006`, and the message **names the feature** so an operator knows what
+to change rather than believing the zone itself is unsupported. System
+zoneinfo is deliberately not an option: two hosts reading two different
+`/usr/share/zoneinfo` snapshots would disagree about when the same
+content-addressed declaration is due.
+
+An **unknown zone name is refused in every build**. A typo must never fall
+back to UTC and fire at the wrong hour while looking correct.
 
 ## Outbound control and credentials
 

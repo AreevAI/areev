@@ -982,10 +982,17 @@ fn an_unusable_declaration_is_reported_distinctly_not_as_waiting() {
     let rig = Rig::new();
 
     // Stored without validation, as a bundle import would be.
+    //
+    // An UNKNOWN zone name rather than a real one: since #297 a build with
+    // zone data evaluates `Asia/Kolkata` perfectly well, so it is no longer
+    // an example of an unusable declaration. A name no zone database has is
+    // refused in every build — and refusing a typo rather than falling back
+    // to UTC is the point: a schedule quietly firing at the wrong hour looks
+    // correct.
     let bad = rig.declare(
         Trigger::new(TriggerKind::Schedule, WF)
             .cron("0 9 * * *")
-            .config(json!({ "int:timezone": "Asia/Kolkata" })),
+            .config(json!({ "int:timezone": "Mars/Olympus" })),
     );
     let good = rig.declare(Trigger::new(TriggerKind::Interval, WF).interval_secs(60));
 
