@@ -316,8 +316,27 @@ Three rules that are decisions rather than mechanics:
   on destruction rather than a historical fact, and a restore that came back
   unheld is the failure a hold exists to prevent.
 
+- **A hold has four facts, and the read returns all four.** `place_hold` has
+  always stored `at_ms`; `holds()` returned `(ns, because, placed_by)` and
+  dropped it, so a host showing "placed on" kept a second copy of every hold
+  that drifts from the engine's. `hold_records()` (1.9.1, #323) returns
+  `HoldRecord`, now `#[non_exhaustive]` and carrying `at_ms`; `holds()` stays
+  as the short form. `HoldRecord::from_json` is the ONE parse — the listing,
+  the guard and the audit path share it, so they cannot disagree about what a
+  hold row contains. A row written before the field existed reads as
+  `at_ms: 0` (unknown, not an error): a hold whose time cannot be read is
+  still a hold, and failing the listing would hide live holds from the page
+  that shows them.
+
+**The refusal path is the one that was untested.** Until 1.9.1 the CAL
+facade's `cal_delete` / `cal_forget_user` held the store mutex across
+`audit_hold_refusal`, which re-locks it — so `FORGET` under a hold DEADLOCKED
+instead of refusing. Everything here passed throughout, because the cases
+below drive `m.forget` and never reach the facade. When you touch the hold
+path, exercise it through a facade, not only through the store.
+
 Conformance: `cases/legal_hold.rs`, both backends; store tests:
-`tests/retention_floor_hold_tests.rs`.
+`tests/retention_floor_hold_tests.rs`, `tests/async_safety_tests.rs`.
 
 ## Forks / heads / merge (the "grains as git" model)
 

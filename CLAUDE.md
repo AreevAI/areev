@@ -127,7 +127,7 @@ triggers:    areev-trigger (evaluator; starts runs via areev-run)     ┤
 | `areev-core` | `.mg` format, canonical serialization, content addressing, 12 grain types, tool-schema rendering, the `anon` pseudonymization engine (Tier-0 detectors, policy, session tokens, keyed derivations) | yes |
 | `areev-store` | The store: dictionary-encoded triples, hybrid recall, namespace prefix scoping (`"org.*"` on every plural read, backed by the `ns_reg` registry; writes/destruction stay exact-namespace), heads/forks, bundles, CAS blobs (encrypted under an HKDF-derived subkey when the memory is), DSAR `subject_report`, declarative `retention:<ns>` policies, memory-tool adapter, migration importers. Backend-agnostic logic over an internal `Db` seam — embedded Turso (default) or PostgreSQL (`feature = "postgres"`, one memory = one schema, concurrent writers serialized at `reserve_write` — the advisory lock is bootstrap-only, pgvector; DSN `sslmode`/`sslrootcert` honored under `feature = "postgres-tls"`, refused not downgraded without it). `read_only` opens (CLI `--read-only`) refuse every write with `STO-E004`, never create an absent memory, and on Postgres issue no DDL at all — SELECT-only verification instead, `STO-E005` when the schema is absent or unbootstrapped — which is what makes a least-privilege role possible there | yes |
 | `areev-conformance` | Backend-parameterized conformance suite (`publish = false`) — one case list (forks, replication, tombstones, PITR, BM25, vectors, CAS, CAL smoke) run against BOTH backends; the Pg runner needs `DATABASE_URL`/`AREEV_PG_URL` and hard-fails when `CI=true` without one | — |
-| `areev-cal` | CAL lexer/parser/executor, ASSEMBLE, `AreevFacade` + mounts, and `render` — THE per-grain renderer (sml/markdown/text/toon/json + summaries + the one token estimator) every surface shares | yes |
+| `areev-cal` | CAL lexer/parser/executor, ASSEMBLE, `AreevFacade` + mounts (+ `AsyncFacade`, its async-safe owner), and `render` — THE per-grain renderer (sml/markdown/text/toon/json + summaries + the one token estimator) every surface shares | yes |
 | `areev-context` | Budget-aware orchestration over `areev_cal::render`: policies/presets, priority + diversity allocation with progressive disclosure (Full→Summary→Omit), timeline/census modes. Renders nothing itself — parity with CAL is test-pinned (`tests/render_parity.rs`) | yes |
 | `areev-loop` | Substrate-agnostic self-improvement engine: `OmsSubstrate`/`LlmBackend` traits (+ the §7.4 capability-gated blob seam), 15 analyzers (12 default-on; `retention_sweep`, `goal_stagnation` and `lesson_pile` are default-off, `run_outcome` reads run journals), four gates, recommendation lifecycle with Rule E1 (`code_revision` pins its evalset; apply only through the recorded gating edge), LLM DISCOVER→GROUND→VERIFY verifier (a draft may author a lesson: gate-judged, stamps applicable+rollbackable, human-applied only — never auto-apply), outcome measurement (no Areev deps) — `docs/loop.md` | — |
 | `areev-loop-adapter` | Areev substrate adapter for Areev Loop (`areev_loop::OmsSubstrate` over `AreevFacade`) + recall-telemetry sidecar | — |
@@ -221,7 +221,20 @@ triggers:    areev-trigger (evaluator; starts runs via areev-run)     ┤
    `open_with()` deliberately re-stamps and reports changes via
    `open_warnings()`. Host config (embedder capability, executor limits) is
    per-process and never persisted in the file.
-7. **Dependency-light by policy**: no clap (hand-rolled args), no HTTP
+7. **A caller-facing surface reaches the store only through a GATED
+   accessor.** `AreevFacade::with_store` applies no authorization — right for
+   a host acting under its own authority (the runtime, the trigger evaluator),
+   wrong for anything a bound principal can reach. Every namespace-scoped call
+   in `areev-py`, `areev-js` and `areev-mcp` goes through `store_read` /
+   `store_write` / `store_checked`, which check the session's EFFECTIVE rights
+   (`effective_authz()`) first; memory-wide operations take the verb on `"*"`,
+   and reads that return per-namespace rows filter them. GHSA-rmrx-26f6-f97w
+   (1.9.1) was the absence of this: `principal=` restricted CAL and almost
+   nothing else, so a read-only principal could read every namespace, write
+   through `remember()`, and erase through the memory tool's `delete`.
+   `areev-cal/tests/host_surface_gating.rs` fails the build on a new ungated
+   `with_store` in those three files unless it is named there with a reason.
+8. **Dependency-light by policy**: no clap (hand-rolled args), no HTTP
    framework (std `TcpListener`), no MCP SDK (hand-rolled JSON-RPC), no
    workspace-wide async runtime (store wraps a private tokio current-thread
    runtime behind a sync API). Think twice before adding a dependency.
