@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.9.1] — 2026-09-19
+
+A **security release**, plus the four Rounic follow-ups raised against 1.9.0
+and a legal-hold deadlock found while fixing one of them. The headline is
+GHSA-rmrx-26f6-f97w: a handle bound to a principal restricted CAL and almost
+nothing else. Hosts that pass `principal=` / `--as` to less-trusted code
+should upgrade; a host that never binds a principal is unaffected by it.
+
 ### Security
 
 - **A bound principal now binds every method, not only CAL**
@@ -4279,7 +4287,8 @@ ecosystem adapters, and the enterprise plane.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.9.0...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.9.1...HEAD
+[1.9.1]: https://github.com/AreevAI/areev/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/AreevAI/areev/compare/v1.8.5...v1.9.0
 [1.8.5]: https://github.com/AreevAI/areev/compare/v1.8.4...v1.8.5
 [1.8.4]: https://github.com/AreevAI/areev/compare/v1.8.3...v1.8.4

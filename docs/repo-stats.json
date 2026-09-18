@@ -1,26 +1,26 @@
 {
-  "version": "1.9.0",
+  "version": "1.9.1",
   "crates": 17,
   "rust": {
-    "files": 327,
-    "physical_lines": 228736,
-    "source_code": 106921,
-    "test_code": 65608,
+    "files": 328,
+    "physical_lines": 229288,
+    "source_code": 107077,
+    "test_code": 65829,
     "unit_test_code": 28663,
-    "integration_test_code": 36945,
+    "integration_test_code": 37166,
     "example_code": 669,
-    "test_functions": 3078,
+    "test_functions": 3081,
     "test_ratio": 0.61,
-    "test_share": 38.0
+    "test_share": 38.1
   },
   "per_crate": [
     {
       "name": "areev-cal",
-      "files": 45,
-      "physical": 59771,
-      "source_code": 25535,
-      "test_code": 20481,
-      "tests": 1066
+      "files": 46,
+      "physical": 60015,
+      "source_code": 25569,
+      "test_code": 20608,
+      "tests": 1068
     },
     {
       "name": "areev-store",
@@ -49,10 +49,10 @@
     {
       "name": "areev-cli",
       "files": 24,
-      "physical": 20982,
+      "physical": 21096,
       "source_code": 8685,
-      "test_code": 7895,
-      "tests": 224
+      "test_code": 7989,
+      "tests": 225
     },
     {
       "name": "areev-core",
@@ -121,16 +121,16 @@
     {
       "name": "areev-js",
       "files": 2,
-      "physical": 4085,
-      "source_code": 3057,
+      "physical": 4178,
+      "source_code": 3114,
       "test_code": 0,
       "tests": 0
     },
     {
       "name": "areev-py",
       "files": 2,
-      "physical": 3641,
-      "source_code": 2615,
+      "physical": 3738,
+      "source_code": 2676,
       "test_code": 0,
       "tests": 0
     },
@@ -145,20 +145,20 @@
     {
       "name": "areev-mcp",
       "files": 1,
-      "physical": 1459,
-      "source_code": 1265,
+      "physical": 1463,
+      "source_code": 1269,
       "test_code": 0,
       "tests": 0
     }
   ],
   "docs": {
     "files": 64,
-    "lines": 33748
+    "lines": 33903
   },
   "error_codes": 113,
   "bindings": {
-    "python_files": 93,
-    "node_test_files": 5
+    "python_files": 94,
+    "node_test_files": 6
   },
   "coverage": {
     "line_coverage": 82.9,
