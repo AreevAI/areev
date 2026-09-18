@@ -180,6 +180,56 @@ still a refusal before relying on that.
 `as_any()` returns `None` — a downcast to `AreevFacade` would hand the caller
 the UNSCOPED facade.
 
+Three additions in 1.9.1 (#324), all for a host serving many principals:
+`resolve_rights(p)` returns the fail-closed `AuthzSet` and `session_with(set)`
+builds the borrowed session from it for free — so a host caches the SET by
+`(principal, authz_epoch)` instead of re-reading grants under the store mutex
+per request, and `principal_session` is now their composition. The set is a
+snapshot by design (a later `set_grants` does not reach it; the epoch moves so
+a cache can notice). `PrincipalSession::add(&grain)` is the typed attributed
+write — same check, same `author_did`, grain builders instead of a JSON field
+map; it REFUSES under an anonymization ingress policy rather than bypassing the
+boundary `cal_add` routes through, because a new API must not be the quiet way
+past a privacy control. `AuthzSet::namespaces(verb)` (areev-core) answers
+"which namespaces" as `All` or `Exact` rather than forcing a probe per
+namespace.
+
+## Store access from a caller-facing surface is GATED (GHSA-rmrx-26f6-f97w)
+
+`with_store` hands out the raw store with **no `AuthzSet` check**. That is
+correct for a host acting under its own authority (areev-run journalling its
+own run, areev-trigger evaluating its own cadence — between them the bulk of
+its ~600 call sites) and WRONG for anything a bound principal can reach.
+
+Until 1.9.1 the bindings and two MCP tools used it for nearly everything, so
+`principal=` restricted CAL and almost nothing else: a read-only principal
+could read any namespace, write one through `remember()`, and erase one through
+the memory tool's `delete`. Use `store_read(ns, f)` / `store_write(ns, f)` /
+`store_checked(verb, ns, f)` / `store_as(verb, ns, f)` on any such surface —
+they check `rights()` (the session-aware read, exposed publicly as
+`effective_authz()`) before the closure sees the store. `"*"` is the
+memory-wide resource, the convention the gated CAL methods already used.
+
+`tests/host_surface_gating.rs` fails the build on a new ungated `with_store` in
+areev-py / areev-js / areev-mcp unless the store method is named there with a
+reason — that test, not discipline, is what keeps the hole closed.
+
+## `AsyncFacade`: the async-safe owner (#322)
+
+`areev_store::AsyncAreev` wraps the raw store only, so an async host that also
+needed authorization had none and hand-rolled it. `AsyncFacade` (src/
+`async_facade.rs`) is the governed equivalent: `open` / `with` / `with_mut` /
+`from_facade` / `close`, every call on the blocking pool, teardown off the
+executor.
+
+It takes a **closure**, not one async method per facade method, and that is
+forced rather than chosen: `PrincipalSession<'f>` borrows its facade and
+therefore cannot cross an `.await`. Inside `with`, a whole request — resolve
+the principal, run its statements — happens on one blocking thread.
+
+`tokio` is a direct dependency here for this and adds NO crate to the graph:
+areev-store already depends on it with the same features.
+
 ## Module map
 
 - `lexer.rs` — Logos DFA, S-1/S-6, destructive-keyword list.
