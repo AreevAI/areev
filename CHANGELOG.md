@@ -46,12 +46,85 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   does the same over real stdio. Reported by Rounic verification of 1.9.0;
   Rounic is a Rust host on the gated facade and was not itself affected.
 
+### Fixed
+
+- **A CAL refusal now carries a code that says "refused"** (#321). `map_store_err`'s
+  catch-all was `CAL-E030 BudgetExceeded`, so a `RECALL` refused for lack of a
+  grant arrived as a *budget* error with the `AUT-E001` detail buried in the
+  message — and a host routing on the code (a refusal to 404 + a `Denied` audit
+  record, an overrun to a retry) had to match a substring to tell them apart.
+  1.9.0 had already fixed this for `DERIVED FROM` (#304), leaving the recall
+  path the odd one out against `docs/cal-reference.md`. Every `AUT-E…` variant
+  now maps to `CAL-E121`, in the recall path and both `HISTORY … DIFF` arms.
+  While there: the catch-all's name was wrong for most of what reached it, so
+  the remainder is now **`CAL-E093 Store error`** carrying the store's own
+  `DOMAIN-Ennn` — a legal hold (`STO-E009`), a read-only open (`STO-E004`), a
+  busy store. Nothing mapped from the store was ever a resource overrun, so
+  `CAL-E030` now means only what it says: CAL's own budget accounting.
+- **A legal-hold refusal no longer deadlocks the process.** `cal_delete` and
+  `cal_forget_user` locked the store inline in the scrutinee of an `if let` /
+  `match`; Rust holds a scrutinee's temporaries for the whole construct, so the
+  guard was still alive inside the refusal arm — and `audit_hold_refusal` locks
+  the same non-reentrant `Mutex`. `FORGET <hash>` and `FORGET SUBJECT` under a
+  hold therefore **hung forever** instead of refusing, which is exactly the path
+  #278 added to make a deferral auditable. Found while adding #321's tests: no
+  CAL- or CLI-level test had ever placed a hold, so the store-level conformance
+  cases passed while the facade path was unreachable.
+- **A blocking open or drop inside an async runtime no longer panics** (#322,
+  first half). `Areev` drives its own current-thread Tokio runtime, so
+  `Areev::open` on a runtime worker panicked from inside Tokio ("Cannot start a
+  runtime from within a runtime") several frames below anything the caller
+  wrote, naming no Areev API — and dropping a handle there panicked again in
+  tokio's blocking shutdown, at process shutdown or in a test's drop. The open
+  now returns **`STO-E010`** naming `AsyncAreev`, `AsyncFacade` and
+  `spawn_blocking`; `TursoDb`'s `Drop` relocates its runtime to a plain thread.
+  A blocking open inside `spawn_blocking` is unaffected — the check is the real
+  `block_on`, caught, not a guess about the thread, because no public Tokio API
+  distinguishes a blocking-pool thread from a worker.
+
 ### Added
 
 - `AreevFacade::store_read` / `store_write` / `store_checked` / `store_as` —
   store access gated on a verb and a namespace, and `effective_authz()`, the
   session-aware rights read a host should use instead of `authz()` when it
   needs to check several namespaces itself.
+
+- **`areev_cal::AsyncFacade`** — an async-safe owner for the GOVERNED facade
+  (#322). `AsyncAreev` wraps the raw store only, so an async host that also
+  needed authorization (`AreevFacade`, `PrincipalSession`, `set_grants`,
+  `authz_epoch`, CAL under a session) hand-rolled one: open on a plain thread,
+  every call through `spawn_blocking`, and a `Drop` releasing the last handle on
+  a dedicated thread. `AsyncFacade::open(path, ns).await`,
+  `.with(|facade| …).await`, `.with_mut(…)`, `.from_facade(f)` and
+  `.close().await`. It takes a **closure** rather than mirroring each method
+  because `PrincipalSession<'f>` borrows its facade and cannot cross an
+  `.await`; inside the closure a whole request runs on one blocking thread.
+  Clones share one facade and queue asynchronously rather than occupying
+  blocking threads. `docs/deployment-profile.md` gains an "Async hosts" section.
+- **`Areev::hold_records()`** and `HoldRecord::at_ms` (#323). `place_hold` has
+  stored the placement time since #278; `holds()` dropped it on the way out, so
+  a product listing legal holds kept a second copy of every hold just to show
+  "placed on" — one that drifts from the engine's record, which since #278 is
+  the authority on what a hold stops. `holds()` stays as the short form;
+  `HoldRecord` is now `#[non_exhaustive]` so a later field is not another
+  break, and a hold row written before the field existed reads as `at_ms: 0`
+  rather than failing the listing. `areev hold list --format json` carries all
+  four facts, and the text form names the time.
+- **Cached rights, a typed session write, and a readable grant set** (#324).
+  `AreevFacade::resolve_rights(principal)` returns the fail-closed `AuthzSet`,
+  and `session_with(rights)` builds a borrowed session from it for free —
+  `principal_session` is now the composition of the two. A host serving many
+  principals can cache the set by `(principal, authz_epoch)` (#309) instead of
+  re-reading grants under the store mutex on every request; the set is a
+  snapshot by design, and the epoch moves when it goes stale.
+  `PrincipalSession::add(&grain)` is the typed, attributed write — same
+  `write`-on-the-namespace check and same `author_did` stamping as `cal_add`,
+  through the grain builders rather than a stringly-typed field map (it refuses
+  under an anonymization ingress policy, which applies to the structured write
+  path, and points at `cal_add`). `AuthzSet::namespaces(verb)` answers "which
+  namespaces may this principal read" as `GrantedNamespaces::All` or
+  `Exact(BTreeSet<String>)` — O(grants) rather than probing every namespace the
+  host knows, and disclosing nothing new since `Grant`'s fields are public.
 
 ## [1.9.0] — 2026-09-18
 

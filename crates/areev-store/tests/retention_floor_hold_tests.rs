@@ -363,3 +363,82 @@ fn a_follower_under_a_hold_still_applies_a_replicated_tombstone() {
         "and it is counted, so an operator can reconcile it"
     );
 }
+
+// ── #323: the placement time survives the read ───────────────────────────
+//
+// `place_hold` has stored all four facts since #278; `holds()` returned three,
+// so a product showing a holds list kept its own copy of "placed on" — a
+// second record that drifts from the engine's, which is the authority on what
+// a hold stops.
+
+#[test]
+fn hold_records_carry_the_placement_time() {
+    let (m, _d) = open_mem();
+    m.place_hold("deal.willow", "SEC inquiry", "user:cco", 1_700_000_000_000)
+        .unwrap();
+
+    let holds = m.hold_records().unwrap();
+    assert_eq!(holds.len(), 1);
+    assert_eq!(holds[0].ns, "deal.willow");
+    assert_eq!(holds[0].because, "SEC inquiry");
+    assert_eq!(holds[0].placed_by, "user:cco");
+    assert_eq!(holds[0].at_ms, 1_700_000_000_000, "the placement time is a fact of the hold");
+
+    // The short form keeps its exact shape for existing callers.
+    assert_eq!(
+        m.holds().unwrap(),
+        vec![(
+            "deal.willow".to_string(),
+            "SEC inquiry".to_string(),
+            "user:cco".to_string()
+        )]
+    );
+}
+
+#[test]
+fn a_hold_written_before_the_field_existed_reads_as_zero() {
+    // A pre-1.9.1 row has no `at_ms`. A hold whose time cannot be read is
+    // still a hold — the listing must degrade, not fail, or upgrading would
+    // hide live holds from the page that shows them.
+    let (mut m, _d) = open_mem();
+    m.meta_put(
+        "hold:legacy.ns",
+        r#"{"because":"old matter","placed_by":"user:cco"}"#,
+    )
+    .unwrap();
+
+    let holds = m.hold_records().unwrap();
+    assert_eq!(holds.len(), 1);
+    assert_eq!(holds[0].at_ms, 0, "an absent time reads as unknown, not an error");
+    assert_eq!(holds[0].because, "old matter");
+
+    // And it still BINDS, which is the part that matters.
+    assert_eq!(
+        m.forget_older_than(Some("legacy.ns"), i64::MAX, None)
+            .unwrap_err()
+            .code(),
+        "STO-E009"
+    );
+}
+
+#[test]
+fn hold_records_are_namespace_sorted_like_holds() {
+    let (m, _d) = open_mem();
+    for (ns, at) in [("z.ns", 3_000), ("a.ns", 1_000), ("m.ns", 2_000)] {
+        m.place_hold(ns, "why", "user:cco", at).unwrap();
+    }
+    let got: Vec<(String, i64)> = m
+        .hold_records()
+        .unwrap()
+        .into_iter()
+        .map(|h| (h.ns, h.at_ms))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            ("a.ns".to_string(), 1_000),
+            ("m.ns".to_string(), 2_000),
+            ("z.ns".to_string(), 3_000)
+        ]
+    );
+}

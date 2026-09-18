@@ -256,6 +256,62 @@ impl AuthzSet {
             self.principal
         )))
     }
+
+    /// Which namespaces this set covers for `verb` (#324).
+    ///
+    /// [`Self::allows`] answers "may I touch THIS one", which a host serving
+    /// many principals can only turn into "which may I touch" by probing every
+    /// namespace it knows — O(namespaces) per principal per policy epoch,
+    /// where the grants themselves are the short list. This is that list.
+    ///
+    /// Discloses nothing new: [`Grant`]'s fields are already public, and a
+    /// session can read its own rights. A grant on `"*"` (or one naming no
+    /// namespace, which means the same) answers [`GrantedNamespaces::All`],
+    /// and so does the owner session.
+    pub fn namespaces(&self, verb: Verb) -> GrantedNamespaces {
+        if self.owner {
+            return GrantedNamespaces::All;
+        }
+        let mut exact = std::collections::BTreeSet::new();
+        for g in self.grants.iter().filter(|g| g.verbs.contains(&verb)) {
+            if g.namespaces.is_empty() || g.namespaces.iter().any(|n| n == "*") {
+                return GrantedNamespaces::All;
+            }
+            exact.extend(g.namespaces.iter().cloned());
+        }
+        GrantedNamespaces::Exact(exact)
+    }
+}
+
+/// The answer to "which namespaces may this principal `verb`?" (#324).
+///
+/// Deliberately not a plain set: "every namespace" and "these three" are
+/// different answers, and collapsing the first into a snapshot of the
+/// namespaces that happen to exist would go stale the moment a write mints a
+/// new one. A caller that wants a concrete list intersects `Exact` with the
+/// namespaces it cares about, and treats `All` as no filter at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GrantedNamespaces {
+    /// Every namespace, including ones not yet written.
+    All,
+    /// Exactly these. Empty = the verb is granted nowhere (fail closed).
+    Exact(std::collections::BTreeSet<String>),
+}
+
+impl GrantedNamespaces {
+    /// True when the verb is granted nowhere at all.
+    pub fn is_empty(&self) -> bool {
+        matches!(self, GrantedNamespaces::Exact(s) if s.is_empty())
+    }
+
+    /// The concrete names, or `None` for [`Self::All`] — which is not a list
+    /// and must not be mistaken for one.
+    pub fn exact(&self) -> Option<&std::collections::BTreeSet<String>> {
+        match self {
+            GrantedNamespaces::All => None,
+            GrantedNamespaces::Exact(s) => Some(s),
+        }
+    }
 }
 
 /// The observer kind a principal label implies (`"agent"` / `"human"`),

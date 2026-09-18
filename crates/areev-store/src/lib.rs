@@ -205,12 +205,40 @@ enum ErasureSelector {
     },
 }
 
-/// One live legal hold, as the guard and the audit record see it.
+/// One live legal hold: its namespace, the ground, who placed it, and WHEN.
+///
+/// A hold is a legal act, so "placed on" is one of its four facts and a host
+/// showing a holds list needs it (#323). `holds()` returns the first three as
+/// a tuple and is kept for existing callers; [`Areev::hold_records`] returns
+/// this.
+///
+/// `#[non_exhaustive]`: a later field (a released-at marker, say) must not be
+/// another source break for anyone constructing one.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct HoldRecord {
     pub ns: String,
     pub because: String,
     pub placed_by: String,
+    /// Epoch milliseconds, as `place_hold` was given them. **0 when the row
+    /// was written by a build that did not store the field** — a hold placed
+    /// before 1.9.1 is still a hold, so an unreadable time reads as unknown
+    /// rather than failing the whole listing.
+    pub at_ms: i64,
+}
+
+impl HoldRecord {
+    /// Read one from the stored JSON. The ONE parse — `hold_records`, the
+    /// guard and the audit path all come through here, so they cannot drift
+    /// about what a hold row contains.
+    fn from_json(ns: &str, v: &serde_json::Value) -> Self {
+        HoldRecord {
+            ns: ns.to_string(),
+            because: v.get("because").and_then(|b| b.as_str()).unwrap_or("").to_string(),
+            placed_by: v.get("placed_by").and_then(|b| b.as_str()).unwrap_or("").to_string(),
+            at_ms: v.get("at_ms").and_then(|d| d.as_i64()).unwrap_or(0),
+        }
+    }
 }
 
 /// An explicit, audited override of a legal hold (D10, #278).
@@ -3758,20 +3786,32 @@ impl Areev {
         self.meta_delete(&format!("{HOLD_PREFIX}{ns}"))
     }
 
-    /// Every live hold, as `(namespace, because, placed_by)`.
+    /// Every live hold, as `(namespace, because, placed_by)` — the short
+    /// form, kept for existing callers. [`Self::hold_records`] also carries
+    /// the placement time.
     pub fn holds(&self) -> Result<Vec<(String, String, String)>> {
+        Ok(self
+            .hold_records()?
+            .into_iter()
+            .map(|h| (h.ns, h.because, h.placed_by))
+            .collect())
+    }
+
+    /// Every live hold with all four of its facts, namespace-sorted (#323).
+    ///
+    /// `place_hold` has always stored `at_ms`; `holds()` dropped it on the way
+    /// out, so a host showing "placed on" had to keep a second copy of every
+    /// hold in its own database — one that drifts from the engine's record,
+    /// which since #278 is the authority on what a hold stops.
+    pub fn hold_records(&self) -> Result<Vec<HoldRecord>> {
         let mut out = Vec::new();
         for (ns, raw) in self.meta_scan(HOLD_PREFIX)? {
             let v: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
                 AreevError::Validation(format!("unreadable hold for '{ns}': {e}"))
             })?;
-            out.push((
-                ns,
-                v.get("because").and_then(|b| b.as_str()).unwrap_or("").to_string(),
-                v.get("placed_by").and_then(|b| b.as_str()).unwrap_or("").to_string(),
-            ));
+            out.push(HoldRecord::from_json(&ns, &v));
         }
-        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out.sort_by(|a, b| a.ns.cmp(&b.ns));
         Ok(out)
     }
 
@@ -3790,11 +3830,7 @@ impl Areev {
         };
         let v: serde_json::Value = serde_json::from_str(raw)
             .map_err(|e| AreevError::Validation(format!("unreadable hold for '{ns}': {e}")))?;
-        Ok(Some(HoldRecord {
-            ns: ns.to_string(),
-            because: v.get("because").and_then(|b| b.as_str()).unwrap_or("").to_string(),
-            placed_by: v.get("placed_by").and_then(|b| b.as_str()).unwrap_or("").to_string(),
-        }))
+        Ok(Some(HoldRecord::from_json(ns, &v)))
     }
 
     /// Refuse a destruction in a held namespace, or record the override.
