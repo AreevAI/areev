@@ -388,6 +388,62 @@ renders. The same open is reachable from the bindings —
 so an embedded console, evaluator or analytics reader is handed the
 SELECT-only role rather than the owner's credential.
 
+## Async hosts
+
+`Areev` is **blocking and drives its own Tokio runtime** — a current-thread
+runtime it `block_on`s for every operation. Tokio will not start a runtime from
+a runtime worker, so a blocking handle must not be opened, called, *or dropped*
+on the executor. The drop is the half that gets missed: it fires at shutdown or
+at the end of a test, long after code that looked correct.
+
+Since 1.9.1 neither case panics. A blocking open on a worker returns
+**`STO-E010`** naming the way out, and the store's teardown relocates its
+runtime to a plain thread rather than panicking. Both are safety nets, not the
+recommended shape — a relocated teardown is a slow drop.
+
+Pick by what the host needs:
+
+| The host needs… | Use |
+|---|---|
+| The raw store, async | `areev_store::AsyncAreev` |
+| The **governed** facade, async — authorization, `PrincipalSession`, `set_grants`, `authz_epoch`, CAL under a session | `areev_cal::AsyncFacade` (1.9.1) |
+| The blocking API, from an async process | open and call inside `tokio::task::spawn_blocking`, or on a plain thread |
+
+`AsyncFacade` exists because `AsyncAreev` wraps the store only, so an async
+service that also authorizes had no async-safe owner and hand-rolled one
+(#322). It takes a **closure** rather than mirroring each facade method,
+because `PrincipalSession<'f>` borrows its facade and cannot cross an `.await`
+— so a whole request runs inside one closure, on one blocking thread:
+
+```rust
+use areev_cal::AsyncFacade;
+
+let f = AsyncFacade::open("agent.db", Some("ops")).await?;
+
+let answer = f.with(|facade| {
+    let session = facade.principal_session("user:amy")?;   // borrows `facade`
+    let ex = areev_cal::CalExecutor::new(Default::default());
+    // …every statement in this request runs under amy's fail-closed rights…
+    facade.authz_epoch()
+}).await?;
+
+f.close().await?;          // teardown off the executor; dropping also works
+```
+
+Notes:
+
+- **Clones share one facade** and calls serialise on it (the store is
+  `&mut`-driven). Callers queue asynchronously rather than occupying blocking
+  threads, so a burst cannot exhaust the host's blocking pool.
+- **`close()` is optional but explicit.** Dropping the last handle tears down
+  off the executor too; `close().await` is for when teardown must have
+  *happened* — graceful shutdown, copying the `.db` file, the end of a test.
+- **`from_facade`** takes a facade the host built itself (read-only mounts, an
+  installed embedder). Build it off the executor; this only takes ownership.
+- Per-principal rights are worth caching: `resolve_rights(p)` + `session_with`
+  (#324) give a host a set it can key by `(principal, authz_epoch)` instead of
+  re-reading grants under the store mutex on every request.
+
 ## SSO note (trusted-header mode)
 
 The proxy shared secret (`--sso-secret-env`) is an **impersonation-grade

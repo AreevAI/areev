@@ -27,6 +27,10 @@ unicode-normalization = "0.1"
 regex = "1"
 lru = "0.18"
 tracing = "0.1"
+# `AsyncFacade` only (#322). Adds NO crate to the dependency graph: areev-store
+# already depends on tokio with exactly these features, so this is a
+# re-declaration of something already present, not a new third-party dep.
+tokio = { version = "1", features = ["rt", "sync"] }
 
 [features]
 default = ["cal"]
@@ -49,4 +53,5 @@ pii_ner = []
 rerank = []
 
 [dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
 tempfile = "3"

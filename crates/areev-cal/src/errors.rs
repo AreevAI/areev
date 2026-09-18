@@ -263,6 +263,21 @@ pub enum CalError {
     #[error("CAL-E092: Invalid query: {detail}")]
     InvalidQuery { detail: String, span: Option<Span> },
 
+    /// CAL-E093 — The store failed the statement for a reason CAL has no
+    /// more specific code for: a legal hold (`STO-E009`), a read-only open
+    /// (`STO-E004`), a busy store, a supersession conflict, an internal
+    /// failure. Carries the store's `DOMAIN-Ennn` detail, which is the code
+    /// worth acting on.
+    ///
+    /// This is the honest name for what used to arrive as `CAL-E030 Budget
+    /// exceeded` (#321). Nothing that reaches here is a resource overrun —
+    /// the genuine budget and timeout errors are raised by CAL itself
+    /// (`assemble.rs`, the pipeline stages), never mapped from the store —
+    /// so a host routing `CAL-E030` as retryable was retrying legal holds
+    /// and read-only refusals.
+    #[error("CAL-E093: Store error: {detail}")]
+    StoreError { detail: String, span: Option<Span> },
+
     /// CAL-E090 — A cryptographic operation failed while executing a CAL
     /// statement (typically AES-GCM decrypt of an encrypted grain blob).
     /// This is **not** a budget overrun — it indicates a key-material
@@ -699,6 +714,7 @@ impl CalError {
             Self::CryptoError { .. } => "CAL-E090",
             Self::HashNotFound { .. } => "CAL-E091",
             Self::InvalidQuery { .. } => "CAL-E092",
+            Self::StoreError { .. } => "CAL-E093",
             Self::FieldNotOnGrainType { .. } => "CAL-E060",
             Self::EngineFieldNotFilterable { .. } => "CAL-E061",
             Self::AssembleTooManySources { .. } => "CAL-E032",
@@ -783,6 +799,7 @@ impl CalError {
             | Self::BudgetExceeded { span, .. }
             | Self::QueryTimeout { span, .. }
             | Self::InvalidQuery { span, .. }
+            | Self::StoreError { span, .. }
             | Self::CryptoError { span, .. }
             | Self::FieldNotOnGrainType { span, .. }
             | Self::EngineFieldNotFilterable { span, .. }
@@ -1029,6 +1046,7 @@ impl CalError {
             },
             Self::BudgetExceeded { detail, .. } => Self::BudgetExceeded { detail, span: s },
             Self::InvalidQuery { detail, .. } => Self::InvalidQuery { detail, span: s },
+            Self::StoreError { detail, .. } => Self::StoreError { detail, span: s },
             Self::CryptoError { detail, .. } => Self::CryptoError { detail, span: s },
             Self::HashNotFound { hash, .. } => Self::HashNotFound { hash, span: s },
             Self::Tier1NotEnabled { statement, .. } => Self::Tier1NotEnabled { statement, span: s },
@@ -1290,6 +1308,9 @@ impl CalError {
             }
             Self::InvalidQuery { .. } => {
                 format!("{}: invalid query{}", code, span_suffix)
+            }
+            Self::StoreError { .. } => {
+                format!("{}: store error{}", code, span_suffix)
             }
             Self::CryptoError { .. } => {
                 format!(

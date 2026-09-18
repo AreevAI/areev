@@ -1410,6 +1410,14 @@ statement returns `AUT-E001` (wrapped as `CAL-E121`) naming the missing
 verb, the namespace, and the principal — exactly what a granting admin
 needs.
 
+Every refusal the store raises reaches CAL as `CAL-E121`, including on the
+recall path: until 1.9.1 the executor's store-error mapping sent an
+authorization denial to `CAL-E030 Budget exceeded` with the `AUT-Ennn` detail
+buried in the message, so a host routing on the code could not tell a refusal
+from a resource overrun (#321). Other store failures — a legal hold, a
+read-only open — now arrive as `CAL-E093 Store error` carrying their own
+`STO-Ennn`, and `CAL-E030` means what it says: CAL's own budget accounting.
+
 ### DCL
 
 ```

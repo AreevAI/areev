@@ -422,15 +422,45 @@ impl AreevFacade {
         &self,
         principal: &str,
     ) -> Result<PrincipalSession<'_>> {
+        Ok(self.session_with(self.resolve_rights(principal)?))
+    }
+
+    /// Resolve a principal's fail-closed rights from the file's grants (#324).
+    ///
+    /// The store read [`Self::principal_session`] does, split out so a host
+    /// serving many principals can do it ONCE per principal and reuse the
+    /// result. Pair it with [`Self::authz_epoch`] (#309): cache the set keyed
+    /// by `(principal, epoch)`, and re-resolve when the epoch moves. Without
+    /// this, every request paid a grant read under the store mutex, and the
+    /// only cacheable thing was the epoch itself — a value that tells a host
+    /// its cache is stale but gives it nothing to cache.
+    ///
+    /// The returned set is a SNAPSHOT: a `set_grants` after this call does not
+    /// change it, which is the same rule `principal_session` has always had.
+    pub fn resolve_rights(&self, principal: &str) -> Result<areev_core::authz::AuthzSet> {
         let grants = {
             let mut guard = self.store.lock().unwrap();
             guard.authz_grants(principal)?
         };
-        Ok(PrincipalSession {
+        Ok(areev_core::authz::AuthzSet::restricted(principal, grants))
+    }
+
+    /// Build a session over rights already resolved (#324) — free, no store
+    /// read. The borrow is what keeps it safe to hold: a session cannot
+    /// outlive the facade it authorizes against.
+    ///
+    /// Takes a RESTRICTED set only in practice: `resolve_rights` never returns
+    /// an owner set, and handing this an [`AuthzSet::owner`] would silently
+    /// promote a caller to the implicit superuser. It is not refused here
+    /// because an owner-equivalent host legitimately builds one, but a host
+    /// that accepts a principal name from a request must go through
+    /// `resolve_rights`, never construct the set itself.
+    pub fn session_with(&self, rights: areev_core::authz::AuthzSet) -> PrincipalSession<'_> {
+        PrincipalSession {
             facade: self,
-            authz: areev_core::authz::AuthzSet::restricted(principal, grants),
+            authz: rights,
             namespace: None,
-        })
+        }
     }
 
     /// The namespace a namespace-DEFAULTING read resolves to.
@@ -1297,6 +1327,53 @@ impl PrincipalSession<'_> {
             .and_then(|v| v.as_str())
             .or(self.facade.namespace.as_deref())
             .unwrap_or("default")
+    }
+
+    /// Add a TYPED grain, checked and attributed exactly as [`Self::cal_add`]
+    /// does — `write` on the grain's namespace, `author_did` stamped when the
+    /// grain does not set one (#324).
+    ///
+    /// The session's only write used to be the stringly-typed `cal_add`, so a
+    /// Rust host writing an attributed `Fact` built a JSON field map by hand
+    /// (`"valid_from"`, `"created_at"`, `"namespace"`) and learned about a
+    /// misspelled field at runtime, from a validation error — while the very
+    /// same host's unattributed writes went through the grain builders
+    /// `Areev::add` takes. This is that path, under a principal.
+    ///
+    /// Namespace resolution matches `cal_add`: the grain's own, else the
+    /// facade's session namespace, else `"default"`.
+    ///
+    /// **Refuses under an anonymization ingress policy.** `cal_add` routes its
+    /// field map through the ingress boundary; a typed grain has no field map
+    /// to route, and quietly writing raw identifiers into a namespace whose
+    /// policy exists to pseudonymize them would be a privacy regression
+    /// introduced by a new API. Use `cal_add` there.
+    pub fn add<G: Grain + Clone + 'static>(&self, grain: &G) -> Result<Hash> {
+        let ns = grain
+            .common()
+            .namespace
+            .clone()
+            .or_else(|| self.facade.namespace.clone())
+            .unwrap_or_else(|| "default".to_string());
+        self.authz.check(areev_core::authz::Verb::Write, &ns)?;
+
+        let mut m = self.facade.store.lock().unwrap();
+        if m.ingress_active(&ns)? {
+            return Err(AreevError::Validation(format!(
+                "namespace {ns:?} has an anonymization ingress policy, which applies to the \
+                 structured write path — use cal_add() so the write passes the ingress \
+                 boundary, or clear the policy"
+            )));
+        }
+
+        let mut g = grain.clone();
+        if g.common().namespace.is_none() {
+            g.common_mut().namespace = Some(ns);
+        }
+        if g.common().author_did.is_none() {
+            g.common_mut().author_did = Some(self.authz.principal().to_string());
+        }
+        m.add(&g)
     }
 
     /// Add a grain, checked against THIS session's rights and attributed to
@@ -2621,7 +2698,13 @@ impl CalStoreFacade for AreevFacade {
             self.check_verb(Verb::Delete, &ns)?;
         }
         let target = format!("hash:{}", hash.to_hex());
-        if let Err(e) = self.store.lock().unwrap().forget(hash) {
+        // Bind the outcome so the MutexGuard drops HERE. An `if let` holds its
+        // scrutinee's temporaries for the whole construct, so locking inline
+        // kept the store locked through the arm — and `audit_hold_refusal`
+        // locks it again, deadlocking the process on a std Mutex, which is not
+        // reentrant. A legal-hold refusal therefore HUNG instead of refusing.
+        let outcome = self.store.lock().unwrap().forget(hash);
+        if let Err(e) = outcome {
             if e.code() == "STO-E009" {
                 // #278: a deferral is evidence, not silence.
                 self.audit_hold_refusal("delete", &target, &e.to_string());
@@ -3079,11 +3162,15 @@ impl CalStoreFacade for AreevFacade {
         let ns = self.default_ns().unwrap_or_else(|| "shared".to_string());
         self.check_verb(Verb::Erase, &ns)?;
         let fp = areev_core::authz::subject_fingerprint(user_id);
-        let report = match self.store.lock().unwrap().forget_subject_with(
+        // Bind the outcome so the MutexGuard drops HERE — see `cal_delete`:
+        // a `match` holds its scrutinee's temporaries across every arm, so the
+        // refusal arm's `audit_hold_refusal` deadlocked on the same lock.
+        let outcome = self.store.lock().unwrap().forget_subject_with(
             &ns,
             user_id,
             areev_store::ErasureOptions { text_mentions },
-        ) {
+        );
+        let report = match outcome {
             Ok(r) => r,
             Err(e) => {
                 if e.code() == "STO-E009" {

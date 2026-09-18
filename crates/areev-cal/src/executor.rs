@@ -3447,10 +3447,11 @@ impl CalExecutor {
                     detail: format!("DIFF source grain decrypt failed: {}", e),
                     span: history.span,
                 },
-                other => CalError::BudgetExceeded {
-                    detail: format!("DIFF source grain error: {}", other),
-                    span: history.span,
-                },
+                // An unreadable grain here is usually an authorization
+                // refusal — the DIFF hashes name grains in namespaces this
+                // session may not read. #321: that arrived as CAL-E030
+                // "Budget exceeded" until 1.10.
+                other => map_store_err(other, history.span),
             })?;
             let grain_b = store.get(&target_hash).map_err(|e| match e {
                 // Mirror the DIFF source mapping above.
@@ -3462,10 +3463,11 @@ impl CalExecutor {
                     detail: format!("DIFF target grain decrypt failed: {}", e),
                     span: history.span,
                 },
-                other => CalError::BudgetExceeded {
-                    detail: format!("DIFF target grain error: {}", other),
-                    span: history.span,
-                },
+                // An unreadable grain here is usually an authorization
+                // refusal — the DIFF hashes name grains in namespaces this
+                // session may not read. #321: that arrived as CAL-E030
+                // "Budget exceeded" until 1.10.
+                other => map_store_err(other, history.span),
             })?;
 
             // CAL-W005: Warn if subject+relation differ between grains.
@@ -5514,12 +5516,33 @@ fn compute_query_hash(input: &str) -> String {
 }
 
 /// Map an `AreevError` raised during CAL execution into the right `CalError`
-/// variant. Crypto failures (AES-GCM decrypt, envelope too short, KEY-E003)
-/// are a distinct class from budget overruns and get `CAL-E090`. Everything
-/// else falls through to `CAL-E030 BudgetExceeded` for backwards
-/// compatibility with existing error-surfacing tests.
+/// variant.
+///
+/// Nothing reaching here is a resource overrun: the genuine budget and timeout
+/// errors are raised by CAL itself (`assemble.rs`, the pipeline stages), never
+/// mapped from the store. The catch-all was nevertheless `CAL-E030 Budget
+/// exceeded`, so an authorization refusal arrived at a host as a retryable
+/// budget error (#321) — and so did a legal hold and a read-only refusal.
+///
+/// Four classes, each with its own code, and the store's own `DOMAIN-Ennn`
+/// carried in the detail either way:
+///
+/// - `AUT-E…` → `CAL-E121`, the same code the `DERIVED FROM` path has raised
+///   since #304 and the one `docs/cal-reference.md` documents.
+/// - crypto (AES-GCM decrypt, envelope too short, KEY-E003) → `CAL-E090`.
+/// - store-side input validation → `CAL-E092`.
+/// - everything else → `CAL-E093`, a neutral store error.
 pub(super) fn map_store_err(e: AreevError, span: Option<super::errors::Span>) -> CalError {
     match e {
+        // Every AUT-E variant, not only the denial: a host routes on the CAL
+        // code and reads the AUT code from the detail for the precise reason.
+        AreevError::AuthzDenied(_)
+        | AreevError::AuthzUnknownPrincipal(_)
+        | AreevError::AuthzConfigInvalid(_)
+        | AreevError::AuthzTokenUnrecognized => CalError::NotAuthorized {
+            detail: e.to_string(),
+            span,
+        },
         AreevError::CryptoError(_) => CalError::CryptoError {
             detail: e.to_string(),
             span,
@@ -5530,7 +5553,7 @@ pub(super) fn map_store_err(e: AreevError, span: Option<super::errors::Span>) ->
             detail: e.to_string(),
             span,
         },
-        _ => CalError::BudgetExceeded {
+        _ => CalError::StoreError {
             detail: e.to_string(),
             span,
         },

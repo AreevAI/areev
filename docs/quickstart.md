@@ -245,7 +245,12 @@ db.add(&Fact::new("john", "prefers", "dark mode"))?;
 ```
 
 > `Areev` is blocking and drives its own runtime, so it must not be called — or
-> dropped — from inside an async runtime. Reach for `AsyncAreev` in async code.
+> dropped — from inside an async runtime. Reach for `AsyncAreev` in async code,
+> or `areev_cal::AsyncFacade` when the host also needs authorization
+> (`PrincipalSession`, `set_grants`, CAL under a session). Since 1.9.1 a
+> blocking open on a runtime worker returns `STO-E010` naming both, rather than
+> panicking from inside Tokio, and teardown relocates itself instead of
+> panicking — see [deployment-profile.md](deployment-profile.md#async-hosts).
 
 ## Python
 

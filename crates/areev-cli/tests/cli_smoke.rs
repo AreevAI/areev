@@ -1906,3 +1906,40 @@ fn attest_end_to_end() {
     let (ok, _, err) = areev(&["import", "--db", db_b, "--bundle", plain_bundle, "--require-attested"]);
     assert!(!ok && err.contains("--trusted-authors"), "{err}");
 }
+
+/// `areev hold list --format json` carries `at_ms` (#323).
+///
+/// The engine has stored the placement time since #278 and `holds()` dropped
+/// it, so a product listing holds kept a second copy of every hold just to
+/// show "placed on" — one that drifts from the engine's, which is the
+/// authority on what a hold stops.
+#[test]
+fn hold_list_json_carries_the_placement_time() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("h.db");
+    let db = db.to_str().unwrap();
+
+    let (ok, _, err) = areev(&[
+        "hold", "set", "--db", db, "--ns", "deal.willow", "--because", "SEC inquiry",
+        "--by", "user:cco",
+    ]);
+    assert!(ok, "hold set failed: {err}");
+
+    let (ok, out, err) = areev(&["hold", "list", "--db", db, "--format", "json"]);
+    assert!(ok, "hold list --format json failed: {err}");
+    let rows: serde_json::Value = serde_json::from_str(out.trim())
+        .unwrap_or_else(|e| panic!("not JSON: {e}\n{out}"));
+    let row = &rows[0];
+    assert_eq!(row["ns"], "deal.willow");
+    assert_eq!(row["because"], "SEC inquiry");
+    assert_eq!(row["placed_by"], "user:cco");
+    let at = row["at_ms"].as_i64().expect("at_ms must be a number");
+    assert!(at > 1_700_000_000_000, "at_ms must be a real epoch-ms clock read, got {at}");
+
+    // The human form still reads as a sentence, and names the time.
+    let (ok, text, err) = areev(&["hold", "list", "--db", db]);
+    assert!(ok, "hold list failed: {err}");
+    assert!(text.contains("deal.willow"), "{text}");
+    assert!(text.contains("user:cco"), "{text}");
+    assert!(text.contains(&at.to_string()), "the text form names the time too: {text}");
+}

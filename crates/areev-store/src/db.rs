@@ -287,7 +287,11 @@ pub(crate) fn with_txn<T>(db: &dyn Db, f: impl FnOnce() -> Result<T>) -> Result<
 /// runtime. Owns the `Database` handle (kept alive for the connection) and a
 /// statement cache that subsumes the old per-field `st_*` slots.
 pub(crate) struct TursoDb {
-    rt: tokio::runtime::Runtime,
+    /// `ManuallyDrop` so [`Drop`] can MOVE it: dropping a Tokio runtime from
+    /// inside another runtime panics, and a host that forgets `close()` must
+    /// get a slow teardown rather than a panic at shutdown (#322). Derefs to
+    /// `Runtime`, so every `self.rt.block_on(...)` below is unchanged.
+    rt: std::mem::ManuallyDrop<tokio::runtime::Runtime>,
     _db: turso::Database,
     conn: turso::Connection,
     /// Keyed by the SQL literal; only `_hot` calls populate it, so growth is
@@ -305,22 +309,61 @@ impl TursoDb {
             .enable_all()
             .build()
             .map_err(db_err)?;
-        let (db, conn) = rt.block_on(async {
-            let mut b = turso::Builder::new_local(path).experimental_index_method(true);
-            if let Some(k) = enc_key {
-                // Wipe our hex rendering of the key after the builder copies
-                // it; the engine necessarily retains its own copy while open.
-                let hexkey = zeroize::Zeroizing::new(hex32(k));
-                b = b.experimental_encryption(true).with_encryption(turso::EncryptionOpts {
-                    cipher: "aes256gcm".to_string(),
-                    hexkey: (*hexkey).clone(),
-                });
+        // #322: `block_on` PANICS from inside Tokio when the caller is a
+        // runtime worker — "Cannot start a runtime from within a runtime",
+        // several frames below anything the caller wrote and naming no Areev
+        // API at all. Catch it and return a coded error that names the way
+        // out.
+        //
+        // Catching the real call rather than probing first is what keeps the
+        // supported escape hatch working: inside `spawn_blocking` a nested
+        // `block_on` is legal, and no public Tokio API distinguishes a
+        // blocking-pool thread from a worker — both are "in a runtime". So the
+        // call itself is the test, and only the genuinely-broken case pays.
+        let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rt.block_on(async {
+                let mut b = turso::Builder::new_local(path).experimental_index_method(true);
+                if let Some(k) = enc_key {
+                    // Wipe our hex rendering of the key after the builder
+                    // copies it; the engine necessarily retains its own copy
+                    // while open.
+                    let hexkey = zeroize::Zeroizing::new(hex32(k));
+                    b = b.experimental_encryption(true).with_encryption(
+                        turso::EncryptionOpts {
+                            cipher: "aes256gcm".to_string(),
+                            hexkey: (*hexkey).clone(),
+                        },
+                    );
+                }
+                let db = b.build().await.map_err(db_err)?;
+                let conn = db.connect().map_err(db_err)?;
+                Ok::<_, AreevError>((db, conn))
+            })
+        }));
+        let (db, conn) = match built {
+            Ok(r) => r?,
+            Err(_) => {
+                // The runtime must not drop HERE either: dropping one on a
+                // worker is the second panic (#322), and it would be
+                // uncaught. Hand it to a plain thread and detach.
+                std::thread::spawn(move || drop(rt));
+                return Err(AreevError::AsyncContext(
+                    "Areev is blocking and drives its own runtime, so it cannot be opened from \
+                     an async task. Use AsyncAreev::open(path).await for the store, or \
+                     areev_cal::AsyncFacade::open(path, opts).await for the governed facade — \
+                     both open, call and tear down off the executor. To keep the blocking API, \
+                     open it on a plain thread (std::thread::spawn) or inside \
+                     tokio::task::spawn_blocking."
+                        .to_string(),
+                ));
             }
-            let db = b.build().await.map_err(db_err)?;
-            let conn = db.connect().map_err(db_err)?;
-            Ok::<_, AreevError>((db, conn))
-        })?;
-        Ok(Self { rt, _db: db, conn, cache: RefCell::new(HashMap::new()) })
+        };
+        Ok(Self {
+            rt: std::mem::ManuallyDrop::new(rt),
+            _db: db,
+            conn,
+            cache: RefCell::new(HashMap::new()),
+        })
     }
 
     /// Clone the cached prepared statement for `sql`, preparing it on first
@@ -347,6 +390,31 @@ async fn drain(rows: &mut turso::Rows) -> Result<Vec<Row>> {
         out.push(Row(vals));
     }
     Ok(out)
+}
+
+impl Drop for TursoDb {
+    fn drop(&mut self) {
+        // SAFETY: `rt` is taken exactly once, here, and nothing reads it after
+        // this — `Drop::drop` runs before the remaining fields drop and is
+        // never called twice.
+        let rt = unsafe { std::mem::ManuallyDrop::take(&mut self.rt) };
+        if tokio::runtime::Handle::try_current().is_ok() {
+            // Dropping a runtime on a runtime worker panics ("Cannot drop a
+            // runtime in a context where blocking is not allowed"), which is
+            // the second, easier-to-miss half of #322: it fires at shutdown or
+            // in a test's drop, long after the code that looked correct.
+            //
+            // Hand it to a plain thread and DETACH. Joining here would block
+            // the worker we are trying not to block; the connection and
+            // database handles that drop immediately after this already
+            // outlive the runtime today (`rt` is the first field, so it
+            // already dropped first), so letting it finish independently
+            // gives them strictly more runtime, not less.
+            std::thread::spawn(move || drop(rt));
+        } else {
+            drop(rt);
+        }
+    }
 }
 
 impl Db for TursoDb {

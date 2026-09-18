@@ -6,7 +6,7 @@
 //! (write but not supersede), an editor (both), a deleter, an admin — each
 //! granted per-namespace, plus the owner who sees none of this.
 
-use areev_cal::{CalExecutor, CalExecutorConfig, AreevFacade};
+use areev_cal::{CalExecutor, CalExecutorConfig, AreevFacade, CalStoreFacade};
 use areev_core::authz::{AUTHZ_NS, REL_PERMITS};
 use areev_core::types::{Fact, Grain};
 use areev_store::Areev;
@@ -452,4 +452,208 @@ fn a_narrowed_result_discloses_no_count_of_what_was_withheld() {
     let dump = v.to_string();
     assert!(!dump.contains("sibling"), "the b-namespace child must not leak: {dump}");
     assert!(!dump.contains("withheld"), "and neither must a count of it: {dump}");
+}
+
+// ── #321: a refusal carries the code that says "refused" ─────────────────
+//
+// `map_store_err`'s catch-all was `CAL-E030 BudgetExceeded`, so a RECALL
+// refused for lack of a grant arrived as a *budget* error carrying the
+// AUT-E001 detail — and a host routing on the code (a governed API mapping a
+// refusal to 404 + a Denied audit record, an overrun to a retry) had to match
+// on a substring inside the message to tell them apart. 1.9.0 had already
+// fixed this for `DERIVED FROM` (#304), leaving the recall path the odd one
+// out against `docs/cal-reference.md`.
+
+/// The statement-level failure channel: the `CalError` itself, not the
+/// executor's `unsupported` payload. `run` above collapses the two, which is
+/// right for "was it refused" and wrong for "with which code".
+fn code_of(ex: &CalExecutor, f: &AreevFacade, q: &str) -> String {
+    match ex.execute(q, f) {
+        Err(e) => e.code().to_string(),
+        Ok(res) => {
+            let v = serde_json::to_value(res.payload_json().unwrap()).unwrap();
+            panic!("{q}\nexpected an error, got payload: {v}");
+        }
+    }
+}
+
+#[test]
+fn a_refused_recall_is_cal_e121_not_a_budget_error() {
+    let dir = TempDir::new().unwrap();
+    let ex = CalExecutor::new(CalExecutorConfig::default());
+    let f = facade_for(&dir, Some("user:reader")); // read ON caller only
+
+    let q = r#"RECALL facts WHERE namespace = "other" LIMIT 5"#;
+    assert_eq!(
+        code_of(&ex, &f, q),
+        "CAL-E121",
+        "an authorization refusal must not surface as a budget overrun"
+    );
+    let msg = ex.execute(q, &f).unwrap_err().to_string();
+    assert!(msg.contains("AUT-E001"), "the AUT detail must survive: {msg}");
+    assert!(
+        !msg.contains("Budget exceeded"),
+        "the refusal must not claim a resource overrun: {msg}"
+    );
+}
+
+#[test]
+fn a_refused_recall_under_a_principal_session_is_also_cal_e121() {
+    let dir = TempDir::new().unwrap();
+    let ex = CalExecutor::new(CalExecutorConfig::default());
+    let f = facade_for(&dir, None); // owner facade; the SESSION is restricted
+    let session = f.principal_session("user:reader").unwrap();
+
+    match ex.execute(r#"RECALL facts WHERE namespace = "other" LIMIT 5"#, &session) {
+        Err(e) => {
+            assert_eq!(e.code(), "CAL-E121");
+            assert!(e.to_string().contains("AUT-E001"));
+        }
+        Ok(res) => panic!("expected a refusal, got {:?}", res.payload_json()),
+    }
+}
+
+#[test]
+fn a_refused_history_diff_is_cal_e121() {
+    let dir = TempDir::new().unwrap();
+    let ex = CalExecutor::new(CalExecutorConfig::default());
+
+    // Two grains in a namespace `user:reader` cannot read.
+    let owner = facade_for(&dir, None);
+    let mut hashes = Vec::new();
+    for object in ["v1", "v2"] {
+        let mut fields = serde_json::Map::new();
+        fields.insert("subject".into(), serde_json::json!("j"));
+        fields.insert("relation".into(), serde_json::json!("stage"));
+        fields.insert("object".into(), serde_json::json!(object));
+        fields.insert("namespace".into(), serde_json::json!("other"));
+        hashes.push(owner.cal_add("fact", &fields).unwrap().to_hex());
+    }
+    drop(owner);
+
+    let f = facade_for(&dir, Some("user:reader"));
+    let q = format!(
+        "HISTORY sha256:{} DIFF sha256:{}",
+        hashes[0], hashes[1]
+    );
+    let code = code_of(&ex, &f, &q);
+    assert_eq!(code, "CAL-E121", "a DIFF over unreadable grains: got {code}");
+}
+
+#[test]
+fn a_non_authz_store_refusal_is_cal_e093_not_a_budget_error() {
+    // The other half of #321: the catch-all's NAME was wrong for most of what
+    // reached it. A legal hold is the clearest case — `STO-E009` is a
+    // deliberate, permanent refusal, and arriving as "Budget exceeded" told a
+    // host to retry something that will never succeed.
+    let dir = TempDir::new().unwrap();
+    let ex = CalExecutor::new(CalExecutorConfig::default());
+    let f = facade_for(&dir, None); // owner: authorization is not what refuses
+
+    let mut fields = serde_json::Map::new();
+    fields.insert("subject".into(), serde_json::json!("j"));
+    fields.insert("relation".into(), serde_json::json!("stage"));
+    fields.insert("object".into(), serde_json::json!("v1"));
+    fields.insert("namespace".into(), serde_json::json!("caller"));
+    let hash = f.cal_add("fact", &fields).unwrap().to_hex();
+
+    f.with_store(|m| m.place_hold("caller", "SEC inquiry", "user:cco", 1_700_000_000_000))
+        .unwrap();
+
+    let q = format!(r#"FORGET sha256:{hash} BECAUSE "cleanup""#);
+    let err = match ex.execute(&q, &f) {
+        Err(e) => e,
+        Ok(res) => {
+            // The write channel reports refusals as an `unsupported` payload;
+            // either way the STO code must be visible and the word "budget"
+            // must not be.
+            let v = serde_json::to_value(res.payload_json().unwrap()).unwrap();
+            let msg = v["message"].as_str().unwrap_or_default().to_string();
+            assert!(msg.contains("STO-E009"), "hold refusal must name STO-E009: {v}");
+            assert!(
+                !msg.to_lowercase().contains("budget"),
+                "a legal hold is not a resource overrun: {msg}"
+            );
+            return;
+        }
+    };
+    assert_eq!(err.code(), "CAL-E093", "got {err}");
+    assert!(err.to_string().contains("STO-E009"), "{err}");
+}
+
+#[test]
+fn cal_e030_no_longer_means_whatever_the_store_said() {
+    // A regression pin for the shape of the fix rather than one case: no
+    // refusal from the store may surface as CAL-E030 any more. CAL-E030 is
+    // reserved for CAL's own budget accounting.
+    let dir = TempDir::new().unwrap();
+    let ex = CalExecutor::new(CalExecutorConfig::default());
+    let f = facade_for(&dir, Some("user:reader"));
+
+    for q in [
+        r#"RECALL facts WHERE namespace = "other" LIMIT 5"#,
+        r#"ADD fact SET subject = "j" SET relation = "r" SET object = "o" SET namespace = "other" REASON "t""#,
+        r#"RECENT 5 IN "other""#,
+    ] {
+        if let Err(e) = ex.execute(q, &f) {
+            assert_ne!(
+                e.code(),
+                "CAL-E030",
+                "{q}\nstore refusals must not claim a budget overrun: {e}"
+            );
+        }
+    }
+}
+
+/// A legal-hold refusal must REFUSE, not hang.
+///
+/// `cal_delete` and `cal_forget_user` locked the store inline in the
+/// scrutinee of an `if let` / `match`. Rust holds a scrutinee's temporaries
+/// for the whole construct, so the guard was still alive inside the refusal
+/// arm — and `audit_hold_refusal` locks the same std `Mutex`, which is not
+/// reentrant. Both destructive paths therefore DEADLOCKED the process the
+/// moment a hold refused one, which is the exact path #278 added to make a
+/// deferral auditable. No CAL- or CLI-level test placed a hold, so it shipped.
+///
+/// Both legs run on a worker with a join deadline: a regression here hangs
+/// forever, and a test that hangs is a test that never reports.
+#[test]
+fn a_hold_refusal_returns_instead_of_deadlocking() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    for leg in ["hash", "subject"] {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let dir = TempDir::new().unwrap();
+            let f = facade_for(&dir, None);
+            let mut fields = serde_json::Map::new();
+            fields.insert("subject".into(), serde_json::json!("j"));
+            fields.insert("relation".into(), serde_json::json!("r"));
+            fields.insert("object".into(), serde_json::json!("v"));
+            fields.insert("namespace".into(), serde_json::json!("caller"));
+            let h = f.cal_add("fact", &fields).unwrap();
+            f.with_store(|m| m.place_hold("caller", "SEC inquiry", "user:cco", 1))
+                .unwrap();
+
+            let err = match leg {
+                "hash" => f.cal_delete(&h, Some("cleanup")).unwrap_err(),
+                _ => f
+                    .cal_forget_user("j", false, "cleanup")
+                    .unwrap_err(),
+            };
+            tx.send(err.code().to_string()).unwrap();
+        });
+
+        match rx.recv_timeout(Duration::from_secs(30)) {
+            Ok(code) => assert_eq!(
+                code, "STO-E009",
+                "{leg}: a held namespace must refuse with the hold code"
+            ),
+            Err(_) => panic!(
+                "{leg}: the hold refusal DEADLOCKED — the store lock is held \
+                 across audit_hold_refusal again"
+            ),
+        }
+    }
 }

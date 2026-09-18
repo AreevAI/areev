@@ -132,6 +132,20 @@ pub enum AreevError {
     /// refusal is itself the evidence a controller needs when answering an
     /// erasure request on a retention ground.
     LegalHold(String),
+    /// A BLOCKING open was attempted from inside an async runtime (#322).
+    ///
+    /// [`Areev`](../../areev_store/struct.Areev.html) drives its own
+    /// current-thread Tokio runtime and `block_on`s it, and Tokio refuses to
+    /// start a runtime from a runtime worker — so the open used to panic from
+    /// inside Tokio, several frames below anything the caller wrote, saying
+    /// "Cannot start a runtime from within a runtime" and naming no Areev API
+    /// at all.
+    ///
+    /// A coded error instead: the message names `AsyncAreev` and
+    /// `AsyncFacade`, which are the two supported answers. Raised only on a
+    /// runtime WORKER — an open on the blocking pool (where `AsyncAreev` and
+    /// `AsyncFacade` put theirs) is legal and unaffected.
+    AsyncContext(String),
     SupersessionConflict(Hash),
     /// A supersession-chain walk (`Areev::supersession_chain`) did not reach
     /// a root within the bounded hop count. Real edit histories terminate in
@@ -194,6 +208,7 @@ impl AreevError {
             Self::ReadOnlyOpenFailed(_) => "STO-E005",
             Self::SchemaNotProvisioned(_) => "STO-E008",
             Self::LegalHold(_) => "STO-E009",
+            Self::AsyncContext(_) => "STO-E010",
             Self::CryptoError(_) => "CRY-E001",
             Self::AttestationInvalid(_) => "CRY-E002",
             Self::AttestationRequired(_) => "CRY-E003",
@@ -238,6 +253,7 @@ impl std::fmt::Display for AreevError {
             Self::ReadOnlyOpenFailed(m) => write!(f, "STO-E005: {m}"),
             Self::SchemaNotProvisioned(m) => write!(f, "STO-E008: {m}"),
             Self::LegalHold(m) => write!(f, "STO-E009: {m}"),
+            Self::AsyncContext(m) => write!(f, "STO-E010: {m}"),
             Self::CryptoError(m) => write!(f, "CRY-E001: crypto error: {m}"),
             Self::AttestationInvalid(m) => write!(f, "CRY-E002: attestation invalid: {m}"),
             Self::AttestationRequired(m) => write!(f, "CRY-E003: attestation required: {m}"),

@@ -113,6 +113,7 @@ COMMANDS:
                                       MINIMUM any sweep must respect —
                                       destruction younger than it refuses
   hold     <set|release|list> [--ns NS] --because \"why\" [--by PRINCIPAL]
+           list also takes [--format json] (adds at_ms, the placement time)
                                       legal hold: while one is live on a
                                       namespace, EVERY destruction path there
                                       refuses (STO-E009) with the hold on
@@ -5706,12 +5707,35 @@ fn run_hold(
             println!("hold released on '{ns}' by {by}: {because}");
         }
         "list" => {
-            let holds = m.holds().map_err(|e| e.to_string())?;
+            // #323: `at_ms` has always been stored; only the read dropped it.
+            let holds = m.hold_records().map_err(|e| e.to_string())?;
+            if flag(flags, "format").as_deref() == Some("json") {
+                let rows: Vec<serde_json::Value> = holds
+                    .iter()
+                    .map(|h| {
+                        serde_json::json!({
+                            "ns": h.ns,
+                            "because": h.because,
+                            "placed_by": h.placed_by,
+                            "at_ms": h.at_ms,
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string(&rows).map_err(|e| e.to_string())?);
+                return Ok(());
+            }
             if holds.is_empty() {
                 println!("no legal holds in this memory");
             }
-            for (hns, because, by) in holds {
-                println!("{hns}: held by {by} — {because}");
+            for h in holds {
+                // A hold from before 1.9.1 has no stored time; say so rather
+                // than printing the epoch, which reads as 1970.
+                let when = if h.at_ms == 0 {
+                    "placed at an unrecorded time".to_string()
+                } else {
+                    format!("placed at {}", h.at_ms)
+                };
+                println!("{}: held by {} — {} ({when})", h.ns, h.placed_by, h.because);
             }
         }
         other => {

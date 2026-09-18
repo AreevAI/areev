@@ -2,33 +2,33 @@
   "version": "1.9.0",
   "crates": 17,
   "rust": {
-    "files": 324,
-    "physical_lines": 227399,
-    "source_code": 106655,
-    "test_code": 65039,
+    "files": 327,
+    "physical_lines": 228736,
+    "source_code": 106921,
+    "test_code": 65608,
     "unit_test_code": 28663,
-    "integration_test_code": 36376,
+    "integration_test_code": 36945,
     "example_code": 669,
-    "test_functions": 3052,
+    "test_functions": 3078,
     "test_ratio": 0.61,
-    "test_share": 37.9
+    "test_share": 38.0
   },
   "per_crate": [
     {
       "name": "areev-cal",
-      "files": 43,
-      "physical": 58825,
-      "source_code": 25367,
-      "test_code": 20040,
-      "tests": 1048
+      "files": 45,
+      "physical": 59771,
+      "source_code": 25535,
+      "test_code": 20481,
+      "tests": 1066
     },
     {
       "name": "areev-store",
-      "files": 42,
-      "physical": 27728,
-      "source_code": 12738,
-      "test_code": 6775,
-      "tests": 342
+      "files": 43,
+      "physical": 27986,
+      "source_code": 12783,
+      "test_code": 6877,
+      "tests": 349
     },
     {
       "name": "areev-run",
@@ -49,16 +49,16 @@
     {
       "name": "areev-cli",
       "files": 24,
-      "physical": 20921,
-      "source_code": 8664,
-      "test_code": 7869,
-      "tests": 223
+      "physical": 20982,
+      "source_code": 8685,
+      "test_code": 7895,
+      "tests": 224
     },
     {
       "name": "areev-core",
       "files": 51,
-      "physical": 18481,
-      "source_code": 9092,
+      "physical": 18553,
+      "source_code": 9124,
       "test_code": 4743,
       "tests": 319
     },
@@ -153,9 +153,9 @@
   ],
   "docs": {
     "files": 64,
-    "lines": 33600
+    "lines": 33748
   },
-  "error_codes": 111,
+  "error_codes": 113,
   "bindings": {
     "python_files": 93,
     "node_test_files": 5
