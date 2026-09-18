@@ -48,3 +48,9 @@ docs/tmp/
 # build artifact, never a repo artifact.
 .venv/
 venv/
+
+# Local scratch: marketing renders, PDF exports, ad-hoc experiment output.
+# Swept into the v1.9.1 release commit by a `git add -A` and removed again —
+# ignore them so that cannot recur.
+tmp/
+output/
