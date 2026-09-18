@@ -6,6 +6,53 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+
+- **A bound principal now binds every method, not only CAL**
+  ([GHSA-rmrx-26f6-f97w](https://github.com/AreevAI/areev/security/advisories/GHSA-rmrx-26f6-f97w),
+  CWE-862). A handle opened with `principal=` (Python), `principal` (Node) or
+  `areev serve --mcp --as` is documented to fail closed (CAL 1.3 §9). It did so
+  for CAL and for five methods; the rest reached the store through
+  `AreevFacade::with_store`, which applies no authorization. A principal granted
+  `read` on one namespace could therefore **read any namespace** through
+  `recall`, `latest`, `search`, `history`, `related`, `entity_at`, `nearest`,
+  the run-history reads and the memory-wide `changes_since` op-log; **write** an
+  ungranted namespace through `remember()`; and **erase** in one through the
+  memory tool's `delete` — while the equivalent CAL statement was correctly
+  refused with `AUT-E001`. On MCP the same hole reached `areev_search`,
+  `areev_related` and `areev_remember` under `--as`.
+
+  Every namespace-scoped call on the three principal-bindable surfaces now goes
+  through the new gated accessors (`AreevFacade::store_read` / `store_write` /
+  `store_checked`), which check the verb against the session's *effective*
+  rights — an active `PrincipalSession`'s when there is one — before the store
+  is touched. Memory-wide operations take `Verb::Read`/`Verb::Admin` on `"*"`;
+  calls that return per-namespace rows (`changes_since`, `provenance`, the
+  anonymization listings) are filtered to what the principal may read; a walk
+  over a namespace list (`related`, a scoped feed) is all-or-nothing; and the
+  memory tool is gated per *command* (`view` → `read`, `create`/`str_replace`/
+  `insert`/`rename` → `write`, `delete` → `delete`, anything unrecognized →
+  `admin`). `set_embedder_command` and `set_anonymizer_command` now authorize
+  *before* probing the command, so a refused caller cannot spawn a subprocess.
+
+  **An unbound (owner) handle is unaffected** — `AuthzSet::owner` allows every
+  verb everywhere — so a host that never binds a principal sees no change. Three
+  test layers keep the hole closed: `areev-cal/tests/host_surface_gating.rs`
+  fails the build on any new ungated `with_store` in the bindings or MCP unless
+  the store method is listed with a reason; `crates/areev-py/tests/test_principal_gating.py`
+  and `crates/areev-js/__test__/principal_gating.mjs` drive the whole public
+  surface under a zero-grant principal and assert `AUT-E001`, with an
+  owner-unaffected positive control; and `mcp_as_principal_binds_every_tool_not_only_cal`
+  does the same over real stdio. Reported by Rounic verification of 1.9.0;
+  Rounic is a Rust host on the gated facade and was not itself affected.
+
+### Added
+
+- `AreevFacade::store_read` / `store_write` / `store_checked` / `store_as` —
+  store access gated on a verb and a namespace, and `effective_authz()`, the
+  session-aware rights read a host should use instead of `authz()` when it
+  needs to check several namespaces itself.
+
 ## [1.9.0] — 2026-09-18
 
 The **Rounic governance wave**: 41 issues raised against 1.8.5 by a

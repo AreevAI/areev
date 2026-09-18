@@ -484,6 +484,14 @@ the CLI:
   **not** parameters; a client-supplied name would let an agent approve
   gates on runs it triggered itself. Approvals from a different principal
   go through a server bound to that principal, the console, or the CLI.
+- **`--as` binds every tool, not only `areev_cal`** (1.9.1). A server started
+  with `--as user:amy` answers each tool under amy's grants: a namespace read
+  needs `read` on it, a write `write`, and the refusal is `AUT-E001` as an
+  `isError` result. Before 1.9.1, `areev_search`, `areev_related` and
+  `areev_remember` reached the store with no check, so they read and wrote
+  namespaces `areev_cal` correctly refused
+  ([GHSA-rmrx-26f6-f97w](https://github.com/AreevAI/areev/security/advisories/GHSA-rmrx-26f6-f97w)).
+  A server started WITHOUT `--as` is the owner session and is unaffected.
 
 | Tool | What it does |
 |---|---|

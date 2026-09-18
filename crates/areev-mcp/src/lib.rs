@@ -559,7 +559,9 @@ impl McpServer {
                 }
                 let grains = self
                     .facade
-                    .with_store(|m| m.recall_hybrid(&ns, subject, relation, Some(query), k, None))
+                    .store_read(&ns, |m| {
+                        m.recall_hybrid(&ns, subject, relation, Some(query), k, None)
+                    })
                     .map_err(|e| e.to_string())?;
                 let out: Vec<Value> = grains
                     .iter()
@@ -588,7 +590,7 @@ impl McpServer {
                 let ns = self.ns(args).to_string();
                 let matches = self
                     .facade
-                    .with_store(|m| m.nearest_semantic(&ns, subject, relation, text, k))
+                    .store_read(&ns, |m| m.nearest_semantic(&ns, subject, relation, text, k))
                     .map_err(|e| match e {
                         areev_core::error::AreevError::Validation(msg)
                             if msg.contains("requires an installed embedder") =>
@@ -706,7 +708,7 @@ impl McpServer {
                 let refs: Vec<&str> = rels.iter().map(String::as_str).collect();
                 let reached = self
                     .facade
-                    .with_store(|m| m.related(&ns, start, &refs, dir, depth, cap))
+                    .store_read(&ns, |m| m.related(&ns, start, &refs, dir, depth, cap))
                     .map_err(|e| e.to_string())?;
                 Ok(json!({"start": start, "reached": reached}).to_string())
             }
@@ -729,7 +731,7 @@ impl McpServer {
                 let ns = self.ns(args).to_string();
                 let found = self
                     .facade
-                    .with_store(|m| m.entity_at(&ns, subject, relation, at, axis))
+                    .store_read(&ns, |m| m.entity_at(&ns, subject, relation, at, axis))
                     .map_err(|e| e.to_string())?;
                 Ok(match found {
                     Some(g) => json!({"found": true, "grain": g}).to_string(),
@@ -747,7 +749,7 @@ impl McpServer {
                 let ns = self.ns(args).to_string();
                 let rows = self
                     .facade
-                    .with_store(|m| m.step_actions(&ns, &wf, node, limit))
+                    .store_read(&ns, |m| m.step_actions(&ns, &wf, node, limit))
                     .map_err(|e| e.to_string())?;
                 let steps: Vec<_> = rows
                     .into_iter()
@@ -768,11 +770,11 @@ impl McpServer {
                     .unwrap_or(true);
                 let trace = self
                     .facade
-                    .with_store(|m| m.run_trace(&ns, run, limit))
+                    .store_read(&ns, |m| m.run_trace(&ns, run, limit))
                     .map_err(|e| e.to_string())?;
                 let produced = if yield_too {
                     self.facade
-                        .with_store(|m| m.run_yield(&ns, run, limit))
+                        .store_read(&ns, |m| m.run_yield(&ns, run, limit))
                         .map_err(|e| e.to_string())?
                 } else {
                     Vec::new()
@@ -794,7 +796,7 @@ impl McpServer {
                 let ns = self.ns(args).to_string();
                 let runs = self
                     .facade
-                    .with_store(|m| m.runs_touching(&ns, &h, depth))
+                    .store_read(&ns, |m| m.runs_touching(&ns, &h, depth))
                     .map_err(|e| e.to_string())?;
                 Ok(json!({"hash": h.to_hex(), "runs": runs}).to_string())
             }
@@ -925,7 +927,9 @@ impl McpServer {
                 let runs = match Hash::from_hex(&hash_arg) {
                     Ok(h) => self
                         .facade
-                        .with_store(|m| m.runs_touching("agent:harness", &h, depth))
+                        .store_read(areev_core::authz::HARNESS_NS, |m| {
+                            m.runs_touching(areev_core::authz::HARNESS_NS, &h, depth)
+                        })
                         .unwrap_or_default(),
                     Err(_) => Vec::new(),
                 };
@@ -1034,7 +1038,7 @@ impl McpServer {
                 };
                 let h = self
                     .facade
-                    .with_store(|m| m.capture(&ns, content, &meta))
+                    .store_write(&ns, |m| m.capture(&ns, content, &meta))
                     .map_err(|e| e.to_string())?;
                 Ok(json!({"hash": h.to_hex(), "event": h.to_hex(), "stored_as": "event",
                     "note": "distill durable facts with areev_add"}).to_string())

@@ -1133,6 +1133,64 @@ caller's own namespace, which a facade-construction-time default could not
 express. `as_any()` deliberately returns `None`: a downcast to the unscoped
 facade would let a caller read past the session's grants.
 
+### Binding a principal binds every method, not only CAL
+
+A bound principal — `principal=` (Python), `principal` (Node),
+`areev serve --mcp --as` — fails closed on the **whole** surface the handle
+exposes, not just on statements it executes. This is worth stating because it
+was not true before 1.9.1.
+
+`AreevFacade::with_store` hands out the raw store with no `AuthzSet` check. It
+exists for hosts acting under their own authority — the runtime journalling its
+own run, a trigger evaluating its own cadence — and the gated methods
+(`cal_add`, `cal_delete`, `facade.recall`, …) are what a caller-facing surface
+is supposed to use. In 1.9.0 and earlier the bindings and two MCP tools reached
+around them: five methods called `check_verb`, and roughly fifty did not. A
+handle bound to a read-only principal could therefore
+
+- read any namespace through `recall`, `latest`, `search`, `history`,
+  `related`, `entity_at`, `nearest` and the run-history reads;
+- read the memory-wide op-log through `changes_since`;
+- **write** any namespace through `remember()`; and
+- **erase** through the memory tool's `delete`,
+
+while the equivalent CAL statement was correctly refused with `AUT-E001`. That
+is [GHSA-rmrx-26f6-f97w](https://github.com/AreevAI/areev/security/advisories/GHSA-rmrx-26f6-f97w),
+fixed in 1.9.1.
+
+The rule now, on every principal-bindable surface:
+
+| The method… | takes |
+|---|---|
+| reads one namespace | `Verb::Read` on it (`store_read`) |
+| writes one namespace | `Verb::Write` on it (`store_write`) |
+| destroys in one namespace | `Verb::Delete` / `Verb::Erase` on it |
+| changes a namespace's governance (anon policy) | `Verb::Admin` on it |
+| reads memory-wide (`stats`, `verify`, CAS blobs) | `Verb::Read` on `"*"` |
+| changes memory-wide state (keys, attestation, indexes, bundles, embedder) | `Verb::Admin` on `"*"` |
+| spans a namespace LIST (`related`, a scoped feed) | every namespace in the list, or nothing |
+| takes no namespace but returns per-namespace rows (`changes_since`, `provenance`, the policy listings) | rows filtered to what the principal may read |
+
+Three consequences worth knowing:
+
+- **The owner is unaffected.** An unbound handle is `AuthzSet::owner`, which
+  allows every verb everywhere, so gating changed nothing for a host that never
+  binds a principal.
+- **A walk is all-or-nothing.** `related` over `"a,b"` refuses unless the
+  principal may read both: a walk is not composable from the namespaces it was
+  allowed, so a partial answer would silently mean something else.
+- **The memory tool is gated per COMMAND**, not per method: `view` takes
+  `read`, `create`/`str_replace`/`insert`/`rename` take `write`, `delete` takes
+  `delete`. An unrecognized command takes `admin`, so a command added to
+  `MemoryTool` later is gated until someone maps it.
+
+Checks ask the facade's **effective** rights (`effective_authz()`) — an active
+`PrincipalSession`'s when one is on the thread, else the bound set — so the
+answer is right under a session too. Two enforcement tests keep it that way:
+`areev-cal/tests/host_surface_gating.rs` fails the build on any new ungated
+`with_store` in the three files, and the per-binding parity tests drive the
+whole public surface under a zero-grant principal and assert the refusal.
+
 ## Areev Loop (self-improvement) trust boundary
 
 Areev Loop lets an agent change its own memory, so its governance *is* a security
