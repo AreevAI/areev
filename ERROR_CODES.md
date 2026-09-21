@@ -214,12 +214,12 @@ and are the source of truth. Ranges:
 | `CAL-E080`–`E085` | ACCUMULATE |
 | `CAL-E090`–`E091` | Crypto during execution / hash not found |
 | `CAL-E092` | Invalid query — store rejected input as invalid (not a budget overrun) |
-| `CAL-E093` | Store error — the statement failed for a reason CAL has no more specific code for (a legal hold `STO-E009`, a read-only open `STO-E004`, a busy store, an internal failure). Carries the store's `DOMAIN-Ennn` detail, which is the code worth acting on. Added in 1.9.1 (#321) as the honest name for what used to arrive as `CAL-E030 Budget exceeded`: nothing mapped from the store is a resource overrun, so a host routing `CAL-E030` as retryable was retrying legal holds |
+| `CAL-E093` | Store error — the statement failed for a reason CAL has no more specific code for (a legal hold `STO-E009`, a read-only open `STO-E004`, a busy store, an internal failure). Carries the store's `DOMAIN-Ennn` detail, which is the code worth acting on — also as a value, `CalError::store_code()` (#331). Added in 1.9.1 (#321) as the honest name for what used to arrive as `CAL-E030 Budget exceeded`: nothing mapped from the store is a resource overrun, so a host routing `CAL-E030` as retryable was retrying legal holds |
 | `CAL-E100` | Unsupported CAL version |
 | `CAL-E110`–`E116` | Multi-format, user vars, scope, LLM-dependent options |
 | `CAL-E117`–`E119` | Template limits and inheritance (OMS CAL §10.7–§10.8) |
 | `CAL-E120` | Invalid JSON+CAL |
-| `CAL-E121` | Not authorized — the session's grants don't cover this statement (carries the `AUT-Ennn` detail) |
+| `CAL-E121` | Not authorized — the session's grants don't cover this statement (carries the `AUT-Ennn` detail; the code itself is `CalError::store_code()`, #331) |
 | `CAL-E122` | `PIN`ned `ASSEMBLE` sources do not fit the `BUDGET` — a pin is never summarised or dropped, so the statement fails instead of degrading it |
 | `CAL-E123` | A `GROUP BY` names more fields than one composite key may have (max 4) |
 | `CAL-W001`–`W012` | Warnings (unknown relation, deprecated operator, `{{#each}}` cap, bounded `CONTRADICTIONS` scan, …) |

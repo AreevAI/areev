@@ -6,6 +6,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **`CAL-E093` and `CAL-E121` carry the store's code as a value** (#331).
+  `CalError::store_code()` returns the store's `DOMAIN-Ennn` (`STO-E009` legal
+  hold, `STO-E002` busy, `AUT-E001` denied, …) and `None` for errors CAL raised
+  itself; the console's `/api/cal` error payload adds it as `store_code` beside
+  `code`, which also survives the sanitized `error` text. A host no longer
+  finds `"STO-E009"` inside the message. Messages are unchanged.
+- **A store refusal of `FORGET` / `FORGET SUBJECT` / `PURGE` is now an error**,
+  not an `unsupported` payload (#331) — `CAL-E093`/`CAL-E121` with its
+  `store_code`, as `docs/cal-reference.md` §9 already described. The console
+  had read the old `ok: true` as success and toasted "Forgotten" for a
+  hold-refused delete. `--no-destructive-ops` still returns `unsupported`.
+- **Rust API:** `CalError::{StoreError, NotAuthorized, InvalidQuery,
+  CryptoError}` gain a `store_code: Option<&'static str>` field. Code that
+  constructs these variants, or destructures them without `..`, needs the
+  field added.
+
 ## [1.9.1] — 2026-09-19
 
 A **security release**, plus the four Rounic follow-ups raised against 1.9.0
