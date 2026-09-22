@@ -1537,6 +1537,7 @@ impl Runner {
         // resume, fork — funnels through here, which is why it lands here and
         // not at each caller.
         self.executor.bind_run_principal(&self.principal);
+        self.executor.bind_artifact_store(Arc::clone(&self.facade));
 
         // #300: the holder carries the HOST, not just the pid. Two
         // containers both running as PID 1 under one service principal used

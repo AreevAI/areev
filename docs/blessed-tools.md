@@ -79,6 +79,22 @@ the broker with `RUN-E022`, and `areev tool provenance` chains the blob.
 `{"status": 200, "body": "…"}`, or `{"error": "…", "code": "RUN-E022"}` when
 policy said no. The refusal keeps the code a reader can look up.
 
+For bounded byte-exact transfers, set `"response_mode":"artifact"`. The reply
+has `status`, `ref` (`cas://sha256:<hex>`), `sha256`, `bytes`, and `mime` instead
+of `body`. The broker writes the response into the run's open CAS, including
+the memory's at-rest encryption. To upload exact bytes, use `body_ref` and a
+required `content_type` (for example `application/pdf`) instead of `body`,
+with `method: "POST_ARTIFACT"` (`PUT_ARTIFACT`/`PATCH_ARTIFACT` likewise). A
+compatible broker maps the marker to the real method; an old broker rejects
+it before it can send an empty upload. Declare both blob read and the
+`Content-Type` header, and grant the upload
+method on the host. The broker checks every redirect hop as for text. Response
+bytes are bounded by the declared `max_response_bytes` (at most 1 MiB without
+a declaration); request bytes by 1 MiB. An overrun is an error, never a
+partial artifact. Require `ref` and verify its digest before using it: older
+text-only peers may ignore the download mode field. With no run-bound writable
+memory, artifact mode fails explicitly.
+
 An input that is not a request is refused by the broker, which was going to
 decide anyway; validating it in the guest would add a second opinion that can
 drift.
@@ -231,7 +247,7 @@ areev run start --db m.db --workflow <PLAN> --run-id r1 \
   --allow-executor 6c088ed0… --sandbox-cmd areev-sandbox \
   --credential vendor=VENDOR_TOKEN \
   --allow-host https://api.vendor.example \
-  --tool-egress 'vendor_api:vendor:GET,POST'
+  --tool-egress 'vendor_api:vendor:GET+POST'
 ```
 
 Nothing runs that the host did not pin, and the effective reach is

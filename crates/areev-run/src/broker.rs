@@ -45,6 +45,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use areev_cal::AreevFacade;
 use areev_core::types::capability::Declaration;
 
 use crate::egress::{EgressDenied, EgressPolicy};
@@ -777,6 +778,10 @@ pub struct EgressCall {
     /// `sha256:<hex>` of the response body.
     pub response_digest: String,
     pub response_bytes: usize,
+    /// Bounded media type of a byte-mode response, if requested.
+    pub response_mime: Option<String>,
+    /// Content address of the downloaded response, when stored as an artifact.
+    pub response_ref: Option<String>,
     /// The credential NAME that was attached, never a value.
     pub credential: Option<String>,
     /// Non-credential request headers the caller set (#105), name AND value.
@@ -863,6 +868,9 @@ pub struct Broker {
     /// — the same posture as a capability module under a host that configured
     /// no broker at all.
     blobs: Arc<std::sync::Mutex<Option<String>>>,
+    /// Run-owned handle: only the driver can open the memory; the broker can
+    /// write an artifact through this shared facade while workers execute.
+    artifact_store: Arc<std::sync::Mutex<Option<Arc<AreevFacade>>>>,
     /// Every blob a caller actually read.
     blob_reads: Arc<std::sync::Mutex<Vec<BlobRead>>>,
     /// caller -> its capability token.
@@ -901,12 +909,14 @@ impl Broker {
         let run_principal: Arc<std::sync::Mutex<Option<String>>> =
             Arc::new(std::sync::Mutex::new(None));
         let blobs: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
+        let artifact_store = Arc::new(std::sync::Mutex::new(None));
         let blob_reads: Arc<std::sync::Mutex<Vec<BlobRead>>> =
             Arc::new(std::sync::Mutex::new(Vec::new()));
         let (stop_t, refusals_t) = (Arc::clone(&stop), Arc::clone(&refusals));
         let (calls_t, declared_t) = (Arc::clone(&calls), Arc::clone(&declared));
         let (owners_t, principal_t) = (Arc::clone(&credential_owners), Arc::clone(&run_principal));
         let (blobs_t, blob_reads_t) = (Arc::clone(&blobs), Arc::clone(&blob_reads));
+        let artifact_store_t = Arc::clone(&artifact_store);
         // Minted credentials live for a TTL and no longer (#113). Held by the
         // BROKER rather than by each source so one invalidation — the 401
         // path — has a single place to reach.
@@ -951,6 +961,7 @@ impl Broker {
                             &owners_t,
                             &principal_t,
                             &blobs_t,
+                            &artifact_store_t,
                             &blob_reads_t,
                             &grants,
                             &by_token,
@@ -975,6 +986,7 @@ impl Broker {
             credential_owners,
             run_principal,
             blobs,
+            artifact_store,
             blob_reads,
             tokens,
             default_token,
@@ -999,7 +1011,15 @@ impl Broker {
         }
     }
 
-    /// Every blob a caller read, for journaling.
+    /// Bind the run's open, writable memory to the broker. No separate open
+    /// or sidecar plaintext write: `put_blob` honors backend and encryption.
+    pub fn bind_artifact_store(&self, store: Arc<AreevFacade>) {
+        if let Ok(mut slot) = self.artifact_store.lock() {
+            *slot = Some(store);
+        }
+    }
+
+    /// Every blob a caller read, including an artifact upload, for journaling.
     pub fn blob_reads(&self) -> Vec<BlobRead> {
         self.blob_reads.lock().map(|b| b.clone()).unwrap_or_default()
     }
@@ -1118,6 +1138,12 @@ struct EgressRequest {
     /// *what* — it cannot name a value it was not given.
     credential: Option<String>,
     body: Option<String>,
+    /// Explicit byte mode. Text callers omit this and keep the original contract.
+    response_mode: Option<String>,
+    /// CAS address of request bytes, mutually exclusive with `body`.
+    body_ref: Option<String>,
+    /// Required with `body_ref`; treated as a declared request header.
+    content_type: Option<String>,
     /// Non-credential request headers the caller wants set (#105).
     ///
     /// The enterprise APIs capability tools are pitched at need one:
@@ -1305,6 +1331,7 @@ fn serve_one(
     credential_owners: &Arc<std::sync::Mutex<BTreeMap<String, String>>>,
     run_principal: &Arc<std::sync::Mutex<Option<String>>>,
     blobs: &Arc<std::sync::Mutex<Option<String>>>,
+    artifact_store: &Arc<std::sync::Mutex<Option<Arc<AreevFacade>>>>,
     blob_reads: &Arc<std::sync::Mutex<Vec<BlobRead>>>,
     grants: &EgressGrants,
     by_token: &BTreeMap<String, String>,
@@ -1460,9 +1487,27 @@ fn serve_one(
             );
         }
     }
-    let guest_headers: Vec<(String, String)> =
+    if req.response_mode.as_deref().is_some_and(|m| m != "artifact") {
+        return respond(&mut stream, 400, r#"{"error":"unsupported response_mode (expected artifact)"}"#);
+    }
+    if req.body.is_some() && req.body_ref.is_some() {
+        return respond(&mut stream, 400, r#"{"error":"body and body_ref are mutually exclusive"}"#);
+    }
+    if req.content_type.is_some() != req.body_ref.is_some() {
+        return respond(&mut stream, 400, r#"{"error":"content_type is required exactly when body_ref is set"}"#);
+    }
+    let mut guest_headers: Vec<(String, String)> =
         req.headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-    let guest_header_names: Vec<String> = req.headers.keys().cloned().collect();
+    if let Some(mime) = &req.content_type {
+        if !areev_core::types::capability::is_valid_header_value(mime) || mime.is_empty()
+            || req.headers.keys().any(|k| k.eq_ignore_ascii_case("content-type"))
+        {
+            return respond(&mut stream, 400, r#"{"error":"invalid or duplicate content_type"}"#);
+        }
+        guest_headers.push(("Content-Type".into(), mime.clone()));
+    }
+    let guest_header_names: Vec<String> = guest_headers.iter().map(|(k, _)| k.clone()).collect();
+    let sent_header_names: BTreeMap<String, String> = guest_headers.iter().cloned().collect();
 
     if let Err(e) = policy.permits(&req.url) {
         note_refusal(
@@ -1484,8 +1529,22 @@ fn serve_one(
         );
     }
 
-    let method = if req.method.trim().is_empty() { "GET" } else { req.method.trim() };
-    let method = method.to_ascii_uppercase();
+    let requested_method = if req.method.trim().is_empty() { "GET" } else { req.method.trim() };
+    let requested_method = requested_method.to_ascii_uppercase();
+    // An older broker ignores unknown JSON fields, including body_ref. It
+    // MUST NOT turn a requested artifact upload into an empty POST. The
+    // marker is deliberately not a legacy HTTP method: old peers refuse it
+    // before dispatch, while this broker maps it to the real, granted verb.
+    let method = match (req.body_ref.is_some(), requested_method.as_str()) {
+        (true, "POST_ARTIFACT") => "POST",
+        (true, "PUT_ARTIFACT") => "PUT",
+        (true, "PATCH_ARTIFACT") => "PATCH",
+        (false, "POST_ARTIFACT" | "PUT_ARTIFACT" | "PATCH_ARTIFACT") => {
+            return respond(&mut stream, 400, r#"{"error":"artifact method requires body_ref"}"#)
+        }
+        (true, _) => return respond(&mut stream, 400, r#"{"error":"body_ref requires POST_ARTIFACT, PUT_ARTIFACT, or PATCH_ARTIFACT"}"#),
+        (false, _) => requested_method.as_str(),
+    }.to_string();
 
     // The DECLARED half of the intersection (#101), checked alongside the host
     // grant and never instead of it: a declaration can only narrow. A caller
@@ -1557,6 +1616,17 @@ fn serve_one(
             }
         }
     };
+
+    if (req.body_ref.is_some() || req.response_mode.as_deref() == Some("artifact"))
+        && artifact_store.lock().ok().and_then(|s| s.clone()).is_none()
+    {
+        return respond(&mut stream, 503, r#"{"error":"artifact mode requires a run-bound writable memory"}"#);
+    }
+    if req.body_ref.is_some() && !capability.as_ref().is_some_and(|(_, d)| d.declares_blob_read()) {
+        return respond(&mut stream, 403, &serde_json::json!({
+            "error": "body_ref requires a declared blob read capability", "code": refusal_code
+        }).to_string());
+    }
 
     // For a capability caller, an unrestricted host policy does not extend to
     // private address space (#101). A memory that syncs in can declare any
@@ -1807,16 +1877,29 @@ fn serve_one(
         );
     }
 
+    let request_bytes = if let Some(uri) = &req.body_ref {
+        let store = artifact_store.lock().unwrap().clone().unwrap();
+        match store.with_store(|m| m.get_blob(uri)) {
+            Ok(bytes) if bytes.len() <= MAX_BODY => {
+                note_blob_read(blob_reads, BlobRead { caller: caller.clone(), uri: uri.clone(), bytes: bytes.len() });
+                Some(bytes)
+            }
+            Ok(_) => return respond(&mut stream, 413, r#"{"error":"artifact request body too large"}"#),
+            Err(e) => return respond(&mut stream, 400, &serde_json::json!({"error": e.to_string()}).to_string()),
+        }
+    } else { req.body.as_ref().map(|s| s.as_bytes().to_vec()) };
+
     let mut outcome = dispatch(
         &req.url,
         &method,
-        req.body.as_deref(),
+        request_bytes.as_deref(),
         &headers,
         &guest_headers,
         policy,
         grant,
         capability.as_ref().map(|(_, d)| d),
         capability.as_ref().map(|(l, _)| l.max_response_bytes),
+        req.response_mode.as_deref() == Some("artifact"),
         &caller,
         refusals,
     );
@@ -1858,7 +1941,7 @@ fn serve_one(
                     // successful calls are forty things that happened. The
                     // caller never sees this response; the record does.
                     if let Dispatched::Answered {
-                        status, body, final_url, redirects, credential_sent,
+                        status, body, final_url, redirects, credential_sent, ..
                     } = &outcome
                     {
                         note_call(
@@ -1869,20 +1952,30 @@ fn serve_one(
                                 url: final_url.clone(),
                                 status: *status,
                                 redirects: *redirects,
-                                request_digest: req.body.as_deref().map(digest),
+                                request_digest: request_bytes.as_deref().map(digest_bytes),
                                 // Scrubbed before digesting, exactly as the
                                 // returned body is: an endpoint that echoed
                                 // the expired token must not put it inside a
                                 // digest either.
-                                response_digest: digest(&scrub_reflected(body.clone(), &headers)),
+                                response_digest: if req.response_mode.as_deref() == Some("artifact") {
+                                    digest_bytes(body)
+                                } else {
+                                    digest_bytes(scrub_reflected(
+                                        String::from_utf8(body.clone()).expect("text decoded at dispatch"),
+                                        &headers).as_bytes())
+                                },
                                 response_bytes: body.len(),
+                                // The discarded 401 may reflect a token in
+                                // its header; do not journal an untrusted MIME.
+                                response_mime: None,
+                                response_ref: None,
                                 credential: if *credential_sent {
                                     req.credential.clone()
                                 } else {
                                     None
                                 },
                                 headers: if *credential_sent {
-                                    req.headers.clone()
+                                    sent_header_names.clone()
                                 } else {
                                     BTreeMap::new()
                                 },
@@ -1898,13 +1991,14 @@ fn serve_one(
                     outcome = dispatch(
                         &req.url,
                         &method,
-                        req.body.as_deref(),
+                        request_bytes.as_deref(),
                         &refreshed,
                         &guest_headers,
                         policy,
                         grant,
                         capability.as_ref().map(|(_, d)| d),
                         capability.as_ref().map(|(l, _)| l.max_response_bytes),
+                        req.response_mode.as_deref() == Some("artifact"),
                         &caller,
                         refusals,
                     );
@@ -1918,14 +2012,36 @@ fn serve_one(
     }
 
     match outcome {
-        Dispatched::Answered { status, body, final_url, redirects, credential_sent } => {
+        Dispatched::Answered { status, body, mime, final_url, redirects, credential_sent } => {
+            if headers.iter().any(|(_, value)| value.len() >= 8 && mime.contains(value)) {
+                return respond(&mut stream, 502, r#"{"error":"upstream reflected a credential in media type"}"#);
+            }
             // Credential reflection: an echo or a verbose error endpoint can
             // bounce the injected `Authorization` back in its BODY, and that
             // body goes to the guest and (as a digest) into the audit trail.
             // Response HEADERS never cross this boundary at all — the broker
             // answers with `{status, body}` and nothing else — so the body is
             // the only channel, and it is scrubbed rather than trusted.
-            let body = scrub_reflected(body, &headers);
+            // Text is scrubbed; binary must remain byte-exact, so refuse a
+            // reflected credential instead of silently changing the artifact.
+            let body = if req.response_mode.as_deref() == Some("artifact") {
+                if headers.iter().any(|(_, value)| value.len() >= 8 &&
+                    (body.windows(value.len()).any(|w| w == value.as_bytes()) ||
+                     value.strip_prefix("Bearer ").is_some_and(|bare| bare.len() >= 8 &&
+                         body.windows(bare.len()).any(|w| w == bare.as_bytes())))) {
+                    return respond(&mut stream, 502, r#"{"error":"upstream reflected a credential in binary response"}"#);
+                }
+                body
+            } else {
+                scrub_reflected(String::from_utf8(body).expect("text decoded at dispatch"), &headers).into_bytes()
+            };
+            let artifact_ref = if req.response_mode.as_deref() == Some("artifact") {
+                let store = artifact_store.lock().unwrap().clone().unwrap();
+                match store.with_store(|m| m.put_blob(&body)) {
+                    Ok(uri) => Some(uri),
+                    Err(e) => return respond(&mut stream, 502, &serde_json::json!({"error": format!("artifact storage failed: {e}")}).to_string()),
+                }
+            } else { None };
             note_call(
                 calls,
                 EgressCall {
@@ -1934,9 +2050,11 @@ fn serve_one(
                     url: final_url,
                     status,
                     redirects,
-                    request_digest: req.body.as_deref().map(digest),
-                    response_digest: digest(&body),
+                    request_digest: request_bytes.as_deref().map(digest_bytes),
+                    response_digest: digest_bytes(&body),
                     response_bytes: body.len(),
+                    response_mime: req.response_mode.as_deref().map(|_| mime.clone()),
+                    response_ref: artifact_ref.clone(),
                     // Only if the credential actually rode the FINAL request: a
                     // cross-origin redirect drops it (see `dispatch`), and an
                     // immutable audit grain claiming the secret reached a
@@ -1949,17 +2067,21 @@ fn serve_one(
                     // credential does (see `dispatch`), so a chain that left
                     // its origin sent neither.
                     headers: if credential_sent {
-                        req.headers.clone()
+                        sent_header_names.clone()
                     } else {
                         BTreeMap::new()
                     },
                 },
             );
-            respond(
-                &mut stream,
-                200,
-                &serde_json::json!({ "status": status, "body": body }).to_string(),
-            )
+            let answer = if req.response_mode.as_deref() == Some("artifact") {
+                serde_json::json!({ "status": status,
+                    "ref": artifact_ref,
+                    "sha256": digest_bytes(&body), "bytes": body.len(), "mime": mime })
+            } else {
+                serde_json::json!({ "status": status,
+                    "body": String::from_utf8(body).expect("text decoded at dispatch") })
+            };
+            respond(&mut stream, 200, &answer.to_string())
         }
         Dispatched::Refused { detail } => respond(
             &mut stream,
@@ -1971,8 +2093,8 @@ fn serve_one(
         // read was abandoned at the cap, so the oversized body was never
         // buffered whole.
         Dispatched::TooLarge { final_url } => {
-            let max =
-                capability.as_ref().map(|(l, _)| l.max_response_bytes).unwrap_or_default();
+            let max = capability.as_ref().map(|(l, _)| l.max_response_bytes)
+                .unwrap_or(if req.response_mode.as_deref() == Some("artifact") { MAX_BODY } else { 0 });
             note_refusal(
                 refusals,
                 EgressRefusal {
@@ -2057,10 +2179,10 @@ fn scrub_reflected(mut body: String, headers: &[(String, String)]) -> String {
 
 /// `sha256:<hex>` over a body. The audit trail records what was sent and
 /// received without recording a mailbox into an immutable, replicating grain.
-fn digest(body: &str) -> String {
+fn digest_bytes(body: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
-    h.update(body.as_bytes());
+    h.update(body);
     format!("sha256:{}", hex::encode(h.finalize()))
 }
 
@@ -2099,7 +2221,7 @@ enum Dispatched {
     /// the same fact. If they ever stop being the same fact, this needs to
     /// become two flags — journaling a header that did not travel is the same
     /// false record as journaling a credential that did not.
-    Answered { status: u16, body: String, final_url: String, redirects: u32, credential_sent: bool },
+    Answered { status: u16, body: Vec<u8>, mime: String, final_url: String, redirects: u32, credential_sent: bool },
     /// A hop was refused by policy; already recorded in `refusals`.
     Refused { detail: String },
     /// The final response exceeded the caller's `max_response_bytes` — the
@@ -2196,13 +2318,14 @@ enum BodyErr {
 fn dispatch(
     start_url: &str,
     start_method: &str,
-    body: Option<&str>,
+    body: Option<&[u8]>,
     credential_headers: &[(String, String)],
     guest_headers: &[(String, String)],
     policy: &EgressPolicy,
     grant: &CallerGrant,
     declaration: Option<&Declaration>,
     max_response_bytes: Option<usize>,
+    binary: bool,
     caller: &str,
     refusals: &Arc<std::sync::Mutex<Vec<EgressRefusal>>>,
 ) -> Dispatched {
@@ -2227,7 +2350,7 @@ fn dispatch(
 
     let mut url = start_url.to_string();
     let mut method = start_method.to_string();
-    let mut body = body.map(str::to_string);
+    let mut body = body.map(<[u8]>::to_vec);
     // Once any hop leaves the starting origin the credential is retired for the
     // rest of the chain, never to return. Comparing each hop against
     // `start_url` alone is not enough: an untrusted intermediary can answer
@@ -2244,24 +2367,26 @@ fn dispatch(
     // Every OTHER mid-body failure is typed too since #298. It used to map to
     // an empty string, which meant a non-UTF-8 body (a PDF, an image, any
     // binary attachment) came back as `{"status":200,"body":""}` with the
-    // audit grain recording a 0-byte success. Carrying binary bodies is a
-    // separate, larger change; refusing them is what makes the current
-    // behaviour honest.
-    let read_body = |resp: &mut ureq::http::Response<ureq::Body>| -> std::result::Result<String, BodyErr> {
-        match max_response_bytes {
-            Some(n) => match resp.body_mut().with_config().limit(n as u64 + 1).read_to_string() {
-                Ok(text) if text.len() > n => Err(BodyErr::TooLarge),
-                Ok(text) => Ok(text),
-                Err(ureq::Error::BodyExceedsLimit(_)) => Err(BodyErr::TooLarge),
-                // Every other read failure — a non-UTF-8 body above all — is
-                // its own error now (#298), never an empty success.
-                Err(e) => Err(BodyErr::NotText(e.to_string())),
-            },
-            None => match resp.body_mut().read_to_string() {
-                Ok(text) => Ok(text),
-                Err(e) => Err(BodyErr::NotText(e.to_string())),
-            },
+    // audit grain recording a 0-byte success. Text still refuses invalid
+    // UTF-8; explicit artifact mode stores bounded exact bytes in CAS.
+    let read_body = |resp: &mut ureq::http::Response<ureq::Body>| -> std::result::Result<Vec<u8>, BodyErr> {
+        // Artifacts never enter the JSON reply; text retains its old no-cap
+        // behavior for callers without a capability declaration.
+        let cap = if binary {
+            max_response_bytes.unwrap_or(MAX_BODY).min(MAX_BODY)
+        } else {
+            max_response_bytes.unwrap_or(usize::MAX - 1)
+        };
+        let bytes = resp.body_mut().with_config().limit(cap as u64 + 1).read_to_vec()
+            .map_err(|e| match e {
+                ureq::Error::BodyExceedsLimit(_) => BodyErr::TooLarge,
+                other => BodyErr::NotText(other.to_string()),
+            })?;
+        if bytes.len() > cap { return Err(BodyErr::TooLarge); }
+        if !binary {
+            std::str::from_utf8(&bytes).map_err(|e| BodyErr::NotText(e.to_string()))?;
         }
+        Ok(bytes)
     };
 
     // Inclusive: the initial request plus up to MAX_REDIRECT_HOPS follows.
@@ -2293,6 +2418,15 @@ fn dispatch(
             .get("location")
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
+        let media = resp.headers().get("content-type")
+            .and_then(|v| v.to_str().ok()).unwrap_or("application/octet-stream")
+            .split(';').next().unwrap_or("").trim();
+        let mime = if media.len() <= 128 && media.contains('/') &&
+            media.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'+' | b'.')) {
+            media.to_string()
+        } else {
+            "application/octet-stream".to_string()
+        };
 
         let Some(next_method) = redirect_method(status, &method) else {
             // Not a redirect, or one we deliberately do not follow. Either way
@@ -2301,6 +2435,7 @@ fn dispatch(
                 Ok(text) => Dispatched::Answered {
                     status,
                     body: text,
+                    mime,
                     final_url: url,
                     redirects: hops,
                     credential_sent: send_credential,
@@ -2318,6 +2453,7 @@ fn dispatch(
                 Ok(text) => Dispatched::Answered {
                     status,
                     body: text,
+                    mime,
                     final_url: url,
                     redirects: hops,
                     credential_sent: send_credential,
@@ -2488,7 +2624,7 @@ fn perform(
     agent: &ureq::Agent,
     method: &str,
     url: &str,
-    body: Option<&str>,
+    body: Option<&[u8]>,
     credential_headers: &[(String, String)],
     guest_headers: &[(String, String)],
     send_credential: bool,
@@ -2512,7 +2648,7 @@ fn perform(
             for (k, v) in guest_headers.iter().chain(credential_headers) {
                 b = b.header(k, v);
             }
-            b.send(body.unwrap_or(""))
+            b.send(body.unwrap_or(b""))
         }
         _ => {
             let mut b = match method {
@@ -2578,6 +2714,179 @@ fn respond_bytes(stream: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fixture(expected: Vec<u8>, response: Vec<u8>, mime: &'static str) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/artifact", listener.local_addr().unwrap());
+        let thread = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            let mut length = 0;
+            loop {
+                line.clear();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" { break; }
+                if let Some(n) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = n.trim().parse().unwrap();
+                }
+            }
+            let mut sent = vec![0; length];
+            reader.read_exact(&mut sent).unwrap();
+            assert_eq!(sent, expected);
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", response.len()).unwrap();
+            let _ = stream.write_all(&response); // overrun tests abandon the read early
+        });
+        (url, thread)
+    }
+
+    #[test]
+    fn binary_request_and_response_are_byte_exact_and_audited_without_bytes() {
+        for (bytes, mime) in [
+            (vec![0, 0x80, 0xff, 10], "application/octet-stream"),
+            (b"%PDF-1.7\n\0\x80\xff".to_vec(), "application/pdf"),
+            (b"PK\x03\x04\0\xff\x80".to_vec(), "application/zip"),
+        ] {
+            let (url, server) = fixture(bytes.clone(), bytes.clone(), mime);
+            let origin = url.trim_end_matches("/artifact");
+            let broker = Broker::start(policy(&[origin]), BTreeMap::new(), grants(&[]), "RUN-E022").unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let store = Arc::new(AreevFacade::new(areev_store::Areev::open(
+                dir.path().join("m.db").to_str().unwrap()).unwrap()));
+            let request_ref = store.with_store(|m| m.put_blob(&bytes)).unwrap();
+            broker.bind_artifact_store(Arc::clone(&store));
+            broker.declare("", Declaration::parse(&serde_json::json!([
+                {"blob":{"read":true}},
+                {"http":{"hosts":[origin],"methods":["POST"],"headers":["Content-Type"]}}
+            ])).unwrap(), CapabilityLimits::default());
+            let (status, answer) = call(&broker, serde_json::json!({
+                "url": url, "method": "POST_ARTIFACT", "response_mode": "artifact",
+                "body_ref": request_ref,
+                "content_type": mime
+            }));
+            assert_eq!(status, 200, "{answer}");
+            server.join().unwrap();
+            assert_eq!(answer["status"], 200);
+            assert_eq!(answer["mime"], mime);
+            assert_eq!(answer["bytes"], bytes.len());
+            assert_eq!(answer["sha256"], digest_bytes(&bytes));
+            assert_eq!(answer["ref"], request_ref);
+            assert_eq!(store.with_store(|m| m.get_blob(answer["ref"].as_str().unwrap())).unwrap(), bytes);
+            assert!(answer.get("body").is_none());
+            let calls = broker.calls();
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0].request_digest.as_deref(), Some(digest_bytes(&bytes).as_str()));
+            assert_eq!(calls[0].response_digest, digest_bytes(&bytes));
+            assert_eq!(calls[0].response_bytes, bytes.len());
+            assert_eq!(calls[0].response_ref.as_deref(), Some(request_ref.as_str()));
+            store.with_store(|m| {
+                crate::journal::write_egress_call(m, "binary", &calls[0], 1_788_134_400_000,
+                    "user:test", None).unwrap();
+                assert_eq!(m.gc_blobs().unwrap(), 0);
+                assert_eq!(m.get_blob(&request_ref).unwrap(), bytes);
+            });
+        }
+    }
+
+    #[test]
+    fn unsupported_modes_and_malformed_binary_requests_fail_before_dispatch() {
+        let broker = Broker::start(policy(&["http://127.0.0.1:1"]), BTreeMap::new(), grants(&[]), "RUN-E022").unwrap();
+        for req in [
+            serde_json::json!({"response_mode":"future"}),
+            serde_json::json!({"body_ref":"cas://sha256:abc"}),
+            serde_json::json!({"body":"x", "body_ref":"cas://sha256:abc", "content_type":"application/pdf"}),
+            serde_json::json!({"url":"http://127.0.0.1:1/x", "method":"POST_ARTIFACT"}),
+            serde_json::json!({"url":"http://127.0.0.1:1/x", "method":"POST", "body_ref":"cas://sha256:abc", "content_type":"application/pdf"}),
+        ] {
+            let (status, answer) = call(&broker, req);
+            assert_eq!(status, 400, "{answer}");
+        }
+        assert!(broker.calls().is_empty());
+        // The old peer's method whitelist has GET/HEAD/DELETE/POST/PUT/PATCH
+        // only; the marker therefore cannot issue an empty upload there.
+        for marker in ["POST_ARTIFACT", "PUT_ARTIFACT", "PATCH_ARTIFACT"] {
+            assert!(!matches!(marker, "GET" | "HEAD" | "DELETE" | "POST" | "PUT" | "PATCH"));
+        }
+        let (status, answer) = call(&broker, serde_json::json!({
+            "url":"http://127.0.0.1:1/artifact", "response_mode":"artifact"
+        }));
+        assert_eq!(status, 503, "{answer}");
+    }
+
+    #[test]
+    fn downloaded_artifact_uses_the_memorys_encryption_key() {
+        let bytes = b"SECRET-PDF-BYTES-\x00\x80\xff".to_vec();
+        let (url, server) = fixture(Vec::new(), bytes.clone(), "application/pdf");
+        let origin = url.trim_end_matches("/artifact");
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("encrypted.db");
+        let opts = areev_store::AreevOptions {
+            encryption_key: Some([42u8; 32]), ..Default::default()
+        };
+        let store = Arc::new(AreevFacade::new(areev_store::Areev::open_with(
+            db.to_str().unwrap(), opts).unwrap()));
+        let broker = Broker::start(policy(&[origin]), BTreeMap::new(), grants(&[]), "RUN-E022").unwrap();
+        broker.bind_artifact_store(Arc::clone(&store));
+        let (status, answer) = call(&broker, serde_json::json!({"url":url,"response_mode":"artifact"}));
+        assert_eq!(status, 200, "{answer}");
+        server.join().unwrap();
+        let uri = answer["ref"].as_str().unwrap();
+        assert_eq!(store.with_store(|m| m.get_blob(uri)).unwrap(), bytes);
+        let hex = uri.strip_prefix("cas://sha256:").unwrap();
+        let sidecar = db.with_file_name("encrypted.db.blobs")
+            .join(&hex[..2]).join(&hex[2..]);
+        let stored = std::fs::read(sidecar).unwrap();
+        assert!(!stored.windows(bytes.len()).any(|w| w == bytes));
+    }
+
+    #[test]
+    fn binary_overrun_is_a_typed_error_not_a_empty_success() {
+        let bytes = vec![0x80; MAX_BODY + 1];
+        let (url, server) = fixture(Vec::new(), bytes, "application/pdf");
+        let origin = url.trim_end_matches("/artifact");
+        let broker = Broker::start(policy(&[origin]), BTreeMap::new(), grants(&[]), "RUN-E022").unwrap();
+        bind_test_store(&broker);
+        let (status, answer) = call(&broker, serde_json::json!({"url":url,"response_mode":"artifact"}));
+        server.join().unwrap();
+        assert_eq!(status, 403, "{answer}");
+        assert_eq!(answer["code"], "RUN-E022");
+        assert!(broker.calls().is_empty());
+    }
+
+    #[test]
+    fn interrupted_binary_response_is_not_a_success() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let url = format!("{origin}/artifact");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            loop {
+                line.clear();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" { break; }
+            }
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 16\r\n\r\n\x00\x80").unwrap();
+        });
+        let broker = Broker::start(policy(&[&origin]), BTreeMap::new(), grants(&[]), "RUN-E022").unwrap();
+        bind_test_store(&broker);
+        let (status, answer) = call(&broker, serde_json::json!({"url":url,"response_mode":"artifact"}));
+        server.join().unwrap();
+        assert_eq!(status, 502, "{answer}");
+        assert!(answer["error"].as_str().unwrap().starts_with("upstream:"));
+        assert!(broker.calls().is_empty());
+    }
+
+    fn bind_test_store(broker: &Broker) {
+        // The broker retains the facade after the TempDir is dropped; the
+        // interrupted/overrun cases never write it.
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(AreevFacade::new(areev_store::Areev::open(
+            dir.path().join("m.db").to_str().unwrap()).unwrap()));
+        broker.bind_artifact_store(store);
+    }
 
     fn call(broker: &Broker, req: serde_json::Value) -> (u16, serde_json::Value) {
         call_as(broker, "connector", req)
