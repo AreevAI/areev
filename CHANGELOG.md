@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.9.2] — 2026-09-22
+
+### Fixed
+
+- **Brokered HTTP tools now support bounded, byte-exact artifacts** (#336).
+  Opt-in `response_mode: "artifact"` stores response bytes in the run's CAS
+  and returns a reference, digest, byte count, and MIME type. `body_ref` sends
+  stored bytes with an explicitly permitted content type. Text mode stays
+  compatible; oversized or failed reads now refuse explicitly. The run journal
+  records artifact metadata and provenance without embedding binary data or
+  credentials, and older brokers reject unsupported binary modes.
+
 ### Changed
 
 - **`CAL-E093` and `CAL-E121` carry the store's code as a value** (#331).
@@ -4305,7 +4317,8 @@ ecosystem adapters, and the enterprise plane.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.9.1...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.9.2...HEAD
+[1.9.2]: https://github.com/AreevAI/areev/compare/v1.9.1...v1.9.2
 [1.9.1]: https://github.com/AreevAI/areev/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/AreevAI/areev/compare/v1.8.5...v1.9.0
 [1.8.5]: https://github.com/AreevAI/areev/compare/v1.8.4...v1.8.5
