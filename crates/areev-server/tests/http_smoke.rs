@@ -250,3 +250,52 @@ fn non_loopback_host_is_rejected_unless_allow_remote() {
     let remote = req(&addr, "GET /api/browse HTTP/1.1\r\nHost: memories.example\r\nConnection: close\r\n\r\n");
     assert!(remote.contains("200"), "allow_remote must accept non-loopback Host: {remote}");
 }
+
+/// #331: the CAL error payload carries the store's code as `store_code`. The
+/// sanitized `error` text drops the detail, so without it a console caller
+/// could not tell a legal hold from any other store failure at all.
+#[test]
+fn cal_error_payload_carries_the_store_code() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("hold.db");
+    let m = Areev::open(db.to_str().unwrap()).unwrap();
+    let facade = AreevFacade::with_session(m, Some("caller".into()), None);
+    let mut fields = serde_json::Map::new();
+    fields.insert("subject".into(), serde_json::json!("j"));
+    fields.insert("relation".into(), serde_json::json!("stage"));
+    fields.insert("object".into(), serde_json::json!("v1"));
+    fields.insert("namespace".into(), serde_json::json!("caller"));
+    let hash = areev_cal::CalStoreFacade::cal_add(&facade, "fact", &fields)
+        .unwrap()
+        .to_hex();
+    facade
+        .with_store(|m| m.place_hold("caller", "SEC inquiry", "user:cco", 1_700_000_000_000))
+        .unwrap();
+
+    let server = UiServer::new(facade, "hold.db".into()).with_auth("t".to_string());
+    let listener = UiServer::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    std::thread::spawn(move || server.serve(listener));
+
+    let post = |query: &str| {
+        let body = serde_json::json!({ "query": query }).to_string();
+        let raw = format!(
+            "POST /api/cal HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let resp = req(&addr, &raw);
+        let json = &resp[resp.find("\r\n\r\n").unwrap() + 4..];
+        serde_json::from_str::<serde_json::Value>(json).unwrap()
+    };
+
+    let v = post(&format!(r#"FORGET sha256:{hash} BECAUSE "cleanup""#));
+    assert_eq!(v["ok"], false, "{v}");
+    assert_eq!(v["code"], "CAL-E093", "{v}");
+    assert_eq!(v["store_code"], "STO-E009", "{v}");
+
+    // An error CAL raised itself carries no store code.
+    let v = post(r#"RECALL facts WHERE subject == "j""#);
+    assert_eq!(v["ok"], false, "{v}");
+    assert!(v.get("store_code").is_none(), "{v}");
+}

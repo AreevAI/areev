@@ -1485,10 +1485,9 @@ impl CalExecutor {
                                 target: format!("hash:{hash}"),
                                 count: 1,
                             }),
-                            Err(e) => Ok(CalResultPayload::Unsupported {
-                                statement: "forget".into(),
-                                message: format!("FORGET failed: {e}"),
-                            }),
+                            // A refusal (hold, grant) is an error with the
+                            // store's code, not "unsupported" (#331).
+                            Err(e) => Err(map_store_err(e, forget.span)),
                         }
                     }
                     super::ast::ForgetTarget::User { user_id } => {
@@ -1515,10 +1514,7 @@ impl CalExecutor {
                                 target: format!("subject:{user_id}"),
                                 count: proof.count,
                             }),
-                            Err(e) => Ok(CalResultPayload::Unsupported {
-                                statement: "forget".into(),
-                                message: format!("FORGET SUBJECT failed: {e}"),
-                            }),
+                            Err(e) => Err(map_store_err(e, forget.span)),
                         }
                     }
                     super::ast::ForgetTarget::Scope { scope } => {
@@ -1552,7 +1548,11 @@ impl CalExecutor {
                         // An authorization refusal is neither a bad name nor
                         // bad syntax — surface it as itself.
                         if s.contains("AUT-E") {
-                            return CalError::NotAuthorized { detail: s, span: None };
+                            return CalError::NotAuthorized {
+                                detail: s,
+                                span: None,
+                                store_code: authz_store_code(&e),
+                            };
                         }
                         // If the inner error is already a CAL error about template
                         // validation (unknown variable, syntax, etc.), surface it
@@ -1611,7 +1611,11 @@ impl CalExecutor {
                     .map_err(|e| {
                         let detail = e.to_string();
                         if detail.contains("AUT-E") {
-                            CalError::NotAuthorized { detail, span: None }
+                            CalError::NotAuthorized {
+                                detail,
+                                span: None,
+                                store_code: authz_store_code(&e),
+                            }
                         } else {
                             CalError::InvalidQueryBody { detail, span: None }
                         }
@@ -1670,10 +1674,7 @@ impl CalExecutor {
                     because,
                 ) {
                     Ok(count) => Ok(CalResultPayload::Purged { count }),
-                    Err(e) => Ok(CalResultPayload::Unsupported {
-                        statement: "purge".into(),
-                        message: format!("PURGE failed: {e}"),
-                    }),
+                    Err(e) => Err(map_store_err(e, purge.span)),
                 }
             }
 
@@ -1732,7 +1733,11 @@ impl CalExecutor {
                     Err(e) => {
                         let detail = e.to_string();
                         if detail.contains("AUT-E") {
-                            return Err(CalError::NotAuthorized { detail, span: ea.span });
+                            return Err(CalError::NotAuthorized {
+                                detail,
+                                span: ea.span,
+                                store_code: authz_store_code(&e),
+                            });
                         }
                         Ok(CalResultPayload::Unsupported {
                             statement: "entity_at".into(),
@@ -1782,7 +1787,11 @@ impl CalExecutor {
                         // read from an empty one — which is the difference
                         // between "you may not ask" and "nothing was derived".
                         if detail.contains("AUT-E") {
-                            return Err(CalError::NotAuthorized { detail, span: df.span });
+                            return Err(CalError::NotAuthorized {
+                                detail,
+                                span: df.span,
+                                store_code: authz_store_code(&e),
+                            });
                         }
                         Ok(CalResultPayload::Unsupported {
                             statement: "derived_from".into(),
@@ -1839,7 +1848,11 @@ impl CalExecutor {
                     Err(e) => {
                         let detail = e.to_string();
                         if detail.contains("AUT-E") {
-                            return Err(CalError::NotAuthorized { detail, span: rel.span });
+                            return Err(CalError::NotAuthorized {
+                                detail,
+                                span: rel.span,
+                                store_code: authz_store_code(&e),
+                            });
                         }
                         Ok(CalResultPayload::Unsupported {
                             statement: "related".into(),
@@ -3446,6 +3459,7 @@ impl CalExecutor {
                 AreevError::CryptoError(_) => CalError::CryptoError {
                     detail: format!("DIFF source grain decrypt failed: {}", e),
                     span: history.span,
+                    store_code: Some(e.code()),
                 },
                 // An unreadable grain here is usually an authorization
                 // refusal — the DIFF hashes name grains in namespaces this
@@ -3462,6 +3476,7 @@ impl CalExecutor {
                 AreevError::CryptoError(_) => CalError::CryptoError {
                     detail: format!("DIFF target grain decrypt failed: {}", e),
                     span: history.span,
+                    store_code: Some(e.code()),
                 },
                 // An unreadable grain here is usually an authorization
                 // refusal — the DIFF hashes name grains in namespaces this
@@ -3956,9 +3971,17 @@ impl CalExecutor {
                 let rows = store.cal_show_grants(Some(name)).map_err(|e| {
                     let detail = e.to_string();
                     if detail.contains("AUT-E") {
-                        CalError::NotAuthorized { detail, span: None }
+                        CalError::NotAuthorized {
+                            detail,
+                            span: None,
+                            store_code: authz_store_code(&e),
+                        }
                     } else {
-                        CalError::InvalidQuery { detail, span: None }
+                        CalError::InvalidQuery {
+                            detail,
+                            span: None,
+                            store_code: Some(e.code()),
+                        }
                     }
                 })?;
                 let grants: Vec<serde_json::Value> = rows
@@ -4003,9 +4026,17 @@ impl CalExecutor {
                     Some(host) => host.describe(store, what).map_err(|e| {
                         let detail = e.to_string();
                         if detail.contains("AUT-E") {
-                            CalError::NotAuthorized { detail, span: None }
+                            CalError::NotAuthorized {
+                                detail,
+                                span: None,
+                                store_code: authz_store_code(&e),
+                            }
                         } else {
-                            CalError::InvalidQuery { detail, span: None }
+                            CalError::InvalidQuery {
+                                detail,
+                                span: None,
+                                store_code: Some(e.code()),
+                            }
                         }
                     })?,
                 }
@@ -4019,9 +4050,17 @@ impl CalExecutor {
                 res.map_err(|e| {
                     let detail = e.to_string();
                     if detail.contains("AUT-E") {
-                        CalError::NotAuthorized { detail, span: None }
+                        CalError::NotAuthorized {
+                            detail,
+                            span: None,
+                            store_code: authz_store_code(&e),
+                        }
                     } else {
-                        CalError::InvalidQuery { detail, span: None }
+                        CalError::InvalidQuery {
+                            detail,
+                            span: None,
+                            store_code: Some(e.code()),
+                        }
                     }
                 })?
             }
@@ -5533,6 +5572,7 @@ fn compute_query_hash(input: &str) -> String {
 /// - store-side input validation → `CAL-E092`.
 /// - everything else → `CAL-E093`, a neutral store error.
 pub(super) fn map_store_err(e: AreevError, span: Option<super::errors::Span>) -> CalError {
+    let store_code = Some(e.code());
     match e {
         // Every AUT-E variant, not only the denial: a host routes on the CAL
         // code and reads the AUT code from the detail for the precise reason.
@@ -5542,22 +5582,41 @@ pub(super) fn map_store_err(e: AreevError, span: Option<super::errors::Span>) ->
         | AreevError::AuthzTokenUnrecognized => CalError::NotAuthorized {
             detail: e.to_string(),
             span,
+            store_code,
         },
         AreevError::CryptoError(_) => CalError::CryptoError {
             detail: e.to_string(),
             span,
+            store_code,
         },
         // A store-side input validation failure is not a resource overrun —
         // surface it as CAL-E092, not CAL-E030 "Budget exceeded".
         AreevError::Validation(_) => CalError::InvalidQuery {
             detail: e.to_string(),
             span,
+            store_code,
         },
         _ => CalError::StoreError {
             detail: e.to_string(),
             span,
+            store_code,
         },
     }
+}
+
+/// The `AUT-Ennn` behind a refusal the caller detected by its text. A host
+/// wrap (the loop's governance adapter) can carry it inside another variant,
+/// so the typed code is not always the AUT one.
+fn authz_store_code(e: &AreevError) -> Option<&'static str> {
+    let code = e.code();
+    if code.starts_with("AUT-") {
+        return Some(code);
+    }
+    let text = e.to_string();
+    ["AUT-E001", "AUT-E002", "AUT-E003", "AUT-E004"]
+        .into_iter()
+        .find(|c| text.contains(c))
+        .or(Some(code))
 }
 
 /// Build `AddOptions` from CAL `AddWithOption` list.
@@ -7715,6 +7774,17 @@ mod tests {
     use areev_core::format::header::MgHeader;
     use areev_core::types::GrainType;
     use std::collections::HashMap;
+
+    #[test]
+    fn authz_store_code_reads_through_a_host_wrap() {
+        assert_eq!(
+            authz_store_code(&AreevError::AuthzUnknownPrincipal("p".into())),
+            Some("AUT-E002")
+        );
+        // The loop's governance adapter carries the refusal as a Validation.
+        let wrapped = AreevError::Validation("LOP-E010: AUT-E001: authorization denied".into());
+        assert_eq!(authz_store_code(&wrapped), Some("AUT-E001"));
+    }
 
     // -----------------------------------------------------------------------
     // Shared mock store
@@ -12443,10 +12513,12 @@ mod tests {
             ..Default::default()
         });
 
-        // Hash form parses (no parse error).
+        // Hash form parses: the mock store refuses the delete itself, which is
+        // a store error (CAL-E093), never a parse error.
         let hash = format!("sha256:{}", "a".repeat(64));
-        ex.execute(&format!("FORGET {hash}"), &store)
-            .expect("FORGET <hash> is a valid CAL statement");
+        if let Err(e) = ex.execute(&format!("FORGET {hash}"), &store) {
+            assert_eq!(e.code(), "CAL-E093", "FORGET <hash> must parse: {e}");
+        }
 
         // USER form is rejected at parse time with CAL-E002.
         let err = ex

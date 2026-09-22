@@ -657,3 +657,102 @@ fn a_hold_refusal_returns_instead_of_deadlocking() {
         }
     }
 }
+
+// ── #331: the store's code as a value, not a substring ─────────────────
+//
+// #321 gave refusals honest CAL codes, but the store code under them
+// (`STO-E009` vs `STO-E002`, `AUT-E001` vs `AUT-E002`) was only in the
+// message text. `CalError::store_code()` carries it beside the text.
+
+#[test]
+fn a_hold_refused_forget_carries_sto_e009_as_its_store_code() {
+    let dir = TempDir::new().unwrap();
+    let ex = CalExecutor::new(CalExecutorConfig::default());
+    let f = facade_for(&dir, None);
+
+    let mut fields = serde_json::Map::new();
+    fields.insert("subject".into(), serde_json::json!("j"));
+    fields.insert("relation".into(), serde_json::json!("stage"));
+    fields.insert("object".into(), serde_json::json!("v1"));
+    fields.insert("namespace".into(), serde_json::json!("caller"));
+    let hash = f.cal_add("fact", &fields).unwrap().to_hex();
+    f.with_store(|m| m.place_hold("caller", "SEC inquiry", "user:cco", 1_700_000_000_000))
+        .unwrap();
+
+    let err = ex
+        .execute(&format!(r#"FORGET sha256:{hash} BECAUSE "cleanup""#), &f)
+        .expect_err("a held grain must not be forgotten");
+    assert_eq!(err.code(), "CAL-E093", "{err}");
+    assert_eq!(err.store_code(), Some("STO-E009"), "{err}");
+    // The message is unchanged — nothing matching on it today breaks.
+    assert!(err.to_string().contains("STO-E009"), "{err}");
+}
+
+#[test]
+fn a_refused_recall_carries_aut_e001_as_its_store_code() {
+    let dir = TempDir::new().unwrap();
+    let ex = CalExecutor::new(CalExecutorConfig::default());
+    let q = r#"RECALL facts WHERE namespace = "other" LIMIT 5"#;
+
+    // Bound principal, and the race-free per-principal session: both paths.
+    let f = facade_for(&dir, Some("user:reader"));
+    let err = ex.execute(q, &f).expect_err("outside the grants");
+    assert_eq!(err.code(), "CAL-E121");
+    assert_eq!(err.store_code(), Some("AUT-E001"), "{err}");
+    drop(f);
+
+    let owner = facade_for(&dir, None);
+    let session = owner.principal_session("user:reader").unwrap();
+    let err = ex.execute(q, &session).expect_err("outside the grants");
+    assert_eq!(err.code(), "CAL-E121");
+    assert_eq!(err.store_code(), Some("AUT-E001"), "{err}");
+}
+
+#[test]
+fn a_refused_history_diff_carries_its_aut_store_code() {
+    let dir = TempDir::new().unwrap();
+    let ex = CalExecutor::new(CalExecutorConfig::default());
+    let owner = facade_for(&dir, None);
+    let mut hashes = Vec::new();
+    for object in ["v1", "v2"] {
+        let mut fields = serde_json::Map::new();
+        fields.insert("subject".into(), serde_json::json!("j"));
+        fields.insert("relation".into(), serde_json::json!("stage"));
+        fields.insert("object".into(), serde_json::json!(object));
+        fields.insert("namespace".into(), serde_json::json!("other"));
+        hashes.push(owner.cal_add("fact", &fields).unwrap().to_hex());
+    }
+    drop(owner);
+
+    let f = facade_for(&dir, Some("user:reader"));
+    let q = format!("HISTORY sha256:{} DIFF sha256:{}", hashes[0], hashes[1]);
+    let err = ex.execute(&q, &f).expect_err("unreadable grains");
+    assert_eq!(err.code(), "CAL-E121");
+    assert_eq!(err.store_code(), Some("AUT-E001"), "{err}");
+}
+
+#[test]
+fn a_refused_admin_statement_carries_its_aut_store_code() {
+    // DEFINE QUERY reaches the store through a site that detects the refusal
+    // itself rather than through `map_store_err` — it must fill the code too.
+    let dir = TempDir::new().unwrap();
+    let ex = CalExecutor::new(CalExecutorConfig::default());
+    let f = facade_for(&dir, Some("user:reader"));
+    let err = ex
+        .execute(r#"DEFINE QUERY "q1" AS { RECALL facts LIMIT 5 }"#, &f)
+        .expect_err("admin is not granted");
+    assert_eq!(err.code(), "CAL-E121", "{err}");
+    assert_eq!(err.store_code(), Some("AUT-E001"), "{err}");
+}
+
+#[test]
+fn an_error_cal_raised_itself_has_no_store_code() {
+    let dir = TempDir::new().unwrap();
+    let ex = CalExecutor::new(CalExecutorConfig::default());
+    let f = facade_for(&dir, None);
+    let err = ex
+        .execute(r#"RECALL facts WHERE subject == "j""#, &f)
+        .expect_err("a parse error");
+    assert!(err.code().starts_with("CAL-"), "{err}");
+    assert_eq!(err.store_code(), None, "{err}");
+}

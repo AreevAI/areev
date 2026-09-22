@@ -261,13 +261,17 @@ pub enum CalError {
     /// nothing was over budget, the request itself was not valid. Carries the
     /// store's `VAL-Ennn` detail so the underlying reason stays visible.
     #[error("CAL-E092: Invalid query: {detail}")]
-    InvalidQuery { detail: String, span: Option<Span> },
+    InvalidQuery {
+        detail: String,
+        span: Option<Span>,
+        store_code: Option<&'static str>,
+    },
 
     /// CAL-E093 — The store failed the statement for a reason CAL has no
     /// more specific code for: a legal hold (`STO-E009`), a read-only open
     /// (`STO-E004`), a busy store, a supersession conflict, an internal
     /// failure. Carries the store's `DOMAIN-Ennn` detail, which is the code
-    /// worth acting on.
+    /// worth acting on — as a value in `store_code` (see [`CalError::store_code`]).
     ///
     /// This is the honest name for what used to arrive as `CAL-E030 Budget
     /// exceeded` (#321). Nothing that reaches here is a resource overrun —
@@ -276,7 +280,11 @@ pub enum CalError {
     /// so a host routing `CAL-E030` as retryable was retrying legal holds
     /// and read-only refusals.
     #[error("CAL-E093: Store error: {detail}")]
-    StoreError { detail: String, span: Option<Span> },
+    StoreError {
+        detail: String,
+        span: Option<Span>,
+        store_code: Option<&'static str>,
+    },
 
     /// CAL-E090 — A cryptographic operation failed while executing a CAL
     /// statement (typically AES-GCM decrypt of an encrypted grain blob).
@@ -286,7 +294,11 @@ pub enum CalError {
     /// (Vault key rotation, different unseal), missing `blob_owner`
     /// mapping, per-user DEK destroyed via crypto-erasure.
     #[error("CAL-E090: Crypto error during query execution: {detail}")]
-    CryptoError { detail: String, span: Option<Span> },
+    CryptoError {
+        detail: String,
+        span: Option<Span>,
+        store_code: Option<&'static str>,
+    },
 
     /// CAL-E091 — A grain referenced by content address (sha256 hash) was
     /// not found in the store. Distinct from `InvalidHash` (CAL-E015,
@@ -430,9 +442,13 @@ pub enum CalError {
     /// CAL-E121 — The session's grants don't cover this statement. Carries
     /// the store's `AUT-Ennn` detail verbatim: the refused verb, namespace,
     /// and principal are the caller's own session facts and exactly what a
-    /// granting admin needs to fix it.
+    /// granting admin needs to fix it. The `AUT-Ennn` itself is `store_code`.
     #[error("CAL-E121: Not authorized: {detail}")]
-    NotAuthorized { detail: String, span: Option<Span> },
+    NotAuthorized {
+        detail: String,
+        span: Option<Span>,
+        store_code: Option<&'static str>,
+    },
 
     /// CAL-E070 — Query input contains invalid UTF-8 byte sequences or
     /// bidi-override characters. HTTP body extractors typically reject
@@ -856,6 +872,19 @@ impl CalError {
         }
     }
 
+    /// The store's own `DOMAIN-Ennn` code behind this error (e.g. `STO-E009`
+    /// under `CAL-E093`), so a host routes on a value, not on message text.
+    /// `None` for errors CAL raised itself.
+    pub fn store_code(&self) -> Option<&'static str> {
+        match self {
+            Self::InvalidQuery { store_code, .. }
+            | Self::StoreError { store_code, .. }
+            | Self::CryptoError { store_code, .. }
+            | Self::NotAuthorized { store_code, .. } => *store_code,
+            _ => None,
+        }
+    }
+
     /// Return the suggestion, if one was attached.
     pub fn suggestion(&self) -> Option<&str> {
         match self {
@@ -1045,9 +1074,27 @@ impl CalError {
                 span: s,
             },
             Self::BudgetExceeded { detail, .. } => Self::BudgetExceeded { detail, span: s },
-            Self::InvalidQuery { detail, .. } => Self::InvalidQuery { detail, span: s },
-            Self::StoreError { detail, .. } => Self::StoreError { detail, span: s },
-            Self::CryptoError { detail, .. } => Self::CryptoError { detail, span: s },
+            Self::InvalidQuery {
+                detail, store_code, ..
+            } => Self::InvalidQuery {
+                detail,
+                span: s,
+                store_code,
+            },
+            Self::StoreError {
+                detail, store_code, ..
+            } => Self::StoreError {
+                detail,
+                span: s,
+                store_code,
+            },
+            Self::CryptoError {
+                detail, store_code, ..
+            } => Self::CryptoError {
+                detail,
+                span: s,
+                store_code,
+            },
             Self::HashNotFound { hash, .. } => Self::HashNotFound { hash, span: s },
             Self::Tier1NotEnabled { statement, .. } => Self::Tier1NotEnabled { statement, span: s },
             Self::InvalidUtf8 { detail, .. } => Self::InvalidUtf8 { detail, span: s },
@@ -1123,7 +1170,13 @@ impl CalError {
                 span: s,
             },
             Self::InvalidJsonCal { detail, .. } => Self::InvalidJsonCal { detail, span: s },
-            Self::NotAuthorized { detail, .. } => Self::NotAuthorized { detail, span: s },
+            Self::NotAuthorized {
+                detail, store_code, ..
+            } => Self::NotAuthorized {
+                detail,
+                span: s,
+                store_code,
+            },
             Self::TemplateTooLarge { size, max, .. } => {
                 Self::TemplateTooLarge { size, max, span: s }
             }
@@ -1797,12 +1850,31 @@ mod tests {
     }
 
     #[test]
+    fn test_store_code_survives_with_span_and_is_none_for_cal_errors() {
+        let err = CalError::StoreError {
+            detail: "STO-E009: namespace 'caller' is under a legal hold".into(),
+            span: None,
+            store_code: Some("STO-E009"),
+        }
+        .with_span(Span { start: 0, end: 6, line: 1, col: 1 });
+        assert_eq!(err.store_code(), Some("STO-E009"));
+        assert!(err.span().is_some());
+
+        let own = CalError::BudgetExceeded {
+            detail: "ASSEMBLE engine requires multi-source syntax".into(),
+            span: None,
+        };
+        assert_eq!(own.store_code(), None);
+    }
+
+    #[test]
     fn test_invalid_query_is_e092_not_budget() {
         // A store validation failure must not masquerade as CAL-E030
         // "Budget exceeded" (the mislabel the persona review flagged).
         let err = CalError::InvalidQuery {
             detail: "VAL-E001: validation error: bad filter".into(),
             span: None,
+            store_code: None,
         };
         assert_eq!(err.code(), "CAL-E092");
         assert!(err.to_string().starts_with("CAL-E092"));
@@ -1903,6 +1975,7 @@ mod tests {
             CalError::CryptoError {
                 detail: "DEK 0xDEADBEEF destroyed for user alice".into(),
                 span: None,
+                store_code: None,
             },
             CalError::InvalidJsonCal {
                 detail: "expected field `tok_xyz` at pointer /auth/token".into(),
@@ -2072,6 +2145,7 @@ mod tests {
                 CalError::NotAuthorized {
                     detail: "AUT-E001: principal agent:bot lacks write on namespace \"caller\"".into(),
                     span: None,
+                    store_code: None,
                 },
                 "CAL-E121",
             ),
@@ -2226,6 +2300,7 @@ mod tests {
             CalError::InvalidQuery {
                 detail: "".into(),
                 span: None,
+                store_code: None,
             },
             CalError::FieldNotOnGrainType {
                 field: "".into(),

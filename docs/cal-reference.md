@@ -1418,6 +1418,23 @@ from a resource overrun (#321). Other store failures — a legal hold, a
 read-only open — now arrive as `CAL-E093 Store error` carrying their own
 `STO-Ennn`, and `CAL-E030` means what it says: CAL's own budget accounting.
 
+Under both `CAL-E121` and `CAL-E093` the store's own code is also a **value**,
+`store_code` — `CalError::store_code()` in Rust, and a `store_code` key beside
+`code` in the console's `/api/cal` error payload — so a host routes on it
+without reading message text: `STO-E009` (legal hold: permanent, tell the
+person), `STO-E002` (busy: retry), `STO-E004` (read-only open: operator
+error), `AUT-E001` (denied) vs `AUT-E002` (unknown principal). It is absent on
+errors CAL raised itself. Since #331 this includes the destructive
+statements: a `FORGET` / `FORGET SUBJECT` / `PURGE` the store refuses is an
+error on this channel, where it used to return an `unsupported` payload with
+the reason only in its message. (`--no-destructive-ops` still returns
+`unsupported` — that refusal is CAL's own, not the store's.)
+
+```sql
+FORGET sha256:<hash> BECAUSE "cleanup"
+-- namespace under a legal hold → code CAL-E093, store_code STO-E009
+```
+
 ### DCL
 
 ```

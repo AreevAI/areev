@@ -1475,6 +1475,11 @@ impl UiServer {
                         if let Some(hint) = e.suggestion() {
                             err["suggestion"] = json!(hint);
                         }
+                        // The store's code survives sanitizing: it is a
+                        // bounded constant, and the one a host routes on.
+                        if let Some(sc) = e.store_code() {
+                            err["store_code"] = json!(sc);
+                        }
                         ok_json(err)
                     }
                 }

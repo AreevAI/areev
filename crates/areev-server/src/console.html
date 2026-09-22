@@ -2936,7 +2936,7 @@ async function openPanel(hash) {
       + '"\n\nThe content is erased for good. This cannot be undone.')) return;
     const r = await cal('FORGET sha256:' + hash);
     if (r.ok) { toast('Forgotten'); closePanel(); await refresh(); }
-    else toast('Could not forget: ' + (r.error || 'unknown'));
+    else toast('Could not forget: ' + (r.error || 'unknown') + (r.store_code ? ' [' + r.store_code + ']' : ''));
   };
   acts.appendChild(del);
   p.appendChild(acts);

@@ -185,9 +185,11 @@ fn erasure_requires_the_erase_verb() {
     let f = AreevFacade::with_session(m, Some("caller".to_string()), None)
         .with_principal("agent:worker")
         .unwrap();
-    let v = payload(&ex, &f, r#"FORGET SUBJECT "pat" BECAUSE "not allowed""#);
-    assert_eq!(v["type"], "unsupported", "{v}");
-    assert!(v["message"].as_str().unwrap().contains("AUT-E001"), "{v}");
+    let err = ex
+        .execute(r#"FORGET SUBJECT "pat" BECAUSE "not allowed""#, &f)
+        .expect_err("erase is not granted");
+    assert_eq!(err.code(), "CAL-E121", "{err}");
+    assert_eq!(err.store_code(), Some("AUT-E001"), "{err}");
     // Nothing was erased.
     assert_eq!(grain_count(&ex, &f, r#"RECALL facts WHERE subject = "pat""#), 1);
 
