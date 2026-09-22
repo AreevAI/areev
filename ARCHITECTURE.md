@@ -2421,6 +2421,25 @@ before it.
 
 ---
 
+### Brokered binary artifacts belong in the run's CAS, not its journal (#336)
+
+`http.call` keeps its text request/response contract by default. An explicit
+`response_mode: "artifact"` lets the broker read bounded raw response bytes,
+write them through the run's *existing open* store handle, and return only a
+CAS reference, digest, length and media type. The same handle resolves a
+declared `body_ref` for a byte-exact upload. An artifact upload uses a method
+marker (`POST_ARTIFACT` etc.) that old brokers refuse before dispatch. This
+avoids both the embedded
+backend's second-open lock and a plaintext sidecar bypass of encryption; the
+store's `put_blob` remains the one writer for files and PostgreSQL alike.
+The run journals a content reference plus bounded provenance, keeping the
+artifact alive through CAS GC without copying binary contents into immutable
+tool-result or audit grains. An older peer that does not understand this
+mode has no `ref`; consumers must reject that answer, not interpret an empty
+text body as a successful artifact.
+
+---
+
 ## 11. Deployment topology
 
 Areev has no platform dependency. Three tiers cover a multi-channel fleet:
@@ -2458,4 +2477,3 @@ subscriptions, which is what keeps a session's `ASSEMBLE` local: a session opens
 the user file and attaches local org replicas as read-only mounts. See the
 [security model](docs/security-model.md) for the trust boundaries of the
 console, and [SECURITY.md](SECURITY.md) to report a vulnerability.
-

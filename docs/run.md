@@ -742,6 +742,22 @@ What is enforced, and where:
 | a credential owned by a different run principal (`--credential name=VAR@principal`) | broker, per call | 403 + a journaled refusal |
 | more than `max_calls`, or a response over `max_response_bytes` | broker, per call | 403 + a journaled refusal — an overrun is an error, never a truncation |
 
+Brokered HTTP uses text by default (`body` remains a UTF-8 string). The
+opt-in `response_mode: "artifact"` writes exact response bytes to the run's
+CAS and returns `ref`, `sha256`, `bytes`, and bounded `mime`; `body_ref` plus
+`content_type` sends exact stored bytes (mutually exclusive with text `body`)
+using `POST_ARTIFACT`, `PUT_ARTIFACT`, or `PATCH_ARTIFACT` as the method. These
+markers map to the real granted methods here; older brokers reject them
+before dispatch instead of sending an empty upload.
+Upload requires a declared blob read and `Content-Type` header permission.
+Binary responses and requests are bounded before storage or dispatch. A read
+error is explicit, not a successful empty body. The egress Observation carries
+only digests, length, MIME, CAS address, and credential *name*; its content
+reference keeps the blob live through CAS garbage collection. A consumer must
+require `ref` and verify its digest to reject a text-only older peer. The
+driver binds its open memory on every run, resume, and fork; without one,
+artifact mode refuses rather than writing an unencrypted sidecar.
+
 The declaration is **frozen into the run manifest** beside the runtime, so a
 supersession mid-run cannot widen what a module reaches, and a resume or a
 verify reads the set the run started with.

@@ -371,6 +371,17 @@ pub fn write_egress_call(
     }
     ex.insert("response_digest".into(), json!(call.response_digest));
     ex.insert("response_bytes".into(), json!(call.response_bytes));
+    if let Some(mime) = &call.response_mime {
+        ex.insert("response_mime".into(), json!(mime));
+    }
+    if let Some(uri) = &call.response_ref {
+        ex.insert("response_ref".into(), json!(uri));
+        obs.common.content_refs.push(areev_core::types::ContentRef {
+            uri: uri.clone(), modality: None, mime_type: call.response_mime.clone(),
+            size_bytes: Some(call.response_bytes as u64),
+            checksum: Some(call.response_digest.clone()), metadata: None,
+        });
+    }
     if let Some(c) = &call.credential {
         ex.insert("credential".into(), json!(c));
     }

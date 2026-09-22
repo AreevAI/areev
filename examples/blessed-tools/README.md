@@ -27,7 +27,7 @@ cargo build --manifest-path areev-sandbox/Cargo.toml
 examples/blessed-tools/run.sh
 ```
 
-Offline: `stub-vendor.py` is a nine-line upstream on loopback that **401s
+Offline: `stub-vendor.py` is a small upstream on loopback that **401s
 anything without the exact bearer token**, so the 200 in step 2 is the proof
 that the broker attached a credential the tool never held.
 
@@ -36,22 +36,25 @@ Four steps, and each one is an assertion:
 1. **install** — the pack's Definition binds the published `http.call` address
    (the script checks it against `areev-tools/dist/blessed.json`, so a rebuilt
    blob fails here rather than silently running different code);
-2. **a permitted call** — 200, with the invoice, through the declared host,
-   method, path prefix and credential;
+2. **permitted calls** — 200 with the invoice, then byte-exact PDF download
+   into CAS and export from that address, through the declared host, methods,
+   path prefix and credential; the run verifies and resumes idempotently;
 3. **an undeclared host** — refused by the **broker** with `RUN-E022`, nothing
    sent, the refusal journaled in the memory;
 4. **provenance** — `areev tool provenance <definition>` chains the blob:
-   present, 2,598 bytes, at the address the Definition names.
+   present, 2,598 bytes, at the address the Definition names. The two PDF
+   calls journal only digests, length, MIME, ref and credential name.
 
 ## The declaration is the whole policy
 
 ```json
 "capabilities": [
   { "http": { "hosts": ["http://127.0.0.1:7788"],
-              "methods": ["GET"],
+              "methods": ["GET", "POST"],
               "path_prefixes": ["/v1/invoices/"],
               "credentials": ["vendor"],
-              "headers": ["X-Api-Version"] } }
+              "headers": ["X-Api-Version", "Content-Type"] } },
+{ "blob": { "read": true } }
 ]
 ```
 
@@ -69,7 +72,7 @@ areev run start … \
   --sandbox-cmd areev-sandbox         # under these limits
   --credential vendor=VENDOR_TOKEN    # holding this secret, which the tool never sees
   --allow-host http://127.0.0.1:7788  # and may reach only here
-  --tool-egress 'vendor_api:vendor:GET'
+  --tool-egress 'vendor_api:vendor:GET+POST'
 ```
 
 Drop `--allow-host` and the declaration alone does not grant reach. Drop
@@ -87,7 +90,7 @@ address.
 
 ## Where to go next
 
-- [`docs/blessed-tools.md`](../../docs/blessed-tools.md) — the three tools, their contracts and addresses
+- [`docs/blessed-tools.md`](../../docs/blessed-tools.md) — the blessed tools, their contracts and addresses
 - [`docs/pack.md`](../../docs/pack.md) — packs: `blob:`/`grain:` references, `expected_hash`
 - [`docs/run.md`](../../docs/run.md) — capability tools: the full table of what is enforced where
 - [`examples/grain-connector/`](../grain-connector/) — the same tier on the trigger path

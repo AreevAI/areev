@@ -77,6 +77,10 @@ pub trait HostToolExecutor: Send + Sync {
     /// there — so an owned credential fails closed if this is ever skipped.
     fn bind_run_principal(&self, _principal: &str) {}
 
+    /// Give a run's broker the same open memory the driver owns, so downloaded
+    /// artifacts use its encrypted/backend-aware CAS writer.
+    fn bind_artifact_store(&self, _store: Arc<areev_cal::AreevFacade>) {}
+
     /// Execute a content-addressed code blob. `bytes` were read and
     /// hash-verified on the driver thread; this runs on a pool worker.
     ///
@@ -190,6 +194,9 @@ impl EgressHandle {
     fn bind_run_principal(&self, principal: &str) {
         self.broker.bind_run_principal(principal)
     }
+    fn bind_artifact_store(&self, store: Arc<areev_cal::AreevFacade>) {
+        self.broker.bind_artifact_store(store)
+    }
     /// The env a tool named `tool_name` gets. Empty when it has no grant, so
     /// a tool nobody authorized cannot even see the broker.
     fn env_for(&self, tool_name: &str) -> Vec<(&'static str, String)> {
@@ -293,6 +300,9 @@ impl HostToolExecutor for CommandExecutor {
         if let Some(e) = &self.egress {
             e.bind_run_principal(principal);
         }
+    }
+    fn bind_artifact_store(&self, store: Arc<areev_cal::AreevFacade>) {
+        if let Some(e) = &self.egress { e.bind_artifact_store(store); }
     }
 
     fn execute(
@@ -629,6 +639,12 @@ impl HostToolExecutor for CodeExecutor {
         match &self.egress {
             Some(e) => e.bind_run_principal(principal),
             None => self.inner.bind_run_principal(principal),
+        }
+    }
+    fn bind_artifact_store(&self, store: Arc<areev_cal::AreevFacade>) {
+        match &self.egress {
+            Some(e) => e.bind_artifact_store(store),
+            None => self.inner.bind_artifact_store(store),
         }
     }
 

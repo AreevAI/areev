@@ -650,6 +650,14 @@ needed no new IPC channel: the engine already injected `AREEV_EGRESS_URL` +
 `AREEV_EGRESS_TOKEN` into that process for uniformity, inert only because the
 *guest* could not reach them.
 
+The opt-in artifact mode keeps that boundary: an upload names an existing CAS
+address and a declared content type, while the broker reads the bytes through
+the run's open memory. Download bytes are read under a limit and stored with
+the same handle, so encrypted memories stay encrypted. The broker refuses a
+binary response that reflects a credential rather than altering its bytes.
+The immutable egress audit retains digests, CAS address and bounded metadata,
+not bytes or credential values.
+
 Four properties make it a capability system rather than a hole:
 
 - **The gate is linked, not guarded.** `areev::fetch` exists in the guest's

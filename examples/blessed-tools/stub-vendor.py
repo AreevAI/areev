@@ -28,6 +28,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b'{"error":"unauthenticated"}')
             return
+        if self.path == "/v1/invoices/4471/attachment":
+            body = b"%PDF-1.7\n\x00\x80\xff\n"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         body = json.dumps({
             "id": self.path.rsplit("/", 1)[-1],
             "vendor": "Acme Freight",
@@ -36,6 +44,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
         }).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):  # noqa: N802 - stdlib naming
+        size = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(size)  # drain even on refusal, avoiding a reset
+        if (self.path != "/v1/invoices/4471/export" or
+                self.headers.get("Authorization") != "Bearer demo-vendor-token" or
+                self.headers.get("Content-Type") != "application/pdf" or
+                body != b"%PDF-1.7\n\x00\x80\xff\n"):
+            self.send_error(400, "invalid binary export")
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/pdf")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
