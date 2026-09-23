@@ -780,4 +780,5 @@ module.exports.__napiBindingTarget = __napiStampBindingTarget(nativeBinding, __n
 module.exports = nativeBinding
 module.exports.Areev = nativeBinding.Areev
 module.exports.dropPostgresSchema = nativeBinding.dropPostgresSchema
+module.exports.packValidate = nativeBinding.packValidate
 module.exports.readBlobOffline = nativeBinding.readBlobOffline

@@ -35,6 +35,9 @@ areev-loop-adapter = { path = "../areev-loop-adapter" }
 areev-llm = { path = "../areev-llm" }
 areev-run = { path = "../areev-run" }
 areev-trigger = { path = "../areev-trigger", features = ["tz"] }
+# `areev::pack` (#341) — the binary crate's library half, renamed so the
+# extern name says what it is used for.
+areev-pack = { package = "areev", path = "../areev-cli" }
 serde_json = "1"
 napi = { version = "3", features = ["napi9"] }
 napi-derive = "3"

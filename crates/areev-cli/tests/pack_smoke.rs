@@ -280,3 +280,43 @@ fn a_capability_declaration_without_the_runtime_that_honours_it_is_refused() {
     assert!(!ok, "a declaration no runtime can honour describes nothing");
     assert!(err.contains("wasm32-areev-io"), "{err}");
 }
+
+#[test]
+fn pin_checks_the_host_pins_without_writing_them_or_moving_the_plan_hash() {
+    // #341: the CLI takes the same executor pins the library and the
+    // bindings do, so the three surfaces stay in parity.
+    let dir = TempDir::new().unwrap();
+    let pack = dir.path().join("pack");
+    write_pack(&pack, None);
+    let (ok, validated, err) = areev(&["pack", "validate", pack.to_str().unwrap(), "--format", "json"]);
+    assert!(ok, "{err}");
+    let v: serde_json::Value = serde_json::from_str(&validated).unwrap();
+    let exec = &v["executors"][0];
+    assert_eq!(exec["tool"], "poll", "{validated}");
+    assert_eq!(exec["pinned"], false, "{validated}");
+    let addr = exec["executor_uri"].as_str().unwrap().to_string();
+
+    // A pin that disagrees refuses the whole install, nothing written.
+    let db = dir.path().join("m.db");
+    let (ok, _out, err) = areev(&[
+        "pack", "install", pack.to_str().unwrap(), "--db", db.to_str().unwrap(),
+        "--pin", &format!("poll={}", "ab".repeat(32)),
+    ]);
+    assert!(!ok, "a mismatched pin must refuse");
+    assert!(err.contains("PCK-E005"), "{err}");
+    let (ok, out, _) = areev(&[
+        "cal", "RECALL tools RECENT 5", "--db", db.to_str().unwrap(), "--ns", "ops",
+        "--format", "json",
+    ]);
+    assert!(ok && out.contains("\"total_available\": 0"), "a refused install left grains: {out}");
+
+    // A pin that agrees installs, is reported, and changes nothing hashed.
+    let (ok, out, err) = areev(&[
+        "pack", "install", pack.to_str().unwrap(), "--db", db.to_str().unwrap(),
+        "--pin", &format!("poll={addr}"), "--format", "json",
+    ]);
+    assert!(ok, "{err}");
+    let installed: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(installed["executors"][0]["pinned"], true, "{out}");
+    assert_eq!(hash_of(&out, "workflow"), hash_of(&validated, "workflow"));
+}

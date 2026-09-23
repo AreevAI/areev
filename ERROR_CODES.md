@@ -193,6 +193,7 @@ through unchanged — an `AUT-E001` raised while installing stays an
 | `PCK-E002` | `ExpectationMismatch` | A grain's `expected_hash` differs from what the pack builds it to. Carries `{file, expected, built}`. Nothing is written: installing it would change what runs, and everything pointing at the old hash (every trigger above all) would now point somewhere else |
 | `PCK-E003` | `UnresolvedRef` | A `blob:` or `grain:` reference names nothing the pack carries — a FORWARD reference included, which is why the manifest is an ordered list and not a set |
 | `PCK-E004` | `AddressDrift` | The address a grain stored under differs from the address it was built to, so `validate` no longer describes `install` |
+| `PCK-E005` | `ExecutorPin` | A host executor pin (`InstallOptions::executor_pins`, the bindings' `executorPins` / `executor_pins`, CLI `--pin`) disagrees with the code a code-carrying tool in the pack names, names no code-carrying tool in it, or is not a content address (#341). The WHOLE install is refused before anything is written. Pins are checked, never stored |
 
 ## Registry — CAL codes
 
