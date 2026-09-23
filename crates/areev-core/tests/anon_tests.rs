@@ -93,6 +93,29 @@ fn golden_us_identifiers() {
 }
 
 #[test]
+fn golden_indian_tax_identifiers() {
+    // #347: the mod-36 checksummed GSTIN runs unconditionally; the PAN has
+    // no public checksum, so it is cue-gated.
+    for gstin in ["27AAPFU0939F1ZV", "29AAACI1681G1ZL", "07AAACR5055K1Z9"] {
+        assert_detects(&format!("Supplier GSTIN {gstin} on the invoice"), "in_gstin", gstin);
+    }
+    assert_detects("PAN: AAPFU0939F", "in_pan", "AAPFU0939F");
+    assert_detects("Income Tax PAN ABCPE1234F on file", "in_pan", "ABCPE1234F");
+    // This cue also fires the generic `account` keyword rule on the same
+    // span; the validated PAN reading must win the overlap.
+    assert_detects("Permanent Account Number AAPFU0939F", "in_pan", "AAPFU0939F");
+    // Near misses: one transposition, an unassigned state code, a PAN-shaped
+    // product code with no cue, and a bad holder-type letter after a cue.
+    assert_clean("GSTIN 27AAPFU0939F1VZ");
+    assert_clean("GSTIN 00AAPFU0939F1ZV");
+    assert_clean("SKU AAPFU0939F");
+    assert_clean("PAN: AAPXU0939F");
+    // The PAN inside a GSTIN is covered by the GSTIN, not reported twice.
+    let found = spans("PAN / GSTIN 27AAPFU0939F1ZV");
+    assert_eq!(found, vec![("in_gstin".to_string(), "27AAPFU0939F1ZV".to_string())]);
+}
+
+#[test]
 fn an_ssn_shaped_span_is_still_redacted_by_a_phone_only_policy() {
     // A policy that redacts `phone` and allows everything else must keep
     // redacting `123-45-6789` after the #281 upgrade: the SSN detection is

@@ -225,6 +225,44 @@ fn floor_forces_egress_and_never_weakens() {
     assert_eq!(m.anon_active_mode("caller").unwrap(), None);
 }
 
+/// #347: a counterparty's GSTIN cannot be listed in a term set in advance,
+/// so the built-in `in_gstin` detector is what keeps it off the egress
+/// channel — under a declared category mapping, and under the floor with no
+/// declared policy at all.
+#[test]
+fn gstin_is_pseudonymised_by_policy_and_by_the_floor() {
+    const GSTIN: &str = "27AAPFU0939F1ZV";
+    let object = format!("Supplier GSTIN {GSTIN}");
+
+    // A declared namespace policy that maps `in_gstin` to pseudonym and
+    // allows everything else — the detector alone must catch the value.
+    let dir = TempDir::new().unwrap();
+    let mut m = open_mem(&dir, "a.db");
+    m.set_anon_policy(
+        "ap",
+        r#"{"mode": "egress", "default_action": "allow", "categories": {"in_gstin": "pseudonym"}}"#,
+    )
+    .unwrap();
+    m.add(&fact("ap", "vendor:acme", "supplier_gstin", &object)).unwrap();
+    let got = m.recall("ap", "vendor:acme", None, 4).unwrap();
+    assert_eq!(got[0].fields["object"], "Supplier GSTIN [IN_GSTIN_1]");
+    assert!(!scannable(&got[0].fields).contains(GSTIN));
+
+    // No declared policy, the floor on: the default policy pseudonymises it.
+    let dir = TempDir::new().unwrap();
+    let mut m = open_mem(&dir, "b.db");
+    m.add(&fact("ap", "vendor:acme", "supplier_gstin", &object)).unwrap();
+    assert_eq!(
+        m.recall("ap", "vendor:acme", None, 4).unwrap()[0].fields["object"],
+        object.as_str(),
+        "no policy and no floor: raw"
+    );
+    m.set_anonymize_egress_floor(true);
+    let got = m.recall("ap", "vendor:acme", None, 4).unwrap();
+    assert_eq!(got[0].fields["object"], "Supplier GSTIN [IN_GSTIN_1]");
+    assert!(!scannable(&got[0].fields).contains(GSTIN));
+}
+
 #[test]
 fn audit_mode_counts_without_transforming() {
     let dir = TempDir::new().unwrap();
