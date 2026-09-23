@@ -272,6 +272,45 @@ pub fn host_anon_key_unlocks_the_vault(b: &dyn Backend) {
     );
 }
 
+/// Built-in Indian tax-identifier detectors (#347) on the egress boundary:
+/// the fixture set pins both directions — valid GSTINs and cued PANs are
+/// pseudonymised, and a transposed GSTIN, an unassigned state code, an
+/// uncued PAN-shaped product code and a bad holder type pass through raw.
+/// Detection is backend-independent, but the egress boundary it feeds is
+/// store code, so the pair must hold on every backend.
+pub fn indian_tax_ids_pseudonymise_on_egress(b: &dyn Backend) {
+    let mut m = b.open_named("anon_in_tax");
+    m.set_anon_policy(
+        "ns",
+        r#"{"mode": "egress", "default_action": "allow",
+            "categories": {"in_gstin": "pseudonym", "in_pan": "pseudonym"}}"#,
+    )
+    .unwrap();
+    let cases: &[(&str, &str, &str)] = &[
+        // (relation, object, expected egress object)
+        ("g1", "GSTIN 27AAPFU0939F1ZV", "GSTIN [IN_GSTIN_1]"),
+        ("g2", "GSTIN 29AAACI1681G1ZL", "GSTIN [IN_GSTIN_1]"),
+        ("g3", "GSTIN 07AAACR5055K1Z9", "GSTIN [IN_GSTIN_1]"),
+        ("g4", "GSTIN 27AAPFU0939F1VZ", "GSTIN 27AAPFU0939F1VZ"),
+        ("g5", "GSTIN 00AAPFU0939F1ZV", "GSTIN 00AAPFU0939F1ZV"),
+        ("p1", "PAN: AAPFU0939F", "PAN: [IN_PAN_1]"),
+        ("p2", "Permanent Account Number ABCPE1234F", "Permanent Account Number [IN_PAN_1]"),
+        ("p3", "PAN AAPXU0939F", "PAN AAPXU0939F"),
+        ("p4", "SKU AAPFU0939F", "SKU AAPFU0939F"),
+    ];
+    for (rel, object, _) in cases {
+        m.add(&fact("ns", "vendor:acme", rel, object)).unwrap();
+    }
+    for (rel, object, want) in cases {
+        let got = m.latest("ns", "vendor:acme", rel).unwrap().expect("stored");
+        assert_eq!(
+            got.fields["object"], *want,
+            "[{}] egress of {object:?}",
+            b.name()
+        );
+    }
+}
+
 // ---- trigger evaluation state (`trg:`) -----------------------------------
 //
 // The declaration is a grain and replicates; the evaluation state must not.

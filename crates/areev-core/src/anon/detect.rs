@@ -43,6 +43,10 @@ pub const KNOWN_CATEGORIES: &[&str] = &[
     "us_ssn",
     "us_itin",
     "aba_routing",
+    // Indian tax identifiers (issue #347). Checksum-validated (GSTIN,
+    // mod-36) or structure-plus-cue (PAN) — see the individual detectors.
+    "in_gstin",
+    "in_pan",
 ];
 
 /// Categories whose detections are backed by a checksum or a structural
@@ -64,6 +68,12 @@ pub fn category_is_validated(category: &str) -> bool {
             | "us_ssn"
             | "us_itin"
             | "aba_routing"
+            | "in_gstin"
+            // Structure (holder-type letter) plus a cue (#347). Without it the
+            // `Permanent Account Number` cue also fires the generic `account`
+            // keyword rule on the same span, and `account_number` would win
+            // the alphabetical fallback — the PAN cue would never yield a PAN.
+            | "in_pan"
     )
 }
 
@@ -110,6 +120,8 @@ pub(super) fn run_tier0(
     detect_us_ssn(text, &mut out);
     detect_us_itin(text, &mut out);
     detect_aba_routing(text, &mut out);
+    detect_in_gstin(text, &mut out);
+    detect_in_pan(text, &mut out);
     detect_mrn(text, &mut out);
     detect_secret(text, &mut out);
     detect_keyword_proximity(text, &mut out);
@@ -530,6 +542,94 @@ fn aba_routing_ok(s: &str) -> bool {
     }
     let sum = 3 * (d[0] + d[3] + d[6]) + 7 * (d[1] + d[4] + d[7]) + (d[2] + d[5] + d[8]);
     sum.is_multiple_of(10)
+}
+
+// ---------------------------------------------------------------------------
+// Indian tax identifiers (issue #347)
+// ---------------------------------------------------------------------------
+//
+// A GSTIN and a PAN sit on almost every Indian invoice, receipt and bank
+// statement, and a counterparty's values cannot be listed in a term set in
+// advance. The GSTIN carries a mod-36 check character, so it runs
+// unconditionally; the PAN has no public checksum, so it is cue-gated.
+
+/// Indian GST identification numbers — 15 characters: a 2-digit state code,
+/// the holder's 10-character PAN, an entity character `[1-9A-Z]`, the letter
+/// `Z`, and a mod-36 check character.
+///
+/// Case-insensitive input, upper-cased before checking. The state code must
+/// be `01`–`38`, `97` (other territory) or `99` (centre jurisdiction), and
+/// the check character must match. Wrong check → not a detection.
+fn detect_in_gstin(text: &str, out: &mut Vec<Detection>) {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = re(
+        &RE,
+        r"[0-9]{2}[A-Za-z]{5}[0-9]{4}[A-Za-z][1-9A-Za-z][Zz][0-9A-Za-z]",
+    );
+    for m in re.find_iter(text) {
+        if boundary_ok(text, m.start(), m.end()) && in_gstin_ok(m.as_str()) {
+            out.push(det(m.start(), m.end(), "in_gstin", "tier0.in_gstin"));
+        }
+    }
+}
+
+fn in_gstin_ok(s: &str) -> bool {
+    const ALPHABET: &[u8; 36] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    let up = s.to_ascii_uppercase();
+    let b = up.as_bytes();
+    if b.len() != 15 {
+        return false;
+    }
+    let state = match (
+        (b[0] as char).to_digit(10),
+        (b[1] as char).to_digit(10),
+    ) {
+        (Some(t), Some(u)) => t * 10 + u,
+        _ => return false,
+    };
+    if !matches!(state, 1..=38 | 97 | 99) {
+        return false;
+    }
+    // Luhn-style mod 36 over the first 14 characters: weights alternate
+    // 1, 2 from the left; each product contributes quotient + remainder.
+    let mut sum: u32 = 0;
+    for (i, c) in b[..14].iter().enumerate() {
+        let Some(v) = (*c as char).to_digit(36) else {
+            return false;
+        };
+        let p = v * if i % 2 == 0 { 1 } else { 2 };
+        sum += p / 36 + p % 36;
+    }
+    ALPHABET[((36 - sum % 36) % 36) as usize] == b[14]
+}
+
+/// Indian Permanent Account Numbers — `[A-Z]{3}` + a holder-type letter
+/// (`P C H F A T B L J G`) + `[A-Z]` + four digits + `[A-Z]`.
+///
+/// ALWAYS cue-gated: the PAN has no public checksum, and its shape collides
+/// with product codes and SKUs. A PAN embedded in a GSTIN is never a
+/// separate detection — the boundary check rejects it, and the GSTIN
+/// detection covers the span.
+fn detect_in_pan(text: &str, out: &mut Vec<Detection>) {
+    static NUM: OnceLock<Regex> = OnceLock::new();
+    static CUE: OnceLock<Regex> = OnceLock::new();
+    let cues = cue_ends(
+        text,
+        &CUE,
+        r"(?i)\b(permanent account number|income tax pan|pan no\.?|pan)\b",
+    );
+    if cues.is_empty() {
+        return;
+    }
+    let num = re(
+        &NUM,
+        r"[A-Za-z]{3}[PCHFATBLJGpchfatbljg][A-Za-z][0-9]{4}[A-Za-z]",
+    );
+    for m in num.find_iter(text) {
+        if boundary_ok(text, m.start(), m.end()) && cue_near(&cues, m.start()) {
+            out.push(det(m.start(), m.end(), "in_pan", "tier0.in_pan"));
+        }
+    }
 }
 
 /// Medical record numbers — shape alone is a bare digit run, which is why
@@ -971,5 +1071,98 @@ mod us_id_tests {
         let mut d = Vec::new();
         detect_phone("123-45-6789", &mut d);
         assert_eq!(d.len(), 1, "the dashed phone pattern still matches");
+    }
+}
+
+#[cfg(test)]
+mod in_tax_id_tests {
+    use super::*;
+
+    /// Only the Indian detectors, so an overlap does not hide a miss.
+    fn cats(text: &str) -> Vec<String> {
+        let mut d = Vec::new();
+        detect_in_gstin(text, &mut d);
+        detect_in_pan(text, &mut d);
+        d.iter()
+            .map(|x| format!("{}:{}", x.category, &text[x.start..x.end]))
+            .collect()
+    }
+
+    #[test]
+    fn gstin_check_character_is_mod_36_weighted_from_the_left() {
+        // The published example GSTIN validates under weights 1,2,1,2,… from
+        // the first character; the reverse weighting would demand `T`.
+        assert!(in_gstin_ok("27AAPFU0939F1ZV"));
+        assert!(!in_gstin_ok("27AAPFU0939F1ZT"));
+        for ok in ["29AAACI1681G1ZL", "07AAACR5055K1Z9", "33ABCPE1234F2ZH", "97AAAAA0000A1ZV"] {
+            assert!(in_gstin_ok(ok), "{ok} must validate");
+        }
+    }
+
+    #[test]
+    fn a_valid_gstin_is_one_detection_over_all_15_characters() {
+        let text = "Supplier GSTIN 27AAPFU0939F1ZV";
+        let mut d = Vec::new();
+        detect_in_gstin(text, &mut d);
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].category, "in_gstin");
+        assert_eq!(d[0].end - d[0].start, 15);
+        assert_eq!(&text[d[0].start..d[0].end], "27AAPFU0939F1ZV");
+        // Case-insensitive input.
+        assert_eq!(cats("gstin 27aapfu0939f1zv"), vec!["in_gstin:27aapfu0939f1zv"]);
+    }
+
+    #[test]
+    fn gstin_check_and_state_code_gate_the_detection() {
+        // Last two characters transposed: the check fails.
+        assert!(cats("27AAPFU0939F1VZ").is_empty());
+        // One middle character changed: the check fails.
+        assert!(cats("27AAPFU0938F1ZV").is_empty());
+        // State codes 00, 39 and 98 are not assigned.
+        assert!(cats("00AAPFU0939F1ZV").is_empty());
+        assert!(!in_gstin_ok("39AAPFU0939F1ZV"));
+        assert!(!in_gstin_ok("98AAPFU0939F1ZV"));
+        // Embedded in a longer alphanumeric run.
+        assert!(cats("X27AAPFU0939F1ZV").is_empty());
+        assert!(cats("27AAPFU0939F1ZV9").is_empty());
+    }
+
+    #[test]
+    fn pan_needs_a_cue() {
+        assert_eq!(cats("PAN: AAPFU0939F"), vec!["in_pan:AAPFU0939F"]);
+        assert_eq!(cats("PAN No. AAPFU0939F"), vec!["in_pan:AAPFU0939F"]);
+        assert_eq!(
+            cats("Permanent Account Number AAPFU0939F"),
+            vec!["in_pan:AAPFU0939F"]
+        );
+        assert_eq!(cats("Income Tax PAN ABCPE1234F"), vec!["in_pan:ABCPE1234F"]);
+        // No cue: a PAN-shaped product code stays clean.
+        assert!(cats("SKU AAPFU0939F").is_empty());
+        // Cue too far away.
+        let far = format!("PAN{} AAPFU0939F", " ".repeat(45));
+        assert!(cats(&far).is_empty());
+        // "pan" inside another word is not a cue.
+        assert!(cats("company AAPFU0939F").is_empty());
+    }
+
+    #[test]
+    fn pan_holder_type_is_validated() {
+        // The holder type is the FOURTH character. `X` is not a holder-type
+        // letter, so `AAPXU0939F` is not a PAN even after a cue.
+        assert!(cats("PAN: AAPXU0939F").is_empty());
+        // Issue #347 lists `AAXFU0939F` as the invalid-holder case, but its
+        // fourth character is `F` (firm) — a valid holder type. The `X` sits
+        // in the free third position, so by the PAN format it IS PAN-shaped.
+        assert_eq!(cats("PAN: AAXFU0939F"), vec!["in_pan:AAXFU0939F"]);
+    }
+
+    #[test]
+    fn a_pan_inside_a_gstin_is_covered_by_the_gstin() {
+        // The PAN inside the GSTIN is not a separate detection, even with a
+        // PAN cue in range: the GSTIN detection covers the span.
+        assert_eq!(
+            cats("PAN / GSTIN 27AAPFU0939F1ZV"),
+            vec!["in_gstin:27AAPFU0939F1ZV"]
+        );
     }
 }
