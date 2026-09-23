@@ -77,7 +77,7 @@ pub const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Latest MCP protocol revision this server speaks.
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
 
-/// Which slice of the 26-tool surface a session advertises and accepts.
+/// Which slice of the 27-tool surface a session advertises and accepts.
 /// `Full` (the default — unchanged prior behavior) is every tool; `Memory`
 /// drops the workflow-runtime family (`run_*`, `areev_loop`,
 /// `areev_recommendations`, `areev_tool_provenance`, `areev_record_tool_call`,
@@ -112,6 +112,7 @@ const RUN_FAMILY: &[&str] = &[
     "areev_run_resume",
     "areev_run_respond",
     "areev_run_input",
+    "areev_run_pause",
     "areev_run_cancel",
     "areev_run_verify",
     "areev_run_list",
@@ -865,6 +866,19 @@ impl McpServer {
                 Ok(json!({"queued": run_id, "by": who,
                           "note": "the next superstep hands it to its nodes under $inbox"}).to_string())
             }
+            "areev_run_pause" => {
+                let run_id = args.get("run_id").and_then(Value::as_str)
+                    .ok_or("areev_run_pause requires 'run_id'")?;
+                let because = args.get("because").and_then(Value::as_str).unwrap_or("paused via mcp");
+                // Attributed to the server-bound identity, like cancel and
+                // input: who paused a run is part of its record.
+                let who = self.run_identity();
+                let receipt = self
+                    .runner(&who)?
+                    .pause(run_id, &who, because)
+                    .map_err(|e| e.to_string())?;
+                serde_json::to_string(&receipt).map_err(|e| e.to_string())
+            }
             "areev_run_cancel" => {
                 let run_id = args.get("run_id").and_then(Value::as_str)
                     .ok_or("areev_run_cancel requires 'run_id'")?;
@@ -1360,6 +1374,14 @@ fn all_tool_defs() -> Vec<Value> {
                 "run_id": s("the run to steer"),
                 "message": s("the message text")
             }, "required": ["run_id", "message"]}
+        }),
+        json!({
+            "name": "areev_run_pause",
+            "description": "Ask a live run to PAUSE at its next superstep boundary: the open superstep finishes and checkpoints, nothing past it dispatches, and the run parks (`parked.kind` = \"paused\") holding no lease or concurrency slot. `areev_run_resume` continues it under the same run id, manifest and pins — no fork, no node re-executed. Needs run.execute (the resume grant). Idempotent: a standing request answers `already: true`. Refused with RUN-E029 when the run already finished or a cancel is pending (cancel wins; cancel on a paused run finalizes it).",
+            "inputSchema": {"type": "object", "properties": {
+                "run_id": s("the run to pause"),
+                "because": s("reason, recorded on the pause Fact")
+            }, "required": ["run_id"]}
         }),
         json!({
             "name": "areev_run_cancel",

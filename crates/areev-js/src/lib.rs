@@ -3399,6 +3399,38 @@ impl Areev {
         })
     }
 
+    /// Ask a live run to PAUSE at its next superstep boundary (#344): the
+    /// open superstep finishes and checkpoints, nothing past it dispatches,
+    /// and the driving `runStart`/`runResume` returns `{"parked": …}` with
+    /// `kind`/`reason` `"paused"` (its `onEvent` stream ends at `RunPaused`).
+    /// `runResume` continues it under the same run id, manifest and pins.
+    ///
+    /// Safe to call from an `onEvent` callback — that is the shape a host
+    /// metering work in its own units uses. Needs `run.execute`, the grant
+    /// `runResume` takes. Idempotent (`already: true` answers the standing
+    /// request); rejects with `RUN-E029` on a finished run or a pending
+    /// cancel. Returns the receipt JSON: `run_id`, `status`
+    /// (`requested` | `paused`), `already`, `request`, `paused_by`,
+    /// `because`, `requested_at`.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn run_pause(
+        &self,
+        run_id: String,
+        because: Option<String>,
+    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        let ns = self.ns.clone();
+        let actor = self.actor.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let runner = js_runner(facade, ns, actor.clone(), None);
+            let receipt = runner
+                .pause(&run_id, &actor, because.as_deref().unwrap_or("paused"))
+                .map_err(run_err)?;
+            serde_json::to_string(&receipt).map_err(err)
+        })
+    }
+
     /// Journal-consistent replay; writes nothing. JSON report.
     #[napi(ts_return_type = "Promise<string>")]
     pub fn run_verify(&self, run_id: String) -> napi::bindgen_prelude::AsyncTask<StringJob> {

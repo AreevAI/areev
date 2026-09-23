@@ -790,6 +790,108 @@ fn cancel_without_a_fresh_reading_journals_a_stale_close() {
     );
 }
 
+/// #344: a pause in the batch that closes a superstep stops the NEXT one from
+/// opening — and changes nothing else. The state it leaves is byte-identical
+/// to the close checkpoint an uninterrupted run writes, and continuing is an
+/// ordinary resume boundary that bills the paused span as elapsed, not wall.
+#[test]
+fn a_pause_holds_at_the_boundary_and_leaves_the_uninterrupted_checkpoint() {
+    let plan =
+        PlanGraph::build(&wf(&["a", "b", "c"]).edge("a", "b").edge("b", "c")).unwrap();
+    let execs = host_execs(&plan);
+    let e = env(&plan, &execs, Budgets::default());
+    let dispatches = |cmds: &[Command]| -> Vec<JournalKey> {
+        cmds.iter()
+            .filter_map(|c| match c {
+                Command::Dispatch { key, .. } => Some(key.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let close_state = |cmds: &[Command]| -> Value {
+        cmds.iter()
+            .find_map(|c| match c {
+                Command::WriteCheckpoint { state_json, .. } => Some(state_json.clone()),
+                _ => None,
+            })
+            .expect("the close checkpoints")
+    };
+
+    let out = step(
+        &e,
+        SchedulerState::new("run-1", &plan),
+        &[EventIn::ClockReading { unix_ms: 1_000 }, EventIn::Start { input: json!({}) }],
+    );
+    let first = dispatches(&out.commands);
+    assert_eq!(first.len(), 1);
+    let resolve = |mut events: Vec<EventIn>| {
+        for key in &first {
+            events.push(EventIn::EffectResolved {
+                key: key.clone(),
+                outcome: ok(json!({key.node.clone(): true})),
+            });
+        }
+        events
+    };
+
+    // Uninterrupted: close superstep 1 and open 2 (dispatching b) in one call.
+    let straight = step(&e, out.state.clone(), &resolve(vec![EventIn::ClockReading { unix_ms: 2_000 }]));
+    assert_eq!(dispatches(&straight.commands).len(), 1);
+
+    // Paused: the same close, and nothing opened.
+    let mut batch = resolve(vec![EventIn::ClockReading { unix_ms: 2_000 }]);
+    batch.push(EventIn::PauseRequested);
+    let held = step(&e, out.state, &batch);
+    assert!(dispatches(&held.commands).is_empty(), "a paused run opens nothing");
+    assert!(matches!(held.state.phase, Phase::Idle));
+    assert!(!held.state.is_terminal());
+    assert_eq!(
+        close_state(&held.commands),
+        close_state(&straight.commands),
+        "the paused checkpoint is the uninterrupted one, byte for byte"
+    );
+    assert_eq!(
+        serde_json::to_value(&held.state).unwrap(),
+        close_state(&held.commands),
+        "nothing about the pause lives in state"
+    );
+
+    // Still requested on the next call: still held (the driver re-feeds it).
+    let again = step(&e, held.state.clone(), &[EventIn::PauseRequested]);
+    assert!(again.commands.is_empty());
+
+    // Resume ten seconds later: b opens, the gap is elapsed, never wall.
+    let resumed = step(
+        &e,
+        held.state,
+        &[EventIn::Resumed, EventIn::ClockReading { unix_ms: 12_000 }],
+    );
+    assert_eq!(dispatches(&resumed.commands).len(), 1);
+    assert_eq!(resumed.state.elapsed_ms, 10_000);
+    assert_eq!(resumed.state.spent.wall_ms, 1_000, "only superstep 1's active span");
+
+    // Terminal outcomes still win: a run with nothing left finishes.
+    let last = PlanGraph::build(&wf(&["a"])).unwrap();
+    let last_execs = host_execs(&last);
+    let le = env(&last, &last_execs, Budgets::default());
+    let o = step(
+        &le,
+        SchedulerState::new("run-2", &last),
+        &[EventIn::ClockReading { unix_ms: 1_000 }, EventIn::Start { input: json!({}) }],
+    );
+    let k = dispatches(&o.commands).remove(0);
+    let done = step(
+        &le,
+        o.state,
+        &[
+            EventIn::ClockReading { unix_ms: 2_000 },
+            EventIn::EffectResolved { key: k, outcome: ok(json!({"a": true})) },
+            EventIn::PauseRequested,
+        ],
+    );
+    assert_eq!(done.state.outcome(), Some(&RunOutcome::Completed));
+}
+
 #[test]
 fn superstep_budget_exhausts_resumably() {
     let plan = PlanGraph::build(

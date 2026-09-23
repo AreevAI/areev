@@ -112,7 +112,7 @@ claude mcp add areev -- areev serve --mcp --db ~/.areev/code.db --ns claude-code
 ```
 
 `areev serve --mcp` speaks newline-delimited JSON-RPC 2.0 on stdio and works
-with any MCP client — 25 tools, with a 12-tool `--profile memory` subset for
+with any MCP client — 27 tools, with a 12-tool `--profile memory` subset for
 hosts that only want chat memory. See [`mcp-reference.md`](mcp-reference.md).
 
 ## Run a governed workflow (`areev run`)

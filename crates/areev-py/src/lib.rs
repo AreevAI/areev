@@ -2098,6 +2098,28 @@ impl Areev {
         Ok(json!({"canceled": run_id}).to_string())
     }
 
+    /// Ask a live run to PAUSE at its next superstep boundary (#344): the
+    /// open superstep finishes and checkpoints, nothing past it dispatches,
+    /// and the driving `run_start`/`run_resume` returns `{"parked": …}` with
+    /// `kind`/`reason` `"paused"` (its `on_event` stream ends at
+    /// `RunPaused`). `run_resume` continues it under the same run id,
+    /// manifest and pins.
+    ///
+    /// Safe to call from an `on_event` callback — that is the shape a host
+    /// metering work in its own units uses. Needs `run.execute`, the grant
+    /// `run_resume` takes. Idempotent (`already: true` answers the standing
+    /// request); raises `RUN-E029` on a finished run or a pending cancel.
+    /// Returns the receipt JSON: `run_id`, `status` (`requested` |
+    /// `paused`), `already`, `request`, `paused_by`, `because`,
+    /// `requested_at`.
+    #[pyo3(signature = (run_id, because = "paused".to_string()))]
+    fn run_pause(&self, py: Python<'_>, run_id: String, because: String) -> PyResult<String> {
+        let runner = self.runner(None, None);
+        let actor = self.actor.clone();
+        let receipt = py.detach(|| runner.pause(&run_id, &actor, &because)).map_err(err)?;
+        serde_json::to_string(&receipt).map_err(|e| err(e.to_string()))
+    }
+
     /// Journal-consistent replay: re-derives every checkpoint, byte-compares
     /// against the stored chain, writes nothing. JSON report.
     fn run_verify(&self, py: Python<'_>, run_id: String) -> PyResult<String> {

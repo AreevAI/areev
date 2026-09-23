@@ -351,8 +351,8 @@ COMMANDS:
            BECAUSE + gating edge, the runs that touched it, and the executor
            blob its executor_uri points at (present? how many bytes? — read
            lock-free, so it answers while the run is still holding the file)
-  run      <start|resume|respond|input|cancel|list|inspect|verify|fork|shadow|
-           oversight-report|demo>   the governed
+  run      <start|resume|respond|input|pause|cancel|list|inspect|verify|fork|
+           shadow|oversight-report|demo>   the governed
            workflow runtime: journaled, checkpointed, HITL-pausable runs of
            Workflow grains. list [--last N] [--offset N] prints the newest
            runs with outcome + spend (default 20; stderr says when the page
@@ -439,6 +439,13 @@ COMMANDS:
            steering message: the next superstep hands it to its nodes under
            `$inbox`, so a person redirects a running run in band instead of
            through a human-gate ask;
+           pause --run-id ID [--because TEXT] asks a live run to stop at its
+           next superstep boundary and park, resumably: the open superstep
+           finishes and checkpoints, nothing past it dispatches, and
+           `run resume` continues it under the same run id, manifest and
+           pins (no fork). Needs run.execute, the grant resume takes;
+           idempotent; RUN-E029 on a finished run or a pending cancel —
+           cancel wins, and cancel on a paused run finalizes it;
            fork --run-id BASE --as-run NEW [--at N] [--plan HASH]
            time-travels or migrates a run;
            shadow [--runs a,b,c | --last N] [--plan HASH | --plan-file F]
@@ -4527,13 +4534,20 @@ fn run_run(
                 serde_json::json!({"run_id": run_id, "finished": format!("{outcome:?}")})
             );
         }
-        RunSession::Parked { envelope, .. } => {
+        RunSession::Parked { envelope, run_id } => {
             println!("{envelope}");
-            eprintln!(
-                "areev: run parked — answer with `areev run respond --run-id ID \
-                 --ask TOOL_CALL_ID --result JSON --as PRINCIPAL`, then \
-                 `areev run resume --run-id ID`"
-            );
+            if envelope["kind"] == "paused" {
+                eprintln!(
+                    "areev: run paused by its host — `areev run resume --run-id {run_id}` \
+                     continues it under the same run id"
+                );
+            } else {
+                eprintln!(
+                    "areev: run parked — answer with `areev run respond --run-id ID \
+                     --ask TOOL_CALL_ID --result JSON --as PRINCIPAL`, then \
+                     `areev run resume --run-id ID`"
+                );
+            }
         }
     };
 
@@ -4609,6 +4623,20 @@ fn run_run(
                 "cancel recorded for '{run_id}' — a live driver drains at its next \
                  superstep boundary; `areev run resume --run-id {run_id}` finalizes a \
                  parked one"
+            );
+        }
+        "pause" => {
+            let usage = "areev run pause --run-id ID [--because \"why\"]";
+            let run_id = need("run-id", usage)?;
+            let because = flag(flags, "because").unwrap_or_else(|| "paused".into());
+            let receipt = runner
+                .pause(&run_id, &principal, &because)
+                .map_err(|e| e.to_string())?;
+            println!("{}", serde_json::to_string(&receipt).unwrap());
+            eprintln!(
+                "areev: pause {} for '{run_id}' — a live driver parks at its next \
+                 superstep boundary; `areev run resume --run-id {run_id}` continues it",
+                if receipt.already { "already standing" } else { "recorded" }
             );
         }
         "verify" => {
@@ -4840,7 +4868,7 @@ fn run_run(
         other => {
             return Err(format!(
                 "unknown run subcommand '{other}' — usage: areev run \
-                 <start|resume|respond|input|cancel|list|inspect|verify|fork|shadow|oversight-report|demo>"
+                 <start|resume|respond|input|pause|cancel|list|inspect|verify|fork|shadow|oversight-report|demo>"
             ))
         }
     }

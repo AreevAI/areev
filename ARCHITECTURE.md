@@ -2495,6 +2495,32 @@ semantics while widening the import surface the by-name refusal keeps closed;
 an interpreter module was declined because the pinned address would name the
 interpreter while the tool's logic rode in its input, outside every pin.
 
+### A host pause is a transient hold, never scheduler state (#344)
+
+**Decision (2026-09-23, #344):** a run gains a third stop beside cancel
+(terminal) and budget exhaustion (continued only by `fork`): a **pause** the
+host asks for, which parks the run at its next superstep boundary and is
+continued by `resume` under the same run id, manifest and pins. The use case
+is a host that meters work in its own units and must stop a run when its
+count crosses a limit without overspending (let it finish) or redoing work
+(cancel it). A host-defined budget axis inside Core was declined as the
+larger primitive: the host keeps its own count, Core only has to stop.
+
+The pause reaches the pure scheduler as `EventIn::PauseRequested`, which
+holds the one `step` call it rides — `progress_idle` returns before opening a
+superstep — and is **never stored**. That is the load-bearing choice: the
+checkpoint a pause leaves is byte-identical to the uninterrupted run's, the
+scheduler epoch does not move, and `verify` needs no pause rule because
+continuing is an ordinary `Resumed` from an `Idle` checkpoint, the boundary it
+already replays for a crash (the paused span is elapsed, never wall). The
+request, its honouring and its consumption are Facts in the run's namespace
+(`mg:run_pause` / `mg:run_paused` / `mg:run_unpause`), read in op-log order off
+the run index the driver already polls for steering — not `latest`-ranked
+harness Facts like cancel, because two pause cycles in one millisecond must
+not rank arbitrarily. It needs `run.execute` (resume's grant, not cancel's
+low bar), is idempotent, and is refused with `RUN-E029` on a finished run or
+a pending cancel: cancel wins, and cancel on a paused run finalizes it.
+
 ---
 
 ## 11. Deployment topology

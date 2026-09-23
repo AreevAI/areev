@@ -40,7 +40,7 @@ replays identically, which is exactly what the epoch is about.
 
 ## Module map
 
-- `error.rs` — the `RUN-Ennn` domain (E001–E024, append-only; format and
+- `error.rs` — the `RUN-Ennn` domain (E001–E029, append-only; format and
   uniqueness pinned by tests).
 - `cond.rs` — the frozen v1 condition grammar (`==`/`!=`/`exists`/truthy;
   strict JSON equality, NO coercion, `1 != 1.0` deliberately). Parse errors
@@ -73,6 +73,16 @@ replays identically, which is exactly what the epoch is about.
     replays the boundary from that stamp. Without the marker the gap is
     invisible: replay opens the next superstep at the previous close and bills
     the downtime as wall.
+  - **Pause** (#344): `EventIn::PauseRequested` is TRANSIENT — `step` reads
+    it off the batch and `progress_idle` returns before opening a superstep;
+    nothing is stored. That is the whole design: the checkpoint a pause
+    leaves is the uninterrupted run's byte for byte, so the scheduler epoch
+    did not move and `verify` needs no new rule (continuing is `Resumed` from
+    an Idle checkpoint, which it already replays). The driver must re-feed it
+    on every call while the request stands, because the call that finally
+    closes into Idle is the one that has to carry it. The hold sits AFTER the
+    terminal decisions, so a run with nothing left completes/cancels/exhausts
+    rather than pausing.
   - **Budgets**: every axis checked at superstep open (per-dispatch
     reservation arrives with Wave-2 LLM effects, which carry a reservable
     `max_tokens`).

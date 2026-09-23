@@ -75,7 +75,7 @@ per line to stdout. It handles these methods:
 |---|---|
 | `initialize` | Returns `protocolVersion`, `capabilities.tools`, and `serverInfo` |
 | `ping` | Returns an empty result |
-| `tools/list` | Returns the twenty-six tool definitions (with input schemas), narrowed by `--profile` when set |
+| `tools/list` | Returns the twenty-seven tool definitions (with input schemas), narrowed by `--profile` when set |
 | `tools/call` | Invokes a tool by `name` with `arguments` |
 
 Conventions:
@@ -123,12 +123,12 @@ multi-tenant host gives an agent a session it must not escape.
 ### Tool profiles
 
 By default (`--profile full`, the implicit setting) a session advertises and
-accepts all twenty-six tools. `--profile memory` narrows both `tools/list`
+accepts all twenty-seven tools. `--profile memory` narrows both `tools/list`
 and `tools/call` to the twelve read/write/query tools (`areev_recall`,
 `areev_search`, `areev_nearest`, `areev_add`, `areev_supersede`,
 `areev_forget`, `areev_remember`, `areev_cal`, `areev_subject_report`,
 `areev_related`, `areev_entity_at`, `areev_step_actions`) and drops the
-fourteen-tool workflow-runtime family (`areev_run_*`, `areev_loop`,
+fifteen-tool workflow-runtime family (`areev_run_*`, `areev_loop`,
 `areev_recommendations`, `areev_tool_provenance`, `areev_record_tool_call`,
 `areev_run_manifest`). Use this when a host wants Areev purely as chat
 memory — an agent that will never start or approve a governed run doesn't
@@ -144,7 +144,7 @@ areev serve --mcp --db memory.db --profile memory
 
 ---
 
-## The twenty-six tools
+## The twenty-seven tools
 
 ### `areev_recall`
 
@@ -465,7 +465,7 @@ read the grain are not recorded: a read leaves no grain.
 | `hash` | string | **yes** | content address (64-hex) of the grain |
 | `depth` | integer | no | provenance hops to walk, max 8 (default 4) |
 
-### The runtime seven (`areev_run_*`)
+### The runtime eight (`areev_run_*`)
 
 The governed workflow runtime over MCP: journaled, checkpointed, budgeted,
 resumable runs of Workflow grains. Two rules distinguish this surface from
@@ -499,7 +499,8 @@ the CLI:
 | `areev_run_resume` | Resume a parked/interrupted run from its latest checkpoint — settles answered asks, expires stale ones, re-delivers crash-window intents under the same idempotency key (recorded). |
 | `areev_run_respond` | Answer one pending ask by `tool_call_id` (never an index) with `result` / `is_error`. Separation of duties is structural; rejected and late responses are journaled as audit evidence before the error returns. |
 | `areev_run_input` | Queue a steering message (`run_id`, `message`). The next superstep hands it to its nodes under `$inbox` — an in-band channel, so a chat-style plan does not misuse a human-gate ask to receive one. |
-| `areev_run_cancel` | Write the kill-switch marker (`run_id`, optional `because`) — deliberately the lowest-privilege run verb. |
+| `areev_run_pause` | Ask a live run to PAUSE at its next superstep boundary (`run_id`, optional `because`) — #344. The open superstep finishes and checkpoints, nothing past it dispatches, and the driving call returns `{"parked": {"kind": "paused", "reason": "paused", …}}`; the run holds no lease or concurrency slot while paused. `areev_run_resume` continues it under the same run id, manifest and pins — no fork, no node re-executed. Needs `run.execute` (the grant resume takes), attributed to the server-bound identity. Idempotent: a standing request answers with `already: true`. `RUN-E029` (as an `isError` result) when the run already finished or a cancel is pending — cancel wins, and a cancel on a paused run finalizes it. |
+| `areev_run_cancel` | Write the kill-switch marker (`run_id`, optional `because`) — deliberately the lowest-privilege run verb. A paused run is finalized as canceled at once. |
 | `areev_run_verify` | Journal-consistent replay: re-derives every checkpoint and byte-compares against the stored chain, writing nothing; divergences name the differing fields. With `plan` (a candidate Workflow hash) and `runs` (comma-separated) it is the plan-change rehearsal instead: the runs re-driven under the candidate with every effect answered from the journal — zero dispatches, zero writes — reporting per run the outcome under incumbent vs candidate, effects replayed and out of support, and spend; a run that needs an effect the journal never recorded is `out_of_support`, a field, not an error. |
 | `areev_run_list` | Recent run ids, newest first (`limit`, default 20). |
 
