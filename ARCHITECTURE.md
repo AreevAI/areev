@@ -2254,10 +2254,52 @@ grain, whose `read` record names the resolved operands and the grain hash, so
 a determination made against a file that has since moved on stays
 reproducible without re-reading it. The payload is byte-identical to the
 bindings' `entity_at`/`related`, because a plan node should read what a driver
-would have pinned. Deliberately two typed operations, not a query language:
-anything richer is a saved query and a trigger's `--context-query`, or a new
-operation with its own decision. `docs/run.md` "Reading the run's own memory"
-is the reference.
+would have pinned. Deliberately typed operations, not a query language —
+two at first, three since #342 (below): anything richer is a saved query and a
+trigger's `--context-query`, or a new operation with its own decision.
+`docs/run.md` "Reading the run's own memory" is the reference.
+
+### In-run recall is a third typed read; saved queries are not
+
+**Decision (2026-09-23, #342):** `reads` gains `op: recall` — the bindings'
+`recall(subject, relation, k, ns)` as a plan-declared read — and does NOT gain
+an `op: saved_query`. The use case is a host that only calls `run
+start`/`resume` and whose agents answer questions over their own records ("the
+last five statements for this account"), where the set of records is not known
+before the run starts, so the driver cannot pre-read it.
+
+`recall` keeps every property the first two reads were built on. Its operands
+are `ns` (exact — the run's namespace or a dotted descendant, never an
+`"org.*"` pattern), `subject`/`subject_from`, an optional literal `relation`,
+`k` (1–64, default 16) and an optional `at`/`at_from` + `axis`; unknown keys
+are refused, so there is no free text and no predicate. The count ceiling is
+enforced by the runtime rather than advised: a plan asking for `k` past 64 is
+refused at start (`RUN-E019`), and the executed read is truncated to the
+plan's `k` and fails if a pinned `k` is out of range. With an instant it is an
+**as-of recall**, defined as `entity_at` per relation (`Areev::recall_at`,
+conformance-tested on both backends) rather than as a new temporal query — the
+store has one reviewed as-of semantics (#305) and a second would eventually
+disagree with it. The cost is stated: an as-of recall answers one grain per
+relation, where the current recall returns every live grain. It is journaled
+as `mg:recall` with `{op, ns, subject, relation, k, grains[, at, axis]}` — the
+resolved operands and every result hash — and `verify`/`shadow` answer it from
+that result grain like any read.
+
+A named saved query was declined for three reasons, any one of which is
+enough. **It is not an address.** Saved queries are `qry:<name>` meta rows —
+mutable, latest-wins on import, replicated — not content-addressed grains, so
+"the query text frozen at the address the plan pins" would need a new pinning
+mechanism for query text before a reviewer could read what a run may see.
+**Binding state into CAL text is a query language by another route**: a plan
+whose operands fill a query's holes can ask anything the query's author
+anticipated and the plan's reviewer did not. **Replay would widen past
+reach.** `verify` and `shadow` answer a read from its journaled result, but
+proving that journaled result is what the plan was *allowed* to ask — tag
+filters, pipelines, `ASSEMBLE` across mounts — is a much larger surface than
+three typed operations whose every operand is on the plan. A start/resume-only
+host that needs a richer question keeps the documented path: a saved query
+feeding a trigger's `--context-query` (bound values travel as a parsed AST,
+never inside CAL text), or a driver-side pre-read into the run input.
 
 ### A hold binds the memory where destruction is decided (1.9.0, #278, #279)
 

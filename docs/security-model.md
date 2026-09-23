@@ -751,16 +751,20 @@ or it writes corrupt records — and it is deliberately narrow:
 
 A host command never receives a handle on the memory its run is holding —
 on the embedded tier the file lock refuses it, and a handle would be a licence
-to read everything. A plan that needs an as-of read or a graph walk declares it
-(`reads`, [run.md](run.md#reading-the-runs-own-memory-reads)), and the runtime
-performs it:
+to read everything. A plan that needs an as-of read, a graph walk or a bounded
+recall declares it (`reads`, [run.md](run.md#reading-the-runs-own-memory-reads)),
+and the runtime performs it:
 
 - **Scope is on the plan, not the tool.** A read targets the run's own
   namespace or a dotted descendant of it — never a parent or a sibling, so
-  `org.uw` cannot read `org.other` or the governance namespaces — and the
-  operation, relation, axis and namespace are
-  literals a reviewer reads. Only the subject, the start and the instant come
-  from run state.
+  `org.uw` cannot read `org.other` or the governance namespaces, and never an
+  `"org.*"` pattern — and the operation, relation, axis, namespace and count
+  are literals a reviewer reads. Only the subject, the start and the instant
+  come from run state.
+- **Every read is bounded.** A `related` walk is capped at depth 4 and 512
+  nodes, a `recall` at `k` ≤ 64; a plan asking for more is refused at start,
+  and the runtime truncates the executed answer to the plan's `k` whatever the
+  store returned. There is no free-text or predicate operand to widen it.
 - **Grants apply twice.** The session must hold `read` on the target namespace
   when the run starts (`RUN-E012` otherwise, before any manifest is written)
   and again at each read, because a resume need not run under the starting

@@ -279,6 +279,9 @@ macro_rules! for_each_conformance_case {
         $per_case!(run_grains_pages_completely);
         $per_case!(step_action_survives_supersession_only_by_restatement);
         $per_case!(runs_executing_reads_the_spec_hash_edge);
+        // in-run recall (#342): recall_at == entity_at per relation; the k ceiling
+        $per_case!(recall_at_is_entity_at_per_relation);
+        $per_case!(run_recall_is_bounded_and_refused_past_its_ceiling);
         // dictionary values are unbounded by their index (#160)
         $per_case!(incompressible_values_of_any_size_are_stored);
         // namespace prefix scoping ("org.*") + the ns registry

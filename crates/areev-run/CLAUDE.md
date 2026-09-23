@@ -294,7 +294,8 @@ evidence. Responding and resuming are separate acts.
 ## Declared memory reads (`memread.rs`, #255)
 
 A plan's `reads` field makes a node a `memory` executor the DRIVER answers:
-`entity_at` or `related` against the run's namespace or a dotted descendant.
+`entity_at`, `related` or `recall` (#342) against the run's namespace or a
+dotted descendant — always an exact namespace, never an `"org.*"` pattern.
 The shape of the rules, and why each one is load-bearing:
 
 - **Its own `NodeExecutor::MemoryRead` variant, not a Host tool with a
@@ -312,9 +313,18 @@ The shape of the rules, and why each one is load-bearing:
   `Runner::start` and fork migration additionally check `read` grants before
   the run exists; `execute` re-checks scope and grants at every read.
 - **The payload is the bindings' JSON** (`{"found", "grain"}` /
-  `{"start", "reached"}`) merged under `into`; the resolved operands + grain
-  hash ride the RESULT grain as `read` (`write_result_with_read`). The
-  result grain is the replay answer, so verify/shadow never re-read.
+  `{"start", "reached"}` / recall's `[{hash, type, fields}]`) merged under
+  `into`; the resolved operands + grain hash(es) ride the RESULT grain as
+  `read` (`write_result_with_read`). The result grain is the replay answer,
+  so verify/shadow never re-read — which is why `recall` needed no change in
+  either.
+- **`recall`'s `k` ceiling (`MAX_K` = 64) is enforced twice**: `parse_reads`
+  refuses 0 / >64 at start, and `execute` fails a pinned spec whose `k` is out
+  of range (the manifest is replicated data) and truncates the store's answer
+  to `k`. With `at`/`at_from` it calls `Areev::recall_at` — `entity_at` per
+  relation, one grain each — never a second as-of semantics. `axis` without
+  an instant is refused (a knob that would do nothing). `op: saved_query`
+  was declined (ARCHITECTURE.md §10): a `qry:` row is not an address.
 - **Operand failures are `SchemaValidationFailed`** (not retryable for a Tool
   effect: same state, same failure); store errors `ExecutorError` (node
   `retries` apply); scope/grant refusals `Unknown`. A miss is a COMPLETED
@@ -323,7 +333,11 @@ The shape of the rules, and why each one is load-bearing:
   because `shadow` of a body that is not in the store used to read `reducers`
   from the store only; a draft's `reads` would have rehearsed as LLM steps.
 - Tests: `tests/memory_read_tests.rs` replays the insurance example's
-  backdated-endorsement fixture from inside a run on both axes.
+  backdated-endorsement fixture from inside a run on both axes, and covers
+  `recall` (≤ k, as-of parity with `entity_at`, journal record, verify/shadow
+  after the file moves on, forged-result divergence, start refusals). The
+  ceiling is also a two-backend case in `areev-conformance`
+  (`run_recall_is_bounded_and_refused_past_its_ceiling`).
 
 ## Telemetry (`stream.rs` + `otel.rs`)
 

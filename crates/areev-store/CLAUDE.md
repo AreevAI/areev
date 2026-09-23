@@ -418,6 +418,20 @@ field — CAL ranks those in the executor over a widened scan instead
 (`CAL-W015`). The two orders differ whenever grains are backdated or imported
 out of order, which is exactly when a caller asks for `created_at` explicitly.
 
+`recall_at(ns, subject, relation, k, t, axis)` (#342) is the as-of recall a
+plan's `op: recall` with an instant calls. It is **defined as `entity_at` per
+relation** — every relation the subject has ever had in `ns` (a `DISTINCT p`
+over `triples`, current or not), or the one named — each answered by
+`entity_at`, sorted newest-first on the asked clock (`valid_from` else
+`created_at` for world, `created_at` for knowledge; relation name breaks
+ties), truncated to `k`. Deliberately not a second temporal query: the store
+has one reviewed as-of semantics (#305's world-time tie-break, the knowledge
+axis's head-chain walk) and a parallel SQL definition would drift from it —
+e.g. on a backdated grain added off the head chain. So `recall_at(…, Some(r),
+1, …)` == `entity_at(…, r, …)` exactly, and an as-of recall returns ONE grain
+per relation where `recall` returns every live one. Exact namespace only.
+Conformance: `recall_at_is_entity_at_per_relation` (both backends).
+
 ## Anonymization key material
 
 Three keys are HKDF-derived from ONE root, with their own domain-separation
@@ -789,8 +803,8 @@ is what lets an embedded reader hold the SELECT-only role too.
 ## Tests & benches
 
 `cargo test -p areev-store`. All tests use `tempfile::TempDir`.
-- `store_tests.rs` — add/recall/supersede/forget, graph ops, `entity_at`
-  both axes, reopen persistence.
+- `store_tests.rs` — add/recall/supersede/forget, graph ops, `entity_at` /
+  `recall_at` both axes, reopen persistence.
 - `fork_merge_tests.rs` — fork → provisional head → merge (uses **fixed**
   `created_at` values to make the tiebreak deterministic — copy that pattern).
 - `fts_hybrid_tests.rs` — RRF ranking, zero-deadline fail-open.

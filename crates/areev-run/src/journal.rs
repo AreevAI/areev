@@ -97,7 +97,8 @@ fn base_tool(
             (workflow_hash.clone(), "mg:subgraph".to_string(), ExecutorKind::Host)
         }
         // A declared memory read journals under `mg:<op>` (`mg:entity_at`,
-        // `mg:related`); what it read rides the result's `read` field.
+        // `mg:related`, `mg:recall`); what it read rides the result's `read`
+        // field.
         NodeExecutor::MemoryRead { op, .. } => {
             (String::new(), format!("mg:{op}"), ExecutorKind::Host)
         }
