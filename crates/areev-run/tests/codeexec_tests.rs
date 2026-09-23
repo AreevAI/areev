@@ -799,3 +799,56 @@ fn a_capability_module_without_a_broker_says_so() {
     let detail = grain.get_str("failure_detail").unwrap_or_default().to_string();
     assert!(detail.contains("no credential broker"), "{detail}");
 }
+
+/// #339: a transfer ceiling that is malformed, zero or above the 32 MiB hard
+/// maximum refuses the run at START with RUN-E028 — before any module runs or
+/// any upstream is contacted — rather than being clamped or ignored. A grain
+/// can arrive by sync or in a pack, so the write path's check is not enough.
+#[test]
+fn an_out_of_range_transfer_ceiling_refuses_at_start() {
+    for limits in [
+        json!({"max_response_bytes": 33_554_433}),
+        json!({"max_request_bytes": 0}),
+        json!({"max_response_bytes": "25MiB"}),
+    ] {
+        let rig = Rig::new();
+        let uri = rig.put_blob(b"\0asm");
+        let plan = plan_with_capabilities(&rig, &uri, "wasm32-areev-io", Some(gmail_caps()), Some(limits.clone()));
+        let exec = areev_run::CodeExecutor::new(Arc::new(Fallback)).allow(&uri);
+        let err = rig.runner(Arc::new(exec)).start(&plan, "r1", json!({}), &opts()).unwrap_err();
+        assert_eq!(err.code(), "RUN-E028", "{limits}: {err}");
+        assert!(err.to_string().contains("node 'work'"), "{err}");
+    }
+}
+
+/// And the admitted range starts: a 25 MiB response / 16 MiB request
+/// declaration is a legitimate document-sized envelope. The request ceiling is
+/// the broker's alone — it is not forwarded to the sandbox, whose argv an
+/// older sandbox build would refuse.
+#[cfg(unix)]
+#[test]
+fn a_document_sized_transfer_declaration_starts() {
+    let rig = Rig::new();
+    let uri = rig.put_blob(b"\0asm-io-module");
+    let plan = plan_with_capabilities(
+        &rig,
+        &uri,
+        "wasm32-areev-io",
+        Some(gmail_caps()),
+        Some(json!({"max_response_bytes": 26_214_400, "max_request_bytes": 16_777_216})),
+    );
+    let fake = fake_sandbox(&rig, "fake-sandbox-339.sh");
+    let exec = areev_run::CodeExecutor::new(Arc::new(Fallback))
+        .allow(&uri)
+        .cache_dir(rig.dir.join("cache"))
+        .sandbox_cmd(fake.to_str().unwrap())
+        .with_egress(areev_run::EgressHandle::new(capability_broker()));
+    let session = rig.runner(Arc::new(exec)).start(&plan, "r1", json!({}), &opts()).unwrap();
+    let RunSession::Finished { outcome, .. } = session else { panic!("expected finish") };
+    assert_eq!(outcome, RunOutcome::Completed);
+    let records = rig.facade.with_store(|m| m.step_actions("ops", &plan, None, 10)).unwrap();
+    let grain = rig.facade.with_store(|m| m.get(&records[0].1)).unwrap();
+    let argv = grain.get_str("tool_content").unwrap_or_default().to_string();
+    assert!(argv.contains("--max-response-bytes 26214400"), "{argv}");
+    assert!(!argv.contains("request"), "{argv}");
+}

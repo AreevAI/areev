@@ -597,7 +597,10 @@ behind these flags.
 `areev-sandbox` runs a `wasm32` module with no WASI, a frozen import set, a fuel
 ceiling, a memory-page ceiling, and a module-size cap applied before the decoder
 sees the bytes. A module cannot open a socket, touch the filesystem, read an
-environment variable, see a clock, or run forever.
+environment variable, see a clock, or run forever. The guest contract is
+[`docs/sandbox-abi.md`](sandbox-abi.md); opening it to non-Rust toolchains
+(#340) added documentation and reference modules, not imports — a WASI import
+is still refused by default, and there is no flag that admits it.
 
 Be precise about what that buys. Tier C protects **the host from the tool**, and
 it is real isolation for parsing, extraction, classification and scoring. It is
@@ -653,7 +656,12 @@ needed no new IPC channel: the engine already injected `AREEV_EGRESS_URL` +
 The opt-in artifact mode keeps that boundary: an upload names an existing CAS
 address and a declared content type, while the broker reads the bytes through
 the run's open memory. Download bytes are read under a limit and stored with
-the same handle, so encrypted memories stay encrypted. The broker refuses a
+the same handle, so encrypted memories stay encrypted. Both limits are
+declared per tool — `max_response_bytes` and `max_request_bytes`, 1 MiB by
+default, never above the 32 MiB hard maximum (#339) — and an out-of-range
+declaration is refused (`RUN-E028`) rather than clamped, so what one call can
+make the broker buffer is bounded by a number an operator can read off the
+Definition. An upload is sized before the broker connects upstream. The broker refuses a
 binary response that reflects a credential rather than altering its bytes.
 The immutable egress audit retains digests, CAS address and bounded metadata,
 not bytes or credential values.
@@ -751,16 +759,20 @@ or it writes corrupt records — and it is deliberately narrow:
 
 A host command never receives a handle on the memory its run is holding —
 on the embedded tier the file lock refuses it, and a handle would be a licence
-to read everything. A plan that needs an as-of read or a graph walk declares it
-(`reads`, [run.md](run.md#reading-the-runs-own-memory-reads)), and the runtime
-performs it:
+to read everything. A plan that needs an as-of read, a graph walk or a bounded
+recall declares it (`reads`, [run.md](run.md#reading-the-runs-own-memory-reads)),
+and the runtime performs it:
 
 - **Scope is on the plan, not the tool.** A read targets the run's own
   namespace or a dotted descendant of it — never a parent or a sibling, so
-  `org.uw` cannot read `org.other` or the governance namespaces — and the
-  operation, relation, axis and namespace are
-  literals a reviewer reads. Only the subject, the start and the instant come
-  from run state.
+  `org.uw` cannot read `org.other` or the governance namespaces, and never an
+  `"org.*"` pattern — and the operation, relation, axis, namespace and count
+  are literals a reviewer reads. Only the subject, the start and the instant
+  come from run state.
+- **Every read is bounded.** A `related` walk is capped at depth 4 and 512
+  nodes, a `recall` at `k` ≤ 64; a plan asking for more is refused at start,
+  and the runtime truncates the executed answer to the plan's `k` whatever the
+  store returned. There is no free-text or predicate operand to widen it.
 - **Grants apply twice.** The session must hold `read` on the target namespace
   when the run starts (`RUN-E012` otherwise, before any manifest is written)
   and again at each read, because a resume need not run under the starting
@@ -922,7 +934,9 @@ Each of the following is worth stating because it closes a specific hole:
   capability caller the broker abandons the body at `max_response_bytes`
   rather than buffering an upstream's whole answer and then measuring it, and
   the overrun is a typed refusal — never a truncated or empty body passed off
-  as the upstream's response.
+  as the upstream's response. The count is of bytes read, not of a declared
+  `Content-Length`, so chunked and close-delimited bodies are bounded the same
+  way; the refusal names the effective ceiling (#339).
 - **`areev::fetch` is non-reentrant, enforced.** Placing a response calls the
   guest's own `alloc`, which is guest code; a guest whose allocator called
   `fetch` again would recurse a native host frame plus a broker round trip per
@@ -1191,6 +1205,15 @@ Three consequences worth knowing:
   `read`, `create`/`str_replace`/`insert`/`rename` take `write`, `delete` takes
   `delete`. An unrecognized command takes `admin`, so a command added to
   `MemoryTool` later is gated until someone maps it.
+- **A pack install is authorized whole, before its first write** (#341, the
+  bindings' `packInstall` / `pack_install` and `areev::pack::install_pack`):
+  `write` on every grain's namespace, `write` on the pack's namespace for its
+  blobs and for NEW saved-query/template rows, `admin` on `"*"` to REPLACE a
+  different registry row (what `DEFINE QUERY` takes) or to replay a bundle
+  pack. The blobs and registry rows used to be written unchecked ahead of the
+  grain batch, so a refused principal had already changed the memory. Host
+  executor pins passed to an install are checked against the pack's code and
+  never written (`PCK-E005`) — a pin stored in the memory it guards is no pin.
 
 Checks ask the facade's **effective** rights (`effective_authz()`) — an active
 `PrincipalSession`'s when one is on the thread, else the bound set — so the

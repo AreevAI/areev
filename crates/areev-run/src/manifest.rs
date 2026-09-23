@@ -907,6 +907,11 @@ pub fn pin_from_definition(
         }
     };
     let runtime_limits = if runtime.is_some() { g.fields.get("runtime_limits").cloned() } else { None };
+    // #339: the brokered-transfer ceilings, refused at start — before any
+    // upstream I/O — when malformed, zero or above the hard maximum. A grain
+    // can arrive by sync or in a pack, so the write path is not the only way in.
+    areev_core::types::capability::validate_transfer_limits(runtime_limits.as_ref())
+        .map_err(|detail| RunError::TransferLimitInvalid { node: node.to_string(), detail })?;
     // The declared capability set (#101). Fail closed on both axes, the same
     // way the runtime does: a declaration on a tool whose runtime cannot honour
     // it describes nothing, and a malformed one must be refused at start rather

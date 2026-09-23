@@ -259,7 +259,12 @@ Pg-only multi-writer race cases); extend it whenever store semantics change.
   `areev blob get` — read an attachment while a run holds the memory.
 - CAS blob sidecar at `"{path}.blobs"`, git-style `hex[..2]/hex[2..]` fan-out:
   `put_blob` (idempotent, tmp+rename), `get_blob` (re-verifies sha256),
-  `gc_blobs` (ref-count from live grains' `content_refs`). Free fn
+  `blob_len` (#339: PLAINTEXT size without loading the body — sidecar
+  metadata + a 21-byte prefix read, or `length(body)`/`substr` on the table
+  backend; a sealed blob reports stored length minus the fixed
+  `blobcrypt::SEALED_OVERHEAD`; verifies nothing — it is what the egress
+  broker refuses an oversized `body_ref` upload on before reading a byte;
+  conformance case `blob_len_reports_size_without_reading`), `gc_blobs` (ref-count from live grains' `content_refs`). Free fn
   **`read_blob_offline(db_path, uri)`** reads one blob WITHOUT opening the
   database — the file lock is exclusive, so while a run holds a memory a second
   process is refused even for a read, which would strand an attachment out of
@@ -417,6 +422,20 @@ immutable blob, so SQL cannot reach it without materializing a column per
 field — CAL ranks those in the executor over a widened scan instead
 (`CAL-W015`). The two orders differ whenever grains are backdated or imported
 out of order, which is exactly when a caller asks for `created_at` explicitly.
+
+`recall_at(ns, subject, relation, k, t, axis)` (#342) is the as-of recall a
+plan's `op: recall` with an instant calls. It is **defined as `entity_at` per
+relation** — every relation the subject has ever had in `ns` (a `DISTINCT p`
+over `triples`, current or not), or the one named — each answered by
+`entity_at`, sorted newest-first on the asked clock (`valid_from` else
+`created_at` for world, `created_at` for knowledge; relation name breaks
+ties), truncated to `k`. Deliberately not a second temporal query: the store
+has one reviewed as-of semantics (#305's world-time tie-break, the knowledge
+axis's head-chain walk) and a parallel SQL definition would drift from it —
+e.g. on a backdated grain added off the head chain. So `recall_at(…, Some(r),
+1, …)` == `entity_at(…, r, …)` exactly, and an as-of recall returns ONE grain
+per relation where `recall` returns every live one. Exact namespace only.
+Conformance: `recall_at_is_entity_at_per_relation` (both backends).
 
 ## Anonymization key material
 
@@ -789,8 +808,8 @@ is what lets an embedded reader hold the SELECT-only role too.
 ## Tests & benches
 
 `cargo test -p areev-store`. All tests use `tempfile::TempDir`.
-- `store_tests.rs` — add/recall/supersede/forget, graph ops, `entity_at`
-  both axes, reopen persistence.
+- `store_tests.rs` — add/recall/supersede/forget, graph ops, `entity_at` /
+  `recall_at` both axes, reopen persistence.
 - `fork_merge_tests.rs` — fork → provisional head → merge (uses **fixed**
   `created_at` values to make the tiebreak deterministic — copy that pattern).
 - `fts_hybrid_tests.rs` — RRF ranking, zero-deadline fail-open.

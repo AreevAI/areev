@@ -281,6 +281,59 @@ fn entity_at_knowledge_axis_walks_chain() {
     assert_eq!(g.get_str("object"), Some("80"));
 }
 
+/// `recall_at` (#342) is `entity_at` per relation: a relation whose every
+/// grain was superseded still answers at an earlier instant, a relation with
+/// no answer at that instant is absent (not guessed), newest-first on the
+/// asked clock, bounded by `k`.
+#[test]
+fn recall_at_answers_entity_at_per_relation() {
+    let (mut m, _d) = open_mem();
+    let dated = |r: &str, o: &str, vf: i64, created: i64| {
+        let mut f = fact("ns", "alice", r, o);
+        f.common.valid_from = Some(vf);
+        f.common.created_at = Some(created);
+        f
+    };
+    let employer = m.add(&dated("employer", "Acme", 1_000, 1_000)).unwrap();
+    m.supersede(&employer, &mut dated("employer", "Globex", 1_000, 5_000))
+        .unwrap();
+    m.add(&dated("city", "Berlin", 2_000, 2_000)).unwrap();
+    m.add(&dated("title", "CTO", 4_000, 4_000)).unwrap();
+
+    let objects = |gs: Vec<areev_core::format::DeserializedGrain>| -> Vec<String> {
+        gs.iter()
+            .map(|g| g.get_str("object").unwrap().to_string())
+            .collect()
+    };
+    // World at 3,000: the restated employer is true since 1,000; `title` has
+    // not started.
+    assert_eq!(
+        objects(m.recall_at("ns", "alice", None, 16, 3_000, Axis::World).unwrap()),
+        vec!["Berlin", "Globex"]
+    );
+    // Knowledge at 3,000: the restatement was not yet recorded.
+    assert_eq!(
+        objects(m.recall_at("ns", "alice", None, 16, 3_000, Axis::Knowledge).unwrap()),
+        vec!["Berlin", "Acme"]
+    );
+    assert_eq!(
+        objects(m.recall_at("ns", "alice", None, 1, 9_000, Axis::World).unwrap()),
+        vec!["CTO"],
+        "k bounds the answer, newest valid_from first"
+    );
+    for (r, t, axis) in [("employer", 3_000, Axis::Knowledge), ("title", 3_000, Axis::World)] {
+        assert_eq!(
+            m.recall_at("ns", "alice", Some(r), 1, t, axis)
+                .unwrap()
+                .first()
+                .map(|g| g.hash),
+            m.entity_at("ns", "alice", r, t, axis).unwrap().map(|g| g.hash),
+            "{r}: a named relation is entity_at"
+        );
+    }
+    assert!(m.recall_at("ns.*", "alice", None, 4, 3_000, Axis::World).is_err());
+}
+
 #[test]
 fn entity_at_world_axis_filters_validity() {
     let (mut m, _d) = open_mem();

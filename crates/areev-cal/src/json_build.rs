@@ -1174,12 +1174,13 @@ pub fn build_grain_from_json<S: GrainSink>(
                                 | "max_pages"
                                 | "max_calls"
                                 | "max_response_bytes"
+                                | "max_request_bytes"
                                 | "max_blob_bytes"
                         ) {
                             return Err(AreevError::Validation(format!(
                                 "tool 'runtime_limits' key '{k}' is not recognized; \
                                  accepted: fuel, max_pages, max_calls, max_response_bytes, \
-                                 max_blob_bytes"
+                                 max_request_bytes, max_blob_bytes"
                             )));
                         }
                         if v.as_u64().is_none() {
@@ -1188,6 +1189,11 @@ pub fn build_grain_from_json<S: GrainSink>(
                             )));
                         }
                     }
+                    // #339: the brokered-transfer ceilings are bounded at
+                    // write time by the same reader run start and the broker
+                    // use — 1..=32 MiB, refused (never clamped) outside it.
+                    areev_core::types::capability::validate_transfer_limits(Some(rl))
+                        .map_err(|e| AreevError::Validation(format!("tool {e}")))?;
                     tool = tool.runtime_limits(rl.clone());
                 }
                 // #101: the declared capability set. Validated HERE, at write
@@ -2128,5 +2134,29 @@ mod tests {
         }));
         let err = build_grain_from_json("tool", &fields, NullSink).unwrap_err();
         assert!(err.to_string().contains("max_sneak"), "{err}");
+    }
+
+    #[test]
+    fn transfer_ceilings_are_bounded_at_write_time() {
+        // #339: `max_request_bytes` is an accepted key, a declaration up to the
+        // 32 MiB hard maximum is stored, and zero or above it is refused.
+        let ok = tool_fields(json!({
+            "executor_uri": "cas://sha256:aa",
+            "runtime": "wasm32-areev",
+            "runtime_limits": {"max_response_bytes": 26_214_400, "max_request_bytes": 16_777_216},
+        }));
+        build_grain_from_json("tool", &ok, NullSink).expect("accepted");
+        for (limits, needle) in [
+            (json!({"max_response_bytes": 33_554_433}), "hard maximum"),
+            (json!({"max_request_bytes": 0}), "is 0"),
+        ] {
+            let fields = tool_fields(json!({
+                "executor_uri": "cas://sha256:aa",
+                "runtime": "wasm32-areev",
+                "runtime_limits": limits,
+            }));
+            let err = build_grain_from_json("tool", &fields, NullSink).unwrap_err();
+            assert!(err.to_string().contains(needle), "{err}");
+        }
     }
 }

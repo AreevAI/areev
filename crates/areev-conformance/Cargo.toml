@@ -18,17 +18,30 @@ postgres = ["areev-store/postgres", "areev-store/conformance"]
 # the outage case skips, because its `pg_terminate_backend` side channel is a
 # raw NoTls connection rather than a store session.
 postgres-tls = ["postgres", "areev-store/postgres-tls"]
+# Run the sandbox guest-ABI case (#340, `tests/sandbox_abi.rs`): the committed
+# non-Rust reference modules through the real `areev-sandbox` binary. No
+# dependency — the sandbox is reached as a subprocess, the way the engine
+# reaches it — only the promise that the binary exists (CI=true hard-fails
+# without it, as the postgres runner does without a database).
+sandbox = []
 
 [dependencies]
 areev-core = { path = "../areev-core" }
 areev-store = { path = "../areev-store" }
 tempfile = "3"
 serde_json = "1"
+# The CAL-over-backend smoke drives the full stack (executor -> facade ->
+# store) against each backend, and the in-run recall case (#342) drives a
+# real `areev_run::Runner` over each backend: the runtime's `k` ceiling is a
+# guarantee only if it holds on every tier. `publish = false`, so neither
+# edge reaches a shipped artifact.
+areev-cal = { path = "../areev-cal" }
+areev-run = { path = "../areev-run" }
 
 [dev-dependencies]
-# The CAL-over-backend smoke drives the full stack (executor -> facade ->
-# store) against each backend.
-areev-cal = { path = "../areev-cal" }
+# `areev::pack` (#341): the pack install the Node/Python bindings call,
+# driven over each backend. A dev-dependency on a `publish = false` crate.
+areev = { path = "../areev-cli" }
 # ONLY for the reconnect-after-outage case: simulating a managed-Postgres
 # restart means terminating the store's backend from a SECOND connection
 # (`pg_terminate_backend`), which no public store API can or should do. Both

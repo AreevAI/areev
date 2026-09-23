@@ -21,6 +21,28 @@ mem.migrate("mem0", export_json, history_json)         # import an existing corp
 mem.memory_tool('{"command": "view", "path": "/memories"}')  # Anthropic memory-tool backend
 ```
 
+## Agent packs
+
+Validate and install an agent pack (`docs/pack.md`) without shipping the
+`areev` binary. Both return the pack report as a JSON string; a refusal raises
+`areev.PackError` (a `ValueError`) whose `.code` is the typed cause
+(`PCK-E001`..`PCK-E005`, or the `AUT-*`/`STO-*` code passed through).
+
+```python
+import json
+
+report = json.loads(areev.pack_validate("packs/invoice-to-accounting"))  # no memory needed
+tenant = areev.Areev("tenant.db", principal="svc:installer")            # installs AS this principal
+try:
+    installed = json.loads(tenant.pack_install(
+        "packs/invoice-to-accounting",
+        expected_hash=plan_hash,                 # refuse unless the plan builds to this
+        executor_pins={"screen": pinned_addr},   # checked, never written (PCK-E005)
+    ))
+except areev.PackError as e:
+    print(e.code)  # "PCK-E002", "PCK-E005", "AUT-E001", …
+```
+
 Part of [Areev](https://github.com/AreevAI/areev) — an embedded memory engine for AI agents. See the [architecture overview](https://github.com/AreevAI/areev/blob/main/ARCHITECTURE.md).
 
 Licensed under MIT OR Apache-2.0.

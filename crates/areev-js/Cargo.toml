@@ -1,6 +1,6 @@
 [package]
 name = "areev-js"
-version = "1.9.2"
+version = "1.9.3"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["MindGryd Software Private Limited"]
@@ -35,6 +35,9 @@ areev-loop-adapter = { path = "../areev-loop-adapter" }
 areev-llm = { path = "../areev-llm" }
 areev-run = { path = "../areev-run" }
 areev-trigger = { path = "../areev-trigger", features = ["tz"] }
+# `areev::pack` (#341) — the binary crate's library half, renamed so the
+# extern name says what it is used for.
+areev-pack = { package = "areev", path = "../areev-cli" }
 serde_json = "1"
 napi = { version = "3", features = ["napi9"] }
 napi-derive = "3"

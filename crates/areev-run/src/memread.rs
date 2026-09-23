@@ -27,6 +27,14 @@
 //! `shadow` answer it from the journal and never re-read a file that has moved
 //! on since.
 //!
+//! A third op, `recall` (#342), answers "what do I hold about this subject"
+//! — the bindings' `db.recall(subject, relation, k, ns)` — with `k` capped at
+//! [`MAX_K`] on the plan and enforced on the result, and an optional instant
+//! that makes it an as-of recall (`Areev::recall_at`, one `entity_at` answer
+//! per relation). Naming a saved query was considered and declined: see
+//! ARCHITECTURE.md §10, "In-run recall is a third typed read; saved queries
+//! are not".
+//!
 //! What it deliberately is not:
 //! - **not a tool's capability.** Nothing a `--tool-cmd`, a native blob or a
 //!   `wasm32-areev-io` module can call reaches it; the pool refuses a memory
@@ -35,10 +43,10 @@
 //! - **not a way out of the run's namespace.** The target is the run's own
 //!   namespace or a dotted descendant of it, fixed on the plan, and the
 //!   session must hold `read` there.
-//! - **not a query language.** Two typed operations whose every operand is on
-//!   the plan; `relation`, `axis`, `ns` and the walk's shape are literals a
-//!   reviewer can read, and only the subject, the start and the instant may
-//!   come from state.
+//! - **not a query language.** Three typed operations whose every operand is
+//!   on the plan; `relation`, `axis`, `ns`, `k` and the walk's shape are
+//!   literals a reviewer can read, and only the subject, the start and the
+//!   instant may come from state. No free text, no predicate.
 
 use areev_cal::AreevFacade;
 use areev_run_core::{EffectOutcome, FailCause, PlanGraph, RunError};
@@ -54,7 +62,7 @@ pub const MEMORY_EXECUTOR: &str = "memory";
 /// The extra field on a read's RESULT grain naming what was read.
 pub const READ_RECORD_FIELD: &str = "read";
 
-const OPS: [&str; 2] = ["entity_at", "related"];
+const OPS: [&str; 3] = ["entity_at", "related", "recall"];
 const COMMON_KEYS: [&str; 3] = ["op", "ns", "into"];
 const ENTITY_AT_KEYS: [&str; 6] = [
     "subject",
@@ -72,6 +80,15 @@ const RELATED_KEYS: [&str; 6] = [
     "depth",
     "limit",
 ];
+const RECALL_KEYS: [&str; 7] = [
+    "subject",
+    "subject_from",
+    "relation",
+    "k",
+    "at",
+    "at_from",
+    "axis",
+];
 
 /// `related`'s bounds, refused rather than clamped: the store clamps silently,
 /// and a declaration that asks for depth 9 should learn it gets 4.
@@ -79,6 +96,12 @@ const MAX_DEPTH: u64 = 4;
 const MAX_LIMIT: u64 = 512;
 const DEFAULT_DEPTH: u64 = 2;
 const DEFAULT_LIMIT: u64 = 64;
+
+/// `recall`'s ceiling (#342): a plan may not ask for more, and the executed
+/// read never returns more than the plan's `k`. The default is the MCP
+/// `areev_recall` default.
+pub const MAX_K: u64 = 64;
+const DEFAULT_K: u64 = 16;
 
 /// Is `ns` the run's own namespace or a dotted descendant of it?
 pub fn in_run_scope(run_ns: &str, ns: &str) -> bool {
@@ -137,15 +160,19 @@ fn normalize(node: &str, raw: &Value, run_ns: &str) -> Result<Value, RunError> {
         Some(op) if OPS.contains(&op) => op,
         Some(op) => {
             return Err(invalid(format!(
-                "unknown op {op:?} (accepted: entity_at, related)"
+                "unknown op {op:?} (accepted: entity_at, related, recall)"
             )))
         }
-        None => return Err(invalid("names no `op` (entity_at | related)".into())),
+        None => {
+            return Err(invalid(
+                "names no `op` (entity_at | related | recall)".into(),
+            ))
+        }
     };
-    let op_keys: &[&str] = if op == "entity_at" {
-        &ENTITY_AT_KEYS
-    } else {
-        &RELATED_KEYS
+    let op_keys: &[&str] = match op {
+        "entity_at" => &ENTITY_AT_KEYS,
+        "related" => &RELATED_KEYS,
+        _ => &RECALL_KEYS,
     };
     if let Some(k) = obj
         .keys()
@@ -161,6 +188,14 @@ fn normalize(node: &str, raw: &Value, run_ns: &str) -> Result<Value, RunError> {
         Some(Value::String(s)) if !s.is_empty() => s.clone(),
         Some(_) => return Err(invalid("`ns` must be a non-empty string".into())),
     };
+    // A literal namespace, never an `"org.*"` scope: a read names exactly the
+    // namespace a reviewer approves and whose grant is checked (`recall` is
+    // the one op whose store call would otherwise accept a pattern).
+    if areev_core::ns::NsScope::is_pattern(&ns) {
+        return Err(invalid(format!(
+            "`ns` must be an exact namespace, not a pattern ({ns:?})"
+        )));
+    }
     if !in_run_scope(run_ns, &ns) {
         return Err(RunError::Unauthorized {
             what: format!(
@@ -188,29 +223,32 @@ fn normalize(node: &str, raw: &Value, run_ns: &str) -> Result<Value, RunError> {
             "relation".into(),
             json!(required_str(obj, "relation").map_err(invalid)?),
         );
-        match (obj.get("at"), obj.get("at_from")) {
-            (Some(at), None) => {
-                let ms = at_ms(at).map_err(|why| invalid(format!("`at`: {why}")))?;
-                spec.insert("at".into(), json!(ms));
-            }
-            (None, Some(_)) => {
-                spec.insert(
-                    "at_from".into(),
-                    json!(pointer(obj, "at_from").map_err(invalid)?),
-                );
-            }
-            _ => return Err(invalid("needs exactly one of `at` / `at_from`".into())),
+        if !instant(obj, &mut spec).map_err(invalid)? {
+            return Err(invalid("needs exactly one of `at` / `at_from`".into()));
         }
-        let axis = match obj.get("axis") {
-            None => "world",
-            Some(Value::String(a)) if a == "world" || a == "knowledge" => a.as_str(),
-            Some(other) => {
-                return Err(invalid(format!(
-                    "`axis` must be \"world\" or \"knowledge\", not {other}"
-                )))
-            }
-        };
-        spec.insert("axis".into(), json!(axis));
+    } else if op == "recall" {
+        operand(obj, "subject", &mut spec).map_err(invalid)?;
+        if obj.contains_key("relation") {
+            spec.insert(
+                "relation".into(),
+                json!(required_str(obj, "relation").map_err(invalid)?),
+            );
+        }
+        // Defaulted like `related`'s `limit`, and refused past the ceiling
+        // rather than clamped: a plan asking for 65 learns it gets 64.
+        spec.insert(
+            "k".into(),
+            json!(bounded(obj, "k", DEFAULT_K, MAX_K).map_err(invalid)?),
+        );
+        // The instant is optional — without one this is a current recall —
+        // but an `axis` with no instant would be a knob that does nothing.
+        if !instant(obj, &mut spec).map_err(invalid)? && obj.contains_key("axis") {
+            return Err(invalid(
+                "`axis` needs an instant (`at` / `at_from`); a recall without one reads \
+                 what is current"
+                    .into(),
+            ));
+        }
     } else {
         operand(obj, "start", &mut spec).map_err(invalid)?;
         let relations: Vec<String> = match obj.get("relations") {
@@ -257,6 +295,35 @@ fn normalize(node: &str, raw: &Value, run_ns: &str) -> Result<Value, RunError> {
         );
     }
     Ok(Value::Object(spec))
+}
+
+/// The instant and its axis, as `entity_at` reads them: at most one of `at`
+/// (normalized to epoch ms) / `at_from` (a pointer), and `axis` defaulting to
+/// world. Returns whether an instant was given; an absent one inserts nothing,
+/// and the caller decides whether that is allowed.
+fn instant(obj: &Map<String, Value>, spec: &mut Map<String, Value>) -> Result<bool, String> {
+    match (obj.get("at"), obj.get("at_from")) {
+        (None, None) => return Ok(false),
+        (Some(at), None) => {
+            let ms = at_ms(at).map_err(|why| format!("`at`: {why}"))?;
+            spec.insert("at".into(), json!(ms));
+        }
+        (None, Some(_)) => {
+            spec.insert("at_from".into(), json!(pointer(obj, "at_from")?));
+        }
+        _ => return Err("needs exactly one of `at` / `at_from`".into()),
+    }
+    let axis = match obj.get("axis") {
+        None => "world",
+        Some(Value::String(a)) if a == "world" || a == "knowledge" => a.as_str(),
+        Some(other) => {
+            return Err(format!(
+                "`axis` must be \"world\" or \"knowledge\", not {other}"
+            ))
+        }
+    };
+    spec.insert("axis".into(), json!(axis));
+    Ok(true)
 }
 
 /// `name` as a literal string, or `name_from` as a JSON pointer — exactly one.
@@ -380,7 +447,7 @@ pub fn execute(facade: &AreevFacade, run_ns: &str, spec: &Value, input: &Value) 
     };
     // Re-checked here, not only at start: the manifest is replicated data, and
     // the run may be resumed by a different session than the one that began it.
-    if !in_run_scope(run_ns, ns) {
+    if !in_run_scope(run_ns, ns) || areev_core::ns::NsScope::is_pattern(ns) {
         return failed(
             FailCause::Unknown,
             format!("memory read of '{ns}' refused: outside this run's namespace '{run_ns}'"),
@@ -478,6 +545,69 @@ pub fn execute(facade: &AreevFacade, run_ns: &str, spec: &Value, input: &Value) 
             // `db.related`'s exact shape.
             (json!({"start": start, "reached": reached}), record)
         }
+        "recall" => {
+            let subject = match resolve_str(spec, input, "subject") {
+                Ok(s) => s,
+                Err(why) => return schema(why),
+            };
+            let relation = spec.get("relation").and_then(Value::as_str);
+            // The ceiling is the runtime's, not the declaration's word for it:
+            // a pinned `k` past MAX_K (a hand-edited manifest) is refused, and
+            // the answer is truncated to `k` whatever the store returned.
+            let k = match spec.get("k").and_then(Value::as_u64) {
+                Some(k) if (1..=MAX_K).contains(&k) => k as usize,
+                other => {
+                    return failed(
+                        FailCause::Unknown,
+                        format!("memory read: pinned `k` {other:?} is outside 1..={MAX_K}"),
+                    )
+                }
+            };
+            let as_of = if spec.get("at").is_some() || spec.get("at_from").is_some() {
+                let at = match resolve(spec, input, "at").and_then(at_ms) {
+                    Ok(at) => at,
+                    Err(why) => return schema(format!("`at`: {why}")),
+                };
+                let axis_name = spec.get("axis").and_then(Value::as_str).unwrap_or("world");
+                let Some(axis) = areev_store::Axis::parse(axis_name) else {
+                    return schema(format!("unknown axis {axis_name:?}"));
+                };
+                Some((at, axis_name, axis))
+            } else {
+                None
+            };
+            let grains = match facade.with_store(|m| match as_of {
+                Some((at, _, axis)) => m.recall_at(ns, &subject, relation, k, at, axis),
+                None => m.recall(ns, &subject, relation, k),
+            }) {
+                Ok(mut g) => {
+                    g.truncate(k);
+                    g
+                }
+                Err(e) => return failed(FailCause::ExecutorError, format!("memory read: {e}")),
+            };
+            let hashes: Vec<String> = grains.iter().map(|g| g.hash.to_hex()).collect();
+            let mut record = json!({
+                "op": op, "ns": ns, "subject": subject, "relation": relation,
+                "k": k, "grains": hashes,
+            });
+            if let Some((at, axis_name, _)) = as_of {
+                record["at"] = json!(at);
+                record["axis"] = json!(axis_name);
+            }
+            // `db.recall`'s exact shape, built as both bindings build it.
+            let payload: Vec<Value> = grains
+                .iter()
+                .map(|g| {
+                    json!({
+                        "hash": g.hash.to_hex(),
+                        "type": format!("{:?}", g.grain_type).to_lowercase(),
+                        "fields": g.fields,
+                    })
+                })
+                .collect();
+            (Value::Array(payload), record)
+        }
         other => {
             return failed(
                 FailCause::Unknown,
@@ -546,6 +676,67 @@ mod tests {
         );
     }
 
+    /// `recall` (#342): `k` defaults to 16, the instant and its axis only
+    /// appear when an instant is declared, and `relation` stays absent when
+    /// the plan names none.
+    #[test]
+    fn a_recall_declaration_normalizes() {
+        let p = plan(&["a", "r"]);
+        let current = json!({"r": {"op": "recall", "subject_from": "/account"}});
+        assert_eq!(
+            parse_reads(Some(&current), &p, "org.uw").unwrap()["r"],
+            json!({"op": "recall", "ns": "org.uw", "into": "r",
+                   "subject_from": "/account", "k": 16})
+        );
+        let as_of = json!({"r": {"op": "recall", "ns": "org.uw.ledger", "subject": "ACC-1",
+            "relation": "mg:statement", "k": 5, "at": "2026-03-18", "into": "stmts"}});
+        assert_eq!(
+            parse_reads(Some(&as_of), &p, "org.uw").unwrap()["r"],
+            json!({"op": "recall", "ns": "org.uw.ledger", "into": "stmts", "subject": "ACC-1",
+                   "relation": "mg:statement", "k": 5, "at": 1_773_792_000_000i64,
+                   "axis": "world"})
+        );
+        let knowledge = json!({"r": {"op": "recall", "subject": "ACC-1", "k": 64,
+            "at_from": "/asked_on", "axis": "knowledge"}});
+        let got = parse_reads(Some(&knowledge), &p, "org.uw").unwrap();
+        assert_eq!(got["r"]["k"], 64, "the ceiling itself is admitted");
+        assert_eq!(got["r"]["axis"], "knowledge");
+    }
+
+    /// The count ceiling is refused at start, never clamped, and `recall`
+    /// admits no free text and no predicate — an unknown key is a refusal.
+    #[test]
+    fn a_recall_past_its_bounds_is_refused_at_start() {
+        let p = plan(&["a", "r"]);
+        let cases: Vec<(Value, &str)> = vec![
+            (json!({"op": "recall", "subject": "s", "k": 0}), "from 1 to 64"),
+            (json!({"op": "recall", "subject": "s", "k": 65}), "from 1 to 64"),
+            (json!({"op": "recall", "subject": "s", "k": -1}), "from 1 to 64"),
+            (json!({"op": "recall", "subject": "s", "k": 2.5}), "from 1 to 64"),
+            (json!({"op": "recall", "subject": "s", "k": "8"}), "from 1 to 64"),
+            (json!({"op": "recall", "subject": "s", "query": "unpaid"}), "unknown key `query`"),
+            (json!({"op": "recall", "subject": "s", "where": "x"}), "unknown key `where`"),
+            (json!({"op": "recall", "subject": "s", "limit": 5}), "unknown key `limit`"),
+            (json!({"op": "recall", "k": 3}), "exactly one of `subject` / `subject_from`"),
+            (json!({"op": "recall", "subject": "s", "relation": ""}), "`relation` must be"),
+            (json!({"op": "recall", "subject": "s", "axis": "world"}), "`axis` needs an instant"),
+            (json!({"op": "recall", "subject": "s", "at": 1, "at_from": "/t"}), "exactly one of `at`"),
+            (json!({"op": "recall", "subject": "s", "at": 1, "axis": "both"}), "`axis` must be"),
+            (json!({"op": "recall", "subject": "s", "at_from": "t"}), "JSON pointer"),
+            (json!({"op": "recall", "subject": "s", "ns": "org.uw.*"}), "not a pattern"),
+        ];
+        for (decl, want) in cases {
+            let reads = json!({ "r": decl });
+            let err = parse_reads(Some(&reads), &p, "org.uw").unwrap_err();
+            assert!(matches!(err, RunError::InvalidPlan { .. }), "{reads}: {err}");
+            assert!(err.to_string().contains(want), "{reads}: expected {want:?} in {err}");
+            assert!(err.to_string().contains("read 'r'"), "names the node: {err}");
+        }
+        let outside = json!({"r": {"op": "recall", "ns": "org.uwx", "subject": "s"}});
+        let err = parse_reads(Some(&outside), &p, "org.uw").unwrap_err();
+        assert!(matches!(err, RunError::Unauthorized { .. }), "{err}");
+    }
+
     /// Every refusal names the node, and a typo is a refusal — never a read
     /// on a default the author did not ask for.
     #[test]
@@ -554,7 +745,8 @@ mod tests {
         let base = json!({"op": "entity_at", "subject": "s", "relation": "p", "at": 1});
         let cases: Vec<(Value, &str)> = vec![
             (json!({"zz": base}), "unknown node 'zz'"),
-            (json!({"r": {"op": "recall"}}), "unknown op"),
+            // Declined in #342: a saved query is not a read op.
+            (json!({"r": {"op": "saved_query", "name": "q"}}), "unknown op"),
             (json!({"r": {"subject": "s"}}), "names no `op`"),
             (
                 json!({"r": {"op": "entity_at", "subject": "s", "relation": "p", "at": 1, "axsi": "knowledge"}}),
@@ -617,6 +809,10 @@ mod tests {
                 "{reads}: expected {want:?} in {err}"
             );
         }
+        let pattern = json!({"r": {"op": "related", "ns": "org.uw.*", "start": "s",
+                                   "relations": ["p"]}});
+        let err = parse_reads(Some(&pattern), &p, "org.uw").unwrap_err();
+        assert!(err.to_string().contains("not a pattern"), "{err}");
         let outside = json!({"r": {"op": "entity_at", "ns": "org.other", "subject": "s",
                                    "relation": "p", "at": 1}});
         let err = parse_reads(Some(&outside), &p, "org.uw").unwrap_err();

@@ -259,6 +259,20 @@ export declare class Areev {
   verifyAttestations(): Promise<string>
   /** Incremental backup to a bundle file. Returns last_op_seq cursor. */
   bundle(path: string, since?: number | undefined | null): Promise<number>
+  /**
+   * Install an agent pack directory into this memory (#341) — the library
+   * behind `areev pack install`, under THIS handle's bound principal.
+   * Resolves to the pack report as a JSON string (the fields
+   * `areev pack install --format json` prints, plus `executors`).
+   *
+   * All-or-nothing: every grain is built and addressed, `expectedHash` and
+   * `executorPins` are checked, and every write is authorized BEFORE the
+   * first one; the grains then go in as one batch. A principal without
+   * `write` on the pack's namespace rejects with `code: "AUT-E001"` and the
+   * memory untouched. Rejections carry `err.code` = `PCK-E001`..`PCK-E005`
+   * or the `AUT-*`/`STO-*` code passed through.
+   */
+  packInstall(dir: string, options?: PackInstallOptions | undefined | null): Promise<string>
   /** Apply a bundle (fast-forward, idempotent). Returns ops applied. */
   importBundle(path: string): Promise<number>
   /** Integrity + content-address verification. Throws on failure. */
@@ -725,6 +739,38 @@ export declare class Areev {
 }
 
 export declare function dropPostgresSchema(url: string, schema: string): void
+
+/** Options for `packInstall` (#341). Every field is optional. */
+export interface PackInstallOptions {
+  /**
+   * The plan hash the deployment expects: some Workflow grain in the pack
+   * must build to it, else `PCK-E002` with nothing written.
+   */
+  expectedHash?: string
+  /**
+   * The namespace for grains when neither the grain nor the manifest names
+   * one. Part of those grains' content when it applies.
+   */
+  ns?: string
+  /**
+   * Host executor pins, `{ tool: address }` (tool = `tool_name`, pack-local
+   * grain id, or symbolic blob name; address = `<hex>`, `sha256:<hex>` or
+   * `cas://sha256:<hex>`). Checked against the pack's code, never written;
+   * a mismatch or a pin naming no code-carrying tool is `PCK-E005`.
+   */
+  executorPins?: Record<string, string>
+  /** Check everything, write nothing. */
+  dryRun?: boolean
+}
+
+/**
+ * Validate an agent pack directory with no memory at all (#341) — the
+ * library behind `areev pack validate`. Resolves to the pack report as a
+ * JSON string: grains with their content addresses, blobs, the registry
+ * keys, `allow_executor`, `executors` (every code-carrying tool with its
+ * address) and warnings. Rejects with `err.code` = `PCK-E001`..`PCK-E005`.
+ */
+export declare function packValidate(dir: string): Promise<string>
 
 /**
  * Drop a memory schema entirely — the postgres backend's memory-level

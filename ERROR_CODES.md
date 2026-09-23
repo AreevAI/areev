@@ -162,6 +162,7 @@ in source.
 | `RUN-E025` | `ModelMismatch` | A run is being resumed under a model configuration it did not start under (#287). Raised BEFORE the lease is taken and before any grain is written, so a run that must not continue here does not look like it started to. `areev run fork` is the sanctioned way through: a fork writes a new manifest carrying the new pin and records what it forked from, so the change is a recorded decision rather than undocumented drift. A manifest with no pin — every run written before 1.9.0 — resumes under anything |
 | `RUN-E026` | `EngineMismatch` | This run was written by a scheduler generation whose decisions differ from this build's (#288). Only the `scheduler_epoch` is compared, never the version string: a patch upgrade must not strand every parked approval run. The epoch moves exactly when a change makes an existing journal replay differently — the #251 class |
 | `RUN-E027` | `ConcurrencyLimit` | Starting this run would exceed a per-memory or per-principal concurrency cap (#296). RETRYABLE by nature: the cap is a backstop beneath the host's own dispatcher, not a verdict on the run. Nothing is written under the run id, so the same id starts once a slot frees, and a trigger firing refused here leaves its item unconsumed (the #129 rule) |
+| `RUN-E028` | `TransferLimitInvalid` | A Tool declares a brokered-transfer ceiling (`runtime_limits.max_response_bytes` or `max_request_bytes`) that is not a positive integer, is zero, or exceeds the 32 MiB (33554432-byte) hard maximum (#339). Refused at run start, before any upstream I/O, and never clamped; the write path refuses the same declaration as a `VAL` error. The broker raises it too, before dispatch, for a host that registered such limits directly |
 
 ### `TRG` — triggers (`areev-trigger/src/error.rs`)
 
@@ -193,6 +194,7 @@ through unchanged — an `AUT-E001` raised while installing stays an
 | `PCK-E002` | `ExpectationMismatch` | A grain's `expected_hash` differs from what the pack builds it to. Carries `{file, expected, built}`. Nothing is written: installing it would change what runs, and everything pointing at the old hash (every trigger above all) would now point somewhere else |
 | `PCK-E003` | `UnresolvedRef` | A `blob:` or `grain:` reference names nothing the pack carries — a FORWARD reference included, which is why the manifest is an ordered list and not a set |
 | `PCK-E004` | `AddressDrift` | The address a grain stored under differs from the address it was built to, so `validate` no longer describes `install` |
+| `PCK-E005` | `ExecutorPin` | A host executor pin (`InstallOptions::executor_pins`, the bindings' `executorPins` / `executor_pins`, CLI `--pin`) disagrees with the code a code-carrying tool in the pack names, names no code-carrying tool in it, or is not a content address (#341). The WHOLE install is refused before anything is written. Pins are checked, never stored |
 
 ## Registry — CAL codes
 

@@ -233,7 +233,8 @@ pub enum NodeExecutor {
     /// entry for this node, frozen by the manifest. The DRIVER answers it
     /// from the store it already holds — never a tool, never the pool — so
     /// the scheduler only has to treat it as an effect with a result.
-    /// `op` is `entity_at` | `related`; `spec` is the normalized declaration.
+    /// `op` is `entity_at` | `related` | `recall`; `spec` is the normalized
+    /// declaration.
     MemoryRead { op: String, spec: Value },
 }
 

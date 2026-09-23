@@ -328,10 +328,13 @@ How much the LLM decides is expressed in the plan, node by node:
    ends.
 6. **Memory reads** — declare a node in the plan's `reads` and the runtime
    answers it from the memory the run is holding: an as-of `entity_at` ("what
-   was true / known about this subject at that date") or a `related` walk, with
-   the subject and instant taken from state by JSON pointer. The answer is
-   exactly what `db.entity_at` / `db.related` return, journaled with its axis,
-   instant and grain hash. This is how a run asks its own memory a question
+   was true / known about this subject at that date"), a `related` walk, or a
+   `recall` of at most `k` (≤ 64) grains about a subject ("the last five
+   statements for this account"), with the subject and instant taken from
+   state by JSON pointer. The answer is exactly what `db.entity_at` /
+   `db.related` / `db.recall` return, journaled with its operands and grain
+   hashes. There is no free-text or saved-query read: a richer question is a
+   trigger's `--context-query` or a driver-side pre-read into the input. This is how a run asks its own memory a question
    without any tool opening it — [`docs/run.md`](../docs/run.md#reading-the-runs-own-memory-reads).
 7. **Dynamic planning** — the agent authors the Workflow grain itself. See §7.
 

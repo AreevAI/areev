@@ -72,7 +72,16 @@ Anything else in the import section is refused **at instantiation**, by name,
 rather than trapped later where the reason is harder to see. A module asking for
 `wasi_snapshot_preview1` is told it is the wrong shape — and so is one asking
 for `areev::fetch` without `--allow-fetch`, which is what extends the frozen-
-import philosophy from "which imports" to "which capabilities".
+import philosophy from "which imports" to "which capabilities". Every such
+refusal names [`docs/sandbox-abi.md`](../docs/sandbox-abi.md), and a WASI one
+adds that WASI is not provided.
+
+**Writing a module in C, Zig, AssemblyScript or anything else**:
+[`docs/sandbox-abi.md`](../docs/sandbox-abi.md) is this contract written for
+someone who does not read Rust — signatures in WAT, framing, limits, fuel,
+what determinism requires, per-toolchain recipes — and
+`areev-tools/examples/` has a reference echo module for each of those three,
+which `tests/abi_examples.rs` runs (#340).
 
 ### `areev::fetch(ptr, len) -> i32`
 

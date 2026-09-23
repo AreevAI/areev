@@ -6,6 +6,79 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.9.3] — 2026-09-23
+
+### Added
+
+- **Brokered artifacts above 1 MiB** (#339). A Tool may now declare
+  `runtime_limits.max_response_bytes` (artifact-mode downloads) and the new
+  `runtime_limits.max_request_bytes` (`body_ref` uploads) up to a documented
+  **32 MiB hard maximum**; undeclared transfers stay bounded at 1 MiB. A
+  zero, non-integer or over-maximum declaration is refused, never clamped: a
+  `VAL` error on write, the new **`RUN-E028`** at run start (before any
+  upstream I/O), and again at broker registration. Over-limit responses are
+  refused at limit + 1 under every framing (Content-Length, chunked,
+  read-to-close) and the refusal names the *effective* ceiling; a truncated
+  transport fails instead of storing short bytes; an oversized `body_ref` is
+  refused by its stored size (`Areev::blob_len`, which reads no body) before
+  a byte is loaded or sent upstream. Text mode and existing declarations are
+  unchanged. The blessed `http.call` blob is unchanged (same address).
+- **`op: recall` — a third typed in-run read** (#342). A plan's `reads` may
+  recall a subject's grains (`ns`, `subject`/`subject_from`, optional literal
+  `relation`, `k` 1–64 default 16, optional `at`/`at_from` + `axis` for an
+  as-of recall, `into`). The ceiling is enforced by the runtime (refused at
+  start past 64, truncated to `k` at execution); journaled as `mg:recall`
+  with resolved operands and result hashes, replay-verified by `verify` and
+  `shadow`. The as-of form is `entity_at` per relation (`Areev::recall_at`),
+  conformance-tested on both backends. `op: saved_query` was declined —
+  ARCHITECTURE.md §10, "In-run recall is a third typed read; saved queries
+  are not".
+- **Pack validate/install from Node and Python** (#341). Node
+  `packValidate(dir)` / `areev.packInstall(dir, options)`; Python
+  `areev.pack_validate(dir)` / `Areev.pack_install(dir, *, expected_hash,
+  ns, executor_pins, dry_run)`. Both install under the handle's bound
+  principal through `areev::pack::install_pack`, all-or-nothing, and carry
+  the typed code (`err.code` / `areev.PackError.code`). Every example pack
+  installs at the same plan hash the CLI prints.
+- **Executor pins at install** (#341). `InstallOptions::executor_pins`, the
+  bindings' `executorPins`/`executor_pins` and CLI `areev pack install --pin
+  TOOL=ADDR,...` are *checked* against the pack's code-carrying tools (new
+  **`PCK-E005`** refuses the whole install on a mismatch) and never written,
+  so pins leave the plan hash and the op-log untouched. The pack report (and
+  `--format json`) gains `executors: [{tool, file, executor_uri, pinned}]`;
+  `validate` also reports `allow_executor`. `install` gains
+  `--expected-hash` / `expected_hash` (`PCK-E002` on mismatch), and
+  `InstallOptions.namespace` is now honoured.
+- **A freestanding sandbox guest ABI** (#340). `docs/sandbox-abi.md`
+  specifies the `wasm32-areev`/`-io` contract in WAT, independent of any Rust
+  crate, with reference echo modules in **C, Zig and AssemblyScript** under
+  `areev-tools/examples/` (byte-reproducible, rebuilt and checked in CI, run
+  twice through the sandbox for fuel/output determinism, and through the
+  `areev-sandbox` binary by `areev-conformance --features sandbox`). A
+  refused import — WASI above all — now names the ABI document. The WASI
+  shim and interpreter options were not taken; the page records why.
+
+### Changed
+
+- **Every plan read refuses a wildcard namespace (`"org.*"`) at run start**
+  (#342). `entity_at` and `related` previously failed only when the node
+  ran.
+- **Rust API:** `CapabilityLimits` gains `max_request_bytes`; code building
+  it without `..Default::default()` needs the field. A text-mode
+  `max_response_bytes` above 32 MiB, formerly accepted, is now refused.
+- `areev pack install` now runs through `areev::pack::install_pack`, so the
+  CLI and the library share one code path.
+
+### Security
+
+- **`install_pack` checked permissions only after writing blobs and
+  saved-query/template rows** (#341). A principal refused at the grain batch
+  left the op-log unchanged but had already written CAS blobs and registry
+  rows through an ungated path. Every permission is now checked before the
+  first write: `write` on each grain's namespace and on the pack's namespace
+  for blobs and new registry rows, `admin` on `*` to replace a different
+  existing registry row or to install a bundle pack.
+
 ## [1.9.2] — 2026-09-22
 
 ### Fixed
@@ -4317,7 +4390,8 @@ ecosystem adapters, and the enterprise plane.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.9.2...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.9.3...HEAD
+[1.9.3]: https://github.com/AreevAI/areev/compare/v1.9.2...v1.9.3
 [1.9.2]: https://github.com/AreevAI/areev/compare/v1.9.1...v1.9.2
 [1.9.1]: https://github.com/AreevAI/areev/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/AreevAI/areev/compare/v1.8.5...v1.9.0

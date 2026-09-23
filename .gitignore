@@ -22,6 +22,9 @@ examples/agents/*/*/out/
 examples/agents/*/typescript/node_modules/
 examples/agents/*/typescript/package-lock.json
 examples/agents/*/rust/Cargo.lock
+# The AssemblyScript reference module's compiler (#340). Its lockfile IS
+# committed: the compiler version decides the bytes.
+areev-tools/examples/assemblyscript/node_modules/
 
 # python bytecode
 __pycache__/

@@ -8063,6 +8063,76 @@ impl Areev {
         }
     }
 
+    /// As-of structural recall (#342): what [`entity_at`](Self::entity_at)
+    /// answers at `t` on `axis`, for each relation `subject` has in `ns` — or
+    /// for `relation` alone when one is named — newest first, k-bounded.
+    ///
+    /// Composed from `entity_at` rather than given its own query, so the two
+    /// can never disagree: `recall_at(ns, s, Some(r), 1, t, axis)` is exactly
+    /// `entity_at(ns, s, r, t, axis)`. That makes an as-of recall ONE grain
+    /// per relation (the as-of read's winner), where the current
+    /// [`recall`](Self::recall) returns every live grain. "Newest" is on the
+    /// asked clock: `valid_from` (else `created_at`) for world, `created_at`
+    /// for knowledge; ties break on relation name, so the answer is a
+    /// function of the memory and the operands alone. Exact namespace only.
+    pub fn recall_at(
+        &mut self,
+        ns: &str,
+        subject: &str,
+        relation: Option<&str>,
+        k: usize,
+        t: i64,
+        axis: Axis,
+    ) -> Result<Vec<DeserializedGrain>> {
+        require_exact_ns("recall_at", ns)?;
+        if k == 0 {
+            return Ok(Vec::new());
+        }
+        let relations: Vec<String> = match relation {
+            Some(r) => vec![r.to_string()],
+            None => {
+                let (ns_id, s_id) = match (self.term_lookup(ns)?, self.term_lookup(subject)?) {
+                    (Some(a), Some(b)) => (a, b),
+                    _ => return Ok(Vec::new()),
+                };
+                // Every relation the subject has EVER had here, not only the
+                // current ones: a relation whose grains are all superseded
+                // can still have an answer at an earlier instant.
+                let ids: Vec<i64> = self
+                    .db
+                    .query(
+                        "SELECT DISTINCT p FROM triples WHERE ns=?1 AND s=?2 AND p IS NOT NULL",
+                        vec![pi(ns_id), pi(s_id)],
+                    )?
+                    .iter()
+                    .filter_map(|row| row.i64(0))
+                    .collect();
+                let mut names = Vec::with_capacity(ids.len());
+                for id in ids {
+                    if let Some(name) = self.term_str(id)? {
+                        names.push(name);
+                    }
+                }
+                names.sort();
+                names
+            }
+        };
+        let mut found: Vec<(i64, String, DeserializedGrain)> = Vec::new();
+        for r in relations {
+            if let Some(g) = self.entity_at(ns, subject, &r, t, axis)? {
+                let created = g.get_i64("created_at").unwrap_or(i64::MIN);
+                let key = match axis {
+                    Axis::World => g.get_i64("valid_from").unwrap_or(created),
+                    Axis::Knowledge => created,
+                };
+                found.push((key, r, g));
+            }
+        }
+        found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        found.truncate(k);
+        Ok(found.into_iter().map(|(_, _, g)| g).collect())
+    }
+
     /// Whether a grain with this content address exists.
     pub fn has(&mut self, hash: &Hash) -> Result<bool> {
         self.has_grain(hash)
@@ -10308,6 +10378,54 @@ impl Areev {
             }
         }
         Ok(format!("cas://sha256:{hex}"))
+    }
+
+    /// The PLAINTEXT length of the blob at a `cas://sha256:` URI, without
+    /// loading its bytes (#339).
+    ///
+    /// What lets a caller that enforces a size ceiling — the egress broker's
+    /// `body_ref` upload — refuse an oversized blob by size, instead of
+    /// reading all of it into memory first and measuring. The embedded
+    /// backend reads the sidecar's file metadata plus its first few bytes
+    /// (to tell a sealed blob from a plaintext one); the table backend
+    /// selects `length(body)` and the magic prefix, never the body.
+    ///
+    /// A sealed blob reports its ciphertext length minus the fixed envelope
+    /// overhead, which is exactly the plaintext length. Nothing is VERIFIED
+    /// here — the digest and AEAD tag are checked by [`Areev::get_blob`] when
+    /// the bytes are actually read; this is a size, not a proof.
+    pub fn blob_len(&mut self, uri: &str) -> Result<u64> {
+        let hex = Self::cas_hex(uri)?;
+        let missing = || AreevError::Storage(format!("blob missing: {uri}"));
+        let (stored, prefix) = match &self.blob_store {
+            BlobStore::Fs(dir) => {
+                use std::io::Read;
+                let path = fs_blob_path(dir, hex);
+                let mut f = std::fs::File::open(&path).map_err(|_| missing())?;
+                let len = f.metadata().map_err(db_err)?.len();
+                let mut prefix = Vec::with_capacity(blobcrypt::SEALED_PREFIX_LEN);
+                (&mut f)
+                    .take(blobcrypt::SEALED_PREFIX_LEN as u64)
+                    .read_to_end(&mut prefix)
+                    .map_err(db_err)?;
+                (len, prefix)
+            }
+            BlobStore::Table => {
+                let raw = hex::decode(hex).map_err(db_err)?;
+                let rows = self.db.query(
+                    "SELECT length(body), substr(body, 1, 21) FROM blobs WHERE hash = ?1",
+                    vec![pb(raw)],
+                )?;
+                let row = rows.first().ok_or_else(missing)?;
+                let len = row.i64(0).ok_or_else(missing)?;
+                (u64::try_from(len).map_err(db_err)?, row.blob(1).unwrap_or_default())
+            }
+        };
+        Ok(if blobcrypt::is_sealed(&prefix) {
+            stored.saturating_sub(blobcrypt::SEALED_OVERHEAD as u64)
+        } else {
+            stored
+        })
     }
 
     /// Fetch bytes by `cas://sha256:` URI, verifying the hash on read.

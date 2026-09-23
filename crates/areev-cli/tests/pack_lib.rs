@@ -250,3 +250,243 @@ fn an_evalset_in_a_pack_is_checked_the_way_eval_create_checks_one() {
     let r = validate_pack(&root).expect("a well-formed evalset validates");
     assert_eq!(r.grains.len(), 1);
 }
+
+// ---------------------------------------------------------------------------
+// #341 — executor pins, expected plan hash, authorization before any write
+// ---------------------------------------------------------------------------
+
+/// A pack with a code blob, a Definition naming it, a plan binding it, and a
+/// saved query — every kind of write an install makes.
+fn code_pack(dir: &TempDir) -> PathBuf {
+    let root = dir.path().join("code-pack");
+    std::fs::create_dir_all(root.join("blobs")).unwrap();
+    std::fs::write(root.join("blobs/poll.wasm"), b"\0asm\x01\0\0\0not-a-real-module").unwrap();
+    write(
+        &root,
+        "grains/010-tool.json",
+        r#"{"type": "tool", "id": "poll", "kind": "definition", "tool_name": "poll",
+            "tool_description": "read the queue", "created_at": 500,
+            "executor_uri": "blob:poll", "runtime": "wasm32-areev-io",
+            "capabilities": [ { "blob": { "read": true } } ]}"#,
+    );
+    write(
+        &root,
+        "grains/020-workflow.json",
+        r#"{"type": "workflow", "id": "plan", "name": "queue", "nodes": ["poll"],
+            "bindings": {"poll": "grain:poll"}, "created_at": 600}"#,
+    );
+    write(
+        &root,
+        "pack.json",
+        r#"{"pack": "queue", "version": "1.0.0", "namespace": "ap",
+            "blobs": {"poll": "blobs/poll.wasm"},
+            "queries": {"pulse": {"body": "RECALL facts LIMIT 5"}},
+            "grains": ["grains/010-tool.json", "grains/020-workflow.json"]}"#,
+    );
+    root
+}
+
+fn owner(dir: &TempDir) -> AreevFacade {
+    let m = Areev::open(dir.path().join("m.db").to_str().unwrap()).unwrap();
+    AreevFacade::with_session(m, Some("ap".into()), None)
+}
+
+fn plan_of(r: &areev::pack::PackReport) -> String {
+    r.grains.iter().find(|g| g.grain_type == "workflow").unwrap().hash.clone()
+}
+
+/// Nothing at all landed: no op, no blob, no registry row.
+fn assert_untouched(facade: &AreevFacade, before: i64, blob: &str) {
+    assert_eq!(facade.with_store(|s| s.head_op_seq()).unwrap(), before, "op-log moved");
+    assert!(
+        facade.with_store(|s| s.get_blob(blob)).is_err(),
+        "the blob landed ahead of a refusal"
+    );
+    assert!(
+        facade.with_store(|s| s.meta_get("qry:pulse")).unwrap().is_none(),
+        "the registry row landed ahead of a refusal"
+    );
+}
+
+fn pins(key: &str, value: &str) -> std::collections::BTreeMap<String, String> {
+    [(key.to_string(), value.to_string())].into_iter().collect()
+}
+
+#[test]
+fn the_report_lists_every_code_carrying_tool_with_its_address() {
+    let dir = TempDir::new().unwrap();
+    let root = code_pack(&dir);
+    let r = validate_pack(&root).unwrap();
+    assert_eq!(r.executors.len(), 1, "{:?}", r.executors);
+    let x = &r.executors[0];
+    assert_eq!(x.tool, "poll");
+    assert_eq!(x.file, "grains/010-tool.json");
+    assert_eq!(x.executor_uri, r.blobs[0].address, "the executor IS the blob's address");
+    assert!(!x.pinned, "validate takes no pins");
+    assert_eq!(
+        r.allow_executor,
+        vec![x.executor_uri.trim_start_matches("cas://sha256:").to_string()]
+    );
+}
+
+#[test]
+fn a_matching_pin_installs_marks_the_tool_and_writes_nothing_extra() {
+    let dir = TempDir::new().unwrap();
+    let root = code_pack(&dir);
+    let validated = validate_pack(&root).unwrap();
+    let addr = validated.executors[0].executor_uri.clone();
+
+    // Without pins, as the baseline op count.
+    let base_dir = TempDir::new().unwrap();
+    let base = owner(&base_dir);
+    let b0 = base.with_store(|s| s.head_op_seq()).unwrap();
+    install_pack(&base, &root, &InstallOptions::default()).unwrap();
+    let unpinned_ops = base.with_store(|s| s.head_op_seq()).unwrap() - b0;
+
+    let facade = owner(&dir);
+    let before = facade.with_store(|s| s.head_op_seq()).unwrap();
+    // Every name a host might hold resolves — tool_name, pack-local id,
+    // symbolic blob name — and every address form parses.
+    let bare = addr.trim_start_matches("cas://sha256:").to_string();
+    for (key, value) in [
+        ("poll", addr.clone()),
+        ("poll", format!("sha256:{bare}")),
+        ("poll", bare.to_uppercase()),
+    ] {
+        let opts = InstallOptions {
+            executor_pins: pins(key, &value),
+            dry_run: true,
+            ..Default::default()
+        };
+        let r = install_pack(&facade, &root, &opts).expect("a matching pin installs");
+        assert!(r.executors[0].pinned);
+    }
+    let opts = InstallOptions { executor_pins: pins("poll", &addr), ..Default::default() };
+    let r = install_pack(&facade, &root, &opts).expect("a matching pin installs");
+    assert!(r.executors[0].pinned, "{:?}", r.executors);
+    // The pin is host-side: the plan hash is the one validate reports, and
+    // the op-log grew exactly as much as an unpinned install's.
+    assert_eq!(plan_of(&r), plan_of(&validated), "a pin must not change the plan hash");
+    assert_eq!(
+        facade.with_store(|s| s.head_op_seq()).unwrap() - before,
+        unpinned_ops,
+        "a pin must not add a write"
+    );
+}
+
+#[test]
+fn a_mismatched_pin_refuses_the_whole_install_with_pck_e005() {
+    let dir = TempDir::new().unwrap();
+    let root = code_pack(&dir);
+    let addr = validate_pack(&root).unwrap().blobs[0].address.clone();
+    let facade = owner(&dir);
+    let before = facade.with_store(|s| s.head_op_seq()).unwrap();
+    let opts = InstallOptions {
+        executor_pins: pins("poll", &"ab".repeat(32)),
+        ..Default::default()
+    };
+    let err = install_pack(&facade, &root, &opts).unwrap_err();
+    assert_eq!(err.code(), "PCK-E005", "{err}");
+    assert!(matches!(err, PackError::ExecutorPin(_)));
+    assert!(err.to_string().contains("Nothing was written"), "{err}");
+    assert_untouched(&facade, before, &addr);
+}
+
+#[test]
+fn a_pin_naming_no_code_carrying_tool_is_refused_not_ignored() {
+    let dir = TempDir::new().unwrap();
+    let root = code_pack(&dir);
+    let addr = validate_pack(&root).unwrap().blobs[0].address.clone();
+    let facade = owner(&dir);
+    let before = facade.with_store(|s| s.head_op_seq()).unwrap();
+    for (key, value) in [
+        ("pol", addr.as_str()),         // a typo pins nothing
+        ("queue", addr.as_str()),       // the plan's name: not code-carrying
+        ("poll", "not-an-address"),     // not a content address
+    ] {
+        let opts = InstallOptions { executor_pins: pins(key, value), ..Default::default() };
+        let err = install_pack(&facade, &root, &opts).unwrap_err();
+        assert_eq!(err.code(), "PCK-E005", "{key}: {err}");
+    }
+    assert_untouched(&facade, before, &addr);
+}
+
+#[test]
+fn an_expected_plan_hash_is_checked_before_anything_is_written() {
+    let dir = TempDir::new().unwrap();
+    let root = code_pack(&dir);
+    let validated = validate_pack(&root).unwrap();
+    let addr = validated.blobs[0].address.clone();
+    let facade = owner(&dir);
+    let before = facade.with_store(|s| s.head_op_seq()).unwrap();
+    let opts = InstallOptions { expected_hash: Some("0".repeat(64)), ..Default::default() };
+    let err = install_pack(&facade, &root, &opts).unwrap_err();
+    assert_eq!(err.code(), "PCK-E002", "{err}");
+    assert_untouched(&facade, before, &addr);
+
+    let opts = InstallOptions {
+        expected_hash: Some(format!("sha256:{}", plan_of(&validated))),
+        ..Default::default()
+    };
+    let r = install_pack(&facade, &root, &opts).expect("the expected plan installs");
+    assert_eq!(plan_of(&r), plan_of(&validated));
+}
+
+#[test]
+fn a_refused_principal_writes_no_blob_and_no_registry_row_either() {
+    // The blobs and saved queries used to go in through the ungated
+    // `with_store` ahead of the batch that then refused: the op-log stayed
+    // put, but the memory did not.
+    let dir = TempDir::new().unwrap();
+    let root = code_pack(&dir);
+    let addr = validate_pack(&root).unwrap().blobs[0].address.clone();
+    let mut m = Areev::open(dir.path().join("m.db").to_str().unwrap()).unwrap();
+    m.add(
+        &Fact::new("user:reader", REL_PERMITS, "read ON ap")
+            .namespace(AUTHZ_NS)
+            .created_at(1_000),
+    )
+    .unwrap();
+    let facade = AreevFacade::with_session(m, Some("ap".into()), None)
+        .with_principal("user:reader")
+        .unwrap();
+    let before = facade.with_store(|s| s.head_op_seq()).unwrap();
+    let err = install_pack(&facade, &root, &InstallOptions::default()).unwrap_err();
+    assert_eq!(err.code(), "AUT-E001", "{err}");
+    assert_untouched(&facade, before, &addr);
+}
+
+#[test]
+fn a_writer_installs_new_registry_rows_but_cannot_replace_a_different_one() {
+    let dir = TempDir::new().unwrap();
+    let root = code_pack(&dir);
+    let mut m = Areev::open(dir.path().join("m.db").to_str().unwrap()).unwrap();
+    m.add(
+        &Fact::new("user:writer", REL_PERMITS, "write ON ap")
+            .namespace(AUTHZ_NS)
+            .created_at(1_000),
+    )
+    .unwrap();
+    let facade = AreevFacade::with_session(m, Some("ap".into()), None)
+        .with_principal("user:writer")
+        .unwrap();
+    // A fresh memory: every row is new, so `write` on the namespace is enough.
+    install_pack(&facade, &root, &InstallOptions::default()).expect("a writer installs");
+    // Re-installing the same pack is a no-op for the registry.
+    install_pack(&facade, &root, &InstallOptions::default()).expect("idempotent");
+
+    // A DIFFERENT body for an existing query is `DEFINE QUERY`'s job: admin.
+    write(
+        &root,
+        "pack.json",
+        r#"{"pack": "queue", "version": "1.0.1", "namespace": "ap",
+            "blobs": {"poll": "blobs/poll.wasm"},
+            "queries": {"pulse": {"body": "RECALL facts LIMIT 50"}},
+            "grains": ["grains/010-tool.json", "grains/020-workflow.json"]}"#,
+    );
+    let before = facade.with_store(|s| s.head_op_seq()).unwrap();
+    let err = install_pack(&facade, &root, &InstallOptions::default()).unwrap_err();
+    assert_eq!(err.code(), "AUT-E001", "{err}");
+    assert!(err.to_string().contains("admin"), "{err}");
+    assert_eq!(facade.with_store(|s| s.head_op_seq()).unwrap(), before);
+}

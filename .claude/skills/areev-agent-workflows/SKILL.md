@@ -19,7 +19,7 @@ edges:    Vec<WorkflowEdge>        // { src, dst, cond: Option<String>, max_cycl
 bindings: HashMap<node, hash>      // node → Tool Definition (or another Workflow = subgraph)
 retries:  HashMap<node, u32>       // n = re-attempts AFTER the first failure
 + extra fields: name (human label), reducers {state_key: lww|append|sum|max|min},
-                reads {node: {op: entity_at|related, ns, into, subject[_from], …}}
+                reads {node: {op: entity_at|related|recall, ns, into, subject[_from], …}}
 ```
 
 Semantics that are easy to miss:
@@ -69,10 +69,12 @@ running run. Four executor shapes fall out of what a node binds:
 - neither ⇒ **abstract** — the node label itself is the LLM instruction
   (needs a configured backend, else `RUN-E006`);
 - a `reads` entry (checked FIRST; the node must bind nothing) ⇒ **memory** —
-  the driver answers an `entity_at`/`related` against the run's own namespace
-  (or a dotted descendant) itself, journaled as `mg:entity_at`/`mg:related`
-  with a `read` record. The only way a run reads its memory without a tool
-  holding a handle (#255, `docs/run.md` "Reading the run's own memory").
+  the driver answers an `entity_at`/`related`/`recall` against the run's own
+  namespace (or a dotted descendant) itself, journaled as `mg:<op>` with a
+  `read` record. `recall`'s `k` is capped at 64 by the runtime (refused at
+  start past it, truncated on execution). The only way a run reads its memory
+  without a tool holding a handle (#255, #342, `docs/run.md` "Reading the
+  run's own memory"). A saved query is deliberately NOT a read op (#342).
 
 `reducers` is validated here too: an unknown reducer name fails at run
 start, not at first merge.
