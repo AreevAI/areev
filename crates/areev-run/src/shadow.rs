@@ -1073,7 +1073,7 @@ pub(crate) fn arg_schemas_for(
         }
         let h = Hash::from_hex(&p.tool_hash).map_err(|e| RunError::Storage { detail: e.to_string() })?;
         let def = facade
-            .with_store(|m| m.get(&h))
+            .with_store(|m| m.get_stored(&h))
             .map_err(|e| RunError::Storage { detail: e.to_string() })?
             .to_tool()
             .map_err(|e| RunError::Storage { detail: e.to_string() })?;

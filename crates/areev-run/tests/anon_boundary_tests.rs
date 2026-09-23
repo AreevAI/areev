@@ -15,12 +15,14 @@ use areev_cal::AreevFacade;
 use areev_core::error::Hash;
 use areev_core::types::{Grain, Tool, ToolKind, Workflow};
 use areev_llm::{
-    StopReason, ToolCallError, ToolCallLlm, ToolCallRequest, ToolCallResponse, Usage,
+    StopReason, ToolCallError, ToolCallLlm, ToolCallOut, ToolCallRequest, ToolCallResponse,
+    Usage,
 };
 use areev_run::{
     ExecResult, HostToolExecutor, RunOptions, Runner, RunSession,
     ScriptedClock,
 };
+use areev_run_core::RunOutcome;
 use areev_store::Areev;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
@@ -93,6 +95,28 @@ fn done(text: &str) -> ToolCallResponse {
     )
 }
 
+/// A model turn that calls `post` with these arguments.
+fn call_post(args: Value) -> ToolCallResponse {
+    ToolCallResponse::new(
+        None,
+        vec![ToolCallOut {
+            id: "c1".into(),
+            name: "post".into(),
+            arguments: args,
+            arguments_raw: None,
+        }],
+        StopReason::ToolUse,
+        Usage { input_tokens: 4, output_tokens: 2, cache_read_tokens: None },
+    )
+}
+
+/// The first `[EMAIL_…]` token in `text`.
+fn email_token(text: &str) -> String {
+    let at = text.find("[EMAIL_").expect("a minted email token");
+    let end = at + text[at..].find(']').unwrap() + 1;
+    text[at..end].to_string()
+}
+
 struct Rig {
     _dir: TempDir,
     facade: Arc<AreevFacade>,
@@ -129,6 +153,35 @@ impl Rig {
             .created_at(600)
             .namespace(NS);
         self.facade.with_store(|m| m.add(&wf)).unwrap()
+    }
+
+    /// `post` alone — a host tool, no model anywhere in the plan.
+    fn host_only_plan(&self) -> Hash {
+        let def = Tool::new("post")
+            .kind(ToolKind::Definition)
+            .tool_description("post the invoice")
+            .created_at(500)
+            .namespace(NS);
+        let dh = self.facade.with_store(|m| m.add(&def)).unwrap();
+        let wf = Workflow::new(vec!["post".into()])
+            .bind("post", &dh.to_hex())
+            .created_at(700)
+            .namespace(NS);
+        self.facade.with_store(|m| m.add(&wf)).unwrap()
+    }
+
+    /// Run the model plan once so the namespace mints a token for SUPPLIER,
+    /// and return that token.
+    fn mint_supplier_token(&self) -> String {
+        let plan = self.plan();
+        let llm = ScriptedLlm::new(vec![done("{}")]);
+        self.runner(Arc::clone(&llm) as Arc<dyn ToolCallLlm>)
+            .start(&plan, "mint", json!({ "messages": [
+                { "role": "user", "content": format!("invoice from {SUPPLIER}") }
+            ]}), &opts())
+            .unwrap();
+        self.exec.seen.lock().unwrap().clear();
+        email_token(&llm.transcript())
     }
 
     fn runner(&self, llm: Arc<dyn ToolCallLlm>) -> Runner {
@@ -319,4 +372,87 @@ fn a_custom_template_round_trips_like_the_default() {
 
     let body = serde_json::to_string(&rig.exec.seen.lock().unwrap().clone()).unwrap();
     assert!(body.contains(SUPPLIER), "the tool still gets the real value: {body}");
+}
+
+// ── #350: only what a MODEL produced is rehydrated ─────────────────────────
+
+#[test]
+fn a_host_written_placeholder_with_no_model_is_dispatched_verbatim() {
+    // A deterministic pipeline pseudonymizes a record itself; no model is in
+    // the plan. Its markers are data, not tokens this run owes anyone.
+    let rig = Rig::new(Some(r#"{"mode": "egress", "scope": "memory"}"#));
+    let plan = rig.host_only_plan();
+    let session = rig
+        .runner(ScriptedLlm::new(vec![]) as Arc<dyn ToolCallLlm>)
+        .start(&plan, "r1", json!({ "note": "referred by [PERSON_1], seen twice" }), &opts())
+        .unwrap();
+    let RunSession::Finished { outcome, .. } = session else { panic!("expected finish") };
+    assert_eq!(outcome, RunOutcome::Completed, "{outcome:?}");
+    let body = serde_json::to_string(&rig.exec.seen.lock().unwrap().clone()).unwrap();
+    assert!(body.contains("referred by [PERSON_1], seen twice"), "{body}");
+}
+
+#[test]
+fn a_tool_input_carrying_an_older_mapping_key_is_not_rewritten() {
+    // The inverse: the namespace's mapping already holds this key (an earlier
+    // run minted it). A host input that happens to carry it must not have a
+    // real identity spliced in — no model of THIS dispatch produced it.
+    let rig = Rig::new(Some(r#"{"mode": "egress", "scope": "memory"}"#));
+    let token = rig.mint_supplier_token();
+    let plan = rig.host_only_plan();
+    let session = rig
+        .runner(ScriptedLlm::new(vec![]) as Arc<dyn ToolCallLlm>)
+        .start(&plan, "r2", json!({ "note": format!("forwarded to {token}") }), &opts())
+        .unwrap();
+    let RunSession::Finished { outcome, .. } = session else { panic!("expected finish") };
+    assert_eq!(outcome, RunOutcome::Completed, "{outcome:?}");
+    let body = serde_json::to_string(&rig.exec.seen.lock().unwrap().clone()).unwrap();
+    assert!(body.contains(&token), "the host's text must pass verbatim: {body}");
+    assert!(!body.contains(SUPPLIER), "an older mapping was spliced in: {body}");
+}
+
+#[test]
+fn a_model_tool_call_with_a_minted_placeholder_is_rehydrated() {
+    // The other half: a placeholder the MODEL returns in a tool call is still
+    // resolved before dispatch.
+    let rig = Rig::new(Some(r#"{"mode": "egress", "scope": "memory"}"#));
+    let token = rig.mint_supplier_token();
+    let plan = rig.plan();
+    let llm = ScriptedLlm::new(vec![call_post(json!({ "vendor": token })), done("{}")]);
+    rig.runner(Arc::clone(&llm) as Arc<dyn ToolCallLlm>)
+        .start(&plan, "r3", json!({ "messages": [
+            { "role": "user", "content": format!("invoice from {SUPPLIER}") }
+        ]}), &opts())
+        .unwrap();
+    assert!(llm.transcript().contains(&token), "the model was shown the token");
+    let seen = rig.exec.seen.lock().unwrap().clone();
+    assert!(
+        seen.iter().any(|v| v.to_string().contains(SUPPLIER)),
+        "the model's tool call must reach the tool rehydrated: {seen:?}"
+    );
+    assert!(!serde_json::to_string(&seen).unwrap().contains(&token), "{seen:?}");
+}
+
+#[test]
+fn a_model_tool_call_with_an_invented_placeholder_is_refused() {
+    let rig = Rig::new(Some(r#"{"mode": "egress", "scope": "memory"}"#));
+    let plan = rig.plan();
+    let llm = ScriptedLlm::new(vec![
+        call_post(json!({ "vendor": "[EMAIL_DEADBEEF]" })),
+        done("{}"),
+    ]);
+    let session = rig
+        .runner(Arc::clone(&llm) as Arc<dyn ToolCallLlm>)
+        .start(&plan, "r4", json!({ "messages": [
+            { "role": "user", "content": format!("invoice from {SUPPLIER}") }
+        ]}), &opts())
+        .unwrap();
+    let body = serde_json::to_string(&rig.exec.seen.lock().unwrap().clone()).unwrap();
+    assert!(!body.contains("DEADBEEF"), "never dispatched: {body}");
+    // The refusal is a failed tool call the model gets to see — and its next
+    // turn is NOT itself refused for the token sitting in its transcript: an
+    // LLM turn's input is never rehydrated, only what it dispatches.
+    assert!(llm.transcript().contains("cannot resolve"), "{}", llm.transcript());
+    let RunSession::Finished { outcome, .. } = session else { panic!("expected finish") };
+    assert_eq!(outcome, RunOutcome::Completed, "{outcome:?}");
 }

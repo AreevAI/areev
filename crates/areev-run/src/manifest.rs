@@ -397,7 +397,7 @@ impl RunManifest {
                     let h = Hash::from_hex(hash_str).map_err(|_| RunError::UnresolvedRef {
                         what: format!("binding for node '{node}' is not a content address"),
                     })?;
-                    let g = m.get(&h).map_err(|e| RunError::UnresolvedRef {
+                    let g = m.get_stored(&h).map_err(|e| RunError::UnresolvedRef {
                         what: format!("binding for node '{node}': {e}"),
                     })?;
                     if g.grain_type == areev_core::types::GrainType::Workflow {
@@ -749,7 +749,7 @@ impl RunManifest {
             .ok_or_else(|| RunError::ManifestMismatch {
                 why: "manifest link carries no config hash".into(),
             })?;
-        let config = m.get(&config_hash).map_err(|e| RunError::ManifestMismatch {
+        let config = m.get_stored(&config_hash).map_err(|e| RunError::ManifestMismatch {
             why: format!("manifest config unreadable: {e}"),
         })?;
         let manifest = config
@@ -782,7 +782,7 @@ impl RunManifest {
         let h = Hash::from_hex(&hex).map_err(|_| RunError::ManifestMismatch {
             why: format!("input_ref {hex:?} is not a content address"),
         })?;
-        let grain = m.get(&h).map_err(|_| RunError::UnresolvedRef {
+        let grain = m.get_stored(&h).map_err(|_| RunError::UnresolvedRef {
             what: format!(
                 "run '{}' stores its input as grain {hex}, which is no longer readable \
                  — the input a run replays from cannot be reconstructed, so verify and \

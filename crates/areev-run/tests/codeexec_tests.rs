@@ -637,6 +637,39 @@ fn a_capability_declaration_is_pinned_into_the_manifest() {
     assert_eq!(pin.capabilities.as_ref(), Some(&gmail_caps()), "frozen verbatim");
 }
 
+/// #350: the manifest freezes a Definition from the STORED grain, not through
+/// the model-facing egress rewrite. Under an egress policy `get` pseudonymizes
+/// an IP literal (`http://[IPV4_1]:7792`), and a pin frozen from that refuses
+/// the tool's first brokered call to the host it actually declared.
+#[cfg(unix)]
+#[test]
+fn a_capability_declaration_is_pinned_verbatim_under_an_egress_policy() {
+    // Egress pseudonymization is keyed, so this memory is opened encrypted.
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().to_path_buf();
+    let mut m = Areev::open_encrypted(path.join("m.db").to_str().unwrap(), [7u8; 32]).unwrap();
+    m.set_anon_policy("ops", r#"{"mode": "egress", "scope": "memory"}"#).unwrap();
+    let rig = Rig { _dir: dir, dir: path, facade: Arc::new(AreevFacade::new(m)) };
+    let caps = json!([{"http": {"hosts": ["http://127.0.0.1:7792"], "methods": ["POST"]}}]);
+    let uri = rig.put_blob(b"\0asm-io-module");
+    let plan = plan_with_capabilities(&rig, &uri, "wasm32-areev-io", Some(caps.clone()), None);
+    let fake = fake_sandbox(&rig, "fake-sandbox-egress-pin.sh");
+
+    let exec = areev_run::CodeExecutor::new(Arc::new(Fallback))
+        .allow(&uri)
+        .cache_dir(rig.dir.join("cache"))
+        .sandbox_cmd(fake.to_str().unwrap())
+        .with_egress(areev_run::EgressHandle::new(capability_broker()));
+    rig.runner(Arc::new(exec)).start(&plan, "r-egress-pin", json!({}), &opts()).unwrap();
+
+    let manifest = rig
+        .facade
+        .with_store(|m| areev_run::RunManifest::load(m, "r-egress-pin"))
+        .expect("the manifest persisted");
+    let pin = manifest.pinned.iter().find(|p| p.node == "work").expect("the node is pinned");
+    assert_eq!(pin.capabilities.as_ref(), Some(&caps), "frozen verbatim, not pseudonymized");
+}
+
 /// A capability RUNTIME with nothing declared can reach nothing. Saying so at
 /// start beats a module that instantiates and has every call refused.
 #[test]

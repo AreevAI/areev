@@ -1043,7 +1043,11 @@ corrupt record — so pseudonymizing the tool seam would break the workflows the
 feature exists to serve.
 
 So the run driver pseudonymizes an abstract node's prompt and rehydrates the
-model's tool-call arguments before dispatch. Rehydration is for dispatch only:
+model's tool-call arguments before dispatch — only placeholders a model turn
+of the run actually produced (#350): host-written text of the same shape
+passes verbatim, and the run's own configuration (Tool Definitions, the
+manifest) is read from the stored grain, not through the egress rewrite.
+Rehydration is for dispatch only:
 the journal keeps the pseudonymized form and the idempotency key derives from
 it, so `verify` replays byte-identically whether or not a policy is live. An
 unresolvable placeholder fails the node rather than sending itself to a vendor.

@@ -748,9 +748,14 @@ or it writes corrupt records — and it is deliberately narrow:
   `custom_terms`. A bare personal name the memory has never seen as a subject
   is not pseudonymized.
 - Rehydration **fails closed** — an unresolvable placeholder fails the node
-  rather than sending the placeholder to a vendor — but `unmatched` detection
-  recognizes the default `[CATEGORY_ID]` silhouette, so a custom `placeholder`
-  template weakens that check.
+  rather than sending the placeholder to a vendor — and scans the policy's own
+  `placeholder` template, so a custom shape is checked like the default.
+- Rehydration applies **only to placeholders a model turn of the run
+  produced** (#350). Placeholder-shaped text a host or code tool wrote is
+  dispatched verbatim — never refused, and never resolved against an older
+  mapping, which would splice a different person's identity into data no
+  model touched. A host literal that collides with a token a model of the
+  same run emitted is indistinguishable from it and is rehydrated.
 - It requires `scope: memory`, and therefore an encrypted memory, because only
   value-derived tokens replay identically (`RUN-E023` refuses the rest at
   start).

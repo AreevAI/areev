@@ -6,6 +6,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **With an egress policy live, only what a model produced is rehydrated**
+  (#350). `areev run` used to run placeholder rehydration over the input of
+  every dispatch, so a host or code tool whose input carried a
+  `[PERSON_1]`-shaped marker no model produced failed with `the model
+  produced placeholder this run cannot resolve` — every run of a
+  model-free pseudonymizing pipeline failed once the floor was on — and a
+  marker that happened to match an older mapping key was silently rewritten
+  to that mapping's value. Rehydration (and its fail-closed refusal) now
+  covers only placeholders emitted by a model turn of the run (or a
+  subgraph's result); anything else is dispatched verbatim. An LLM turn's own
+  input is no longer rehydrated, so a refused tool call no longer also fails
+  the model's next turn.
+- **Run configuration is frozen from the stored grain, not through the egress
+  rewrite** (#350). The manifest resolved bound Tool Definitions with the
+  egress-bounded `get`, so a `wasm32-areev-io` Definition declaring
+  `hosts: ["http://127.0.0.1:7792"]` was pinned as `http://[IPV4_1]:7792` and
+  its first brokered call refused with `RUN-E022`. The manifest (bindings,
+  stored config, input by reference), the shadow argument-schema load and the
+  trigger connector Definition now read through the new `Areev::get_stored`.
+
 ## [1.9.4] — 2026-09-23
 
 ### Added

@@ -5769,6 +5769,27 @@ impl Areev {
         Ok(g)
     }
 
+    /// Fetch a grain by content address exactly as stored — NO egress
+    /// boundary. For a host reading its own configuration (a run manifest
+    /// freezing a Tool Definition, a trigger resolving its connector): an
+    /// egress policy pseudonymizes what leaves toward a model or a caller,
+    /// and a Definition whose declared `hosts` became `http://[IPV4_1]:7792`
+    /// would refuse its own first brokered call (#350). Never reachable from
+    /// a caller-facing surface without that surface's own gate.
+    pub fn get_stored(&mut self, hash: &Hash) -> Result<DeserializedGrain> {
+        let rows = self.db.query(
+            "SELECT blob FROM grains WHERE hash = ?1",
+            vec![pb(hash.as_bytes().to_vec())],
+        )?;
+        match rows.first() {
+            Some(row) => deserialize_blob(
+                &row.blob(0)
+                    .ok_or_else(|| AreevError::Storage("blob column not a blob".into()))?,
+            ),
+            None => Err(AreevError::NotFound(*hash)),
+        }
+    }
+
     /// Apply the egress boundary to one grain (docs/anonymization-proposal.md
     /// P1). One `is_idle` branch when the feature is unused.
     #[inline]
