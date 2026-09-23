@@ -124,7 +124,7 @@ What each piece means:
   They are law-tested for batching invariance, which is what makes fan-out
   results order-independent.
 - **`reads`** — node → a declared read of the run's **own memory**
-  (`entity_at` or `related`). The runtime answers that node itself, from the
+  (`entity_at`, `related` or `recall`). The runtime answers that node itself, from the
   file it already holds; no tool is involved. See
   [Reading the run's own memory](#reading-the-runs-own-memory-reads).
 
@@ -169,22 +169,51 @@ that clock at that instant (a backdated fact, asked about before it was
 received, is the honest miss). `"op": "related"` returns `db.related`'s
 `{"start", "reached"}` the same way.
 
-| Key | `entity_at` | `related` | |
-|---|---|---|---|
-| `op` | `"entity_at"` | `"related"` | required |
-| `ns` | ✓ | ✓ | the run's namespace or a dotted descendant; default the run's |
-| `into` | ✓ | ✓ | the state key the answer lands under; default the node id |
-| `subject` / `subject_from` | ✓ | | exactly one: a literal, or a JSON pointer into the node's input |
-| `relation` | ✓ | | literal |
-| `at` / `at_from` | ✓ | | exactly one; epoch ms or an ISO-8601 date/timestamp (UTC) |
-| `axis` | ✓ | | `world` (default) or `knowledge` |
-| `start` / `start_from` | | ✓ | exactly one, as `subject` |
-| `relations` | | ✓ | a list, or a comma-separated string |
-| `direction`, `depth`, `limit` | | ✓ | `out`/`in`/`both` (default `out`), 1–4 (default 2), 1–512 (default 64) |
+`"op": "recall"` answers "what do I hold about this subject" — the last five
+statements for an account, every open item on a case — and returns exactly
+what `db.recall(subject, relation, k, ns)` returns: a list of
+`{"hash", "type", "fields"}`, newest first, **never more than `k`**:
+
+```python
+"reads": {
+    "recent_statements": {"op": "recall", "ns": "org.ap.ledger",
+                          "subject_from": "/account", "relation": "mg:statement",
+                          "k": 5},
+    # as-of: per relation, what entity_at answers on that clock at that instant
+    "account_at_notice": {"op": "recall", "ns": "org.ap.ledger",
+                          "subject_from": "/account", "k": 16,
+                          "at_from": "/received_at", "axis": "knowledge"},
+}
+```
+
+With an instant it is an **as-of recall**: for each relation the subject has
+(or the one named), the grain `entity_at` answers at that instant on that
+axis, ordered newest first on the asked clock (`valid_from` for world,
+`created_at` for knowledge) and bounded by `k`. So a named relation with
+`k: 1` is exactly `entity_at` in recall's shape, and an as-of recall is one
+grain per relation where a current recall returns every live grain.
+
+| Key | `entity_at` | `related` | `recall` | |
+|---|---|---|---|---|
+| `op` | `"entity_at"` | `"related"` | `"recall"` | required |
+| `ns` | ✓ | ✓ | ✓ | the run's namespace or a dotted descendant, exact (no `"org.*"`); default the run's |
+| `into` | ✓ | ✓ | ✓ | the state key the answer lands under; default the node id |
+| `subject` / `subject_from` | ✓ | | ✓ | exactly one: a literal, or a JSON pointer into the node's input |
+| `relation` | ✓ | | optional | literal; a `recall` without one reads every relation |
+| `k` | | | ✓ | 1–64 (default 16); past 64 is refused, never clamped |
+| `at` / `at_from` | ✓ | | optional | exactly one (at most one for `recall`); epoch ms or an ISO-8601 date/timestamp (UTC) |
+| `axis` | ✓ | | ✓ | `world` (default) or `knowledge`; on `recall` only with an instant |
+| `start` / `start_from` | | ✓ | | exactly one, as `subject` |
+| `relations` | | ✓ | | a list, or a comma-separated string |
+| `direction`, `depth`, `limit` | | ✓ | | `out`/`in`/`both` (default `out`), 1–4 (default 2), 1–512 (default 64) |
 
 Only the subject, the start and the instant may come from state; the
-relation, the axis, the namespace and the walk's shape are literals on the
-plan, so a reviewer reads exactly what a run may see. Pointers resolve against
+relation, the axis, the namespace, the count and the walk's shape are literals
+on the plan, so a reviewer reads exactly what a run may see. There is no free
+text and no predicate: a question richer than these three reads is a saved
+query feeding a trigger's [`--context-query`](triggers.md), or a driver-side
+pre-read into the run input (ARCHITECTURE.md §10, "In-run recall is a third
+typed read; saved queries are not"). Pointers resolve against
 the node's input — the merged state for a node, the task's own input for a
 [`$send`](#fan-out-send) task, so one read node can fan out across many
 subjects (pair it with an `append` reducer on its `into` key).
@@ -192,7 +221,9 @@ subjects (pair it with an `append` reducer on its `into` key).
 The rules, each enforced rather than advised:
 
 - **Refused at start, naming the node** — an unknown key (`axsi` does not
-  quietly read the world axis), a missing or doubled operand, a node that both
+  quietly read the world axis, `query` does not become free text), a missing
+  or doubled operand, a count out of range (`k: 0`, `k: 65`, `depth: 9`), a
+  pattern namespace, a node that both
   binds a tool and declares a read (`RUN-E019`); a namespace outside the run's
   own, or one the session holds no `read` grant on (`RUN-E012`). Grants are
   checked again at each read, because a resume need not run under the session
@@ -201,18 +232,26 @@ The rules, each enforced rather than advised:
   own thread. It is never offered to an abstract node's model, never handed to
   `--tool-cmd`, a native blob or a `wasm32-areev-io` module, and the executor
   pool refuses one outright if it ever arrives there.
+- **The count ceiling is the runtime's.** `k` is refused past 64 at start,
+  and the executed recall is truncated to the plan's `k` whatever the store
+  returned; a pinned declaration whose `k` is out of range (a hand-edited
+  manifest) fails the node rather than read more.
 - **Journaled like every effect.** An intent before, a result after — named
-  `mg:entity_at` / `mg:related` — whose `read` field records what was read *as
-  resolved*: `{op, ns, subject, relation, at, axis, grain}` (the grain's hash,
-  or `null` for a miss). `run-trace` shows it, and `verify` and `shadow` answer
+  `mg:entity_at` / `mg:related` / `mg:recall` — whose `read` field records what
+  was read *as resolved*: `{op, ns, subject, relation, at, axis, grain}` (the
+  grain's hash, or `null` for a miss) for `entity_at`;
+  `{op, ns, subject, relation, k, grains}` (every result hash, in order, and
+  `relation: null` when none was named) plus `at` and `axis` for an as-of
+  `recall`. `run-trace` shows it, and `verify` and `shadow` answer
   it from the journal, so a determination stays reproducible after the file has
   moved on. `run inspect` prints each read's frozen declaration under `read`.
 - **Failures fail the node, never a guess.** A pointer that lands on nothing,
   or on the wrong type, is `schema_validation_failed` and is not retried (the
   same state fails the same way); a store error is `executor_error` and obeys
   the node's `retries`.
-- **Reads go through the store's egress boundary**, exactly as `db.entity_at`
-  does, so an `egress` anonymization policy on the target namespace applies.
+- **Reads go through the store's egress boundary**, exactly as
+  `db.entity_at` / `db.recall` do, so an `egress` anonymization policy on the
+  target namespace applies.
 
 Plans with `reads` are authored through the generic JSON `add` (like
 `max_cycles` and `reducers`); CAL `ADD workflow` has no syntax for them, and
@@ -818,12 +857,12 @@ Whether a **tool subprocess** can read the memory its own run holds depends on
 the storage tier, and it silently decides whether an agent design is portable.
 The door that works on **every** tier, with no tool holding a handle, is a
 [declared read](#reading-the-runs-own-memory-reads) on the plan — the runtime
-answers `entity_at` / `related` itself:
+answers `entity_at` / `related` / `recall` itself:
 
 - **Embedded (Turso file)**: no — the file lock is exclusive, so even a pure
   `RECALL` from inside a tool is refused (`STO-E001`). Use the doors that
-  exist: a plan's **`reads`** have the runtime answer as-of reads and graph
-  walks itself, `areev blob get` reads CAS attachments lock-free, a
+  exist: a plan's **`reads`** have the runtime answer as-of reads, bounded
+  recalls and graph walks itself, `areev blob get` reads CAS attachments lock-free, a
   **capability tool** reads them with `areev::blob_get` through the broker
   (#106, above), and a **trigger's `--context-query`** has the evaluator
   assemble a saved query's result into the run input before the run starts

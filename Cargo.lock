@@ -221,6 +221,7 @@ version = "1.9.2"
 dependencies = [
  "areev-cal",
  "areev-core",
+ "areev-run",
  "areev-store",
  "serde_json",
  "tempfile",

@@ -24,11 +24,15 @@ areev-core = { path = "../areev-core" }
 areev-store = { path = "../areev-store" }
 tempfile = "3"
 serde_json = "1"
+# The CAL-over-backend smoke drives the full stack (executor -> facade ->
+# store) against each backend, and the in-run recall case (#342) drives a
+# real `areev_run::Runner` over each backend: the runtime's `k` ceiling is a
+# guarantee only if it holds on every tier. `publish = false`, so neither
+# edge reaches a shipped artifact.
+areev-cal = { path = "../areev-cal" }
+areev-run = { path = "../areev-run" }
 
 [dev-dependencies]
-# The CAL-over-backend smoke drives the full stack (executor -> facade ->
-# store) against each backend.
-areev-cal = { path = "../areev-cal" }
 # ONLY for the reconnect-after-outage case: simulating a managed-Postgres
 # restart means terminating the store's backend from a SECOND connection
 # (`pg_terminate_backend`), which no public store API can or should do. Both

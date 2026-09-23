@@ -1293,8 +1293,8 @@ areev recall ... --db acct.db                                   # STO-E001, lock
 
 This is safe rather than a loophole: blobs are immutable, live beside the file
 rather than in it, and carry their checksum as their address, which the read
-re-verifies. For *grains* the doors are different: declare the as-of reads
-and graph walks a plan needs as its [`reads`](run.md#reading-the-runs-own-memory-reads)
+re-verifies. For *grains* the doors are different: declare the as-of reads,
+graph walks and bounded recalls a plan needs as its [`reads`](run.md#reading-the-runs-own-memory-reads)
 so the runtime answers them mid-run, declare a
 `--context-query` on the trigger so the evaluator assembles a saved query's
 result into the run input before the run starts, or run the PostgreSQL

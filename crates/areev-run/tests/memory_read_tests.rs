@@ -689,3 +689,375 @@ fn a_draft_plan_with_reads_rehearses_against_its_journaled_runs() {
     assert_eq!(report.effect_dispatches, 0);
     assert_eq!(report.writes, 0);
 }
+
+// ---------------------------------------------------------------------------
+// `op: recall` (#342): a bounded recall over the run's own records.
+// ---------------------------------------------------------------------------
+
+const LEDGER_NS: &str = "org.uw.ledger";
+
+/// Six monthly statements for one account, oldest first.
+fn book_statements(rig: &Rig) -> Vec<Hash> {
+    rig.facade
+        .with_store(|m| {
+            (1..=6)
+                .map(|month| {
+                    m.add(
+                        &Fact::new("ACC-7", "mg:statement", &format!("2026-0{month} balance"))
+                            .namespace(LEDGER_NS)
+                            .created_at(ms(&format!("2026-0{month}-28"))),
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .unwrap()
+}
+
+/// What `db.recall(subject, relation, k, ns)` returns on the bindings, built
+/// the way both bindings build it.
+fn recall_shape(grains: &[areev_core::format::DeserializedGrain]) -> Value {
+    Value::Array(
+        grains
+            .iter()
+            .map(|g| {
+                json!({"hash": g.hash.to_hex(),
+                       "type": format!("{:?}", g.grain_type).to_lowercase(),
+                       "fields": g.fields})
+            })
+            .collect(),
+    )
+}
+
+fn recall_trace(rig: &Rig, run_id: &str) -> Vec<areev_core::format::DeserializedGrain> {
+    rig.facade
+        .with_store(|m| m.run_trace(RUN_NS, run_id, 1024))
+        .unwrap()
+        .into_iter()
+        .filter(|g| g.get_str("tool_name") == Some("mg:recall"))
+        .filter(|g| g.fields.contains_key("read"))
+        .collect()
+}
+
+/// "The last three statements for this account": the run's state holds
+/// exactly what `db.recall` returns, never more than `k`, with the subject
+/// taken from state — and a recall naming no relation reads every relation.
+#[test]
+fn a_recall_returns_what_db_recall_returns_bounded_by_k() {
+    let rig = Rig::new();
+    let booked = book_statements(&rig);
+    let plan = rig.plan(json!({
+        "last_three": {"op": "recall", "ns": LEDGER_NS, "subject_from": "/account",
+                       "relation": "mg:statement", "k": 3},
+        "everything": {"op": "recall", "ns": LEDGER_NS, "subject": "ACC-7"},
+    }));
+    let session = rig
+        .runner("user:desk")
+        .start(&plan, "stmt-1", json!({"account": "ACC-7"}), &opts())
+        .unwrap();
+    assert!(
+        matches!(session, RunSession::Finished { outcome: RunOutcome::Completed, .. }),
+        "{session:?}"
+    );
+    let mut names = rig.exec.names();
+    names.sort();
+    assert_eq!(names, vec!["assess", "intake"], "no read reached a tool");
+
+    let state = rig.exec.input_of("assess");
+    let direct = rig
+        .facade
+        .with_store(|m| m.recall(LEDGER_NS, "ACC-7", Some("mg:statement"), 3))
+        .unwrap();
+    assert_eq!(state["last_three"], recall_shape(&direct));
+    let got: Vec<&str> = state["last_three"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|g| g["hash"].as_str())
+        .collect();
+    let newest: Vec<String> = booked.iter().rev().take(3).map(|h| h.to_hex()).collect();
+    assert_eq!(got, newest, "the three newest, newest first — never more than k");
+
+    let all = rig
+        .facade
+        .with_store(|m| m.recall(LEDGER_NS, "ACC-7", None, 16))
+        .unwrap();
+    assert_eq!(all.len(), 6, "the default k (16) is above the six there are");
+    assert_eq!(state["everything"], recall_shape(&all));
+}
+
+/// With an instant it is an as-of recall: per relation, exactly what
+/// `entity_at` answers on that clock — so the backdated endorsement and the
+/// restated deductible read the same from a recall as from the as-of read.
+#[test]
+fn an_as_of_recall_answers_both_clocks_like_entity_at() {
+    let rig = Rig::new();
+    rig.book_pol_4471();
+    let recall_at = |axis: &str| {
+        json!({"op": "recall", "ns": POLICY_NS, "subject_from": "/policy_id",
+               "at_from": "/date_of_loss", "axis": axis})
+    };
+    let plan = rig.plan(json!({
+        "world_at_loss": recall_at("world"),
+        "known_at_loss": recall_at("knowledge"),
+        "limit_on_may20": {"op": "recall", "ns": POLICY_NS, "subject": "POL-4471",
+                           "relation": "mg:coverage_limit", "k": 1, "at": "2026-05-20"},
+    }));
+    rig.runner("user:desk")
+        .start(&plan, "asof-1", claim(), &opts())
+        .unwrap();
+    let state = rig.exec.input_of("assess");
+    let loss = ms("2026-03-18");
+    for (key, axis) in [("world_at_loss", Axis::World), ("known_at_loss", Axis::Knowledge)] {
+        let direct = rig
+            .facade
+            .with_store(|m| m.recall_at(POLICY_NS, "POL-4471", None, 16, loss, axis))
+            .unwrap();
+        assert_eq!(state[key], recall_shape(&direct), "{key}");
+    }
+    let by_relation = |key: &str, relation: &str| -> Option<String> {
+        state[key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|g| g["fields"]["relation"] == relation)
+            .and_then(|g| g["fields"]["object"].as_str().map(str::to_string))
+    };
+    // World: the cover in force on the date of loss, and the deductible as
+    // it truly was (restated to 10,000 in June, true since January).
+    assert_eq!(by_relation("world_at_loss", "mg:coverage_limit").as_deref(), Some("500000"));
+    assert_eq!(by_relation("world_at_loss", "mg:deductible").as_deref(), Some("10000"));
+    // Knowledge: what the desk believed — 5,000 — and a relation with no
+    // knowledge-clock answer is absent, exactly as entity_at says.
+    assert_eq!(by_relation("known_at_loss", "mg:deductible").as_deref(), Some("5000"));
+    assert_eq!(
+        by_relation("known_at_loss", "mg:coverage_limit"),
+        rig.binding_entity_at("POL-4471", "mg:coverage_limit", loss, Axis::Knowledge)
+            .pointer("/grain/fields/object")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        "parity with entity_at on the knowledge clock"
+    );
+    // A named relation with k = 1 IS entity_at, in recall's shape.
+    let as_of =
+        rig.binding_entity_at("POL-4471", "mg:coverage_limit", ms("2026-05-20"), Axis::World);
+    assert_eq!(state["limit_on_may20"][0]["hash"], as_of["grain"]["hash"]);
+    assert_eq!(state["limit_on_may20"].as_array().unwrap().len(), 1);
+}
+
+/// The journal records the resolved operands and every result hash; verify
+/// reproduces the run after the ledger has moved on, and `shadow` under the
+/// same plan rehearses it without reading the file.
+#[test]
+fn a_recall_is_journaled_with_its_result_hashes_and_replays() {
+    let rig = Rig::new();
+    let booked = book_statements(&rig);
+    rig.book_pol_4471();
+    let plan = rig.plan(json!({
+        "last_two": {"op": "recall", "ns": LEDGER_NS, "subject_from": "/account",
+                     "relation": "mg:statement", "k": 2, "into": "stmts"},
+        "cover_then": {"op": "recall", "ns": POLICY_NS, "subject": "POL-4471",
+                       "relation": "mg:coverage_limit", "k": 4,
+                       "at_from": "/date_of_loss", "axis": "world"},
+    }));
+    let runner = rig.runner("user:desk");
+    let mut input = claim();
+    input["account"] = json!("ACC-7");
+    runner.start(&plan, "stmt-j", input, &opts()).unwrap();
+
+    let reads = recall_trace(&rig, "stmt-j");
+    assert_eq!(reads.len(), 2, "one result grain per read");
+    let by_node = |node: &str| {
+        reads
+            .iter()
+            .find(|g| g.get_str("node") == Some(node))
+            .expect(node)
+    };
+    let newest_two: Vec<String> = booked.iter().rev().take(2).map(|h| h.to_hex()).collect();
+    assert_eq!(
+        by_node("last_two").fields["read"],
+        json!({"op": "recall", "ns": LEDGER_NS, "subject": "ACC-7",
+               "relation": "mg:statement", "k": 2, "grains": newest_two})
+    );
+    let content: Value =
+        serde_json::from_str(by_node("last_two").get_str("tool_content").unwrap()).unwrap();
+    assert_eq!(content["stmts"].as_array().unwrap().len(), 2, "`into` renamed the key");
+    let cover = rig
+        .facade
+        .with_store(|m| {
+            m.entity_at(POLICY_NS, "POL-4471", "mg:coverage_limit", ms("2026-03-18"), Axis::World)
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        by_node("cover_then").fields["read"],
+        json!({"op": "recall", "ns": POLICY_NS, "subject": "POL-4471",
+               "relation": "mg:coverage_limit", "k": 4, "at": ms("2026-03-18"),
+               "axis": "world", "grains": [cover.hash.to_hex()]})
+    );
+
+    // The ledger moves on: a seventh statement. A re-read would now answer
+    // differently; verify and shadow must not re-read.
+    rig.facade
+        .with_store(|m| {
+            m.add(
+                &Fact::new("ACC-7", "mg:statement", "2026-07 balance")
+                    .namespace(LEDGER_NS)
+                    .created_at(ms("2026-07-28")),
+            )
+        })
+        .unwrap();
+    let calls_before = rig.exec.names().len();
+    assert!(runner.verify("stmt-j").unwrap().verified, "answered from the journal");
+    let report = runner
+        .shadow_plan(&["stmt-j".into()], &areev_run::PlanCandidate::Hash(plan))
+        .unwrap();
+    let r = &report.runs[0];
+    assert_eq!((r.verdict.as_str(), r.out_of_support.len()), ("same", 0), "{r:?}");
+    assert!(r.identity.as_ref().is_some_and(|i| i.consistent), "{r:?}");
+    assert_eq!((report.effect_dispatches, report.writes), (0, 0));
+    assert_eq!(rig.exec.names().len(), calls_before, "nothing executed");
+}
+
+/// Replay's teeth for a recall: a forged result — the answer swapped for
+/// one the memory never gave — makes both verify and an identity shadow
+/// diverge.
+#[test]
+fn a_tampered_recall_result_fails_verify_and_shadow() {
+    let rig = Rig::new();
+    book_statements(&rig);
+    let plan = rig.plan(json!({
+        "last_two": {"op": "recall", "ns": LEDGER_NS, "subject": "ACC-7",
+                     "relation": "mg:statement", "k": 2},
+    }));
+    let runner = rig.runner("user:desk");
+    runner.start(&plan, "stmt-t", json!({}), &opts()).unwrap();
+    assert!(runner.verify("stmt-t").unwrap().verified);
+
+    rig.facade.with_store(|m| {
+        let v = areev_run::journal::load(m, RUN_NS, "stmt-t").unwrap();
+        let entry = v.entries.values().find(|e| e.key.node == "last_two").unwrap().clone();
+        let (result_hash, _) = entry.result.unwrap();
+        let stored = m.get(&result_hash).unwrap();
+        let mut forged = stored.to_tool().unwrap();
+        forged.content = Some(
+            json!({"last_two": [{"hash": "00", "type": "fact", "fields": {"object": "FORGED"}}]})
+                .to_string(),
+        );
+        forged.common.created_at = Some(1_785_999_999_999);
+        forged.common.namespace = Some(RUN_NS.into());
+        forged = forged.step_action(&plan.to_hex(), "last_two");
+        for key in [
+            "run_id", "task_path", "node", "attempt", "effect_seq", "superstep",
+            "effect_kind", "usage_input_tokens", "usage_output_tokens",
+            "usage_usd_micros", "usage_journal_bytes", "read",
+        ] {
+            if let Some(val) = stored.fields.get(key) {
+                forged.common.extra_fields.insert(key.into(), val.clone());
+            }
+        }
+        m.supersede(&result_hash, &mut forged).unwrap();
+    });
+
+    let report = runner.verify("stmt-t").unwrap();
+    assert!(!report.verified, "a forged recall must not verify: {report:?}");
+    let shadow = runner
+        .shadow_plan(&["stmt-t".into()], &areev_run::PlanCandidate::Hash(plan))
+        .unwrap();
+    let identity = shadow.runs[0].identity.as_ref().expect("identity replay");
+    assert!(!identity.consistent, "{:?}", shadow.runs[0]);
+}
+
+/// The ceiling is the runtime's, not only the validator's: a pinned spec that
+/// never went through `parse_reads` (a hand-edited, replicated manifest) and
+/// asks for 65 fails the read instead of returning 65 grains, and a
+/// pattern namespace is refused rather than widened into a scope.
+#[test]
+fn the_executed_recall_enforces_the_ceiling_on_a_pinned_spec() {
+    let rig = Rig::new();
+    rig.facade
+        .with_store(|m| {
+            for i in 0..70 {
+                m.add(
+                    &Fact::new("ACC-9", "mg:line", &format!("line {i}"))
+                        .namespace(LEDGER_NS)
+                        .created_at(1_000 + i),
+                )?;
+            }
+            Ok::<_, areev_core::error::AreevError>(())
+        })
+        .unwrap();
+    let exec = |spec: Value| areev_run::memread::execute(&rig.facade, RUN_NS, &spec, &json!({}));
+    let base = json!({"op": "recall", "ns": LEDGER_NS, "into": "r", "subject": "ACC-9"});
+
+    let mut over = base.clone();
+    over["k"] = json!(65);
+    let EffectOutcome::Failed { detail, .. } = exec(over).outcome else {
+        panic!("a pinned k past the ceiling must fail")
+    };
+    assert!(detail.contains("outside 1..=64"), "{detail}");
+
+    let mut at_max = base.clone();
+    at_max["k"] = json!(64);
+    let done = exec(at_max);
+    let EffectOutcome::Completed { result, .. } = done.outcome else { panic!() };
+    assert_eq!(result["r"].as_array().unwrap().len(), 64, "70 stored, 64 returned");
+    assert_eq!(done.record.unwrap()["grains"].as_array().unwrap().len(), 64);
+
+    let mut scoped = base;
+    scoped["k"] = json!(5);
+    scoped["ns"] = json!("org.uw.*");
+    let EffectOutcome::Failed { detail, .. } = exec(scoped).outcome else {
+        panic!("a pattern namespace must fail")
+    };
+    assert!(detail.contains("refused"), "{detail}");
+}
+
+/// The ceiling and the scope, on the plan, before the run exists: `k` past
+/// 64 (or 0) is refused, free text is an unknown key, and so is a namespace
+/// the session cannot read — and a refused start leaves no run behind.
+#[test]
+fn a_recall_past_its_ceiling_or_grant_refuses_at_start() {
+    use areev_core::authz::{AUTHZ_NS, REL_PERMITS};
+
+    let rig = Rig::new();
+    book_statements(&rig);
+    for k in [0, 65, 1000] {
+        let plan = rig.plan(json!({
+            "all": {"op": "recall", "ns": LEDGER_NS, "subject": "ACC-7", "k": k},
+        }));
+        let run_id = format!("k-{k}");
+        let runner = rig.runner("user:desk");
+        let err = runner.start(&plan, &run_id, json!({}), &opts()).unwrap_err();
+        assert!(matches!(err, RunError::InvalidPlan { .. }), "k={k}: {err}");
+        assert!(err.to_string().contains("`k` must be an integer from 1 to 64"), "{err}");
+        assert!(runner.inspect(&run_id).is_err(), "no run left behind");
+    }
+    let noisy = rig.plan(json!({
+        "all": {"op": "recall", "ns": LEDGER_NS, "subject": "ACC-7", "query": "unpaid"},
+    }));
+    let err = rig
+        .runner("user:desk")
+        .start(&noisy, "free-text", json!({}), &opts())
+        .unwrap_err();
+    assert!(err.to_string().contains("unknown key `query`"), "{err}");
+
+    rig.facade
+        .with_store(|m| {
+            m.add(
+                &Fact::new("agent:desk", REL_PERMITS, "read,run.execute,write ON org.uw")
+                    .namespace(AUTHZ_NS)
+                    .created_at(900),
+            )
+        })
+        .unwrap();
+    rig.facade.bind_principal("agent:desk").unwrap();
+    let plan = rig.plan(json!({
+        "all": {"op": "recall", "ns": LEDGER_NS, "subject": "ACC-7", "k": 5},
+    }));
+    let runner = rig.runner("agent:desk");
+    let err = runner.start(&plan, "g-1", json!({}), &opts()).unwrap_err();
+    assert!(matches!(err, RunError::Unauthorized { .. }), "{err}");
+    assert!(err.to_string().contains("declares a read of 'org.uw.ledger'"), "{err}");
+    assert!(runner.inspect("g-1").is_err());
+    assert!(rig.exec.names().is_empty());
+}
