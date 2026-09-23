@@ -32,6 +32,11 @@
 //!   failed node, chosen at close, not at arrival.
 //! - **Cancel**: drain; retries stop; parked Client asks are abandoned (the
 //!   journal keeps their grains); finish `Canceled`.
+//! - **Pause** (#344): `EventIn::PauseRequested` in a batch stops that call
+//!   from OPENING a superstep — nothing else. The open one finishes normally
+//!   and closes into an ordinary `Idle` checkpoint; terminal outcomes (cancel
+//!   included) still win. Nothing is stored, so the checkpoint is the one an
+//!   uninterrupted run writes, and resuming is `EventIn::Resumed`.
 //! - **Budgets** (§6.7): every axis is checked at superstep open, before
 //!   any dispatch. Per-dispatch reservation refines this in Wave 2, where
 //!   LLM effects carry a mandatory `max_tokens` reserve to check — a v1
@@ -142,7 +147,10 @@ pub fn step(env: &StepEnv<'_>, mut st: SchedulerState, events: &[EventIn]) -> St
     for ev in events {
         apply_event(env, &mut st, ev, &mut out);
     }
-    progress(env, &mut st, &mut out);
+    // A pause is a property of THIS call's batch, never of the state (#344):
+    // see `EventIn::PauseRequested`.
+    let hold = events.iter().any(|e| matches!(e, EventIn::PauseRequested));
+    progress(env, &mut st, &mut out, hold);
     StepOutcome { commands: out, state: st }
 }
 
@@ -195,6 +203,8 @@ fn apply_event(
             st.inputs_seen += 1;
             st.inbox.push(message.clone());
         }
+        // Read by `step` itself, over the whole batch; nothing to apply.
+        EventIn::PauseRequested => {}
         EventIn::AskForwarded { tool_call_id } => {
             let Some(pending) = st.pending_asks.get(tool_call_id).cloned() else {
                 return;
@@ -964,7 +974,7 @@ fn handle_flow_tool_outcome(
     }
 }
 
-fn progress(env: &StepEnv<'_>, st: &mut SchedulerState, out: &mut Vec<Command>) {
+fn progress(env: &StepEnv<'_>, st: &mut SchedulerState, out: &mut Vec<Command>, hold: bool) {
     loop {
         if st.is_terminal() {
             return;
@@ -975,7 +985,7 @@ fn progress(env: &StepEnv<'_>, st: &mut SchedulerState, out: &mut Vec<Command>) 
             }
             return;
         }
-        if !progress_idle(env, st, out) {
+        if !progress_idle(env, st, out, hold) {
             return;
         }
     }
@@ -1070,7 +1080,12 @@ fn progress_open(env: &StepEnv<'_>, st: &mut SchedulerState, out: &mut Vec<Comma
 }
 
 /// One pass over the idle phase. Returns true to keep looping.
-fn progress_idle(env: &StepEnv<'_>, st: &mut SchedulerState, out: &mut Vec<Command>) -> bool {
+fn progress_idle(
+    env: &StepEnv<'_>,
+    st: &mut SchedulerState,
+    out: &mut Vec<Command>,
+    hold: bool,
+) -> bool {
     if let Some((by, reason)) = st.cancel.clone() {
         finish(st, out, RunOutcome::Canceled { by, reason });
         return false;
@@ -1152,6 +1167,13 @@ fn progress_idle(env: &StepEnv<'_>, st: &mut SchedulerState, out: &mut Vec<Comma
                 return false;
             }
         }
+    }
+
+    // A host pause (#344) holds HERE — after every terminal decision above,
+    // before anything is opened. The state is left exactly as the last close
+    // checkpointed it, so the parked checkpoint is the uninterrupted run's.
+    if hold {
+        return false;
     }
 
     // Open the superstep.

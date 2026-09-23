@@ -14,7 +14,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { existsSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import { fileURLToPath } from 'node:url'
@@ -1810,6 +1810,122 @@ test('a subscriber does not change what the run recorded', async () => {
     return Object.fromEntries(keys.map((k) => [k, r[k]]))
   }
   assert.deepEqual(await shape('obs-on'), await shape('obs-off'))
+  await m.close()
+})
+
+// ---- #344: a host pause, requested from onEvent -----------------------------
+//
+// A host metering work in its own units watches the stream and, when its
+// count crosses a limit, pauses the run instead of canceling it. The pause
+// lands at the next superstep boundary AFTER the callback runs — the event is
+// delivered asynchronously, and the superstep that follows a checkpoint is
+// already dispatched when the checkpoint is announced — so the test asserts
+// the contract (parked, resumable, every node exactly once), not which node
+// the boundary fell after.
+
+async function seedThreeNodePlan(m) {
+  const bind = {}
+  for (const [i, n] of ['a', 'b', 'c'].entries()) {
+    bind[n] = await m.add('tool', JSON.stringify({
+      tool_name: n, kind: 'definition', tool_description: `step ${n}`, created_at: 700 + i,
+    }), 'ops')
+  }
+  return m.add('workflow', JSON.stringify({
+    nodes: ['a', 'b', 'c'],
+    edges: [{ src: 'a', dst: 'b' }, { src: 'b', dst: 'c' }],
+    bindings: bind,
+    created_at: 710,
+  }), 'ops')
+}
+
+/// Each tool takes long enough for the pause to land mid-run, and appends
+/// its own name to `log` — the per-node invocation count the test asserts.
+const loggingTool = (log) =>
+  `sleep 0.4; echo "$AREEV_TOOL_NAME" >> '${log}'; printf '{}'`
+
+const readLog = (log) =>
+  existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean) : []
+
+test('runPause from onEvent parks the run; runResume finishes it under the same id', async () => {
+  const m = makeDb('ops')
+  const wf = await seedThreeNodePlan(m)
+  const log = join(mkdtempSync(join(tmpdir(), 'areev-pause-')), 'calls.log')
+  const tool = loggingTool(log)
+
+  let pauseCall = null
+  const onEvent = (line) => {
+    const e = JSON.parse(line)
+    if (e.event === 'CheckpointWritten' && pauseCall === null) {
+      pauseCall = m.runPause('p1', 'limit reached')
+    }
+  }
+  const session = JSON.parse(await m.runStart(
+    wf, 'p1', '{}', tool,
+    null, null, null, null, null, null, null, null, null, null, null, null, null,
+    onEvent,
+  ))
+  const receipt = JSON.parse(await pauseCall)
+  assert.equal(receipt.run_id, 'p1')
+  assert.equal(receipt.because, 'limit reached')
+  assert.equal(receipt.already, false)
+
+  assert.ok(session.parked, `expected a park, got ${JSON.stringify(session)}`)
+  assert.equal(session.parked.reason, 'paused')
+  assert.equal(session.parked.kind, 'paused')
+  assert.equal(session.parked.because, 'limit reached')
+  const before = readLog(log)
+  assert.ok(before.length >= 1 && before.length < 3, `paused mid-run: ${before}`)
+
+  const inspected = JSON.parse(await m.runInspect('p1'))
+  assert.equal(inspected.phase, 'paused')
+  assert.equal(inspected.pause.status, 'paused')
+  assert.equal(inspected.pause.because, 'limit reached')
+  assert.ok(inspected.pause.paused_by)
+  assert.ok(inspected.pause.requested_at > 0 && inspected.pause.paused_at > 0)
+
+  // Idempotent while paused: the standing request answers.
+  const again = JSON.parse(await m.runPause('p1', 'again'))
+  assert.equal(again.already, true)
+  assert.equal(again.status, 'paused')
+  assert.equal(again.request, receipt.request)
+
+  const done = JSON.parse(await m.runResume('p1', tool))
+  assert.equal(done.finished, 'Completed')
+  assert.deepEqual(readLog(log), ['a', 'b', 'c'], 'every node exactly once, none re-executed')
+  assert.equal(JSON.parse(await m.runVerify('p1')).verified, true)
+  assert.equal(JSON.parse(await m.runInspect('p1')).phase, 'finished')
+
+  // A finished run is refused with the documented code.
+  await assert.rejects(m.runPause('p1', 'too late'), /RUN-E029/)
+  await m.close()
+})
+
+test('runCancel on a paused run finalises it as canceled', async () => {
+  const m = makeDb('ops')
+  const wf = await seedThreeNodePlan(m)
+  const log = join(mkdtempSync(join(tmpdir(), 'areev-pause-')), 'calls.log')
+  const tool = loggingTool(log)
+  let pauseCall = null
+  const session = JSON.parse(await m.runStart(
+    wf, 'p2', '{}', tool,
+    null, null, null, null, null, null, null, null, null, null, null, null, null,
+    (line) => {
+      if (JSON.parse(line).event === 'CheckpointWritten' && pauseCall === null) {
+        pauseCall = m.runPause('p2', 'hold')
+      }
+    },
+  ))
+  await pauseCall
+  assert.equal(session.parked.reason, 'paused')
+  const ran = readLog(log).length
+
+  assert.deepEqual(JSON.parse(await m.runCancel('p2', 'abandon')), { canceled: 'p2' })
+  assert.equal(JSON.parse(await m.runInspect('p2')).phase, 'finished')
+  const after = JSON.parse(await m.runResume('p2', tool))
+  assert.match(after.finished, /^Canceled/)
+  assert.equal(readLog(log).length, ran, 'nothing ran after the pause')
+  assert.equal(JSON.parse(await m.runVerify('p2')).verified, true)
+  await assert.rejects(m.runPause('p2', 'hold'), /RUN-E029/)
   await m.close()
 })
 

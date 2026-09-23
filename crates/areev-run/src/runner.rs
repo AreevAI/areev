@@ -174,6 +174,18 @@ fn executor_kind_of(executor: &areev_run_core::NodeExecutor) -> &'static str {
     }
 }
 
+/// A terminal outcome as the one-word label the run-outcome record and the
+/// run index carry (`budget_exhausted:<axis>` names the axis).
+fn outcome_label(outcome: &RunOutcome) -> String {
+    match outcome {
+        RunOutcome::Completed => "completed".to_string(),
+        RunOutcome::Stalled { .. } => "stalled".to_string(),
+        RunOutcome::Failed { .. } => "failed".to_string(),
+        RunOutcome::Canceled { .. } => "canceled".to_string(),
+        RunOutcome::BudgetExhausted { axis } => format!("budget_exhausted:{}", axis.as_str()),
+    }
+}
+
 /// One `run:<id> mg:harness` link as the run index reads it:
 /// `(created_at, run_id, session namespace if stamped)`.
 type RunIndexRow = (i64, String, Option<String>);
@@ -809,15 +821,30 @@ impl Runner {
     /// journaled responses, re-deliver dangling intents (§5.3).
     pub fn resume(&self, run_id: &str, opts: &RunOptions) -> Result<RunSession, RunError> {
         self.check_run_verb(areev_core::authz::Verb::RunExecute)?;
+        self.resume_run(run_id, opts, true)
+    }
+
+    /// `resume` past its grant check. `check_llm` is false only on cancel's
+    /// finalization of a paused run (#344), which dispatches nothing and so
+    /// has no model to be pinned to — and whose caller holds `run.cancel`,
+    /// deliberately the lower bar.
+    fn resume_run(
+        &self,
+        run_id: &str,
+        opts: &RunOptions,
+        check_llm: bool,
+    ) -> Result<RunSession, RunError> {
         let manifest = self.load_manifest(run_id)?;
         // Before the lease and before any grain is written (#287, #288): a
         // run that must not continue here must not LOOK like it started to.
         self.check_engine_pin(&manifest)?;
-        self.check_llm_pin(&manifest)?;
+        if check_llm {
+            self.check_llm_pin(&manifest)?;
+        }
         let plan_hash = Hash::from_hex(&manifest.plan_hash)
             .map_err(|_| RunError::ManifestMismatch { why: "bad plan hash".into() })?;
         let plan = self.load_plan(&plan_hash)?;
-        let view = self
+        let mut view = self
             .facade
             .with_store(|m| journal::load(m, &self.ns, run_id))
             .map_err(err_run)?;
@@ -851,6 +878,32 @@ impl Runner {
         }
 
         let now = self.clock.now_ms();
+        // Continuing a PAUSED run consumes its request (#344), and says so in
+        // the journal: who resumed it and which request that answered. A
+        // request that was never honoured (asked while the run sat parked on
+        // an ask, or crashed) is NOT consumed — the drive below honours it at
+        // the next boundary, which is what the asker was promised.
+        if view.pause.is_paused() && matches!(st.phase, areev_run_core::Phase::Idle) {
+            if let Some(req) = view.pause.active.clone() {
+                self.facade
+                    .with_store(|m| {
+                        journal::write_pause_released(
+                            m,
+                            &self.ns,
+                            run_id,
+                            &req.request,
+                            now,
+                            &self.principal,
+                        )
+                    })
+                    .map_err(err_run)?;
+                view.pause.apply(&journal::PauseEvent::Released {
+                    request: req.request,
+                    by: self.principal.clone(),
+                    at: now as i64,
+                });
+            }
+        }
         // A run picked back up between supersteps stopped existing for the
         // span between its last close and this reading. `Resumed` marks that
         // so the coming open accrues the gap as ELAPSED rather than charging
@@ -1341,7 +1394,115 @@ impl Runner {
         f.common.author_did = Some(principal.to_string());
         f.common.extra_fields.insert("run_id".into(), json!(run_id));
         self.facade.with_store(|m| m.add(&f)).map_err(err_run)?;
+        // A PAUSED run (#344) has no driver to notice the marker, and it is
+        // parked precisely because its host has not decided what happens
+        // next — so cancel finalizes it here, rather than leaving a canceled
+        // run looking paused until someone happens to resume it. Nothing
+        // dispatches: from an Idle checkpoint with the marker set the
+        // scheduler finishes `Canceled` before it could open a superstep.
+        //
+        // Best effort on purpose. The marker is already durable, and every
+        // path that can fail here (another driver holding the lease, a store
+        // error) is one where a later drive drains the run on that marker
+        // anyway; the brake itself must never fail because the tidy-up did.
+        if self.is_paused(run_id) {
+            let _ = self.resume_run(run_id, &RunOptions::default(), false);
+        }
         Ok(())
+    }
+
+    /// Ask a live run to PAUSE at its next superstep boundary (#344).
+    ///
+    /// Writes the pause request — a Fact journaled with the principal and the
+    /// reason — and returns. A driver advancing the run honours it where it
+    /// would otherwise open the next superstep: the open one finishes and
+    /// checkpoints normally, and the run parks there holding no lease and no
+    /// concurrency slot. `resume` continues it under the same run id,
+    /// manifest and pins, consuming the request; no node re-executes, because
+    /// nothing past the checkpoint was ever dispatched.
+    ///
+    /// The same grant as `resume` (`run.execute`) — stopping a run resumably
+    /// is a scheduling decision about the run, unlike cancel's deliberately
+    /// low bar, which exists so the brake is never blocked.
+    ///
+    /// Idempotent: asking again while a request stands (honoured or not)
+    /// writes nothing and answers with the standing request. Refused with
+    /// `RUN-E029` when the run already finished or a cancel is pending
+    /// against it — cancel wins over pause.
+    pub fn pause(
+        &self,
+        run_id: &str,
+        principal: &str,
+        reason: &str,
+    ) -> Result<crate::PauseReceipt, RunError> {
+        self.check_run_verb(areev_core::authz::Verb::RunExecute)?;
+        // An unknown run id is an error, not a request filed for later: a
+        // pause can only mean a run that exists.
+        self.load_manifest(run_id)?;
+        let view = self
+            .facade
+            .with_store(|m| journal::load(m, &self.ns, run_id))
+            .map_err(err_run)?;
+        if let Some(last) = view.checkpoints.last() {
+            let st: SchedulerState = serde_json::from_value(last.scheduler.clone())
+                .map_err(|e| RunError::ManifestMismatch { why: format!("checkpoint state: {e}") })?;
+            if let Some(outcome) = st.outcome() {
+                return Err(RunError::NotPausable {
+                    run_id: run_id.to_string(),
+                    why: format!("it already finished ({})", outcome_label(outcome)),
+                });
+            }
+        }
+        if let Some((by, why)) = self.cancel_marker(run_id) {
+            return Err(RunError::NotPausable {
+                run_id: run_id.to_string(),
+                why: format!(
+                    "a cancel by {by} is pending against it ({why}) — cancel wins over \
+                     pause, and the run drains to canceled"
+                ),
+            });
+        }
+        if let Some(standing) = view.pause.active.clone() {
+            let status = if view.pause.is_paused() { "paused" } else { "requested" };
+            return Ok(crate::PauseReceipt {
+                run_id: run_id.to_string(),
+                status: status.into(),
+                already: true,
+                request: standing,
+            });
+        }
+        let now = self.clock.now_ms();
+        let ordinal = view.pause.requests;
+        let h = self
+            .facade
+            .with_store(|m| {
+                journal::write_pause_request(m, &self.ns, run_id, reason, ordinal, now, principal)
+            })
+            .map_err(err_run)?;
+        Ok(crate::PauseReceipt {
+            run_id: run_id.to_string(),
+            status: "requested".into(),
+            already: false,
+            request: journal::PauseRequest {
+                request: h.to_hex(),
+                paused_by: principal.to_string(),
+                because: reason.to_string(),
+                requested_at: now as i64,
+            },
+        })
+    }
+
+    /// Parked on a honoured, unconsumed pause request at a between-supersteps
+    /// checkpoint — nobody is driving it.
+    fn is_paused(&self, run_id: &str) -> bool {
+        let Ok(view) = self.facade.with_store(|m| journal::load(m, &self.ns, run_id)) else {
+            return false;
+        };
+        view.pause.is_paused()
+            && view
+                .checkpoints
+                .last()
+                .is_some_and(|c| c.scheduler.get("phase") == Some(&json!("Idle")))
     }
 
     /// Queue a steering message for a running run. It is consumed by the
@@ -1629,6 +1790,9 @@ impl Runner {
             .collect();
         let mut prev_ckpt: Option<Hash> = view.checkpoints.last().map(|c| c.hash);
         let mut input_cursor = view.cursor;
+        // The host-pause state (#344): the standing request, if any, polled
+        // forward on the same cursor as steering messages.
+        let mut pause = view.pause.clone();
         // Steering messages the journal already holds but this state has not
         // applied. They wait in `steer` with everything polled later: an
         // input is fed ONLY while a superstep is open, which is what makes it
@@ -1706,17 +1870,26 @@ impl Runner {
             // the next wave picks the same messages up rather than losing
             // them to a transient store error.
             if !st.is_terminal() {
-                if let Ok((queued, at)) = self
+                if let Ok((queued, pauses, at)) = self
                     .facade
-                    .with_store(|m| journal::poll_inputs(m, &self.ns, &run_id, input_cursor))
+                    .with_store(|m| journal::poll_run(m, &self.ns, &run_id, input_cursor))
                 {
                     input_cursor = at;
                     steer.extend(queued);
+                    for ev in &pauses {
+                        pause.apply(ev);
+                    }
                 }
                 if !steer.is_empty() && matches!(st.phase, areev_run_core::Phase::Open { .. }) {
                     events.extend(
                         steer.drain(..).map(|message| EventIn::InputSeen { message }),
                     );
+                }
+                // A standing pause rides EVERY batch until the run parks on
+                // it: the scheduler holds nothing between calls, so the call
+                // that finally closes into Idle has to carry it too.
+                if pause.active.is_some() {
+                    events.push(EventIn::PauseRequested);
                 }
             }
 
@@ -2190,15 +2363,7 @@ impl Runner {
                 // cost-attribution source. Journaled AFTER the terminal
                 // checkpoint; replay never sees it (it is not a journal
                 // entry), so verify is unaffected.
-                let outcome_label = match &outcome {
-                    RunOutcome::Completed => "completed".to_string(),
-                    RunOutcome::Stalled { .. } => "stalled".to_string(),
-                    RunOutcome::Failed { .. } => "failed".to_string(),
-                    RunOutcome::Canceled { .. } => "canceled".to_string(),
-                    RunOutcome::BudgetExhausted { axis } => {
-                        format!("budget_exhausted:{}", axis.as_str())
-                    }
-                };
+                let outcome_label = outcome_label(&outcome);
                 let mut obs = Observation::new(&self.principal, "system")
                     .subject(&format!("run:{run_id}"))
                     .object(&outcome_label)
@@ -2388,6 +2553,53 @@ impl Runner {
                 slots.release(&self.facade);
                 lease.release(&self.facade);
                 return Ok(RunSession::Parked { envelope, run_id });
+            }
+
+            // Parked on a host pause (#344): the step that carried the request
+            // ended between supersteps. Everything up to here is durable —
+            // the close checkpointed, every dispatched effect settled with its
+            // wave — so there is nothing in flight to lose.
+            if let (Some(req), areev_run_core::Phase::Idle) = (pause.active.clone(), &st.phase) {
+                let now = self.clock.now_ms();
+                self.facade
+                    .with_store(|m| {
+                        journal::write_pause_applied(
+                            m,
+                            &self.ns,
+                            &run_id,
+                            &req.request,
+                            st.superstep,
+                            now,
+                            &self.principal,
+                        )
+                    })
+                    .map_err(err_run)?;
+                emit(crate::stream::RunEvent::RunPaused {
+                    run_id: run_id.clone(),
+                    superstep: st.superstep,
+                    paused_by: req.paused_by.clone(),
+                    because: req.because.clone(),
+                });
+                // Same release as a park on an ask: a paused run is a
+                // journaled checkpoint, not a process — it holds no lease and
+                // no concurrency slot, so any driver may continue it.
+                slots.release(&self.facade);
+                lease.release(&self.facade);
+                return Ok(RunSession::Parked {
+                    envelope: json!({
+                        "kind": "paused",
+                        "reason": "paused",
+                        "run_id": run_id,
+                        "checkpoint": prev_ckpt.map(|h| h.to_hex()),
+                        "superstep": st.superstep,
+                        "paused_by": req.paused_by,
+                        "because": req.because,
+                        "requested_at": req.requested_at,
+                        "paused_at": now,
+                        "asks": [],
+                    }),
+                    run_id,
+                });
             }
 
             // Parked with the envelope announced in an earlier session.
@@ -2624,13 +2836,35 @@ impl Runner {
         let last = view.checkpoints.last();
         let scheduler = last.map(|c| c.scheduler.clone()).unwrap_or(Value::Null);
         let asks = scheduler.get("pending_asks").cloned().unwrap_or(json!({}));
-        let phase = scheduler.get("phase").and_then(|p| p.as_str().map(String::from)).or_else(
+        let mut phase = scheduler.get("phase").and_then(|p| p.as_str().map(String::from)).or_else(
             || {
                 scheduler.get("phase").map(|p| {
                     if p.get("Finished").is_some() { "finished".into() } else { "open".into() }
                 })
             },
         );
+        // A host pause (#344): who asked, when, why — and, once a driver
+        // honoured it, where it parked. A paused run's checkpoint is an
+        // ordinary Idle one, so the phase is the pause record's to name. A
+        // terminal run keeps `finished` whatever request is left standing.
+        let finished = phase.as_deref() == Some("finished");
+        let pause = view.pause.active.as_ref().filter(|_| !finished).map(|req| {
+            let mut p = json!({
+                "status": if view.pause.is_paused() { "paused" } else { "requested" },
+                "paused_by": req.paused_by,
+                "because": req.because,
+                "requested_at": req.requested_at,
+                "request": req.request,
+            });
+            if let (Some((superstep, at)), Some(o)) = (view.pause.applied, p.as_object_mut()) {
+                o.insert("paused_at".into(), json!(at));
+                o.insert("superstep".into(), json!(superstep));
+            }
+            p
+        });
+        if view.pause.is_paused() && !finished {
+            phase = Some("paused".into());
+        }
         Ok(crate::InspectReport {
             run_id: run_id.to_string(),
             plan_hash: manifest.plan_hash.clone(),
@@ -2682,6 +2916,7 @@ impl Runner {
                 "llm_context_tokens": manifest.llm_context_tokens,
                 "llm_tool_result_chars": manifest.llm_tool_result_chars,
             }),
+            pause,
         })
     }
 
@@ -2927,6 +3162,12 @@ impl Runner {
             // live driver opened after a RESUME: (the verified checkpoint,
             // the reading the driver took on picking the run back up).
             let mut resume_boundary: Option<(usize, u64)> = None;
+            // Set when the checkpoint just verified is followed DIRECTLY by a
+            // canceled terminal at the same superstep: the live driver stopped
+            // there (a pause, #344, or a crash) and a later drive finished the
+            // run on its cancel marker without opening anything. (The verified
+            // checkpoint, the terminal's reading, the cancel.)
+            let mut cancel_boundary: Option<(usize, u64, EventIn)> = None;
             for cmd in out.commands {
                 match cmd {
                     Command::WriteIntent { .. } => {}
@@ -2992,6 +3233,39 @@ impl Runner {
                             view.checkpoints.get(ckpt_idx).and_then(|c| c.decisions.resumed_at)
                         {
                             resume_boundary = Some((ckpt_idx - 1, at));
+                        } else if let Some(next) = view.checkpoints.get(ckpt_idx).filter(|n| {
+                            // An ordinary finish ALSO follows its close at
+                            // the same superstep; what sets this one apart is
+                            // a close that carried no cancel followed by a
+                            // terminal that does — a cancel seen in a LATER
+                            // drive, which only a stop at Idle allows.
+                            n.superstep == superstep
+                                && state_json.get("phase") == Some(&json!("Idle"))
+                                && state_json.get("cancel").is_none_or(|c| c.is_null())
+                                && n.scheduler
+                                    .get("phase")
+                                    .and_then(|p| p.get("Finished"))
+                                    .and_then(|f| f.get("Canceled"))
+                                    .is_some()
+                        }) {
+                            // The stop-then-cancel boundary. The replay ran
+                            // straight on into the next superstep; the live
+                            // driver never did — it resumed at `Idle` (so fed
+                            // `Resumed`) and finished on the cancel marker.
+                            let cancel = next
+                                .scheduler
+                                .get("cancel")
+                                .and_then(|v| v.as_array())
+                                .and_then(|a| {
+                                    Some(EventIn::CancelSeen {
+                                        principal: a.first()?.as_str()?.to_string(),
+                                        reason: a.get(1)?.as_str()?.to_string(),
+                                    })
+                                });
+                            let at = next.scheduler.get("clock_ms").and_then(|v| v.as_u64());
+                            if let (Some(cancel), Some(at)) = (cancel, at) {
+                                cancel_boundary = Some((ckpt_idx - 1, at, cancel));
+                            }
                         }
                     }
                     Command::Finish { .. } => {}
@@ -3013,6 +3287,19 @@ impl Runner {
                 events = vec![EventIn::Resumed, EventIn::ClockReading { unix_ms: at }];
                 continue;
             }
+            if let Some((verified_idx, at, cancel)) = cancel_boundary {
+                // Same rewind, fed the batch the finalizing drive saw: the
+                // resume marker, its reading, and the cancel — which finishes
+                // the run from Idle before anything opens.
+                st = serde_json::from_value::<SchedulerState>(
+                    view.checkpoints[verified_idx].scheduler.clone(),
+                )
+                .map_err(|e| RunError::ManifestMismatch {
+                    why: format!("checkpoint {verified_idx} state: {e}"),
+                })?;
+                events = vec![EventIn::Resumed, EventIn::ClockReading { unix_ms: at }, cancel];
+                continue;
+            }
             if let Some(key) = unanswered {
                 if let Some(cancel_ev) = cancel_peek(pre_ckpt_idx, &pre_state) {
                     // The live driver canceled at this boundary BEFORE
@@ -3026,6 +3313,18 @@ impl Runner {
                     events = pre_events;
                     events.push(cancel_ev);
                     continue;
+                }
+                // A PAUSED run (#344) stopped at the checkpoint just verified
+                // and has dispatched nothing since: the replay's next open is
+                // work the run has simply not done yet. That is the whole run
+                // verified, not a gap — the same verdict a park on an ask gets.
+                if ckpt_idx >= view.checkpoints.len() && view.pause.is_paused() {
+                    report.steps.push(VerifyStep {
+                        superstep: pre_state.superstep.max(st.superstep.saturating_sub(1)),
+                        verdict: "run is paused by its host — verified up to the pause".into(),
+                        ok: true,
+                    });
+                    break 'replay;
                 }
                 report.steps.push(VerifyStep {
                     superstep: st.superstep,

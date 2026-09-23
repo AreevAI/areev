@@ -190,6 +190,21 @@ pub enum EventIn {
     /// active work — which is the whole `RUN-E009`-on-every-crash-recovered
     /// -run defect this closes.
     Resumed,
+    /// A host asked the run to PAUSE (#344): hold at the next superstep
+    /// boundary instead of opening the next superstep.
+    ///
+    /// TRANSIENT by design — it affects only the `step` call it rides and is
+    /// never stored in `SchedulerState`, so the checkpoint a pause leaves
+    /// behind is byte-identical to the one an uninterrupted run writes at the
+    /// same close. The driver keeps feeding it on every call while the pause
+    /// request stands; the first call that ends between supersteps (`Idle`,
+    /// not terminal) is where the run parks. Terminal outcomes still win: a
+    /// run with nothing left to do completes, cancels or exhausts rather than
+    /// pausing. Continuing is an ordinary [`EventIn::Resumed`] from that
+    /// `Idle` checkpoint, so `verify` replays a paused-then-resumed run
+    /// through the resume-boundary rule it already has, and the paused span
+    /// accrues as elapsed, never as wall.
+    PauseRequested,
 }
 
 /// One tool offered to an abstract node's model, pinned by the manifest.

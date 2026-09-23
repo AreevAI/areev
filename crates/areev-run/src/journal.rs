@@ -464,10 +464,23 @@ pub fn poll_inputs(
     run_id: &str,
     cursor: i64,
 ) -> Result<(Vec<Value>, i64)> {
+    poll_run(m, ns, run_id, cursor).map(|(inputs, _, at)| (inputs, at))
+}
+
+/// Steering messages AND pause records written since `cursor`, with the
+/// cursor advanced — one forward read of the run index per wave boundary,
+/// for both of the run's in-band control channels.
+pub fn poll_run(
+    m: &mut Areev,
+    ns: &str,
+    run_id: &str,
+    cursor: i64,
+) -> Result<(Vec<Value>, Vec<PauseEvent>, i64)> {
     // The cursor advances only on success: a page read that fails midway
     // would otherwise leave it past messages this call is dropping, and the
     // next poll would never see them again.
     let mut out = Vec::new();
+    let mut pauses = Vec::new();
     let mut at = cursor;
     loop {
         let page = m.run_grains(ns, run_id, at, 512)?;
@@ -478,12 +491,177 @@ pub fn poll_inputs(
                 if let Some(msg) = g.fields.get("object") {
                     out.push(msg.clone());
                 }
+            } else if let Some(ev) = pause_event(&g) {
+                pauses.push(ev);
             }
         }
         if exhausted {
-            return Ok((out, at));
+            return Ok((out, pauses, at));
         }
     }
+}
+
+// ---- host pause (#344) -----------------------------------------------------
+//
+// Three Facts in the RUN's namespace, indexed by `run_id` exactly like a
+// steering message, so every reader that already walks the run index —
+// `load` (resume, inspect, verify) and the live driver's per-wave poll — sees
+// them in op-log order at no extra read. Order is the point: a cancel Fact is
+// read with `latest`, which ranks by `created_at` and then hash, and two
+// pause cycles inside one clock millisecond would rank arbitrarily.
+//
+// - `mg:run_pause`    the REQUEST: object = the reason, author = who asked.
+// - `mg:run_paused`   the driver HONOURED it: object = the request's hash,
+//                     `superstep` = the boundary it parked after.
+// - `mg:run_unpause`  a resume CONSUMED it: object = the request's hash,
+//                     author = who resumed. A consumed request never
+//                     re-pauses the run, however stale.
+//
+// None of them is a journal entry or touches scheduler state, so `verify`
+// is byte-identical with or without them.
+pub const P_RUN_PAUSE: &str = "mg:run_pause";
+pub const P_RUN_PAUSED: &str = "mg:run_paused";
+pub const P_RUN_UNPAUSE: &str = "mg:run_unpause";
+
+/// A standing pause request.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct PauseRequest {
+    /// The request Fact's hash — what `mg:run_paused` / `mg:run_unpause` name.
+    pub request: String,
+    pub paused_by: String,
+    pub because: String,
+    pub requested_at: i64,
+}
+
+/// One pause record, as read off the run index.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PauseEvent {
+    Requested(PauseRequest),
+    Applied { request: String, superstep: u64, at: i64 },
+    Released { request: String, by: String, at: i64 },
+}
+
+/// The run's pause state, folded from its pause records in op-log order.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PauseLog {
+    /// Requests ever written — the next one's ordinal, which keeps two
+    /// otherwise-identical requests from collapsing into one address.
+    pub requests: u64,
+    /// The request no resume has consumed yet.
+    pub active: Option<PauseRequest>,
+    /// Set once a driver honoured `active`: `(superstep, at)`.
+    pub applied: Option<(u64, i64)>,
+}
+
+impl PauseLog {
+    pub fn apply(&mut self, ev: &PauseEvent) {
+        match ev {
+            PauseEvent::Requested(r) => {
+                self.requests += 1;
+                self.active = Some(r.clone());
+                self.applied = None;
+            }
+            PauseEvent::Applied { request, superstep, at } => {
+                if self.active.as_ref().is_some_and(|a| &a.request == request) {
+                    self.applied = Some((*superstep, *at));
+                }
+            }
+            PauseEvent::Released { request, .. } => {
+                if self.active.as_ref().is_some_and(|a| &a.request == request) {
+                    self.active = None;
+                    self.applied = None;
+                }
+            }
+        }
+    }
+
+    /// Parked on the standing request (honoured, not yet consumed).
+    pub fn is_paused(&self) -> bool {
+        self.active.is_some() && self.applied.is_some()
+    }
+}
+
+fn pause_event(g: &areev_core::format::deserialize::DeserializedGrain) -> Option<PauseEvent> {
+    let at = g.get_i64("created_at").unwrap_or(0);
+    match g.get_str("relation")? {
+        P_RUN_PAUSE => Some(PauseEvent::Requested(PauseRequest {
+            request: g.hash.to_hex(),
+            paused_by: g.get_str("author_did").unwrap_or("unknown").to_string(),
+            because: g.get_str("object").unwrap_or("").to_string(),
+            requested_at: at,
+        })),
+        P_RUN_PAUSED => Some(PauseEvent::Applied {
+            request: g.get_str("object")?.to_string(),
+            superstep: g.get_u64(F_SUPERSTEP).unwrap_or(0),
+            at,
+        }),
+        P_RUN_UNPAUSE => Some(PauseEvent::Released {
+            request: g.get_str("object")?.to_string(),
+            by: g.get_str("author_did").unwrap_or("unknown").to_string(),
+            at,
+        }),
+        _ => None,
+    }
+}
+
+fn pause_fact(
+    ns: &str,
+    run_id: &str,
+    relation: &str,
+    object: &str,
+    clock_ms: u64,
+    principal: &str,
+) -> areev_core::types::Fact {
+    let mut f = areev_core::types::Fact::new(&format!("run:{run_id}"), relation, object)
+        .namespace(ns)
+        .created_at(clock_ms as i64);
+    f.common.author_did = Some(principal.to_string());
+    f.common.extra_fields.insert("run_id".into(), json!(run_id));
+    f
+}
+
+/// Write a pause REQUEST. `ordinal` is the request's position in the run's
+/// pause history, so a second request with the same reason, principal and
+/// millisecond is still a second grain.
+pub fn write_pause_request(
+    m: &mut Areev,
+    ns: &str,
+    run_id: &str,
+    because: &str,
+    ordinal: u64,
+    clock_ms: u64,
+    principal: &str,
+) -> Result<Hash> {
+    let mut f = pause_fact(ns, run_id, P_RUN_PAUSE, because, clock_ms, principal);
+    f.common.extra_fields.insert("pause_ordinal".into(), json!(ordinal));
+    m.add(&f)
+}
+
+/// Record that the driver honoured `request`, parking after `superstep`.
+pub fn write_pause_applied(
+    m: &mut Areev,
+    ns: &str,
+    run_id: &str,
+    request: &str,
+    superstep: u64,
+    clock_ms: u64,
+    principal: &str,
+) -> Result<Hash> {
+    let mut f = pause_fact(ns, run_id, P_RUN_PAUSED, request, clock_ms, principal);
+    f.common.extra_fields.insert(F_SUPERSTEP.into(), json!(superstep));
+    m.add(&f)
+}
+
+/// Record that a resume consumed `request`.
+pub fn write_pause_released(
+    m: &mut Areev,
+    ns: &str,
+    run_id: &str,
+    request: &str,
+    clock_ms: u64,
+    principal: &str,
+) -> Result<Hash> {
+    m.add(&pause_fact(ns, run_id, P_RUN_UNPAUSE, request, clock_ms, principal))
 }
 
 /// Write a checkpoint State grain, chained by `derived_from`.
@@ -550,6 +728,8 @@ pub struct JournalView {
     /// The run-index cursor this view was read to, so a live driver can
     /// poll forward for new steering messages without reloading.
     pub cursor: i64,
+    /// The host-pause state (#344), folded from the run's pause records.
+    pub pause: PauseLog,
 }
 
 impl JournalView {
@@ -626,6 +806,10 @@ fn ingest(
         if let Some(msg) = g.fields.get("object") {
             view.inputs.push(msg.clone());
         }
+        return Ok(());
+    }
+    if let Some(ev) = pause_event(g) {
+        view.pause.apply(&ev);
         return Ok(());
     }
     // Journal entries: Tool grains carrying the key fields.

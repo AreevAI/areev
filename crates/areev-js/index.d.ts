@@ -588,6 +588,22 @@ export declare class Areev {
   runInput(runId: string, message: string): Promise<string>
   /** Write the kill-switch marker (the lowest-privilege run verb). */
   runCancel(runId: string, because?: string | undefined | null): Promise<string>
+  /**
+   * Ask a live run to PAUSE at its next superstep boundary (#344): the
+   * open superstep finishes and checkpoints, nothing past it dispatches,
+   * and the driving `runStart`/`runResume` returns `{"parked": …}` with
+   * `kind`/`reason` `"paused"` (its `onEvent` stream ends at `RunPaused`).
+   * `runResume` continues it under the same run id, manifest and pins.
+   *
+   * Safe to call from an `onEvent` callback — that is the shape a host
+   * metering work in its own units uses. Needs `run.execute`, the grant
+   * `runResume` takes. Idempotent (`already: true` answers the standing
+   * request); rejects with `RUN-E029` on a finished run or a pending
+   * cancel. Returns the receipt JSON: `run_id`, `status`
+   * (`requested` | `paused`), `already`, `request`, `paused_by`,
+   * `because`, `requested_at`.
+   */
+  runPause(runId: string, because?: string | undefined | null): Promise<string>
   /** Journal-consistent replay; writes nothing. JSON report. */
   runVerify(runId: string): Promise<string>
   /**

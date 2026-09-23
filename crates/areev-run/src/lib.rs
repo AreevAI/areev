@@ -152,6 +152,26 @@ pub struct InspectReport {
     /// 16 effects?" needs to see the cap. Both are frozen in the manifest, so
     /// this is what the run will keep using on every resume.
     pub limits: serde_json::Value,
+    /// The host-pause record (#344), present while a pause request stands on
+    /// a run that has not finished: `status` is `requested` until a driver
+    /// honours it and `paused` after (when `phase` is `paused` too), with who
+    /// asked, why and when, plus `paused_at`/`superstep` once honoured.
+    /// Absent otherwise, so a report for a run nobody paused is unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pause: Option<serde_json::Value>,
+}
+
+/// What `Runner::pause` answers (#344): the standing request, whether this
+/// call wrote it (`already: false`) or found it (`already: true` — pause is
+/// idempotent), and its status — `requested` until a driver honours it at a
+/// superstep boundary, `paused` after.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PauseReceipt {
+    pub run_id: String,
+    pub status: String,
+    pub already: bool,
+    #[serde(flatten)]
+    pub request: journal::PauseRequest,
 }
 
 /// One row of the run index: what `areev run list` and the console's Runs

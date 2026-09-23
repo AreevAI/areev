@@ -186,6 +186,42 @@ takes the batch's reading) and `cancel_without_a_fresh_reading_journals_a_stale_
 (pins the contract's negative: skip the reading, get a stale close — the
 exact shape the old driver code produced).
 
+## Host pause (#344)
+
+`Runner::pause` writes `mg:run_pause` (reason, author = principal); the drive
+loop picks it up on the SAME forward read of the run index as steering
+(`journal::poll_run`) and feeds `EventIn::PauseRequested` on every step batch
+while it stands. When a step leaves the state `Idle` and non-terminal, the
+driver writes `mg:run_paused` (request hash + superstep), emits `RunPaused`,
+releases lease and slots, and returns `Parked` with an envelope of
+`kind`/`reason` `"paused"` and empty `asks` — so every existing `Parked`
+consumer keeps compiling and reading. Rules that are load-bearing:
+
+- **The records live in the RUN's namespace, not `agent:harness`**, unlike
+  cancel. They must be read in op-log order: `latest` ranks by `created_at`
+  then hash, and two pause cycles in one millisecond would rank arbitrarily.
+  `journal::load` folds them into `JournalView.pause` (`PauseLog`) for free.
+  Each request carries `pause_ordinal` so a repeat with the same reason,
+  principal and millisecond is still a distinct grain.
+- **Only `resume` consumes, and only a HONOURED request at an Idle
+  checkpoint** (`mg:run_unpause` naming it). A request made while parked on a
+  gate survives the resume that settles the answer and applies at the next
+  boundary — consuming it there would silently drop what the asker was
+  promised.
+- **`cancel` on a paused run finalizes it** via `resume_run(…, check_llm:
+  false)` — no dispatch can happen from Idle with the marker set, so there is
+  no model to be pinned to, and cancel's caller holds only `run.cancel`.
+  Best-effort: the marker is durable first, and a lease conflict just means a
+  live driver drains it.
+- **`verify`**: a still-paused run's tail (the replay opening work the run
+  never did) is `ok` when `view.pause.is_paused()`; a paused-then-canceled
+  run is the stop-then-cancel boundary — an Idle close carrying no cancel,
+  followed by a `Canceled` terminal at the same superstep — rewound and fed
+  `[Resumed, ClockReading(terminal.clock_ms), CancelSeen]`. That also fixes
+  the same shape after a crash.
+- Pause needs `run.execute` (resume's grant); refusal is `RUN-E029`
+  (finished, or a cancel pending — cancel wins). Idempotent otherwise.
+
 ## HITL (§6.6)
 
 `respond` validates in order (pausable → known ask by `tool_call_id`, NEVER
