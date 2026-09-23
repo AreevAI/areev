@@ -1610,3 +1610,120 @@ def test_attestation_round_trip(tmp_path):
     assert json.loads(b.verify_attestations())["unattested"] == 0, "refused bundle wrote nothing"
     with pytest.raises(ValueError, match="CRY-E004"):
         b.set_attest_policy("maybe")
+
+
+# --------------------------------------------------------------------------
+# 1.9.4 — egress floor on a bound handle (#345), loop_run gateway (#346),
+# reading a recommendation's proposal (#348)
+# --------------------------------------------------------------------------
+
+def test_egress_floor_raise_needs_no_grant_lower_needs_admin(tmp_path):
+    path = str(tmp_path / "floor.db")
+    owner = areev.Areev(path, ns="demo")
+    owner.add_fact("supplier", "email", "billing@acme.example")
+    owner.cal('GRANT read, write ON demo TO "agent:d1"')
+    del owner
+
+    bound = areev.Areev(path, ns="demo", principal="agent:d1")
+    assert bound.anonymize_egress_floor() is False
+    bound.set_anonymize_egress_floor(True)  # raising strengthens: no grant needed
+    assert bound.anonymize_egress_floor() is True
+    flat = json.dumps(json.loads(bound.recall("supplier")))
+    assert "billing@acme.example" not in flat, flat
+
+    with pytest.raises(ValueError, match="AUT-E001"):
+        bound.set_anonymize_egress_floor(False)  # lowering needs admin on "*"
+    assert bound.anonymize_egress_floor() is True
+    del bound
+
+    owner = areev.Areev(path, ns="demo")
+    owner.set_anonymize_egress_floor(True)
+    assert owner.anonymize_egress_floor() is True
+    owner.set_anonymize_egress_floor(False)
+    assert owner.anonymize_egress_floor() is False
+
+
+def test_loop_run_model_leg_honors_base_url_and_key_env(tmp_path, monkeypatch):
+    import http.server
+    import threading
+
+    seen = []
+
+    class Recorder(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            seen.append(self.headers.get("Authorization"))
+            body = json.dumps({
+                "choices": [{"message": {"role": "assistant", "content": "[]"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            }).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), Recorder)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.setenv("AREEV_TEST_SCOPED_KEY", "sk-sentinel-346")
+        m = make_db(tmp_path)
+        for _ in range(4):
+            m.record_tool_call("stripe_refund", "rate_limited 429", True)
+        m.add_fact("acme", "tier", "enterprise")
+        out = json.loads(m.loop_run(
+            model="openai:gpt-4o-mini",
+            base_url=f"http://127.0.0.1:{srv.server_port}/v1",
+            key_env="AREEV_TEST_SCOPED_KEY",
+        ))
+        assert out["outcome"] == "ran"
+        assert seen, "the model leg never reached the recorder"
+        assert all(a == "Bearer sk-sentinel-346" for a in seen), seen
+    finally:
+        srv.shutdown()
+
+
+def test_recommendation_detail_exposes_the_proposal(tmp_path):
+    path = str(tmp_path / "recs.db")
+    m = areev.Areev(path, ns="caller")
+    for _ in range(4):
+        m.record_tool_call("stripe_refund", "rate_limited 429", True)
+    m.loop_run()
+    plain = json.loads(m.recommendations())
+    assert plain
+    keys = {"hash", "status", "severity", "analyzer", "summary", "target_ref",
+            "destructive", "evalset_hash", "rollbackable"}
+    assert all(set(r) == keys for r in plain), plain  # default shape unchanged
+
+    rows = json.loads(m.recommendations('{"include":"proposal"}'))
+    assert all("action_kind" in r and "proposal" in r for r in rows), rows
+    with pytest.raises(ValueError, match="unknown include"):
+        m.recommendations('{"include":"everything"}')
+
+    h = plain[0]["hash"]
+    one = json.loads(m.recommendation(h[:12]))  # a prefix resolves, as in the CLI
+    assert one["hash"] == h
+    assert one["action_kind"] and one["proposal"] in ("cal", "edit", "data")
+    row = next(r for r in rows if r["hash"] == h)
+    assert {k: one[k] for k in ("proposal", "action_kind")} == \
+        {k: row[k] for k in ("proposal", "action_kind")}
+    with pytest.raises(ValueError, match="no recommendation matches"):
+        m.recommendation("ffffffffffff")
+    # No read on "caller" (the namespace the analyzer ran over) and no
+    # whole-queue grant on areev-loop: the single read is refused exactly as
+    # the listing is — on the queue, never naming or confirming the hash.
+    m.cal('GRANT read ON "elsewhere" TO "agent:outsider"')
+    del m
+
+    outsider = areev.Areev(path, ns="elsewhere", principal="agent:outsider")
+    with pytest.raises(ValueError, match="AUT-E001") as listing:
+        outsider.recommendations('{"status":"all"}')
+    with pytest.raises(ValueError, match="AUT-E001") as single:
+        outsider.recommendation(h)
+    assert h[:12] not in str(single.value)
+    assert str(single.value) == str(listing.value)

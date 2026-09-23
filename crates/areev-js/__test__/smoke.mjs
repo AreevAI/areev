@@ -2028,3 +2028,106 @@ test('grain attestation: keyed writes attest, require-policy import admits signe
   assert.throws(() => b.setAttestPolicy('maybe'), /CRY-E004/)
   b.close()
 })
+
+// --------------------------------------------------------------------------
+// 1.9.4 — egress floor on a bound handle (#345), loopRun gateway (#346),
+// reading a recommendation's proposal (#348)
+// --------------------------------------------------------------------------
+
+test('egress floor: raising needs no grant, lowering needs admin, the getter reads it back', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'areev-js-'))
+  const path = join(dir, 'floor.db')
+  let owner = new Areev(path, 'demo')
+  await owner.addFact('supplier', 'email', 'billing@acme.example')
+  await owner.cal('GRANT read, write ON demo TO "agent:d1"')
+  owner.close()
+
+  const bound = new Areev(path, 'demo', null, null, null, 'agent:d1')
+  assert.equal(await bound.anonymizeEgressFloor(), false)
+  await bound.setAnonymizeEgressFloor(true)
+  assert.equal(await bound.anonymizeEgressFloor(), true)
+  assert.ok(!(await bound.recall('supplier')).includes('billing@acme.example'))
+  await assert.rejects(() => bound.setAnonymizeEgressFloor(false), /AUT-E001/)
+  assert.equal(await bound.anonymizeEgressFloor(), true)
+  bound.close()
+
+  owner = new Areev(path, 'demo')
+  await owner.setAnonymizeEgressFloor(true)
+  assert.equal(await owner.anonymizeEgressFloor(), true)
+  await owner.setAnonymizeEgressFloor(false)
+  assert.equal(await owner.anonymizeEgressFloor(), false)
+  owner.close()
+})
+
+test('loopRun sends its model leg to baseUrl with the key named by keyEnv', async () => {
+  const seen = []
+  const server = createServer((req, res) => {
+    req.resume()
+    req.on('end', () => {
+      seen.push(req.headers.authorization)
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({
+        choices: [{ message: { role: 'assistant', content: '[]' } }],
+        usage: { prompt_tokens: 1, completion_tokens: 1 },
+      }))
+    })
+  })
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  const saved = { key: process.env.OPENAI_API_KEY, base: process.env.OPENAI_BASE_URL }
+  delete process.env.OPENAI_API_KEY
+  delete process.env.OPENAI_BASE_URL
+  process.env.AREEV_TEST_SCOPED_KEY = 'sk-sentinel-346'
+  try {
+    const m = makeDb()
+    for (let i = 0; i < 4; i++) await m.recordToolCall('stripe_refund', 'rate_limited 429', true)
+    await m.addFact('acme', 'tier', 'enterprise')
+    const out = JSON.parse(await m.loopRun(
+      null, null, null, 'openai:gpt-4o-mini', null, null, null, null, null, null,
+      `http://127.0.0.1:${server.address().port}/v1`, 'AREEV_TEST_SCOPED_KEY',
+    ))
+    assert.equal(out.outcome, 'ran')
+    assert.ok(seen.length, 'the model leg never reached the recorder')
+    assert.ok(seen.every((a) => a === 'Bearer sk-sentinel-346'), JSON.stringify(seen))
+    m.close()
+  } finally {
+    if (saved.key !== undefined) process.env.OPENAI_API_KEY = saved.key
+    if (saved.base !== undefined) process.env.OPENAI_BASE_URL = saved.base
+    delete process.env.AREEV_TEST_SCOPED_KEY
+    server.close()
+  }
+})
+
+test('recommendation(hash) and include:"proposal" expose what a recommendation would change', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'areev-js-'))
+  const path = join(dir, 'recs.db')
+  const m = new Areev(path, 'caller')
+  for (let i = 0; i < 4; i++) await m.recordToolCall('stripe_refund', 'rate_limited 429', true)
+  await m.loopRun()
+  const plain = JSON.parse(await m.recommendations())
+  assert.ok(plain.length)
+  const keys = ['analyzer', 'destructive', 'evalset_hash', 'hash', 'rollbackable',
+    'severity', 'status', 'summary', 'target_ref']
+  for (const r of plain) assert.deepEqual(Object.keys(r).sort(), keys) // default shape unchanged
+
+  const rows = JSON.parse(await m.recommendations('{"include":"proposal"}'))
+  assert.ok(rows.every((r) => r.action_kind && r.proposal))
+  await assert.rejects(() => m.recommendations('{"include":"everything"}'), /unknown include/)
+
+  const h = plain[0].hash
+  const one = JSON.parse(await m.recommendation(h.slice(0, 12))) // a prefix resolves, as in the CLI
+  assert.equal(one.hash, h)
+  assert.ok(one.action_kind && ['cal', 'edit', 'data'].includes(one.proposal))
+  const row = rows.find((r) => r.hash === h)
+  assert.equal(one.cal, row.cal)
+  await assert.rejects(() => m.recommendation('ffffffffffff'), /no recommendation matches/)
+  await m.cal('GRANT read ON "elsewhere" TO "agent:outsider"')
+  m.close()
+
+  // No read on "caller" and no whole-queue grant: refused on the queue, as
+  // the listing is, never naming or confirming the hash.
+  const outsider = new Areev(path, 'elsewhere', null, null, null, 'agent:outsider')
+  await assert.rejects(() => outsider.recommendations('{"status":"all"}'), /AUT-E001/)
+  await assert.rejects(() => outsider.recommendation(h), (e) =>
+    /AUT-E001/.test(e.message) && !e.message.includes(h.slice(0, 12)))
+  outsider.close()
+})

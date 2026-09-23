@@ -5872,16 +5872,7 @@ fn load_gating_evidence(
 
 fn resolve_hash(engine: &Engine, sub: &AreevSubstrate, prefix: &str) -> Result<String, String> {
     let recs = engine.recommendations(sub, None).map_err(|e| e.to_string())?;
-    let matches: Vec<&str> = recs
-        .iter()
-        .map(|r| r.hash.as_str())
-        .filter(|h| h.starts_with(prefix))
-        .collect();
-    match matches.len() {
-        0 => Err(format!("no recommendation matches '{prefix}'")),
-        1 => Ok(matches[0].to_string()),
-        n => Err(format!("'{prefix}' is ambiguous ({n} matches) — use more characters")),
-    }
+    Ok(areev_loop_adapter::find_recommendation(&recs, prefix)?.hash.clone())
 }
 
 /// Resolve an LLM backend from a `--<prefix>cmd` / `--<prefix>model` flag pair,
@@ -7014,47 +7005,10 @@ fn run_loop(
             let prefix = positional
                 .get(1)
                 .ok_or_else(|| "usage: areev loop show <hash>".to_string())?;
-            let hash = resolve_hash(&engine, &sub, prefix)?;
             let recs = engine.recommendations(&sub, None).map_err(|e| e.to_string())?;
-            let r = recs.iter().find(|r| r.hash == hash).unwrap();
-            let mut out = serde_json::json!({
-                "hash": r.hash,
-                "status": r.status.as_str(),
-                "severity": r.severity.as_str(),
-                "analyzer": r.analyzer,
-                "origin": r.origin,
-                "target_ref": r.target_ref,
-                "summary": r.summary.render(),
-                "destructive": r.destructive,
-                "rollbackable": r.rollbackable,
-                "evidence": r.evidence,
-                "dedup_key": r.dedup_key,
-                "confidence": r.confidence,
-            });
-            // The reviewable change itself — `show` is the review surface, so
-            // the proposal must be visible before approve/apply. Flattened
-            // (`proposal` kind tag + its fields, e.g. `cal`) exactly like the
-            // stored grain body; the outcome metric and any LLM guidance ride
-            // along when present.
-            let o = out.as_object_mut().unwrap();
-            if !r.near_duplicate_of.is_empty() {
-                o.insert("near_duplicate_of".into(), serde_json::json!(r.near_duplicate_of));
-            }
-            // A plan revision's rehearsal against the plan's journaled runs
-            // (`areev run shadow --plan-file`), when the substrate could run
-            // one — the reviewer approves from evidence, not prose.
-            if let Some(replay) = &r.replay {
-                o.insert("replay".into(), replay.clone());
-            }
-            if let Ok(serde_json::Value::Object(p)) = serde_json::to_value(&r.proposal) {
-                o.extend(p);
-            }
-            if let Some(m) = &r.metric {
-                o.insert("metric".into(), serde_json::to_value(m).map_err(|e| e.to_string())?);
-            }
-            if let Some(gd) = &r.guidance {
-                o.insert("guidance".into(), serde_json::Value::from(gd.clone()));
-            }
+            let r = areev_loop_adapter::find_recommendation(&recs, prefix)?;
+            // The review surface — shared with the bindings' `recommendation(hash)`.
+            let out = areev_loop_adapter::recommendation_detail(r);
             println!("{}", serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?);
         }
         "approve" | "reject" => {

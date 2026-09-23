@@ -1,4 +1,5 @@
 {
+  "action_kind": "cluster_failure",
   "analyzer": "loop.tool_failure/1",
   "cal": "ADD fact {\"confidence\":0.8333333333333334,\"namespace\":\"agent\",\"object\":\"rate limited # retry later\",\"relation\":\"fails_with\",\"subject\":\"stripe_refund\"}",
   "confidence": 0.8333333333333334,
@@ -39,6 +40,7 @@
   "target_ref": "entity:lessons/stripe_refund"
 }
 {
+  "action_kind": "flag_contradiction",
   "analyzer": "loop.contradiction_sweep/1",
   "cal": "SUPERSEDE 55115aa529ba08efd71876a657b5b83c6d8507a4fee4539fe8a5ff799180b109 WITH fact {\"namespace\":\"agent\",\"object\":\"ap-south-1\",\"relation\":\"region\",\"subject\":\"deploy\"}",
   "confidence": 0.8,
@@ -77,6 +79,7 @@
   "target_ref": "entity:agent/deploy"
 }
 {
+  "action_kind": "flag_contradiction",
   "analyzer": "loop.contradiction_sweep/1",
   "cal": "SUPERSEDE 2460b28efe5437dc19e5802850f0405186b403d75c1974a83d2d611e7abad10f WITH fact {\"namespace\":\"agent\",\"object\":\"tokyo\",\"relation\":\"lives_in\",\"subject\":\"sam\"}",
   "confidence": 0.8,
@@ -115,6 +118,7 @@
   "target_ref": "entity:agent/sam"
 }
 {
+  "action_kind": "merge_heads",
   "analyzer": "loop.fork_surfacing/1",
   "cal": "SUPERSEDE 75f48e1cbc437967e2f9222faed59bcf640e120f248069c0c321e759571b8058 WITH state {\"merge_into\":\"2dfca9a43c528882c9bf16255ef89f271712d3adb3c0f28bc9c55d59fa5b9063\"}\nSUPERSEDE d0bd4509a86504ac52da9fd148d654461db1fff8b7145046a60eac80a7008f72 WITH state {\"merge_into\":\"2dfca9a43c528882c9bf16255ef89f271712d3adb3c0f28bc9c55d59fa5b9063\"}",
   "confidence": 0.8,
@@ -137,6 +141,7 @@
   "target_ref": "entity:acme/tier"
 }
 {
+  "action_kind": "merge_heads",
   "analyzer": "loop.fork_surfacing/1",
   "cal": "SUPERSEDE 55115aa529ba08efd71876a657b5b83c6d8507a4fee4539fe8a5ff799180b109 WITH state {\"merge_into\":\"294da91a90e018ac3e37a75f9aa5e4c31ddbc1a0e67f02e1b32a12b29fd2a0df\"}",
   "confidence": 0.8,
@@ -158,6 +163,7 @@
   "target_ref": "entity:deploy/region"
 }
 {
+  "action_kind": "merge_heads",
   "analyzer": "loop.fork_surfacing/1",
   "cal": "SUPERSEDE fa55e3371f90f631987b70e18325b242ddb2087552d67d91e85b97268b487ba2 WITH state {\"merge_into\":\"2460b28efe5437dc19e5802850f0405186b403d75c1974a83d2d611e7abad10f\"}",
   "confidence": 0.8,
@@ -179,6 +185,7 @@
   "target_ref": "entity:sam/lives_in"
 }
 {
+  "action_kind": "flag",
   "analyzer": "loop.skill_stall/1",
   "confidence": 0.8,
   "data": {
@@ -203,6 +210,7 @@
   "target_ref": "entity:skills/parse_invoices"
 }
 {
+  "action_kind": "expire",
   "analyzer": "loop.staleness/1",
   "cal": "FORGET f7391faf88804ab35fb3b7bff51d78767fbb5f6d33dfc5b4f58a4b25a4bff011",
   "confidence": 0.8,
@@ -223,6 +231,7 @@
   "target_ref": "grain:f7391faf88804ab35fb3b7bff51d78767fbb5f6d33dfc5b4f58a4b25a4bff011"
 }
 {
+  "action_kind": "consolidate",
   "analyzer": "loop.duplicate_sweep/1",
   "cal": "SUPERSEDE 75f48e1cbc437967e2f9222faed59bcf640e120f248069c0c321e759571b8058 WITH fact {\"namespace\":\"agent\",\"object\":\"Enterprise\",\"relation\":\"tier\",\"subject\":\"acme\"}\nSUPERSEDE 2dfca9a43c528882c9bf16255ef89f271712d3adb3c0f28bc9c55d59fa5b9063 WITH fact {\"namespace\":\"agent\",\"object\":\"Enterprise\",\"relation\":\"tier\",\"subject\":\"acme\"}",
   "confidence": 0.8,
@@ -245,6 +254,7 @@
   "target_ref": "entity:agent/acme"
 }
 {
+  "action_kind": "expire",
   "analyzer": "loop.staleness/1",
   "cal": "FORGET 4e923a4274128b90328f2c04754106ae5675eb7f2b75571e1c945894c5f45ccc",
   "confidence": 0.8,
@@ -265,6 +275,7 @@
   "target_ref": "grain:4e923a4274128b90328f2c04754106ae5675eb7f2b75571e1c945894c5f45ccc"
 }
 {
+  "action_kind": "consolidate",
   "analyzer": "loop.duplicate_sweep/1",
   "cal": "SUPERSEDE 2b929078418b4e9c0c475bc23f7923c72a5ac41fdd7f156555842176d1d01cd6 WITH observation {\"body\":\"user asked about pricing tiers refunds billing invoices during onboarding call\",\"namespace\":\"agent\"}",
   "confidence": 0.8,

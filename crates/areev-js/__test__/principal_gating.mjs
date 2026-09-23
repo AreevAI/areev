@@ -88,7 +88,9 @@ function calls(db, dir) {
     ['attestAll', () => db.attestAll(null)],
     ['addEmbeddings', () => db.addEmbeddings('[]')],
     ['dropVectorIndex', () => db.dropVectorIndex()],
-    ['setAnonymizeEgressFloor', () => db.setAnonymizeEgressFloor(true)],
+    // LOWERING the floor is refused; raising it only strengthens protection
+    // and needs no grant (#345).
+    ['setAnonymizeEgressFloor', () => db.setAnonymizeEgressFloor(false)],
   ]
 }
 

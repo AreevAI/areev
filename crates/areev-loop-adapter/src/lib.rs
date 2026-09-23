@@ -129,6 +129,84 @@ pub fn visible_recommendations<S: areev_loop::OmsSubstrate>(
     Ok(all.into_iter().filter(|r| covers_rec(authz, &r.scope)).collect())
 }
 
+/// The one recommendation among `recs` whose hash starts with `prefix` —
+/// the lookup `areev loop show` and the bindings' `recommendation(hash)`
+/// share. Pass the coverage-filtered list ([`visible_recommendations`]) on a
+/// principal-bindable surface, so a hash the caller cannot see is "no
+/// match", indistinguishable from one that does not exist.
+pub fn find_recommendation<'a>(
+    recs: &'a [areev_loop::Recommendation],
+    prefix: &str,
+) -> Result<&'a areev_loop::Recommendation, String> {
+    let matches: Vec<&areev_loop::Recommendation> =
+        recs.iter().filter(|r| r.hash.starts_with(prefix)).collect();
+    match matches.as_slice() {
+        [] => Err(format!("no recommendation matches '{prefix}'")),
+        [one] => Ok(one),
+        many => Err(format!(
+            "'{prefix}' is ambiguous ({} matches) — use more characters",
+            many.len()
+        )),
+    }
+}
+
+/// One recommendation as the review surface shows it: `areev loop show` and
+/// the bindings' `recommendation(hash)` print exactly this object (#348).
+///
+/// The reviewable change itself rides along — `show` is the review surface,
+/// so the proposal must be visible before approve/apply. Flattened
+/// (`proposal` kind tag + its fields, e.g. `cal`) exactly like the stored
+/// grain body; `action_kind`, the outcome metric and any LLM guidance ride
+/// along too. The proposal is derived content governed by the same grants
+/// as the summary: callers reach this only through a coverage-filtered list.
+pub fn recommendation_detail(r: &areev_loop::Recommendation) -> serde_json::Value {
+    let mut out = serde_json::json!({
+        "hash": r.hash,
+        "status": r.status.as_str(),
+        "severity": r.severity.as_str(),
+        "analyzer": r.analyzer,
+        "origin": r.origin,
+        "target_ref": r.target_ref,
+        "action_kind": r.action_kind,
+        "summary": r.summary.render(),
+        "destructive": r.destructive,
+        "rollbackable": r.rollbackable,
+        "evidence": r.evidence,
+        "dedup_key": r.dedup_key,
+        "confidence": r.confidence,
+    });
+    let o = out.as_object_mut().expect("json! object");
+    if let Some(pin) = &r.evalset_hash {
+        o.insert("evalset_hash".into(), serde_json::json!(pin));
+    }
+    if !r.near_duplicate_of.is_empty() {
+        o.insert("near_duplicate_of".into(), serde_json::json!(r.near_duplicate_of));
+    }
+    // A plan revision's rehearsal against the plan's journaled runs
+    // (`areev run shadow --plan-file`), when the substrate could run
+    // one — the reviewer approves from evidence, not prose.
+    if let Some(replay) = &r.replay {
+        o.insert("replay".into(), replay.clone());
+    }
+    o.extend(proposal_fields(r));
+    if let Some(m) = r.metric.as_ref().and_then(|m| serde_json::to_value(m).ok()) {
+        o.insert("metric".into(), m);
+    }
+    if let Some(gd) = &r.guidance {
+        o.insert("guidance".into(), serde_json::Value::from(gd.clone()));
+    }
+    out
+}
+
+/// The flattened proposal body (`proposal` kind tag + its fields) — what
+/// `recommendations({"include": "proposal"})` adds to a listing row.
+pub fn proposal_fields(r: &areev_loop::Recommendation) -> serde_json::Map<String, serde_json::Value> {
+    match serde_json::to_value(&r.proposal) {
+        Ok(serde_json::Value::Object(p)) => p,
+        _ => serde_json::Map::new(),
+    }
+}
+
 /// The observer type an actor label implies, used where no credential record
 /// declares one (the credential map will carry an explicit `observer` field
 /// when the multi-token surfaces land; this prefix heuristic is the interim
