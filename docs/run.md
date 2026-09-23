@@ -761,7 +761,8 @@ default** and declarable up to a **32 MiB hard maximum**
 declarations are refused with `RUN-E028` at start rather than clamped; an
 overrun is `RUN-E022` naming the effective limit — a response is counted as it
 is read (chunked and close-delimited bodies included) and refused at limit + 1,
-an upload is sized against its stored blob before any upstream connection. A
+an upload is sized from its stored blob's metadata — before its bytes are
+loaded and before any upstream connection. A
 read error, including a body the transport cut short of its `Content-Length`,
 is explicit, not a successful empty or short body. Text mode is unchanged:
 `max_response_bytes` bounds a capability caller's text body as before. The egress Observation carries

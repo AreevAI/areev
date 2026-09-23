@@ -1946,14 +1946,28 @@ fn serve_one(
     // A `body_ref` upload is sized against its EFFECTIVE ceiling here, before
     // `dispatch` opens a connection: an overrun is refused before the upstream
     // sees a byte, and the refusal names the limit that applied (#339).
+    //
+    // Sized by `blob_len` — file metadata / `length(body)` — BEFORE any byte
+    // is loaded, so an oversized blob costs a stat, not an allocation of its
+    // whole size. The length is re-checked after the read as a backstop:
+    // `blob_len` reports a size, and only `get_blob` verifies the bytes.
     let request_bytes = if let Some(uri) = &req.body_ref {
         let store = artifact_store.lock().unwrap().clone().unwrap();
-        match store.with_store(|m| m.get_blob(uri)) {
-            Ok(bytes) if bytes.len() <= request_cap => {
+        let sized = match store.with_store(|m| m.blob_len(uri)) {
+            Ok(n) if n > request_cap as u64 => Err(n),
+            Ok(_) => match store.with_store(|m| m.get_blob(uri)) {
+                Ok(bytes) if bytes.len() <= request_cap => Ok(bytes),
+                Ok(bytes) => Err(bytes.len() as u64),
+                Err(e) => return respond(&mut stream, 400, &serde_json::json!({"error": e.to_string()}).to_string()),
+            },
+            Err(e) => return respond(&mut stream, 400, &serde_json::json!({"error": e.to_string()}).to_string()),
+        };
+        match sized {
+            Ok(bytes) => {
                 note_blob_read(blob_reads, BlobRead { caller: caller.clone(), uri: uri.clone(), bytes: bytes.len() });
                 Some(bytes)
             }
-            Ok(bytes) => {
+            Err(size) => {
                 note_refusal(
                     refusals,
                     EgressRefusal {
@@ -1967,17 +1981,15 @@ fn serve_one(
                     413,
                     &serde_json::json!({
                         "error": format!(
-                            "caller '{caller}' asked to upload a {}-byte artifact, larger than \
+                            "caller '{caller}' asked to upload a {size}-byte artifact, larger than \
                              its {request_cap}-byte max_request_bytes ceiling — refused before \
-                             any byte was sent upstream",
-                            bytes.len()
+                             any byte was sent upstream"
                         ),
                         "code": refusal_code
                     })
                     .to_string(),
                 );
             }
-            Err(e) => return respond(&mut stream, 400, &serde_json::json!({"error": e.to_string()}).to_string()),
         }
     } else { req.body.as_ref().map(|s| s.as_bytes().to_vec()) };
 
@@ -3303,6 +3315,39 @@ mod tests {
             assert!(broker.blob_reads().is_empty(), "nothing was handed on");
             assert_eq!(broker.refusals().len(), 1);
         }
+    }
+
+    #[test]
+    fn an_oversized_upload_is_refused_by_size_before_its_bytes_are_loaded() {
+        // The blob's sidecar is grown to a sparse 1 GiB behind the store's
+        // back. Loading it would allocate 1 GiB and then fail the digest
+        // check (400 "blob corrupt"); a size-first refusal answers 413 naming
+        // the metadata length instead — which is only possible if the bytes
+        // were never read.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("m.db");
+        let store = Arc::new(AreevFacade::new(areev_store::Areev::open(db.to_str().unwrap()).unwrap()));
+        let uri = store.with_store(|m| m.put_blob(b"%PDF-small")).unwrap();
+        let hex = uri.strip_prefix("cas://sha256:").unwrap();
+        let sidecar = db.with_file_name("m.db.blobs").join(&hex[..2]).join(&hex[2..]);
+        let gib: u64 = 1 << 30;
+        std::fs::OpenOptions::new().write(true).open(&sidecar).unwrap().set_len(gib).unwrap();
+        assert_eq!(store.with_store(|m| m.blob_len(&uri)).unwrap(), gib);
+
+        let broker = artifact_broker(&origin, limits(DEFAULT_TRANSFER, DEFAULT_TRANSFER), &store, BTreeMap::new());
+        let (status, answer) = call(&broker, serde_json::json!({
+            "url": format!("{origin}/upload"), "method": "POST_ARTIFACT",
+            "body_ref": uri, "content_type": "application/pdf"
+        }));
+        assert_eq!(status, 413, "refused by size, not by a failed read: {answer}");
+        let error = answer["error"].as_str().unwrap();
+        assert!(error.contains(&format!("{gib}-byte artifact")), "{error}");
+        assert!(error.contains("1048576-byte"), "{error}");
+        assert!(matches!(listener.accept(), Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock));
+        assert!(broker.blob_reads().is_empty());
     }
 
     #[test]

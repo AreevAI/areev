@@ -260,6 +260,7 @@ macro_rules! for_each_conformance_case {
         $per_case!(host_anon_key_unlocks_the_vault);
         // CAS blobs + hybrid legs
         $per_case!(cas_blob_roundtrip_and_gc);
+        $per_case!(blob_len_reports_size_without_reading);
         $per_case!(forget_reclaims_sole_referenced_blob);
         $per_case!(blob_reads_without_opening_the_memory);
         $per_case!(bm25_leg_finds_text);

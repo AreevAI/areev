@@ -23,6 +23,20 @@ pub fn cas_blob_roundtrip_and_gc(b: &dyn Backend) {
     assert!(m.get_blob(&uri).is_err(), "reclaimed blob is gone");
 }
 
+/// `blob_len` reports a blob's plaintext size without reading its body
+/// (#339) — the egress broker refuses an oversized `body_ref` upload on this
+/// number before loading a byte. Same answer on both backends; an absent or
+/// malformed address is a clean error.
+pub fn blob_len_reports_size_without_reading(b: &dyn Backend) {
+    let mut m = b.open();
+    for bytes in [&b""[..], b"x", &[0x80u8; 70_000][..]] {
+        let uri = m.put_blob(bytes).unwrap();
+        assert_eq!(m.blob_len(&uri).unwrap(), bytes.len() as u64, "[{}]", b.name());
+    }
+    assert!(m.blob_len(&format!("cas://sha256:{}", "c".repeat(64))).is_err());
+    assert!(m.blob_len("cas://sha256:xyz").is_err());
+}
+
 /// `read_blob_offline` reaches a blob by address without opening the memory,
 /// on either backend (#202) — which is what lets a sandboxed tool read the
 /// attachment its own run filed while that run still holds the memory.

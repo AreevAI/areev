@@ -259,7 +259,12 @@ Pg-only multi-writer race cases); extend it whenever store semantics change.
   `areev blob get` — read an attachment while a run holds the memory.
 - CAS blob sidecar at `"{path}.blobs"`, git-style `hex[..2]/hex[2..]` fan-out:
   `put_blob` (idempotent, tmp+rename), `get_blob` (re-verifies sha256),
-  `gc_blobs` (ref-count from live grains' `content_refs`). Free fn
+  `blob_len` (#339: PLAINTEXT size without loading the body — sidecar
+  metadata + a 21-byte prefix read, or `length(body)`/`substr` on the table
+  backend; a sealed blob reports stored length minus the fixed
+  `blobcrypt::SEALED_OVERHEAD`; verifies nothing — it is what the egress
+  broker refuses an oversized `body_ref` upload on before reading a byte;
+  conformance case `blob_len_reports_size_without_reading`), `gc_blobs` (ref-count from live grains' `content_refs`). Free fn
   **`read_blob_offline(db_path, uri)`** reads one blob WITHOUT opening the
   database — the file lock is exclusive, so while a run holds a memory a second
   process is refused even for a read, which would strand an attachment out of

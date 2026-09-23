@@ -10310,6 +10310,54 @@ impl Areev {
         Ok(format!("cas://sha256:{hex}"))
     }
 
+    /// The PLAINTEXT length of the blob at a `cas://sha256:` URI, without
+    /// loading its bytes (#339).
+    ///
+    /// What lets a caller that enforces a size ceiling — the egress broker's
+    /// `body_ref` upload — refuse an oversized blob by size, instead of
+    /// reading all of it into memory first and measuring. The embedded
+    /// backend reads the sidecar's file metadata plus its first few bytes
+    /// (to tell a sealed blob from a plaintext one); the table backend
+    /// selects `length(body)` and the magic prefix, never the body.
+    ///
+    /// A sealed blob reports its ciphertext length minus the fixed envelope
+    /// overhead, which is exactly the plaintext length. Nothing is VERIFIED
+    /// here — the digest and AEAD tag are checked by [`Areev::get_blob`] when
+    /// the bytes are actually read; this is a size, not a proof.
+    pub fn blob_len(&mut self, uri: &str) -> Result<u64> {
+        let hex = Self::cas_hex(uri)?;
+        let missing = || AreevError::Storage(format!("blob missing: {uri}"));
+        let (stored, prefix) = match &self.blob_store {
+            BlobStore::Fs(dir) => {
+                use std::io::Read;
+                let path = fs_blob_path(dir, hex);
+                let mut f = std::fs::File::open(&path).map_err(|_| missing())?;
+                let len = f.metadata().map_err(db_err)?.len();
+                let mut prefix = Vec::with_capacity(blobcrypt::SEALED_PREFIX_LEN);
+                (&mut f)
+                    .take(blobcrypt::SEALED_PREFIX_LEN as u64)
+                    .read_to_end(&mut prefix)
+                    .map_err(db_err)?;
+                (len, prefix)
+            }
+            BlobStore::Table => {
+                let raw = hex::decode(hex).map_err(db_err)?;
+                let rows = self.db.query(
+                    "SELECT length(body), substr(body, 1, 21) FROM blobs WHERE hash = ?1",
+                    vec![pb(raw)],
+                )?;
+                let row = rows.first().ok_or_else(missing)?;
+                let len = row.i64(0).ok_or_else(missing)?;
+                (u64::try_from(len).map_err(db_err)?, row.blob(1).unwrap_or_default())
+            }
+        };
+        Ok(if blobcrypt::is_sealed(&prefix) {
+            stored.saturating_sub(blobcrypt::SEALED_OVERHEAD as u64)
+        } else {
+            stored
+        })
+    }
+
     /// Fetch bytes by `cas://sha256:` URI, verifying the hash on read.
     pub fn get_blob(&mut self, uri: &str) -> Result<Vec<u8>> {
         use sha2::{Digest, Sha256};

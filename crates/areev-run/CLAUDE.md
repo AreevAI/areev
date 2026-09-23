@@ -510,7 +510,8 @@ Neither replaces the other — see `docs/security-model.md` and
   the EFFECTIVE `response_cap` once and passes the same value to `dispatch`
   and to the `TooLarge` message. `MAX_BODY` bounds only the caller's JSON to
   the broker; an artifact crosses it as a `cas://` address. A `body_ref` blob
-  is sized before `dispatch` connects, and a binary body cut short of its
+  is sized by `Areev::blob_len` (metadata, no body read) before it is loaded
+  and before `dispatch` connects, and a binary body cut short of its
   framing is `BodyErr::Transport` → 502, never a short success.
 - **Guest request headers** (#105) — `EgressRequest.headers` carries the
   non-credential headers enterprise APIs demand (`X-Goog-User-Project` and

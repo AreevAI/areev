@@ -109,8 +109,8 @@ error naming that ceiling (`…larger than its 1048576-byte ceiling…`) — cou
 as it is read, so a chunked or close-delimited body is refused at limit + 1
 exactly like one with a `Content-Length`, and a body the transport cuts short
 fails rather than being stored short. An upload over `max_request_bytes` is
-refused (`413`, `RUN-E022`, the limit named) before the broker connects
-upstream, so the upstream never sees a byte. No partial or empty artifact is
+refused (`413`, `RUN-E022`, the limit named) by its stored size — before its
+bytes are loaded and before the broker connects upstream — so the upstream never sees a byte. No partial or empty artifact is
 ever returned. Nothing in this blob or the sandbox imposes a cap of its own on
 the artifact path: the guest sends and receives only the `cas://` address.
 
