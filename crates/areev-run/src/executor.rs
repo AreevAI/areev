@@ -570,13 +570,30 @@ impl CodeExecutor {
             if let Some(n) = l.get("max_calls").and_then(Value::as_u64) {
                 limits.max_calls = n.min(u64::from(u32::MAX)) as u32;
             }
-            if let Some(n) = l.get("max_response_bytes").and_then(Value::as_u64) {
-                // Clamp rather than `as usize`-truncate: on a 32-bit target a
-                // manifest value above `usize::MAX` would silently wrap to a
-                // tiny ceiling that refuses legitimate responses, the same
-                // hazard the `max_calls` clamp above avoids.
-                limits.max_response_bytes = usize::try_from(n).unwrap_or(usize::MAX);
-            }
+        }
+        // #339: the transfer ceilings go through the one reader every layer
+        // shares, so a malformed, zero or over-maximum declaration is refused
+        // here — before the module runs and before any upstream I/O — rather
+        // than silently ignored or clamped. The manifest already refused it at
+        // run start; a pool worker (or the trigger evaluator's connector
+        // path) does not get to assume that.
+        use areev_core::types::capability::transfer_limit;
+        let bounded = |key: &str| -> Result<Option<usize>, String> {
+            transfer_limit(code.limits.as_ref(), key)
+                .map(|n| n.map(|n| usize::try_from(n).unwrap_or(usize::MAX)))
+                .map_err(|detail| {
+                    areev_run_core::RunError::TransferLimitInvalid {
+                        node: tool_name.to_string(),
+                        detail,
+                    }
+                    .to_string()
+                })
+        };
+        if let Some(n) = bounded("max_response_bytes")? {
+            limits.max_response_bytes = n;
+        }
+        if let Some(n) = bounded("max_request_bytes")? {
+            limits.max_request_bytes = n;
         }
         egress.declare(tool_name, declared, limits);
         Ok(())

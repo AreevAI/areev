@@ -804,7 +804,7 @@ fn a_response_above_the_ceiling_is_refused_rather_than_truncated() {
     broker.declare(
         "t",
         declaration(json!([{"http": {"hosts": [site.origin()]}}])),
-        CapabilityLimits { max_calls: 8, max_response_bytes: 4 },
+        CapabilityLimits { max_calls: 8, max_response_bytes: 4, ..Default::default() },
     );
     let token = broker.token_for("t").unwrap().to_string();
 
@@ -829,7 +829,7 @@ fn a_capability_tool_cannot_exceed_its_call_ceiling() {
     broker.declare(
         "t",
         declaration(json!([{"http": {"hosts": [site.origin()]}}])),
-        CapabilityLimits { max_calls: 2, max_response_bytes: 1024 },
+        CapabilityLimits { max_calls: 2, max_response_bytes: 1024, ..Default::default() },
     );
     let token = broker.token_for("t").unwrap().to_string();
     let req = json!({ "url": format!("{}/x", site.origin()), "method": "GET" });
@@ -1813,7 +1813,7 @@ fn a_capability_response_read_is_bounded_by_the_ceiling() {
     broker.declare(
         "t",
         declaration(json!([{"http": {"hosts": [site.origin()]}}])),
-        CapabilityLimits { max_calls: 8, max_response_bytes: 16 },
+        CapabilityLimits { max_calls: 8, max_response_bytes: 16, ..Default::default() },
     );
     let token = broker.token_for("t").unwrap().to_string();
     let (code, body) =

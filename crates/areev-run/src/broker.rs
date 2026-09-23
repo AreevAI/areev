@@ -54,7 +54,16 @@ use crate::egress::{EgressDenied, EgressPolicy};
 type Result<T> = std::result::Result<T, String>;
 
 /// Largest request body the broker will read, mirroring the console's cap.
+///
+/// This bounds the JSON a CALLER sends the broker, never an artifact: a
+/// `body_ref` upload and an artifact-mode response cross this boundary as a
+/// `cas://` address, and are bounded by [`CapabilityLimits`] instead (#339).
 const MAX_BODY: usize = 1024 * 1024;
+
+/// Ceiling on one brokered artifact transfer when nothing is declared (#339).
+const DEFAULT_TRANSFER: usize = areev_core::types::capability::DEFAULT_TRANSFER_BYTES as usize;
+/// The hard maximum a declaration may raise it to (#339): 32 MiB.
+const MAX_TRANSFER: usize = areev_core::types::capability::MAX_TRANSFER_BYTES as usize;
 
 /// How a credential is attached to an outbound request.
 ///
@@ -819,17 +828,33 @@ pub struct BlobRead {
 /// Extism's model: overruns are typed errors, never truncation — a tool that
 /// silently received half a response would produce a wrong answer with no
 /// evidence that anything went wrong.
+///
+/// The two byte ceilings default to 1 MiB and may be declared up to the
+/// 32 MiB hard maximum (`areev_core::types::capability::MAX_TRANSFER_BYTES`,
+/// #339). The executor refuses a declaration outside `1..=32 MiB` before the
+/// module runs; the broker re-checks an artifact transfer against the same
+/// range before any upstream I/O, so a host constructing these directly
+/// cannot get a silent clamp either.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CapabilityLimits {
     /// Calls one caller may make for the life of the broker.
     pub max_calls: u32,
-    /// Largest response body handed back to a caller.
+    /// Largest response body handed back to a caller — the text body, or the
+    /// exact bytes an artifact-mode call stores in CAS.
     pub max_response_bytes: usize,
+    /// Largest `body_ref` artifact a caller may upload (#339). Checked against
+    /// the stored blob's size before the broker connects upstream, so an
+    /// overrun is refused before the upstream sees a byte.
+    pub max_request_bytes: usize,
 }
 
 impl Default for CapabilityLimits {
     fn default() -> Self {
-        CapabilityLimits { max_calls: 64, max_response_bytes: 1024 * 1024 }
+        CapabilityLimits {
+            max_calls: 64,
+            max_response_bytes: DEFAULT_TRANSFER,
+            max_request_bytes: DEFAULT_TRANSFER,
+        }
     }
 }
 
@@ -1628,6 +1653,47 @@ fn serve_one(
         }).to_string());
     }
 
+    // The EFFECTIVE byte ceilings (#339), computed once so the read cap and
+    // every message that names a limit report the same number. An artifact
+    // is bounded by the caller's declaration — 1 MiB when it declared none —
+    // up to the 32 MiB hard maximum; text keeps its original contract
+    // (declared ceiling for a capability caller, uncapped for a subprocess
+    // tool or connector).
+    let artifact_mode = req.response_mode.as_deref() == Some("artifact");
+    let response_cap: Option<usize> = match (&capability, artifact_mode) {
+        (Some((l, _)), _) => Some(l.max_response_bytes),
+        (None, true) => Some(DEFAULT_TRANSFER),
+        (None, false) => None,
+    };
+    let request_cap = capability.as_ref().map_or(DEFAULT_TRANSFER, |(l, _)| l.max_request_bytes);
+    // Re-checked here, not only at registration: `CapabilityLimits` is public,
+    // and a host that built one by hand must get the refusal the declaration
+    // path gives rather than a quiet clamp. Before any upstream I/O.
+    let out_of_range = |key: &str, n: usize| -> Option<String> {
+        (n == 0 || n > MAX_TRANSFER).then(|| {
+            areev_run_core::RunError::TransferLimitInvalid {
+                node: caller.clone(),
+                detail: format!(
+                    "{key} is {n}, outside 1..={MAX_TRANSFER} — refused rather than clamped"
+                ),
+            }
+            .to_string()
+        })
+    };
+    let invalid = if artifact_mode {
+        out_of_range("max_response_bytes", response_cap.unwrap_or(DEFAULT_TRANSFER))
+    } else {
+        None
+    }
+    .or_else(|| req.body_ref.as_ref().and_then(|_| out_of_range("max_request_bytes", request_cap)));
+    if let Some(detail) = invalid {
+        return respond(
+            &mut stream,
+            400,
+            &serde_json::json!({ "error": detail, "code": "RUN-E028" }).to_string(),
+        );
+    }
+
     // For a capability caller, an unrestricted host policy does not extend to
     // private address space (#101). A memory that syncs in can declare any
     // hosts it likes, so the declaration alone must never be what authorizes
@@ -1877,14 +1943,40 @@ fn serve_one(
         );
     }
 
+    // A `body_ref` upload is sized against its EFFECTIVE ceiling here, before
+    // `dispatch` opens a connection: an overrun is refused before the upstream
+    // sees a byte, and the refusal names the limit that applied (#339).
     let request_bytes = if let Some(uri) = &req.body_ref {
         let store = artifact_store.lock().unwrap().clone().unwrap();
         match store.with_store(|m| m.get_blob(uri)) {
-            Ok(bytes) if bytes.len() <= MAX_BODY => {
+            Ok(bytes) if bytes.len() <= request_cap => {
                 note_blob_read(blob_reads, BlobRead { caller: caller.clone(), uri: uri.clone(), bytes: bytes.len() });
                 Some(bytes)
             }
-            Ok(_) => return respond(&mut stream, 413, r#"{"error":"artifact request body too large"}"#),
+            Ok(bytes) => {
+                note_refusal(
+                    refusals,
+                    EgressRefusal {
+                        caller: caller.clone(),
+                        destination: req.url.clone(),
+                        reason: format!("artifact upload exceeds its {request_cap}-byte ceiling"),
+                    },
+                );
+                return respond(
+                    &mut stream,
+                    413,
+                    &serde_json::json!({
+                        "error": format!(
+                            "caller '{caller}' asked to upload a {}-byte artifact, larger than \
+                             its {request_cap}-byte max_request_bytes ceiling — refused before \
+                             any byte was sent upstream",
+                            bytes.len()
+                        ),
+                        "code": refusal_code
+                    })
+                    .to_string(),
+                );
+            }
             Err(e) => return respond(&mut stream, 400, &serde_json::json!({"error": e.to_string()}).to_string()),
         }
     } else { req.body.as_ref().map(|s| s.as_bytes().to_vec()) };
@@ -1898,8 +1990,8 @@ fn serve_one(
         policy,
         grant,
         capability.as_ref().map(|(_, d)| d),
-        capability.as_ref().map(|(l, _)| l.max_response_bytes),
-        req.response_mode.as_deref() == Some("artifact"),
+        response_cap,
+        artifact_mode,
         &caller,
         refusals,
     );
@@ -1997,8 +2089,8 @@ fn serve_one(
                         policy,
                         grant,
                         capability.as_ref().map(|(_, d)| d),
-                        capability.as_ref().map(|(l, _)| l.max_response_bytes),
-                        req.response_mode.as_deref() == Some("artifact"),
+                        response_cap,
+                        artifact_mode,
                         &caller,
                         refusals,
                     );
@@ -2092,9 +2184,13 @@ fn serve_one(
         // response computes a wrong answer with nothing to show for it. The
         // read was abandoned at the cap, so the oversized body was never
         // buffered whole.
+        //
+        // The number named is the EFFECTIVE ceiling the read was abandoned
+        // at — the same value `dispatch` enforced — never the declaration
+        // alone (#339: a 25 MiB declaration once reported itself while a
+        // silent 1 MiB clamp was what actually refused).
         Dispatched::TooLarge { final_url } => {
-            let max = capability.as_ref().map(|(l, _)| l.max_response_bytes)
-                .unwrap_or(if req.response_mode.as_deref() == Some("artifact") { MAX_BODY } else { 0 });
+            let max = response_cap.unwrap_or(0);
             note_refusal(
                 refusals,
                 EgressRefusal {
@@ -2252,6 +2348,8 @@ enum BodyErr {
     TooLarge,
     /// Not decodable as UTF-8 text.
     NotText(String),
+    /// An artifact body the transport cut short (#339).
+    Transport(String),
 }
 
 /// Perform the call, following redirects **by hand** so the allowlist governs
@@ -2370,16 +2468,20 @@ fn dispatch(
     // audit grain recording a 0-byte success. Text still refuses invalid
     // UTF-8; explicit artifact mode stores bounded exact bytes in CAS.
     let read_body = |resp: &mut ureq::http::Response<ureq::Body>| -> std::result::Result<Vec<u8>, BodyErr> {
-        // Artifacts never enter the JSON reply; text retains its old no-cap
-        // behavior for callers without a capability declaration.
-        let cap = if binary {
-            max_response_bytes.unwrap_or(MAX_BODY).min(MAX_BODY)
-        } else {
-            max_response_bytes.unwrap_or(usize::MAX - 1)
-        };
+        // `max_response_bytes` is the caller's EFFECTIVE ceiling, resolved in
+        // `serve_one` (#339): an artifact always has one (declared, else
+        // 1 MiB); text retains its old no-cap behavior for callers without a
+        // capability declaration. Counted as it is read, so a chunked or
+        // close-delimited body with no Content-Length is refused at cap + 1
+        // exactly like a declared one.
+        let cap = max_response_bytes.unwrap_or(usize::MAX - 1);
         let bytes = resp.body_mut().with_config().limit(cap as u64 + 1).read_to_vec()
             .map_err(|e| match e {
                 ureq::Error::BodyExceedsLimit(_) => BodyErr::TooLarge,
+                // An artifact interrupted mid-body (fewer bytes than its
+                // Content-Length, a torn chunk) is a transport failure, not a
+                // short success and not a text-decoding problem.
+                other if binary => BodyErr::Transport(other.to_string()),
                 other => BodyErr::NotText(other.to_string()),
             })?;
         if bytes.len() > cap { return Err(BodyErr::TooLarge); }
@@ -2444,6 +2546,10 @@ fn dispatch(
                 Err(BodyErr::NotText(detail)) => {
                     Dispatched::NotText { final_url: url, detail }
                 }
+                Err(BodyErr::Transport(detail)) => Dispatched::Upstream(format!(
+                    "the response body was interrupted before it completed ({detail}) — \
+                     refused rather than stored short"
+                )),
             };
         };
         let Some(location) = location else {
@@ -2462,6 +2568,10 @@ fn dispatch(
                 Err(BodyErr::NotText(detail)) => {
                     Dispatched::NotText { final_url: url, detail }
                 }
+                Err(BodyErr::Transport(detail)) => Dispatched::Upstream(format!(
+                    "the response body was interrupted before it completed ({detail}) — \
+                     refused rather than stored short"
+                )),
             };
         };
         let Some(next_url) = crate::egress::resolve_location(&url, &location) else {
@@ -2877,6 +2987,361 @@ mod tests {
         assert_eq!(status, 502, "{answer}");
         assert!(answer["error"].as_str().unwrap().starts_with("upstream:"));
         assert!(broker.calls().is_empty());
+    }
+
+    // ---- #339: declared artifact limits above 1 MiB -----------------------
+
+    /// A memory the test keeps alive (and can read back) for as long as it
+    /// holds the returned directory.
+    fn kept_store() -> (tempfile::TempDir, Arc<AreevFacade>) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(AreevFacade::new(areev_store::Areev::open(
+            dir.path().join("m.db").to_str().unwrap()).unwrap()));
+        (dir, store)
+    }
+
+    /// An upstream that reads one request (headers + Content-Length body),
+    /// hands the stream to `answer`, and returns the body it received.
+    fn upstream<F>(answer: F) -> (String, std::thread::JoinHandle<Vec<u8>>)
+    where
+        F: FnOnce(&mut TcpStream) + Send + 'static,
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let thread = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            let mut length = 0;
+            loop {
+                line.clear();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" || line.is_empty() { break; }
+                if let Some(n) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = n.trim().parse().unwrap();
+                }
+            }
+            let mut sent = vec![0; length];
+            reader.read_exact(&mut sent).unwrap();
+            answer(&mut stream);
+            sent
+        });
+        (origin, thread)
+    }
+
+    /// How an upstream frames its body.
+    #[derive(Clone, Copy, Debug)]
+    enum Framing { Length, Chunked, CloseDelimited }
+
+    fn framed(body: Vec<u8>, framing: Framing) -> impl FnOnce(&mut TcpStream) + Send + 'static {
+        move |s: &mut TcpStream| {
+            // Write errors are expected on the overrun cases: the broker
+            // abandons the read at its ceiling and closes.
+            let _ = match framing {
+                Framing::Length => write!(s,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/pdf\r\nContent-Length: {}\r\n\
+                     Connection: close\r\n\r\n", body.len())
+                    .and_then(|_| s.write_all(&body)),
+                Framing::Chunked => write!(s,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/pdf\r\n\
+                     Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n")
+                    .and_then(|_| {
+                        for chunk in body.chunks(1000) {
+                            write!(s, "{:x}\r\n", chunk.len())?;
+                            s.write_all(chunk)?;
+                            s.write_all(b"\r\n")?;
+                        }
+                        s.write_all(b"0\r\n\r\n")
+                    }),
+                Framing::CloseDelimited => write!(s,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/pdf\r\nConnection: close\r\n\r\n")
+                    .and_then(|_| s.write_all(&body)),
+            };
+            let _ = s.flush();
+            let _ = s.shutdown(std::net::Shutdown::Write);
+        }
+    }
+
+    /// A broker whose default caller declared GET (+ blob-read POST uploads)
+    /// against `origin`, with `limits`, bound to `store`.
+    fn artifact_broker(
+        origin: &str,
+        limits: CapabilityLimits,
+        store: &Arc<AreevFacade>,
+        credentials: BTreeMap<String, CredentialSource>,
+    ) -> Broker {
+        let creds: Vec<String> = credentials.keys().cloned().collect();
+        let broker = Broker::start(
+            policy(&[origin]),
+            credentials,
+            grants(&creds.iter().map(String::as_str).collect::<Vec<_>>()),
+            "RUN-E022",
+        )
+        .unwrap();
+        broker.bind_artifact_store(Arc::clone(store));
+        broker.declare("", Declaration::parse(&serde_json::json!([
+            {"blob": {"read": true}},
+            {"http": {"hosts": [origin], "methods": ["GET", "POST"],
+                      "headers": ["Content-Type"], "credentials": creds}}
+        ])).unwrap(), limits);
+        broker
+    }
+
+    fn limits(response: usize, request: usize) -> CapabilityLimits {
+        CapabilityLimits { max_response_bytes: response, max_request_bytes: request, ..Default::default() }
+    }
+
+    /// 2 MiB + 13 bytes that are not UTF-8, with a recognisable marker inside
+    /// so "raw bytes stayed out of the journal" is checkable.
+    fn document_fixture() -> Vec<u8> {
+        let mut bytes: Vec<u8> = (0..2 * 1024 * 1024 + 13u32)
+            .map(|i| 0x80 | (i.wrapping_mul(31) % 127) as u8)
+            .collect();
+        bytes[0] = 0xff;
+        let marker = b"RAW-DOCUMENT-MARKER-339";
+        bytes[64..64 + marker.len()].copy_from_slice(marker);
+        assert!(std::str::from_utf8(&bytes).is_err());
+        bytes
+    }
+
+    const SECRET: &str = "sk-live-339-never-journaled-value";
+
+    #[test]
+    fn a_25_mib_declaration_downloads_a_2_mib_document_exactly_and_journals_no_secret_or_byte() {
+        let bytes = document_fixture();
+        let (origin, server) = upstream(framed(bytes.clone(), Framing::Length));
+        let (_dir, store) = kept_store();
+        let creds: BTreeMap<String, CredentialSource> =
+            [("vendor".to_string(), Credential::Bearer(SECRET.into()).into())].into();
+        let broker = artifact_broker(&origin, limits(26_214_400, DEFAULT_TRANSFER), &store, creds);
+        let (status, answer) = call(&broker, serde_json::json!({
+            "url": format!("{origin}/statement.pdf"), "response_mode": "artifact",
+            "credential": "vendor"
+        }));
+        server.join().unwrap();
+        assert_eq!(status, 200, "{answer}");
+        assert_eq!(answer["bytes"], 2 * 1024 * 1024 + 13);
+        assert_eq!(answer["sha256"], digest_bytes(&bytes));
+        let uri = answer["ref"].as_str().unwrap().to_string();
+        let stored = store.with_store(|m| m.get_blob(&uri)).unwrap();
+        assert_eq!(stored.len(), bytes.len());
+        assert_eq!(digest_bytes(&stored), digest_bytes(&bytes));
+        assert_eq!(stored, bytes);
+
+        // The audit record: the credential by NAME, the body by digest and
+        // address — neither the secret nor a single raw byte.
+        let calls = broker.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].credential.as_deref(), Some("vendor"));
+        let h = store.with_store(|m| {
+            crate::journal::write_egress_call(m, "r339", &calls[0], 1_788_134_400_000,
+                "user:test", None)
+        }).unwrap();
+        let grain = store.with_store(|m| m.get(&h)).unwrap();
+        let recorded = format!("{:?}", grain.fields);
+        assert!(!recorded.contains(SECRET), "credential value journaled: {recorded}");
+        assert!(!recorded.contains("RAW-DOCUMENT-MARKER-339"), "raw bytes journaled");
+        assert!(recorded.contains(&digest_bytes(&bytes)), "{recorded}");
+        assert!(recorded.len() < 4096, "the record is metadata, not the document");
+        assert!(format!("{calls:?}").len() < 4096);
+    }
+
+    #[test]
+    fn a_1_mib_declaration_refuses_the_same_document_naming_1048576() {
+        let bytes = document_fixture();
+        let (origin, server) = upstream(framed(bytes, Framing::Length));
+        let (_dir, store) = kept_store();
+        let broker = artifact_broker(&origin, limits(1_048_576, DEFAULT_TRANSFER), &store, BTreeMap::new());
+        let (status, answer) = call(&broker, serde_json::json!({
+            "url": format!("{origin}/statement.pdf"), "response_mode": "artifact"
+        }));
+        server.join().unwrap();
+        assert_eq!(status, 403, "{answer}");
+        assert_eq!(answer["code"], "RUN-E022");
+        let error = answer["error"].as_str().unwrap();
+        assert!(error.contains("1048576-byte"), "names the effective limit: {error}");
+        assert!(answer.get("ref").is_none() && answer.get("bytes").is_none(), "no partial success");
+        assert!(broker.calls().is_empty(), "an overrun is not a call that succeeded");
+        let refusals = broker.refusals();
+        assert_eq!(refusals.len(), 1);
+        assert!(refusals[0].reason.contains("1048576-byte"), "{:?}", refusals[0]);
+        // The same record that goes in the journal carries no body either.
+        let h = store.with_store(|m| {
+            crate::journal::write_egress_refusal(m, "r339", &refusals[0], 1_788_134_400_000,
+                "user:test", None)
+        }).unwrap();
+        let recorded = format!("{:?}", store.with_store(|m| m.get(&h)).unwrap().fields);
+        assert!(!recorded.contains("RAW-DOCUMENT-MARKER-339"));
+    }
+
+    #[test]
+    fn an_undeclared_artifact_keeps_the_1_mib_default_and_says_so() {
+        // No declaration at all (a connector): the default is the effective
+        // ceiling, and the refusal names it rather than 0 or the hard max.
+        let (origin, server) = upstream(framed(vec![0x80; DEFAULT_TRANSFER + 1], Framing::Length));
+        let broker = Broker::start(policy(&[&origin]), BTreeMap::new(), grants(&[]), "RUN-E022").unwrap();
+        let (_dir, store) = kept_store();
+        broker.bind_artifact_store(store);
+        let (status, answer) = call(&broker, serde_json::json!({
+            "url": format!("{origin}/a"), "response_mode": "artifact"
+        }));
+        server.join().unwrap();
+        assert_eq!(status, 403, "{answer}");
+        assert!(answer["error"].as_str().unwrap().contains("1048576-byte"), "{answer}");
+    }
+
+    #[test]
+    fn the_ceiling_is_exact_at_the_limit_and_refuses_limit_plus_one_in_every_framing() {
+        const LIMIT: usize = 4096;
+        for framing in [Framing::Length, Framing::Chunked, Framing::CloseDelimited] {
+            for (size, admitted) in [(LIMIT, true), (LIMIT + 1, false)] {
+                let body: Vec<u8> = (0..size).map(|i| 0x80 | (i % 97) as u8).collect();
+                let (origin, server) = upstream(framed(body.clone(), framing));
+                let (_dir, store) = kept_store();
+                let broker = artifact_broker(&origin, limits(LIMIT, DEFAULT_TRANSFER), &store, BTreeMap::new());
+                let (status, answer) = call(&broker, serde_json::json!({
+                    "url": format!("{origin}/x"), "response_mode": "artifact"
+                }));
+                server.join().unwrap();
+                if admitted {
+                    assert_eq!(status, 200, "{framing:?} at the limit: {answer}");
+                    assert_eq!(answer["bytes"], LIMIT);
+                    let got = store.with_store(|m| m.get_blob(answer["ref"].as_str().unwrap())).unwrap();
+                    assert_eq!(got, body, "{framing:?}");
+                } else {
+                    assert_eq!(status, 403, "{framing:?} at limit + 1: {answer}");
+                    assert_eq!(answer["code"], "RUN-E022");
+                    assert!(answer["error"].as_str().unwrap().contains("4096-byte"), "{answer}");
+                    assert!(broker.calls().is_empty(), "{framing:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_interrupted_artifact_fails_rather_than_succeeding_short() {
+        let cases: [(&str, &[u8]); 2] = [
+            // Declares 5000 bytes, delivers 100, closes.
+            ("length", b"HTTP/1.1 200 OK\r\nContent-Length: 5000\r\n\r\n"),
+            // A chunk announced at 0x1000 bytes and torn after 100.
+            ("chunked", b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1000\r\n"),
+        ];
+        for (name, head) in cases {
+            let head = head.to_vec();
+            let (origin, server) = upstream(move |s| {
+                let _ = s.write_all(&head);
+                let _ = s.write_all(&[0x80; 100]);
+                let _ = s.flush();
+                let _ = s.shutdown(std::net::Shutdown::Both);
+            });
+            let (_dir, store) = kept_store();
+            let broker = artifact_broker(&origin, limits(26_214_400, DEFAULT_TRANSFER), &store, BTreeMap::new());
+            let (status, answer) = call(&broker, serde_json::json!({
+                "url": format!("{origin}/x"), "response_mode": "artifact"
+            }));
+            server.join().unwrap();
+            assert_eq!(status, 502, "{name}: {answer}");
+            let error = answer["error"].as_str().unwrap();
+            assert!(error.contains("interrupted"), "{name}: {error}");
+            assert!(answer.get("ref").is_none(), "{name}");
+            assert!(broker.calls().is_empty(), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_declared_16_mib_upload_is_sent_exactly() {
+        const SIXTEEN: usize = 16 * 1024 * 1024;
+        let bytes: Vec<u8> = (0..SIXTEEN).map(|i| 0x80 | (i.wrapping_mul(7) % 127) as u8).collect();
+        let (origin, server) = upstream(|s| {
+            let _ = s.write_all(b"HTTP/1.1 201 Created\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+        });
+        let (_dir, store) = kept_store();
+        let request_ref = store.with_store(|m| m.put_blob(&bytes)).unwrap();
+        let broker = artifact_broker(&origin, limits(DEFAULT_TRANSFER, SIXTEEN), &store, BTreeMap::new());
+        let (status, answer) = call(&broker, serde_json::json!({
+            "url": format!("{origin}/upload"), "method": "POST_ARTIFACT",
+            "body_ref": request_ref, "content_type": "application/pdf"
+        }));
+        let received = server.join().unwrap();
+        assert_eq!(status, 200, "{answer}");
+        assert_eq!(answer["status"], 201);
+        assert_eq!(received.len(), SIXTEEN);
+        assert_eq!(digest_bytes(&received), digest_bytes(&bytes));
+        let calls = broker.calls();
+        assert_eq!(calls[0].request_digest.as_deref(), Some(digest_bytes(&bytes).as_str()));
+        assert_eq!(broker.blob_reads()[0].bytes, SIXTEEN);
+    }
+
+    #[test]
+    fn an_over_ceiling_upload_is_refused_before_the_upstream_sees_a_byte() {
+        // Declared 16 MiB, asked to send 16 MiB + 1; and undeclared (1 MiB
+        // default), asked to send 1 MiB + 1. Neither connects upstream.
+        for (declared, size) in [
+            (16 * 1024 * 1024, 16 * 1024 * 1024 + 1),
+            (DEFAULT_TRANSFER, DEFAULT_TRANSFER + 1),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let origin = format!("http://{}", listener.local_addr().unwrap());
+            let (_dir, store) = kept_store();
+            let request_ref = store.with_store(|m| m.put_blob(&vec![0xfe; size])).unwrap();
+            let broker = artifact_broker(&origin, limits(DEFAULT_TRANSFER, declared), &store, BTreeMap::new());
+            let (status, answer) = call(&broker, serde_json::json!({
+                "url": format!("{origin}/upload"), "method": "POST_ARTIFACT",
+                "body_ref": request_ref, "content_type": "application/pdf"
+            }));
+            assert_eq!(status, 413, "{answer}");
+            assert_eq!(answer["code"], "RUN-E022");
+            let error = answer["error"].as_str().unwrap();
+            assert!(error.contains(&format!("{declared}-byte")), "names the effective limit: {error}");
+            assert!(
+                matches!(listener.accept(), Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock),
+                "the upstream was never connected to"
+            );
+            assert!(broker.calls().is_empty());
+            assert!(broker.blob_reads().is_empty(), "nothing was handed on");
+            assert_eq!(broker.refusals().len(), 1);
+        }
+    }
+
+    #[test]
+    fn out_of_range_limits_are_refused_before_any_upstream_io_never_clamped() {
+        for (l, req) in [
+            (limits(0, DEFAULT_TRANSFER), serde_json::json!({"response_mode": "artifact"})),
+            (limits(MAX_TRANSFER + 1, DEFAULT_TRANSFER), serde_json::json!({"response_mode": "artifact"})),
+            (limits(DEFAULT_TRANSFER, MAX_TRANSFER + 1), serde_json::json!({
+                "method": "POST_ARTIFACT", "content_type": "application/pdf"})),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let origin = format!("http://{}", listener.local_addr().unwrap());
+            let (_dir, store) = kept_store();
+            let r = store.with_store(|m| m.put_blob(b"%PDF")).unwrap();
+            let broker = artifact_broker(&origin, l, &store, BTreeMap::new());
+            let mut req = req;
+            req["url"] = serde_json::json!(format!("{origin}/x"));
+            if req.get("method").is_some() { req["body_ref"] = serde_json::json!(r); }
+            let (status, answer) = call(&broker, req);
+            assert_eq!(status, 400, "{answer}");
+            assert_eq!(answer["code"], "RUN-E028");
+            assert!(answer["error"].as_str().unwrap().starts_with("RUN-E028: "), "{answer}");
+            assert!(matches!(listener.accept(), Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock));
+        }
+    }
+
+    #[test]
+    fn text_mode_keeps_its_contract_under_a_large_declaration() {
+        // Text is unchanged: a declared ceiling still bounds it, and a body
+        // that is not UTF-8 is still refused as such, not stored.
+        let (origin, server) = upstream(framed(b"plain text".to_vec(), Framing::Length));
+        let (_dir, store) = kept_store();
+        let broker = artifact_broker(&origin, limits(26_214_400, DEFAULT_TRANSFER), &store, BTreeMap::new());
+        let (status, answer) = call(&broker, serde_json::json!({"url": format!("{origin}/t")}));
+        server.join().unwrap();
+        assert_eq!(status, 200, "{answer}");
+        assert_eq!(answer["body"], "plain text");
+        assert!(answer.get("ref").is_none());
     }
 
     fn bind_test_store(broker: &Broker) {

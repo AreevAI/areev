@@ -88,12 +88,35 @@ with `method: "POST_ARTIFACT"` (`PUT_ARTIFACT`/`PATCH_ARTIFACT` likewise). A
 compatible broker maps the marker to the real method; an old broker rejects
 it before it can send an empty upload. Declare both blob read and the
 `Content-Type` header, and grant the upload
-method on the host. The broker checks every redirect hop as for text. Response
-bytes are bounded by the declared `max_response_bytes` (at most 1 MiB without
-a declaration); request bytes by 1 MiB. An overrun is an error, never a
-partial artifact. Require `ref` and verify its digest before using it: older
-text-only peers may ignore the download mode field. With no run-bound writable
-memory, artifact mode fails explicitly.
+method on the host. The broker checks every redirect hop as for text.
+
+**Artifact limits (#339).** Both directions are bounded by the Definition's
+`runtime_limits`, and both default to **1 MiB** (1048576 bytes) when nothing
+is declared:
+
+| Key | Bounds | Default | Hard maximum |
+|---|---|---|---|
+| `max_response_bytes` | the bytes an artifact-mode response stores in CAS (and a text body, as before) | 1048576 | 33554432 (32 MiB) |
+| `max_request_bytes` | the `body_ref` blob an artifact upload sends | 1048576 | 33554432 (32 MiB) |
+
+A document envelope declares what it needs — `{"max_response_bytes":
+26214400, "max_request_bytes": 16777216}` admits a 25 MiB download and a
+16 MiB upload. A declaration that is zero, not an integer, or above 32 MiB is
+**refused, never clamped**: at write time (`VAL`), again at run start
+(`RUN-E028`, before any module runs), and by the broker before any upstream
+I/O. A response over its effective ceiling is refused with `RUN-E022` and an
+error naming that ceiling (`…larger than its 1048576-byte ceiling…`) — counted
+as it is read, so a chunked or close-delimited body is refused at limit + 1
+exactly like one with a `Content-Length`, and a body the transport cuts short
+fails rather than being stored short. An upload over `max_request_bytes` is
+refused (`413`, `RUN-E022`, the limit named) before the broker connects
+upstream, so the upstream never sees a byte. No partial or empty artifact is
+ever returned. Nothing in this blob or the sandbox imposes a cap of its own on
+the artifact path: the guest sends and receives only the `cas://` address.
+
+Require `ref` and verify its digest before using it: older text-only peers may
+ignore the download mode field. With no run-bound writable memory, artifact
+mode fails explicitly.
 
 An input that is not a request is refused by the broker, which was going to
 decide anyway; validating it in the guest would add a second opinion that can
