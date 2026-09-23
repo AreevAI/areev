@@ -722,6 +722,59 @@ fn string_list(v: Option<&serde_json::Value>, field: &str) -> Result<Vec<String>
         .collect()
 }
 
+/// Ceiling on one brokered transfer when a tool declares none (#339): 1 MiB,
+/// in both directions — the response a caller receives and the `body_ref`
+/// artifact it uploads.
+pub const DEFAULT_TRANSFER_BYTES: u64 = 1024 * 1024;
+
+/// The hard maximum a Tool may DECLARE for one brokered artifact transfer
+/// (#339): 32 MiB. Sized for document artifacts — a 25 MiB statement upload,
+/// a 16 MiB generated export — while still bounding what one call may make
+/// the broker buffer. A declaration above it is refused, never clamped: a
+/// tool that asked for 64 MiB and silently got 32 would fail on the first
+/// document between the two with nothing pointing at its own declaration.
+pub const MAX_TRANSFER_BYTES: u64 = 32 * 1024 * 1024;
+
+/// The `runtime_limits` keys that bound a brokered transfer, validated by
+/// [`transfer_limit`] at every layer that reads them.
+pub const TRANSFER_LIMIT_KEYS: [&str; 2] = ["max_response_bytes", "max_request_bytes"];
+
+/// Read one declared transfer ceiling out of a Tool's `runtime_limits`.
+///
+/// `Ok(None)` when it is not declared (the caller applies
+/// [`DEFAULT_TRANSFER_BYTES`]); `Err` when it is declared but is not an
+/// integer, is zero, or exceeds [`MAX_TRANSFER_BYTES`]. One reader for the
+/// three layers that must agree — write validation, run start and the
+/// broker's registration — for the reason the module doc gives: a looser
+/// check at one of them is how a tool becomes writable and then unrunnable.
+pub fn transfer_limit(limits: Option<&serde_json::Value>, key: &str) -> Result<Option<u64>> {
+    let Some(v) = limits.and_then(|l| l.get(key)).filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    match v.as_u64() {
+        None => Err(format!(
+            "runtime_limits.{key} must be a positive integer byte count, got {v}"
+        )),
+        Some(0) => Err(format!(
+            "runtime_limits.{key} is 0 — a transfer ceiling of zero bytes admits nothing; \
+             omit it for the {DEFAULT_TRANSFER_BYTES}-byte default"
+        )),
+        Some(n) if n > MAX_TRANSFER_BYTES => Err(format!(
+            "runtime_limits.{key} is {n}, above the {MAX_TRANSFER_BYTES}-byte (32 MiB) hard \
+             maximum for one brokered transfer — refused rather than clamped"
+        )),
+        Some(n) => Ok(Some(n)),
+    }
+}
+
+/// Validate every transfer ceiling a `runtime_limits` object declares.
+pub fn validate_transfer_limits(limits: Option<&serde_json::Value>) -> Result<()> {
+    for key in TRANSFER_LIMIT_KEYS {
+        transfer_limit(limits, key)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1214,5 +1267,27 @@ mod tests {
         let h = AllowedHost::parse("https://api.example.com").unwrap();
         assert!(!h.permits_url("not-a-url"));
         assert!(!h.permits_url(""));
+    }
+
+    #[test]
+    fn transfer_limits_admit_the_bounded_range_and_refuse_the_rest() {
+        // #339: absent is the default; 1..=32 MiB is admitted exactly; zero,
+        // a non-integer and anything above the hard maximum are refused by
+        // name, never clamped.
+        assert_eq!(transfer_limit(None, "max_response_bytes").unwrap(), None);
+        let l = json!({"max_response_bytes": 26_214_400, "max_request_bytes": MAX_TRANSFER_BYTES});
+        assert_eq!(transfer_limit(Some(&l), "max_response_bytes").unwrap(), Some(26_214_400));
+        assert_eq!(transfer_limit(Some(&l), "max_request_bytes").unwrap(), Some(MAX_TRANSFER_BYTES));
+        validate_transfer_limits(Some(&l)).unwrap();
+        for (bad, needle) in [
+            (json!({"max_response_bytes": 0}), "is 0"),
+            (json!({"max_request_bytes": MAX_TRANSFER_BYTES + 1}), "33554432-byte"),
+            (json!({"max_response_bytes": "25MiB"}), "positive integer"),
+            (json!({"max_request_bytes": -1}), "positive integer"),
+            (json!({"max_response_bytes": 1.5}), "positive integer"),
+        ] {
+            let err = validate_transfer_limits(Some(&bad)).unwrap_err();
+            assert!(err.contains(needle), "{bad} -> {err}");
+        }
     }
 }

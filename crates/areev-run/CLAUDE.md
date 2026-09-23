@@ -499,6 +499,20 @@ Neither replaces the other — see `docs/security-model.md` and
   `--tool-cmd` tool, every connector) is unaffected. The call budget is spent
   BEFORE dispatch so a refused call still costs one — otherwise a module probes
   the policy for free.
+- **Artifact transfer ceilings** (#339) — `CapabilityLimits.max_response_bytes`
+  / `max_request_bytes`, 1 MiB default, 32 MiB hard maximum
+  (`areev_core::types::capability::{DEFAULT,MAX}_TRANSFER_BYTES`). One reader,
+  `capability::transfer_limit`, at all three layers — CAL write (`VAL`),
+  `pin_from_definition` at start (`RUN-E028`), `register_capability` — and
+  `serve_one` re-checks the range for hosts that build `CapabilityLimits` by
+  hand. Never clamp: the pre-#339 `.min(MAX_BODY)` silently held a 25 MiB
+  declaration to 1 MiB while the refusal quoted 25 MiB. `serve_one` computes
+  the EFFECTIVE `response_cap` once and passes the same value to `dispatch`
+  and to the `TooLarge` message. `MAX_BODY` bounds only the caller's JSON to
+  the broker; an artifact crosses it as a `cas://` address. A `body_ref` blob
+  is sized by `Areev::blob_len` (metadata, no body read) before it is loaded
+  and before `dispatch` connects, and a binary body cut short of its
+  framing is `BodyErr::Transport` → 502, never a short success.
 - **Guest request headers** (#105) — `EgressRequest.headers` carries the
   non-credential headers enterprise APIs demand (`X-Goog-User-Project` and
   friends). Three rules, each load-bearing: (1) broker-owned names

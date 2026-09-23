@@ -37,6 +37,14 @@ use zeroize::Zeroizing;
 /// plausible plaintext prefix at a fixed offset.
 pub(crate) const BLOB_MAGIC: &[u8; 9] = b"MGB-BLOB1";
 const NONCE_LEN: usize = 12;
+/// AES-256-GCM's authentication tag, appended to the ciphertext.
+const TAG_LEN: usize = 16;
+/// Bytes a sealed blob carries before its ciphertext — enough to tell
+/// [`is_sealed`] without reading the body (#339's `blob_len`).
+pub(crate) const SEALED_PREFIX_LEN: usize = BLOB_MAGIC.len() + NONCE_LEN;
+/// What [`seal`] adds to a plaintext: magic, nonce and tag. Stored length
+/// minus this is the plaintext length.
+pub(crate) const SEALED_OVERHEAD: usize = SEALED_PREFIX_LEN + TAG_LEN;
 
 /// Domain separation for the blob key. Changing this string re-keys every
 /// blob and is therefore a format break — never edit it in place; add a v2
@@ -155,6 +163,18 @@ mod tests {
             "plaintext must not survive in the sealed bytes"
         );
         assert_eq!(open(&k, ADDR, &sealed).unwrap(), b"secret audio bytes");
+    }
+
+    #[test]
+    fn the_sealed_envelope_overhead_is_fixed() {
+        // `Areev::blob_len` derives a sealed blob's plaintext length from its
+        // stored length by this constant, so it must be exact at every size.
+        let k = derive_blob_key(&[3u8; 32]);
+        for n in [0usize, 1, 37, 4096] {
+            let sealed = seal(&k, ADDR, &vec![0xab; n]).unwrap();
+            assert_eq!(sealed.len(), n + SEALED_OVERHEAD, "{n}");
+            assert!(is_sealed(&sealed[..SEALED_PREFIX_LEN]));
+        }
     }
 
     #[test]

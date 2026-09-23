@@ -600,7 +600,8 @@ run already has.
   "executor_uri": "cas://sha256:<64 hex>",
   "runtime": "wasm32-areev-io",
   "runtime_limits": { "fuel": 200000000, "max_pages": 256,
-                      "max_calls": 64, "max_response_bytes": 1048576 },
+                      "max_calls": 64, "max_response_bytes": 1048576,
+                      "max_request_bytes": 1048576 },
   "capabilities": [
     { "http": { "hosts": ["https://gmail.googleapis.com"],
                 "methods": ["POST"],
@@ -740,7 +741,9 @@ What is enforced, and where:
 | anything outside the host grant | broker, per call | 403 + a journaled refusal |
 | a private/loopback destination (`127.0.0.0/8`, `10/8`, `169.254/16`, `::1`, `fc00::/7`, …) under an **unrestricted** policy | broker, per call and per hop | 403 — a declaration alone cannot authorize local reach; name it in `--allow-host` |
 | a credential owned by a different run principal (`--credential name=VAR@principal`) | broker, per call | 403 + a journaled refusal |
-| more than `max_calls`, or a response over `max_response_bytes` | broker, per call | 403 + a journaled refusal — an overrun is an error, never a truncation |
+| more than `max_calls`, or a response over `max_response_bytes` | broker, per call | 403 + a journaled refusal — an overrun is an error, never a truncation; the message names the EFFECTIVE ceiling |
+| a `body_ref` upload over `max_request_bytes` | broker, per call — before connecting upstream | 413 + a journaled refusal naming the ceiling; the upstream sees no byte |
+| `max_response_bytes` / `max_request_bytes` zero, non-integer, or above 32 MiB | write time (`VAL`), run start (`RUN-E028`), broker | refused, never clamped |
 
 Brokered HTTP uses text by default (`body` remains a UTF-8 string). The
 opt-in `response_mode: "artifact"` writes exact response bytes to the run's
@@ -750,8 +753,19 @@ using `POST_ARTIFACT`, `PUT_ARTIFACT`, or `PATCH_ARTIFACT` as the method. These
 markers map to the real granted methods here; older brokers reject them
 before dispatch instead of sending an empty upload.
 Upload requires a declared blob read and `Content-Type` header permission.
-Binary responses and requests are bounded before storage or dispatch. A read
-error is explicit, not a successful empty body. The egress Observation carries
+Binary responses and requests are bounded before storage or dispatch (#339):
+`runtime_limits.max_response_bytes` bounds the stored response and
+`runtime_limits.max_request_bytes` the `body_ref` upload, each **1 MiB by
+default** and declarable up to a **32 MiB hard maximum**
+(`areev_core::types::capability::MAX_TRANSFER_BYTES`). Out-of-range
+declarations are refused with `RUN-E028` at start rather than clamped; an
+overrun is `RUN-E022` naming the effective limit — a response is counted as it
+is read (chunked and close-delimited bodies included) and refused at limit + 1,
+an upload is sized from its stored blob's metadata — before its bytes are
+loaded and before any upstream connection. A
+read error, including a body the transport cut short of its `Content-Length`,
+is explicit, not a successful empty or short body. Text mode is unchanged:
+`max_response_bytes` bounds a capability caller's text body as before. The egress Observation carries
 only digests, length, MIME, CAS address, and credential *name*; its content
 reference keeps the blob live through CAS garbage collection. A consumer must
 require `ref` and verify its digest to reject a text-only older peer. The

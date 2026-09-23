@@ -111,6 +111,9 @@ fn blob_sidecar_is_encrypted_at_rest() {
     // Reopening with the key still reads it; the wrong key does not.
     let mut m = Areev::open_with(p, enc_opts(key)).unwrap();
     assert_eq!(m.get_blob(&uri).unwrap(), secret);
+    // #339: `blob_len` reports the PLAINTEXT size of a sealed blob, from the
+    // sidecar's metadata, without opening the envelope.
+    assert_eq!(m.blob_len(&uri).unwrap(), secret.len() as u64);
     drop(m);
     // A different key derives a different blob key → the AEAD refuses.
     // (Opening the DB itself with a wrong key fails first on most engines,

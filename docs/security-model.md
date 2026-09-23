@@ -653,7 +653,12 @@ needed no new IPC channel: the engine already injected `AREEV_EGRESS_URL` +
 The opt-in artifact mode keeps that boundary: an upload names an existing CAS
 address and a declared content type, while the broker reads the bytes through
 the run's open memory. Download bytes are read under a limit and stored with
-the same handle, so encrypted memories stay encrypted. The broker refuses a
+the same handle, so encrypted memories stay encrypted. Both limits are
+declared per tool — `max_response_bytes` and `max_request_bytes`, 1 MiB by
+default, never above the 32 MiB hard maximum (#339) — and an out-of-range
+declaration is refused (`RUN-E028`) rather than clamped, so what one call can
+make the broker buffer is bounded by a number an operator can read off the
+Definition. An upload is sized before the broker connects upstream. The broker refuses a
 binary response that reflects a credential rather than altering its bytes.
 The immutable egress audit retains digests, CAS address and bounded metadata,
 not bytes or credential values.
@@ -922,7 +927,9 @@ Each of the following is worth stating because it closes a specific hole:
   capability caller the broker abandons the body at `max_response_bytes`
   rather than buffering an upstream's whole answer and then measuring it, and
   the overrun is a typed refusal — never a truncated or empty body passed off
-  as the upstream's response.
+  as the upstream's response. The count is of bytes read, not of a declared
+  `Content-Length`, so chunked and close-delimited bodies are bounded the same
+  way; the refusal names the effective ceiling (#339).
 - **`areev::fetch` is non-reentrant, enforced.** Placing a response calls the
   guest's own `alloc`, which is guest code; a guest whose allocator called
   `fetch` again would recurse a native host frame plus a broker round trip per

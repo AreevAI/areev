@@ -124,6 +124,15 @@ pub enum RunError {
     /// id, so the same id starts once a slot frees, and a trigger firing
     /// refused here leaves its item unconsumed (the #129 rule for RUN-E018).
     ConcurrencyLimit { scope: String, limit: u32 },
+    /// RUN-E028 — a Tool declares a brokered-transfer ceiling
+    /// (`runtime_limits.max_response_bytes` / `max_request_bytes`) that is
+    /// malformed, zero, or above the 32 MiB hard maximum (#339).
+    ///
+    /// Refused at run start — before any upstream I/O — and never clamped: a
+    /// tool that declared more than the host will carry would otherwise fail
+    /// on the first document between the two sizes, with nothing pointing at
+    /// its own declaration.
+    TransferLimitInvalid { node: String, detail: String },
 }
 
 /// The budget axes (§6.7). `Supersteps` is the global backstop too.
@@ -191,6 +200,7 @@ impl RunError {
             Self::ModelMismatch { .. } => "RUN-E025",
             Self::EngineMismatch { .. } => "RUN-E026",
             Self::ConcurrencyLimit { .. } => "RUN-E027",
+            Self::TransferLimitInvalid { .. } => "RUN-E028",
         }
     }
 }
@@ -333,6 +343,12 @@ impl fmt::Display for RunError {
                  {scope} — nothing was written, so this run id is still free. \
                  Retry once a slot frees, or raise the cap"
             ),
+            Self::TransferLimitInvalid { node, detail } => write!(
+                f,
+                "{code}: node '{node}' declares an invalid transfer ceiling: \
+                 {detail}. Declare 1..=33554432 bytes (32 MiB), or omit it for \
+                 the 1048576-byte (1 MiB) default"
+            ),
         }
     }
 }
@@ -371,6 +387,7 @@ mod tests {
             RunError::EgressRefused { destination: "https://x/".into() },
             RunError::AnonReplayUnsafe { ns: "n".into(), scope: "session".into() },
             RunError::ContextExceeded { node: "n".into(), tokens: 9, ceiling: Some(8) },
+            RunError::TransferLimitInvalid { node: "n".into(), detail: "d".into() },
         ]
     }
 
@@ -391,6 +408,6 @@ mod tests {
             );
             assert!(seen.insert(code), "duplicate code {code}");
         }
-        assert_eq!(seen.len(), 24);
+        assert_eq!(seen.len(), 25);
     }
 }
