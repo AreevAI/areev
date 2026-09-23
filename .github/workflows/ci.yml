@@ -537,6 +537,15 @@ jobs:
         env:
           AREEV_SANDBOX: ${{ github.workspace }}/areev-sandbox/target/debug/areev-sandbox
         run: cargo test -p areev-conformance --features sandbox --test sandbox_abi
+      # #339's end-to-end proof: the committed http.call blob, through the real
+      # sandbox binary and the real broker, moving a 2 MiB + 13 byte non-UTF8
+      # artifact exactly under a 25 MiB declaration and refusing it under 1 MiB.
+      # The test skips where the binary is absent, so it runs HERE, where it
+      # is built.
+      - name: blessed http.call moves a declared >1 MiB artifact end to end
+        env:
+          AREEV_SANDBOX: ${{ github.workspace }}/areev-sandbox/target/debug/areev-sandbox
+        run: cargo test -p areev-run --test blessed_artifact_tests
       - name: clippy (the conformance case)
         run: cargo clippy -p areev-conformance --features sandbox --all-targets -- -D warnings
 
