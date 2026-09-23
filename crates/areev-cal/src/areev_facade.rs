@@ -731,6 +731,26 @@ impl AreevFacade {
         Ok(self.with_store(f))
     }
 
+    /// Set the egress anonymization floor (a per-process host cap, never
+    /// persisted). The authority check is asymmetric (#345): **raising** the
+    /// floor only strengthens protection, so any session may do it — a
+    /// least-privilege principal-bound handle is exactly the one that most
+    /// needs it. **Lowering** it weakens what every reader through this
+    /// handle sees, so it needs `admin` on `"*"`, as before.
+    pub fn set_anonymize_egress_floor(&self, on: bool) -> Result<()> {
+        if !on {
+            self.check_verb(Verb::Admin, "*")?;
+        }
+        self.with_store(|m| m.set_anonymize_egress_floor(on));
+        Ok(())
+    }
+
+    /// Whether the egress anonymization floor is on for this handle. Reports
+    /// a host setting, not grain content, so it needs no grant.
+    pub fn anonymize_egress_floor(&self) -> bool {
+        self.with_store(|m| m.anonymize_egress_floor())
+    }
+
     /// [`Self::store_as`] for the usual case — a closure that is itself a
     /// store call returning `Result` — flattening the two so a gated call
     /// site reads exactly like the ungated one it replaces.

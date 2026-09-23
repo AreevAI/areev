@@ -424,9 +424,12 @@ export declare class Areev {
    * Run one analysis pass. Bare it never gates. `fullSweep` re-analyzes
    * the whole memory (`areev loop reflect` semantics); `policy` is a path
    * to a host `loop-policy.json` — the only way auto-apply is granted
-   * from the bindings. Returns run-outcome JSON.
+   * from the bindings. `baseUrl` / `keyEnv` point the model leg
+   * (reflection and grounding) at a gateway with a key named by variable
+   * — the CLI's `--llm-base-url` / `--llm-api-key-env`, and `runStart`'s
+   * pair (#346). Returns run-outcome JSON.
    */
-  loopRun(minNew?: number | undefined | null, minNewErrors?: number | undefined | null, ifStale?: string | undefined | null, model?: string | undefined | null, llmCmd?: string | undefined | null, groundModel?: string | undefined | null, groundCmd?: string | undefined | null, analyzerCmd?: string | undefined | null, fullSweep?: boolean | undefined | null, policy?: string | undefined | null): Promise<string>
+  loopRun(minNew?: number | undefined | null, minNewErrors?: number | undefined | null, ifStale?: string | undefined | null, model?: string | undefined | null, llmCmd?: string | undefined | null, groundModel?: string | undefined | null, groundCmd?: string | undefined | null, analyzerCmd?: string | undefined | null, fullSweep?: boolean | undefined | null, policy?: string | undefined | null, baseUrl?: string | undefined | null, keyEnv?: string | undefined | null): Promise<string>
   /**
    * Score a candidate loop configuration against the recorded past,
    * beside the incumbent (`areev loop replay`). `request` is the JSON
@@ -442,6 +445,15 @@ export declare class Areev {
    * "pending"}`; `{"status":"all"}` clears the filter. JSON list.
    */
   recommendations(filter?: string | undefined | null): Promise<string>
+  /**
+   * One recommendation as `areev loop show` prints it — the review
+   * surface, including the proposal body (`cal` / `edit` / `data`) and
+   * `action_kind`, so a host can measure a proposal before it approves or
+   * applies it (#348). A hash prefix is accepted. Coverage-filtered like
+   * `recommendations()`: a recommendation the principal cannot see is
+   * "not found", never a denial that discloses it exists.
+   */
+  recommendation(hash: string): Promise<string>
   /**
    * Approve and apply a recommendation in one audited step (§6.6). The
    * `because` reason is mandatory. A refused apply leaves the recommendation
@@ -521,8 +533,11 @@ export declare class Areev {
   /**
    * Host cap (never persisted): force egress anonymization on for every
    * namespace without a declared policy. Can never weaken a declared one.
+   * Raising it needs no grant; lowering it needs `admin` on `"*"` (#345).
    */
   setAnonymizeEgressFloor(on: boolean): Promise<void>
+  /** Whether the egress anonymization floor is on for this handle. */
+  anonymizeEgressFloor(): Promise<boolean>
   /**
    * Install a Tier-1 NER detector over the command seam (probed at
    * install; a broken command errors here, not at the first read).
@@ -588,6 +603,22 @@ export declare class Areev {
   runInput(runId: string, message: string): Promise<string>
   /** Write the kill-switch marker (the lowest-privilege run verb). */
   runCancel(runId: string, because?: string | undefined | null): Promise<string>
+  /**
+   * Ask a live run to PAUSE at its next superstep boundary (#344): the
+   * open superstep finishes and checkpoints, nothing past it dispatches,
+   * and the driving `runStart`/`runResume` returns `{"parked": …}` with
+   * `kind`/`reason` `"paused"` (its `onEvent` stream ends at `RunPaused`).
+   * `runResume` continues it under the same run id, manifest and pins.
+   *
+   * Safe to call from an `onEvent` callback — that is the shape a host
+   * metering work in its own units uses. Needs `run.execute`, the grant
+   * `runResume` takes. Idempotent (`already: true` answers the standing
+   * request); rejects with `RUN-E029` on a finished run or a pending
+   * cancel. Returns the receipt JSON: `run_id`, `status`
+   * (`requested` | `paused`), `already`, `request`, `paused_by`,
+   * `because`, `requested_at`.
+   */
+  runPause(runId: string, because?: string | undefined | null): Promise<string>
   /** Journal-consistent replay; writes nothing. JSON report. */
   runVerify(runId: string): Promise<string>
   /**

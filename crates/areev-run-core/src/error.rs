@@ -133,6 +133,13 @@ pub enum RunError {
     /// on the first document between the two sizes, with nothing pointing at
     /// its own declaration.
     TransferLimitInvalid { node: String, detail: String },
+    /// RUN-E029 — a pause was asked of a run that cannot be paused (#344): it
+    /// already finished (completed, failed, stalled, canceled, or out of
+    /// budget), or a cancel is pending against it — cancel wins over pause.
+    ///
+    /// Pausing an already-paused (or already-pause-requested) run is NOT this
+    /// error; it is idempotent and answers with the standing request.
+    NotPausable { run_id: String, why: String },
 }
 
 /// The budget axes (§6.7). `Supersteps` is the global backstop too.
@@ -201,6 +208,7 @@ impl RunError {
             Self::EngineMismatch { .. } => "RUN-E026",
             Self::ConcurrencyLimit { .. } => "RUN-E027",
             Self::TransferLimitInvalid { .. } => "RUN-E028",
+            Self::NotPausable { .. } => "RUN-E029",
         }
     }
 }
@@ -349,6 +357,11 @@ impl fmt::Display for RunError {
                  {detail}. Declare 1..=33554432 bytes (32 MiB), or omit it for \
                  the 1048576-byte (1 MiB) default"
             ),
+            Self::NotPausable { run_id, why } => write!(
+                f,
+                "{code}: run '{run_id}' cannot be paused: {why}. A pause only \
+                 applies to a run that can still advance"
+            ),
         }
     }
 }
@@ -388,6 +401,7 @@ mod tests {
             RunError::AnonReplayUnsafe { ns: "n".into(), scope: "session".into() },
             RunError::ContextExceeded { node: "n".into(), tokens: 9, ceiling: Some(8) },
             RunError::TransferLimitInvalid { node: "n".into(), detail: "d".into() },
+            RunError::NotPausable { run_id: "r".into(), why: "w".into() },
         ]
     }
 
@@ -408,6 +422,6 @@ mod tests {
             );
             assert!(seen.insert(code), "duplicate code {code}");
         }
-        assert_eq!(seen.len(), 25);
+        assert_eq!(seen.len(), 26);
     }
 }

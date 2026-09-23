@@ -1140,6 +1140,8 @@ can pin the right negatives:
 | `us_ssn` | structure (area ≠ 000/666, < 900; group ≠ 00; serial ≠ 0000). Dashed/spaced forms match unconditionally; a **bare** nine-digit run needs an SSN cue within 40 characters |
 | `us_itin` | the SSN shapes with area 9xx and an IRS group range (50–65, 70–88, 90–92, 94–99) — disjoint from `us_ssn` by construction. Bare runs are cue-gated |
 | `aba_routing` | Federal Reserve district prefix **and** the 3-7-1 checksum, and **always** cue-gated: the checksum passes about one random nine-digit run in ten |
+| `in_gstin` | Indian GSTIN (15 characters): a state code `01`–`38`, `97` or `99`, **and** the mod-36 check character (weights 1,2 alternating from the left over the first 14 characters). Runs unconditionally, case-insensitive |
+| `in_pan` | Indian PAN (10 characters): a holder-type letter (`P C H F A T B L J G`) in the fourth position, and **always** cue-gated (`PAN`, `PAN No`, `Income Tax PAN`, `Permanent Account Number`) within 40 characters — it has no public checksum. A PAN inside a GSTIN is covered by the `in_gstin` span, never reported twice |
 | `mrn` | cue only (`MRN`, `medical record number`, …) within 40 characters |
 
 The US detectors (1.9.0, #281) also fixed a leak: a dashed SSN matched the
@@ -1152,6 +1154,13 @@ severity and length. Detection stays additive, so a policy that redacts
 to `must_not_redact`: `EBITDA 123456789`, `ref 021000022` (bad checksum),
 `invoice 021000021` (no cue), and a real NANP number like `(212) 555-0142`,
 which must stay `phone`.
+
+The Indian tax identifiers (#347) exist because a counterparty's GSTIN cannot
+be listed in a `term_sets` entry in advance, and it sits on nearly every
+invoice. Under the egress floor with no declared policy, `Supplier GSTIN
+27AAPFU0939F1ZV` reads back as `Supplier GSTIN [IN_GSTIN_1]`. Worth adding to
+`must_not_redact`: `27AAPFU0939F1VZ` (last two transposed), `00AAPFU0939F1ZV`
+(unassigned state code), and `SKU AAPFU0939F` (PAN-shaped, no cue).
 
 ### Redact on context, not just on category
 

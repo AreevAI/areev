@@ -524,7 +524,7 @@ areev loop run     [--min-new N --min-new-errors N --if-stale 6h --format json -
 areev loop reflect  like run, but re-analyzes the WHOLE memory (ignores the incremental
                     watermark) — a full sweep; same flags as run
 areev loop list    [--status pending|applied|all] [--fail-on high]   (exit 2 on match → CI gate)
-areev loop show <hash>
+areev loop show <hash>   the review surface: proposal + action_kind (= the bindings' recommendation(hash))
 areev loop approve|reject|apply|rollback <hash> --because "…" [--actor A] [--allow-destructive]
 areev loop outcomes     the Verify gate — did applied advice hold or regress?
 areev loop analyzers | policy
@@ -548,6 +548,11 @@ db.record_tool_call("stripe_refund", result_json, is_error=True, thread="sess-42
 db.loop_run(min_new=20, min_new_errors=3, if_stale="6h")   # gated; bare call never gates
 db.loop_run(full_sweep=True)                 # the `reflect` semantics: whole memory
 db.loop_run(policy="loop-policy.json")     # host policy file — the only auto-apply path
+db.loop_run(model="openai:gpt-4o-mini",     # the model leg (reflection AND grounding)
+            base_url="http://127.0.0.1:4000/v1", key_env="TENANT_7_KEY")
+#   through a gateway with a key named by variable — the CLI's --llm-base-url /
+#   --llm-api-key-env and run_start's pair; with key_env given, the provider's
+#   default variable (OPENAI_API_KEY) is never read
 db.loop_run()   # the returned JSON carries `llm_funnel` when a backend is
 #   attached: evidence → proposed → cited (with `dropped_uncited` and
 #   `dropped_target` split out) → grounded → kept → stored (with
@@ -560,6 +565,17 @@ db.recommendations('{"status":"pending"}')
 #   see which gate a code or adapter revision will be held to BEFORE they
 #   approve it (null on every other kind; the engine refuses a pin elsewhere)
 #   — and `near_duplicate_of`, the live lessons an authored lesson restates
+db.recommendations('{"status":"pending","include":"proposal"}')
+#   the same rows plus `action_kind` and the flattened proposal (`proposal`
+#   kind tag + `cal` / `format,base_digest,diff` / `data`), so a host gate can
+#   measure a batch of proposals in one call; without `include` the row shape
+#   is unchanged
+db.recommendation(hash)   # the object `areev loop show <hash>` prints — the
+#   review surface, proposal included (a hash prefix resolves). The proposal
+#   is derived content governed by the same grants as the summary: the call is
+#   coverage-filtered exactly like the listing (#312), so a recommendation
+#   the principal does not cover answers "no recommendation matches", never a
+#   denial that confirms it exists
 db.apply_recommendation(hash, because="…")     # audited approve+apply
 db.apply_recommendation(hash, because="…", gating_run="eval-…")  # a gated
 #   (code/adapter) revision: evidence loads from the recorded eval summary,
@@ -579,7 +595,8 @@ db.record_adapter(reply_json, manifest_hash, evalset_hash)
 ```
 
 Node mirrors these as `recordToolCall`, `loopRun` (incl. `fullSweep` /
-`policy`), `recommendations`, `applyRecommendation` (incl. `gatingRun`),
+`policy`, and `baseUrl` / `keyEnv` as its last two parameters),
+`recommendations`, `recommendation`, `applyRecommendation` (incl. `gatingRun`),
 `dismissRecommendation`, `rollbackRecommendation`, `loopOutcomes`,
 `loopReplay`, `recordCorpusExport`, and `recordAdapter`, plus the `actor`
 constructor argument.

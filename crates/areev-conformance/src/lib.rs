@@ -258,6 +258,7 @@ macro_rules! for_each_conformance_case {
         $per_case!(meta_cas_admits_one_claimer_and_fences_the_loser);
         $per_case!(value_derived_anon_refuses_without_key_material);
         $per_case!(host_anon_key_unlocks_the_vault);
+        $per_case!(indian_tax_ids_pseudonymise_on_egress);
         // CAS blobs + hybrid legs
         $per_case!(cas_blob_roundtrip_and_gc);
         $per_case!(blob_len_reports_size_without_reading);

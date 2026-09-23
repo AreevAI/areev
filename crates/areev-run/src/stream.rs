@@ -97,6 +97,10 @@ pub enum RunEvent {
     /// Always the last event. `dropped_events` is the §6.10 honesty
     /// counter: how many events the bounded buffer discarded.
     RunFinished { run_id: String, outcome: String, dropped_events: u64 },
+    /// The run parked on a host PAUSE (#344) at the boundary after
+    /// `superstep`: the last event of this leg, the way `AskRaised` ends a
+    /// leg that parks on a human gate. `runResume` carries `RunResumed` … on.
+    RunPaused { run_id: String, superstep: u64, paused_by: String, because: String },
 }
 
 /// A host-supplied event subscriber. Called on the bus's OWN thread — a

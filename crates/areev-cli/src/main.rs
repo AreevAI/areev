@@ -351,8 +351,8 @@ COMMANDS:
            BECAUSE + gating edge, the runs that touched it, and the executor
            blob its executor_uri points at (present? how many bytes? — read
            lock-free, so it answers while the run is still holding the file)
-  run      <start|resume|respond|input|cancel|list|inspect|verify|fork|shadow|
-           oversight-report|demo>   the governed
+  run      <start|resume|respond|input|pause|cancel|list|inspect|verify|fork|
+           shadow|oversight-report|demo>   the governed
            workflow runtime: journaled, checkpointed, HITL-pausable runs of
            Workflow grains. list [--last N] [--offset N] prints the newest
            runs with outcome + spend (default 20; stderr says when the page
@@ -439,6 +439,13 @@ COMMANDS:
            steering message: the next superstep hands it to its nodes under
            `$inbox`, so a person redirects a running run in band instead of
            through a human-gate ask;
+           pause --run-id ID [--because TEXT] asks a live run to stop at its
+           next superstep boundary and park, resumably: the open superstep
+           finishes and checkpoints, nothing past it dispatches, and
+           `run resume` continues it under the same run id, manifest and
+           pins (no fork). Needs run.execute, the grant resume takes;
+           idempotent; RUN-E029 on a finished run or a pending cancel —
+           cancel wins, and cancel on a paused run finalizes it;
            fork --run-id BASE --as-run NEW [--at N] [--plan HASH]
            time-travels or migrates a run;
            shadow [--runs a,b,c | --last N] [--plan HASH | --plan-file F]
@@ -4527,13 +4534,20 @@ fn run_run(
                 serde_json::json!({"run_id": run_id, "finished": format!("{outcome:?}")})
             );
         }
-        RunSession::Parked { envelope, .. } => {
+        RunSession::Parked { envelope, run_id } => {
             println!("{envelope}");
-            eprintln!(
-                "areev: run parked — answer with `areev run respond --run-id ID \
-                 --ask TOOL_CALL_ID --result JSON --as PRINCIPAL`, then \
-                 `areev run resume --run-id ID`"
-            );
+            if envelope["kind"] == "paused" {
+                eprintln!(
+                    "areev: run paused by its host — `areev run resume --run-id {run_id}` \
+                     continues it under the same run id"
+                );
+            } else {
+                eprintln!(
+                    "areev: run parked — answer with `areev run respond --run-id ID \
+                     --ask TOOL_CALL_ID --result JSON --as PRINCIPAL`, then \
+                     `areev run resume --run-id ID`"
+                );
+            }
         }
     };
 
@@ -4609,6 +4623,20 @@ fn run_run(
                 "cancel recorded for '{run_id}' — a live driver drains at its next \
                  superstep boundary; `areev run resume --run-id {run_id}` finalizes a \
                  parked one"
+            );
+        }
+        "pause" => {
+            let usage = "areev run pause --run-id ID [--because \"why\"]";
+            let run_id = need("run-id", usage)?;
+            let because = flag(flags, "because").unwrap_or_else(|| "paused".into());
+            let receipt = runner
+                .pause(&run_id, &principal, &because)
+                .map_err(|e| e.to_string())?;
+            println!("{}", serde_json::to_string(&receipt).unwrap());
+            eprintln!(
+                "areev: pause {} for '{run_id}' — a live driver parks at its next \
+                 superstep boundary; `areev run resume --run-id {run_id}` continues it",
+                if receipt.already { "already standing" } else { "recorded" }
             );
         }
         "verify" => {
@@ -4840,7 +4868,7 @@ fn run_run(
         other => {
             return Err(format!(
                 "unknown run subcommand '{other}' — usage: areev run \
-                 <start|resume|respond|input|cancel|list|inspect|verify|fork|shadow|oversight-report|demo>"
+                 <start|resume|respond|input|pause|cancel|list|inspect|verify|fork|shadow|oversight-report|demo>"
             ))
         }
     }
@@ -5872,16 +5900,7 @@ fn load_gating_evidence(
 
 fn resolve_hash(engine: &Engine, sub: &AreevSubstrate, prefix: &str) -> Result<String, String> {
     let recs = engine.recommendations(sub, None).map_err(|e| e.to_string())?;
-    let matches: Vec<&str> = recs
-        .iter()
-        .map(|r| r.hash.as_str())
-        .filter(|h| h.starts_with(prefix))
-        .collect();
-    match matches.len() {
-        0 => Err(format!("no recommendation matches '{prefix}'")),
-        1 => Ok(matches[0].to_string()),
-        n => Err(format!("'{prefix}' is ambiguous ({n} matches) — use more characters")),
-    }
+    Ok(areev_loop_adapter::find_recommendation(&recs, prefix)?.hash.clone())
 }
 
 /// Resolve an LLM backend from a `--<prefix>cmd` / `--<prefix>model` flag pair,
@@ -7014,47 +7033,10 @@ fn run_loop(
             let prefix = positional
                 .get(1)
                 .ok_or_else(|| "usage: areev loop show <hash>".to_string())?;
-            let hash = resolve_hash(&engine, &sub, prefix)?;
             let recs = engine.recommendations(&sub, None).map_err(|e| e.to_string())?;
-            let r = recs.iter().find(|r| r.hash == hash).unwrap();
-            let mut out = serde_json::json!({
-                "hash": r.hash,
-                "status": r.status.as_str(),
-                "severity": r.severity.as_str(),
-                "analyzer": r.analyzer,
-                "origin": r.origin,
-                "target_ref": r.target_ref,
-                "summary": r.summary.render(),
-                "destructive": r.destructive,
-                "rollbackable": r.rollbackable,
-                "evidence": r.evidence,
-                "dedup_key": r.dedup_key,
-                "confidence": r.confidence,
-            });
-            // The reviewable change itself — `show` is the review surface, so
-            // the proposal must be visible before approve/apply. Flattened
-            // (`proposal` kind tag + its fields, e.g. `cal`) exactly like the
-            // stored grain body; the outcome metric and any LLM guidance ride
-            // along when present.
-            let o = out.as_object_mut().unwrap();
-            if !r.near_duplicate_of.is_empty() {
-                o.insert("near_duplicate_of".into(), serde_json::json!(r.near_duplicate_of));
-            }
-            // A plan revision's rehearsal against the plan's journaled runs
-            // (`areev run shadow --plan-file`), when the substrate could run
-            // one — the reviewer approves from evidence, not prose.
-            if let Some(replay) = &r.replay {
-                o.insert("replay".into(), replay.clone());
-            }
-            if let Ok(serde_json::Value::Object(p)) = serde_json::to_value(&r.proposal) {
-                o.extend(p);
-            }
-            if let Some(m) = &r.metric {
-                o.insert("metric".into(), serde_json::to_value(m).map_err(|e| e.to_string())?);
-            }
-            if let Some(gd) = &r.guidance {
-                o.insert("guidance".into(), serde_json::Value::from(gd.clone()));
-            }
+            let r = areev_loop_adapter::find_recommendation(&recs, prefix)?;
+            // The review surface — shared with the bindings' `recommendation(hash)`.
+            let out = areev_loop_adapter::recommendation_detail(r);
             println!("{}", serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?);
         }
         "approve" | "reject" => {

@@ -431,6 +431,20 @@ fn parse_scopes(spec: Option<&str>) -> napi::Result<ScopeSet> {
     Ok(ScopeSet::of(&out))
 }
 
+/// `recommendations(filter)`'s `include` option (#348): `"proposal"` (or its
+/// alias `"detail"`) adds `action_kind` and the flattened proposal to each
+/// row; absent leaves the row shape unchanged. Anything else is refused
+/// rather than silently ignored.
+fn include_proposal(filter: Option<&serde_json::Value>) -> napi::Result<bool> {
+    match filter.and_then(|v| v.get("include")) {
+        None | Some(serde_json::Value::Null) => Ok(false),
+        Some(v) => match v.as_str() {
+            Some("proposal" | "detail") => Ok(true),
+            _ => Err(err(format!("unknown include {v} — expected \"proposal\" or \"detail\""))),
+        },
+    }
+}
+
 fn status_from_str(s: &str) -> Option<RecStatus> {
     match s {
         "pending" => Some(RecStatus::Pending),
@@ -612,6 +626,8 @@ job_types! {
     MaybeStringJob => Option<String>,
     /// Store call kept for its effect (`forget`, `setEmbedderCommand`).
     UnitJob => (),
+    /// Store call returning a flag (`anonymizeEgressFloor`).
+    BoolJob => bool,
     /// Store call returning a count.
     U32Job => u32,
     /// Store call returning an op-log cursor.
@@ -2566,7 +2582,10 @@ impl Areev {
     /// Run one analysis pass. Bare it never gates. `fullSweep` re-analyzes
     /// the whole memory (`areev loop reflect` semantics); `policy` is a path
     /// to a host `loop-policy.json` — the only way auto-apply is granted
-    /// from the bindings. Returns run-outcome JSON.
+    /// from the bindings. `baseUrl` / `keyEnv` point the model leg
+    /// (reflection and grounding) at a gateway with a key named by variable
+    /// — the CLI's `--llm-base-url` / `--llm-api-key-env`, and `runStart`'s
+    /// pair (#346). Returns run-outcome JSON.
     #[napi(ts_return_type = "Promise<string>")]
     #[allow(clippy::too_many_arguments)] // a flat FFI surface; each knob is a distinct scalar
     pub fn loop_run(
@@ -2581,6 +2600,8 @@ impl Areev {
         analyzer_cmd: Option<String>,
         full_sweep: Option<bool>,
         policy: Option<String>,
+        base_url: Option<String>,
+        key_env: Option<String>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
         let opts = RunOptions {
@@ -2613,7 +2634,9 @@ impl Areev {
                 let llm = areev_loop::CommandLlm::new(&cmd, None).map_err(err)?;
                 engine = engine.with_llm(Box::new(llm));
             } else if let Some(spec) = model {
-                engine = engine.with_llm(areev_llm::resolve(&spec, None, None).map_err(err)?);
+                engine = engine.with_llm(
+                    areev_llm::resolve(&spec, base_url.as_deref(), key_env.as_deref()).map_err(err)?,
+                );
             }
             // Optional separate grounding backend (defaults to the reflection model).
             if let Some(cmd) = ground_cmd {
@@ -2621,7 +2644,10 @@ impl Areev {
                 engine = engine.with_ground_llm(Box::new(g));
             } else if let Some(spec) = ground_model {
                 engine =
-                    engine.with_ground_llm(areev_llm::resolve(&spec, None, None).map_err(err)?);
+                    engine.with_ground_llm(
+                        areev_llm::resolve(&spec, base_url.as_deref(), key_env.as_deref())
+                            .map_err(err)?,
+                    );
             }
             // Optional external analyzer (advisory only — never auto-applies).
             if let Some(cmd) = analyzer_cmd {
@@ -2678,9 +2704,14 @@ impl Areev {
         // filtered itself to `None` and the pending default was put straight
         // back — `"all"` behaved as `"pending"`, and an applied recommendation
         // was missing from a list that promised every status.
+        let filter = filter.and_then(|f| serde_json::from_str::<serde_json::Value>(&f).ok());
         let requested = filter
-            .and_then(|f| serde_json::from_str::<serde_json::Value>(&f).ok())
+            .as_ref()
             .and_then(|v| v.get("status").and_then(|s| s.as_str()).map(str::to_string));
+        let with_proposal = match include_proposal(filter.as_ref()) {
+            Ok(b) => b,
+            Err(e) => return StringJob::spawn(move || Err(e)),
+        };
         let status = match requested.as_deref() {
             Some("all") => None,
             Some(s) => match status_from_str(s) {
@@ -2711,7 +2742,7 @@ impl Areev {
         let rows: Vec<_> = recs
             .iter()
             .map(|r| {
-                json!({
+                let mut row = json!({
                     "hash": r.hash,
                     "status": r.status.as_str(),
                     "severity": r.severity.as_str(),
@@ -2725,10 +2756,40 @@ impl Areev {
                     // refuses a pin anywhere else.
                     "evalset_hash": r.evalset_hash,
                     "rollbackable": r.rollbackable,
-                })
+                });
+                if with_proposal {
+                    let o = row.as_object_mut().expect("json! object");
+                    o.insert("action_kind".into(), json!(r.action_kind));
+                    o.extend(areev_loop_adapter::proposal_fields(r));
+                }
+                row
             })
             .collect();
         serde_json::to_string(&rows).map_err(err)
+        })
+    }
+
+    /// One recommendation as `areev loop show` prints it — the review
+    /// surface, including the proposal body (`cal` / `edit` / `data`) and
+    /// `action_kind`, so a host can measure a proposal before it approves or
+    /// applies it (#348). A hash prefix is accepted. Coverage-filtered like
+    /// `recommendations()`: a recommendation the principal cannot see is
+    /// "not found", never a denial that discloses it exists.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn recommendation(&self, hash: String) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let sub = BorrowedSubstrate::new(&facade);
+            let recs = areev_loop_adapter::visible_recommendations(
+                &Engine::with_builtins(),
+                &sub,
+                &facade.authz(),
+                None,
+            )
+            .map_err(err)?;
+            let r = areev_loop_adapter::find_recommendation(&recs, &hash).map_err(err)?;
+            serde_json::to_string(&areev_loop_adapter::recommendation_detail(r)).map_err(err)
         })
     }
 
@@ -2991,6 +3052,7 @@ impl Areev {
 
     /// Host cap (never persisted): force egress anonymization on for every
     /// namespace without a declared policy. Can never weaken a declared one.
+    /// Raising it needs no grant; lowering it needs `admin` on `"*"` (#345).
     #[napi(ts_return_type = "Promise<void>")]
     pub fn set_anonymize_egress_floor(
         &self,
@@ -2999,11 +3061,16 @@ impl Areev {
         let slot = self.facade.clone();
         UnitJob::spawn(move || {
             let facade = take_facade(&slot)?;
-            facade
-                .store_as(areev_core::authz::Verb::Admin, "*", |m| m.set_anonymize_egress_floor(on))
-                .map_err(err)?;
+            facade.set_anonymize_egress_floor(on).map_err(err)?;
             Ok(())
         })
+    }
+
+    /// Whether the egress anonymization floor is on for this handle.
+    #[napi(ts_return_type = "Promise<boolean>")]
+    pub fn anonymize_egress_floor(&self) -> napi::bindgen_prelude::AsyncTask<BoolJob> {
+        let slot = self.facade.clone();
+        BoolJob::spawn(move || Ok(take_facade(&slot)?.anonymize_egress_floor()))
     }
 
     /// Install a Tier-1 NER detector over the command seam (probed at
@@ -3329,6 +3396,38 @@ impl Areev {
                 .cancel(&run_id, &actor, because.as_deref().unwrap_or("canceled"))
                 .map_err(run_err)?;
             Ok(json!({"canceled": run_id}).to_string())
+        })
+    }
+
+    /// Ask a live run to PAUSE at its next superstep boundary (#344): the
+    /// open superstep finishes and checkpoints, nothing past it dispatches,
+    /// and the driving `runStart`/`runResume` returns `{"parked": …}` with
+    /// `kind`/`reason` `"paused"` (its `onEvent` stream ends at `RunPaused`).
+    /// `runResume` continues it under the same run id, manifest and pins.
+    ///
+    /// Safe to call from an `onEvent` callback — that is the shape a host
+    /// metering work in its own units uses. Needs `run.execute`, the grant
+    /// `runResume` takes. Idempotent (`already: true` answers the standing
+    /// request); rejects with `RUN-E029` on a finished run or a pending
+    /// cancel. Returns the receipt JSON: `run_id`, `status`
+    /// (`requested` | `paused`), `already`, `request`, `paused_by`,
+    /// `because`, `requested_at`.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn run_pause(
+        &self,
+        run_id: String,
+        because: Option<String>,
+    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        let ns = self.ns.clone();
+        let actor = self.actor.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let runner = js_runner(facade, ns, actor.clone(), None);
+            let receipt = runner
+                .pause(&run_id, &actor, because.as_deref().unwrap_or("paused"))
+                .map_err(run_err)?;
+            serde_json::to_string(&receipt).map_err(err)
         })
     }
 

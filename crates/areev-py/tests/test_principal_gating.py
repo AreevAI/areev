@@ -122,7 +122,9 @@ def calls(db, tmp_path):
         ("ensure_vector_index", lambda: db.ensure_vector_index(16, 64, 32)),
         ("drop_vector_index", lambda: db.drop_vector_index()),
         ("set_embedder_command", lambda: db.set_embedder_command("cat", None)),
-        ("set_anonymize_egress_floor", lambda: db.set_anonymize_egress_floor(True)),
+        # LOWERING the floor is refused; raising it only strengthens
+        # protection and needs no grant (#345, EXEMPT below as the getter).
+        ("set_anonymize_egress_floor", lambda: db.set_anonymize_egress_floor(False)),
         ("set_anonymizer_command", lambda: db.set_anonymizer_command("cat")),
         ("set_trigger_paused", lambda: db.trigger_pause("abc", "because")),
     ]
@@ -140,6 +142,7 @@ EXEMPT = {
     "close": "releases the handle",
     "cal_prepare": "parses a statement; touches no store",
     "spec": "static capability description",
+    "anonymize_egress_floor": "reports a per-process host cap, no grain data (#345)",
     # --- already gated inside the facade / CAL executor -------------------
     "cal": "the CAL executor gates every statement it runs",
     "add": "facade cal_add -> check_verb(Write, ns)",

@@ -112,6 +112,16 @@ areev anonymize set --db clinic.db --ns org.clinic.referrals \
 areev … --anonymize-egress
 ```
 
+From the bindings the floor is `set_anonymize_egress_floor(True)` (Python) /
+`setAnonymizeEgressFloor(true)` (Node), read back with
+`anonymize_egress_floor()` / `anonymizeEgressFloor()`. The authority check is
+asymmetric: **raising the floor needs no grant** — it only strengthens what
+this handle discloses, and a handle bound to a least-privilege agent principal
+is exactly the one that most needs it — while **lowering it needs `admin` on
+`*`** (`AUT-E001` otherwise), so a bound agent can switch the floor on but
+never off. Unlike a declared `egress` policy, the floor is scoped to the one
+handle: other readers of the namespace are untouched.
+
 `clinic-policy.json`:
 
 ```json

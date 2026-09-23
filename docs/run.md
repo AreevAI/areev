@@ -1345,7 +1345,84 @@ areev run oversight-report --run-id demo-1     # or --plan <HASH> for the newest
 `cancel` writes a marker Fact — deliberately the **lowest-privilege** run
 verb, because a brake must never be blocked by missing privilege. A live
 driver drains at its next superstep boundary; `resume` finalizes a parked
-one.
+one, and a **paused** one (below) is finalized by the cancel itself.
+
+### Pause: a resumable stop the host asks for (#344)
+
+```bash
+areev run pause  --run-id demo-1 --because "quota reached"
+areev run resume --run-id demo-1            # continues it — same run id, no fork
+```
+
+`cancel` is terminal; a budget axis parks a run that only a `fork` continues.
+`pause` is the third stop: the **host** asks, the run parks resumably, and
+`resume` continues it under the **same run id, manifest and pins**. It is what
+a host that meters work in its own units — rows extracted, documents
+processed, anything counted from a node's output rather than tokens or
+dollars — needs when its count crosses a limit: not "finish and overspend",
+not "cancel and redo", but "stop where you are and wait".
+
+- **Where it stops.** `pause` writes a request Fact (`mg:run_pause`, in the
+  run's namespace, with the principal and the reason) and returns. A live
+  driver polls it at every wave boundary, with the steering queue, and honours
+  it where it would otherwise **open** the next superstep: the open superstep
+  finishes, its results merge and its checkpoint is written exactly as in an
+  uninterrupted run, and then nothing further is dispatched. So a pause asked
+  while node `b` is executing takes effect after `b` — it never interrupts a
+  node. Terminal outcomes still win: a run with nothing left to do completes
+  (or is canceled, or exhausts a budget) rather than pausing.
+- **What it looks like.** The driving `start`/`resume` returns `{"parked":
+  {"kind": "paused", "reason": "paused", "superstep", "paused_by", "because",
+  "requested_at", "paused_at", "checkpoint", "asks": []}}`, and its event
+  stream ends at `RunPaused` the way a gate's leg ends at `AskRaised`. The run
+  holds **no lease and no concurrency slot** while paused, like any park, so
+  any driver may continue it. `inspect` reports `phase: "paused"` and a
+  `pause` block — `status`, `paused_by`, `because`, `requested_at`,
+  `paused_at`, `superstep`. The driver journals where it parked
+  (`mg:run_paused`).
+- **Continuing.** `resume` on a paused run consumes the request — it writes
+  `mg:run_unpause` naming the request and who resumed — and continues from the
+  parked checkpoint. Nothing re-executes: nothing past the checkpoint was ever
+  dispatched. A consumed request never re-pauses the run; a new `pause` is a
+  new request. A request made while the run is parked on a **human gate** is
+  not consumed by the resume that settles the answer — it applies at the next
+  boundary after it, which is what the asker was promised.
+- **Verify.** The pause leaves nothing in scheduler state
+  (`EventIn::PauseRequested` holds a single `step` call and is never stored),
+  so the parked checkpoint is byte-identical to the uninterrupted run's, and
+  the resumed superstep is an ordinary resume boundary: `verify` replays a
+  paused-then-resumed run through the rule it already has for a crash, with
+  the paused span accrued as `elapsed`, never as wall. A run still paused
+  verifies up to the pause; a paused run canceled afterwards verifies through
+  its canceled terminal.
+- **Refusals and interactions.** `pause` needs `run.execute` — the grant
+  `resume` takes; stopping a run resumably is a scheduling decision, unlike
+  cancel's deliberately low bar. It is **idempotent**: asking again while a
+  request stands writes nothing and answers `already: true` with the standing
+  request. It is refused with **`RUN-E029`** when the run already finished
+  (completed, failed, stalled, canceled, out of budget) or a cancel is pending
+  against it — **cancel wins over pause**. `cancel` on a paused run finalizes
+  it as canceled at once: nobody is driving it, and it is parked precisely
+  because its host has not decided what happens next.
+- **Scope, stated.** A pause stops the run it names at that run's own
+  boundary; a subgraph child running inline finishes as the parent's one
+  effect first. It does not raise Core's budgets — `fork` remains the path for
+  those.
+
+Surfaces: `areev run pause`, MCP `areev_run_pause`, `db.run_pause(run_id,
+because=…)`, `m.runPause(runId, because)`. The binding call is safe from an
+`on_event`/`onEvent` callback — the shape a metering host uses:
+
+```js
+let asked = false
+const onEvent = (line) => {
+  const e = JSON.parse(line)
+  if (e.event === 'CheckpointWritten' && !asked && overLimit()) { asked = true; m.runPause('r1', 'limit reached') }
+}
+const out = JSON.parse(await m.runStart(plan, 'r1', '{}', toolCmd, ...Array(13).fill(null), onEvent))
+// out.parked.reason === 'paused' — later, once the limit is raised:
+await m.runResume('r1', toolCmd)
+```
 
 `oversight-report` answers the EU AI Act **Article 14** questions as a
 command: where a human can intervene (the client-gated nodes), who is
@@ -1775,8 +1852,8 @@ not know, and a run with no model in it sees the lines it always did.
 Three things a subscriber's author needs to know:
 
 - **`RunFinished` is emitted at a TERMINAL outcome.** A run that parks on a
-  human gate ends its `run_start` leg at `AskRaised`; `RunResumed` …
-  `RunFinished` arrive on the `run_resume` leg. Waiting for `RunFinished` from
+  human gate ends its `run_start` leg at `AskRaised` (a host pause ends it at
+  `RunPaused`); `RunResumed` … `RunFinished` arrive on the `run_resume` leg. Waiting for `RunFinished` from
   a start that parks waits forever. `dropped_events` on that last line is the
   honesty counter: how many events the bounded (1024, drop-oldest) buffer
   discarded because the subscriber could not keep up.
@@ -1806,14 +1883,14 @@ The same runtime on every surface — one journal, one set of rules:
 
 | Surface | Shape |
 |---|---|
-| CLI | `areev run start/resume/respond/input/cancel/list/inspect/verify/fork/shadow/oversight-report/demo`, plus `areev run-trace` / `areev runs-touching` |
-| MCP | the seven `areev_run_*` tools ([reference](mcp-reference.md)); host tools only via `$AREEV_RUN_TOOL_CMD`; the acting principal is server-bound — `principal`/`responder` are never client-supplied |
-| Python | `db.run_start(workflow, run_id, input_json, tool_cmd, …, allow_executor=…, executor_cache=…, sandbox_cmd=…, executor_timeout_secs=…, on_event=…)`, `run_resume` (same tail), `run_respond(…, responder=…)`, `run_input`, `run_cancel`, `run_verify`, `run_shadow(run_ids, plan=…, plan_body=…, options=…)`, `run_fork`, `run_list`, `run_inspect`, `run_oversight_report(run_id=…, plan=…)`, `changes_since` — JSON strings out. `on_event` is a callable taking one JSON string: the same §6.10 line `--events` prints |
-| Node | `await m.runStart(…, onEvent)` and the same set (`runRespond`, `runInput`, `runFork`, `runInspect`, `runOversightReport`, …) — promises, JSON strings out. `onEvent` is `(event: string) => void`, called from the event bus's own thread |
+| CLI | `areev run start/resume/respond/input/pause/cancel/list/inspect/verify/fork/shadow/oversight-report/demo`, plus `areev run-trace` / `areev runs-touching` |
+| MCP | the eight `areev_run_*` tools ([reference](mcp-reference.md)); host tools only via `$AREEV_RUN_TOOL_CMD`; the acting principal is server-bound — `principal`/`responder` are never client-supplied |
+| Python | `db.run_start(workflow, run_id, input_json, tool_cmd, …, allow_executor=…, executor_cache=…, sandbox_cmd=…, executor_timeout_secs=…, on_event=…)`, `run_resume` (same tail), `run_respond(…, responder=…)`, `run_input`, `run_pause`, `run_cancel`, `run_verify`, `run_shadow(run_ids, plan=…, plan_body=…, options=…)`, `run_fork`, `run_list`, `run_inspect`, `run_oversight_report(run_id=…, plan=…)`, `changes_since` — JSON strings out. `on_event` is a callable taking one JSON string: the same §6.10 line `--events` prints |
+| Node | `await m.runStart(…, onEvent)` and the same set (`runRespond`, `runInput`, `runPause`, `runFork`, `runInspect`, `runOversightReport`, …) — promises, JSON strings out. `onEvent` is `(event: string) => void`, called from the event bus's own thread |
 | HTTP / console | `GET /api/run/list`, `GET /api/run/inspect`, `POST /api/run/respond` (per-principal credential required), `POST /api/run/cancel`; the console's Runs tab is the approval queue. The console's **Workflows** tab visualizes and edits plans themselves — an editable node/edge graph over the same Workflow grains, built entirely on `/api/browse` and `/api/cal` (`ADD workflow`), no dedicated route. It also draws what a plan does *not* contain: the Trigger grains that point at it (read-only, in their own lane) and, when a run is selected, a status rail per step from that run's journal grains — a client-side join on `mg:step_action:<node>`, not a new endpoint. The **Tools** tab is the other half of that picture: the Tool definitions a node can bind to, each with its schema, locked params and the plans that bind it, plus every execution grain grouped by run. A plan with a bounded-cycle edge or a per-node retry count opens view-only: `ADD`/`SUPERSEDE workflow` has no surface syntax yet to author either (`* N` populates `retries`, not `max_cycles`) — and for the same reason, connecting an edge that would close a cycle in an editable plan is refused rather than silently saved as an unbounded one |
 
 Authorization uses three verbs, granted like any other
-([CAL DCL](cal-reference.md)): `run.execute` (start/resume), `run.respond`
+([CAL DCL](cal-reference.md)): `run.execute` (start/resume/pause), `run.respond`
 (answer asks), `run.cancel` (the brake). An unbound local session is the
 owner and holds every right — grants matter once a file is shared.
 
@@ -1850,7 +1927,8 @@ pending ask, `RUN-E012` missing grant, `RUN-E013` canceled, `RUN-E024`
 transcript over `--llm-context-tokens` with nothing left to fold,
 `RUN-E025` the model this run started under is not the one on offer (fork),
 `RUN-E026` a different scheduler epoch wrote this run (fork), `RUN-E027` a
-concurrency cap — retryable, and nothing was written. The full registry is
+concurrency cap — retryable, and nothing was written, `RUN-E029` a pause
+asked of a run that already finished or has a cancel pending. The full registry is
 [`ERROR_CODES.md`](../ERROR_CODES.md).
 
 ## Bounds, stated

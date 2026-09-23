@@ -1190,6 +1190,7 @@ The rule now, on every principal-bindable surface:
 | changes a namespace's governance (anon policy) | `Verb::Admin` on it |
 | reads memory-wide (`stats`, `verify`, CAS blobs) | `Verb::Read` on `"*"` |
 | changes memory-wide state (keys, attestation, indexes, bundles, embedder) | `Verb::Admin` on `"*"` |
+| lowers the egress anonymization floor | `Verb::Admin` on `"*"`; RAISING it needs no grant (#345) |
 | spans a namespace LIST (`related`, a scoped feed) | every namespace in the list, or nothing |
 | takes no namespace but returns per-namespace rows (`changes_since`, `provenance`, the policy listings) | rows filtered to what the principal may read |
 
@@ -1201,6 +1202,13 @@ Three consequences worth knowing:
 - **A walk is all-or-nothing.** `related` over `"a,b"` refuses unless the
   principal may read both: a walk is not composable from the namespaces it was
   allowed, so a partial answer would silently mean something else.
+- **The egress floor is asymmetric** (#345). `set_anonymize_egress_floor(true)`
+  only strengthens what the handle discloses, so any bound principal may raise
+  it — the least-privilege agent handle is the one that most needs it, and it
+  used to be the one refused. Lowering it weakens every read through the
+  handle and keeps the `admin`-on-`"*"` check; the rule lives in
+  `AreevFacade::set_anonymize_egress_floor`, so both bindings share it. The
+  getter reports a host setting, not grain content, and takes no grant.
 - **The memory tool is gated per COMMAND**, not per method: `view` takes
   `read`, `create`/`str_replace`/`insert`/`rename` take `write`, `delete` takes
   `delete`. An unrecognized command takes `admin`, so a command added to

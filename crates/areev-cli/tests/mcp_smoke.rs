@@ -85,6 +85,10 @@ fn mcp_round_trip() {
             "text": "alice prefers tea"}})),
         rpc(90, "tools/call", serde_json::json!({"name": "areev_run_verify", "arguments": {
             "plan": "0".repeat(64), "runs": "run-a"}})),
+        // #344: pausing a run that does not exist is a tool failure naming
+        // the run, never a request filed for later.
+        rpc(91, "tools/call", serde_json::json!({"name": "areev_run_pause", "arguments": {
+            "run_id": "no-such-run", "because": "drain"}})),
     ];
     {
         let stdin = child.stdin.as_mut().unwrap();
@@ -99,15 +103,15 @@ fn mcp_round_trip() {
         .lines()
         .map(|l| serde_json::from_str(l).unwrap())
         .collect();
-    // 19 requests (the notification gets no response)
-    assert_eq!(lines.len(), 19, "one response per request");
+    // 20 requests (the notification gets no response)
+    assert_eq!(lines.len(), 20, "one response per request");
 
     let by_id = |id: u64| lines.iter().find(|v| v["id"] == id).unwrap();
 
     assert_eq!(by_id(1)["result"]["serverInfo"]["name"], "areev");
     let tools = by_id(2)["result"]["tools"].as_array().unwrap();
 
-    // The plan-change rehearsal rides `areev_run_verify` (no 27th tool): the
+    // The plan-change rehearsal rides `areev_run_verify` (no tool of its own): the
     // schema advertises `plan` + `runs`, and a call with a plan that is not
     // in the store is a tool failure that names the workflow, not a JSON-RPC
     // error and not a silent verify of `run_id`.
@@ -115,7 +119,9 @@ fn mcp_round_trip() {
     assert!(verify_props.get("plan").is_some() && verify_props.get("runs").is_some(), "{verify_props}");
     assert_eq!(by_id(90)["result"]["isError"], true, "{}", by_id(90));
     let text = by_id(90)["result"]["content"][0]["text"].as_str().unwrap();
-    assert!(text.contains("workflow"), "{text}");    assert_eq!(tools.len(), 26);
+    assert!(text.contains("workflow"), "{text}");
+    assert_eq!(by_id(91)["result"]["isError"], true, "{}", by_id(91));
+    assert_eq!(tools.len(), 27);
     for memory_tool in ["areev_search", "areev_nearest"] {
         assert!(
             tools.iter().any(|t| t["name"] == memory_tool),
@@ -127,6 +133,7 @@ fn mcp_round_trip() {
         "areev_run_resume",
         "areev_run_respond",
         "areev_run_input",
+        "areev_run_pause",
         "areev_run_cancel",
         "areev_run_verify",
         "areev_run_list",
@@ -750,7 +757,7 @@ fn mcp_supersede_runs_touching_and_recommendations() {
 /// and a client that calls one anyway (stale tool cache, hand-rolled request)
 /// gets a named refusal, not a crash or a silent no-op. `--profile full`
 /// (the default) is unaffected, so this only checks the narrowed side —
-/// `mcp_round_trip` above already exercises the full 26-tool surface.
+/// `mcp_round_trip` above already exercises the full 27-tool surface.
 #[test]
 fn mcp_profile_memory_hides_run_tools() {
     let dir = TempDir::new().unwrap();
@@ -793,8 +800,8 @@ fn mcp_profile_memory_hides_run_tools() {
     let by_id = |id: u64| lines.iter().find(|v| v["id"] == id).unwrap();
 
     let tools = by_id(2)["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 12, "memory profile: 26 minus the 14-tool run/loop family");
-    for run_tool in ["areev_run_start", "areev_loop", "areev_recommendations", "areev_tool_provenance"] {
+    assert_eq!(tools.len(), 12, "memory profile: 27 minus the 15-tool run/loop family");
+    for run_tool in ["areev_run_start", "areev_run_pause", "areev_loop", "areev_recommendations", "areev_tool_provenance"] {
         assert!(
             !tools.iter().any(|t| t["name"] == run_tool),
             "{run_tool} must not be advertised under --profile memory"

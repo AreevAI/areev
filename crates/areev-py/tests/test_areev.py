@@ -1610,3 +1610,229 @@ def test_attestation_round_trip(tmp_path):
     assert json.loads(b.verify_attestations())["unattested"] == 0, "refused bundle wrote nothing"
     with pytest.raises(ValueError, match="CRY-E004"):
         b.set_attest_policy("maybe")
+
+
+# --------------------------------------------------------------------------
+# 1.9.4 — egress floor on a bound handle (#345), loop_run gateway (#346),
+# reading a recommendation's proposal (#348)
+# --------------------------------------------------------------------------
+
+def test_egress_floor_raise_needs_no_grant_lower_needs_admin(tmp_path):
+    path = str(tmp_path / "floor.db")
+    owner = areev.Areev(path, ns="demo")
+    owner.add_fact("supplier", "email", "billing@acme.example")
+    owner.cal('GRANT read, write ON demo TO "agent:d1"')
+    del owner
+
+    bound = areev.Areev(path, ns="demo", principal="agent:d1")
+    assert bound.anonymize_egress_floor() is False
+    bound.set_anonymize_egress_floor(True)  # raising strengthens: no grant needed
+    assert bound.anonymize_egress_floor() is True
+    flat = json.dumps(json.loads(bound.recall("supplier")))
+    assert "billing@acme.example" not in flat, flat
+
+    with pytest.raises(ValueError, match="AUT-E001"):
+        bound.set_anonymize_egress_floor(False)  # lowering needs admin on "*"
+    assert bound.anonymize_egress_floor() is True
+    del bound
+
+    owner = areev.Areev(path, ns="demo")
+    owner.set_anonymize_egress_floor(True)
+    assert owner.anonymize_egress_floor() is True
+    owner.set_anonymize_egress_floor(False)
+    assert owner.anonymize_egress_floor() is False
+
+
+def test_loop_run_model_leg_honors_base_url_and_key_env(tmp_path, monkeypatch):
+    import http.server
+    import threading
+
+    seen = []
+
+    class Recorder(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            seen.append(self.headers.get("Authorization"))
+            body = json.dumps({
+                "choices": [{"message": {"role": "assistant", "content": "[]"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            }).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), Recorder)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.setenv("AREEV_TEST_SCOPED_KEY", "sk-sentinel-346")
+        m = make_db(tmp_path)
+        for _ in range(4):
+            m.record_tool_call("stripe_refund", "rate_limited 429", True)
+        m.add_fact("acme", "tier", "enterprise")
+        out = json.loads(m.loop_run(
+            model="openai:gpt-4o-mini",
+            base_url=f"http://127.0.0.1:{srv.server_port}/v1",
+            key_env="AREEV_TEST_SCOPED_KEY",
+        ))
+        assert out["outcome"] == "ran"
+        assert seen, "the model leg never reached the recorder"
+        assert all(a == "Bearer sk-sentinel-346" for a in seen), seen
+    finally:
+        srv.shutdown()
+
+
+def test_recommendation_detail_exposes_the_proposal(tmp_path):
+    path = str(tmp_path / "recs.db")
+    m = areev.Areev(path, ns="caller")
+    for _ in range(4):
+        m.record_tool_call("stripe_refund", "rate_limited 429", True)
+    m.loop_run()
+    plain = json.loads(m.recommendations())
+    assert plain
+    keys = {"hash", "status", "severity", "analyzer", "summary", "target_ref",
+            "destructive", "evalset_hash", "rollbackable"}
+    assert all(set(r) == keys for r in plain), plain  # default shape unchanged
+
+    rows = json.loads(m.recommendations('{"include":"proposal"}'))
+    assert all("action_kind" in r and "proposal" in r for r in rows), rows
+    with pytest.raises(ValueError, match="unknown include"):
+        m.recommendations('{"include":"everything"}')
+
+    h = plain[0]["hash"]
+    one = json.loads(m.recommendation(h[:12]))  # a prefix resolves, as in the CLI
+    assert one["hash"] == h
+    assert one["action_kind"] and one["proposal"] in ("cal", "edit", "data")
+    row = next(r for r in rows if r["hash"] == h)
+    assert {k: one[k] for k in ("proposal", "action_kind")} == \
+        {k: row[k] for k in ("proposal", "action_kind")}
+    with pytest.raises(ValueError, match="no recommendation matches"):
+        m.recommendation("ffffffffffff")
+    # No read on "caller" (the namespace the analyzer ran over) and no
+    # whole-queue grant on areev-loop: the single read is refused exactly as
+    # the listing is — on the queue, never naming or confirming the hash.
+    m.cal('GRANT read ON "elsewhere" TO "agent:outsider"')
+    del m
+
+    outsider = areev.Areev(path, ns="elsewhere", principal="agent:outsider")
+    with pytest.raises(ValueError, match="AUT-E001") as listing:
+        outsider.recommendations('{"status":"all"}')
+    with pytest.raises(ValueError, match="AUT-E001") as single:
+        outsider.recommendation(h)
+    assert h[:12] not in str(single.value)
+    assert str(single.value) == str(listing.value)
+# #344 — host pause, requested from on_event
+# --------------------------------------------------------------------------
+#
+# A host metering work in its own units watches the stream and, when its count
+# crosses a limit, pauses the run instead of canceling it. The pause lands at
+# the next superstep boundary AFTER the callback runs (the event is delivered
+# asynchronously, and the superstep after a checkpoint is already dispatched
+# when the checkpoint is announced), so these assert the contract — parked,
+# resumable, every node exactly once — not which node the boundary fell after.
+
+def _three_node_plan(db):
+    bind = {}
+    for i, n in enumerate(["a", "b", "c"]):
+        bind[n] = db.add("tool", json.dumps({
+            "tool_name": n, "kind": "definition",
+            "tool_description": f"step {n}", "created_at": 700 + i,
+        }), ns="ops")
+    return db.add("workflow", json.dumps({
+        "nodes": ["a", "b", "c"],
+        "edges": [{"src": "a", "dst": "b"}, {"src": "b", "dst": "c"}],
+        "bindings": bind,
+        "created_at": 710,
+    }), ns="ops")
+
+
+def _logging_tool(log):
+    """Slow enough for the pause to land mid-run; logs its own name."""
+    return f"sleep 0.4; echo \"$AREEV_TOOL_NAME\" >> '{log}'; printf '{{}}'"
+
+
+def _read_log(log):
+    return log.read_text().split() if log.exists() else []
+
+
+def _start_and_pause_on_first_checkpoint(db, wf, run_id, tool, because):
+    receipts, errors = [], []
+
+    def on_event(line):
+        if json.loads(line)["event"] == "CheckpointWritten" and not (receipts or errors):
+            try:
+                receipts.append(json.loads(db.run_pause(run_id, because=because)))
+            except Exception as e:  # an exception here is unraisable; keep it
+                errors.append(e)
+
+    session = json.loads(db.run_start(wf, run_id, input_json="{}", tool_cmd=tool,
+                                      on_event=on_event))
+    assert not errors, errors
+    assert receipts, "the callback must have asked for the pause"
+    return session, receipts[0]
+
+
+def test_run_pause_from_on_event_parks_and_resume_finishes(tmp_path):
+    db = areev.Areev(str(tmp_path / "pause.db"), ns="ops", actor="user:starter")
+    wf = _three_node_plan(db)
+    log = tmp_path / "calls.log"
+    tool = _logging_tool(log)
+
+    session, receipt = _start_and_pause_on_first_checkpoint(db, wf, "p1", tool, "limit reached")
+    assert receipt["run_id"] == "p1" and receipt["already"] is False
+    assert receipt["because"] == "limit reached"
+    assert receipt["paused_by"] == "user:starter"
+
+    parked = session.get("parked")
+    assert parked, session
+    assert parked["reason"] == "paused" and parked["kind"] == "paused"
+    assert parked["because"] == "limit reached"
+    before = _read_log(log)
+    assert 1 <= len(before) < 3, f"paused mid-run: {before}"
+
+    inspected = json.loads(db.run_inspect("p1"))
+    assert inspected["phase"] == "paused"
+    assert inspected["pause"]["status"] == "paused"
+    assert inspected["pause"]["paused_by"] == "user:starter"
+    assert inspected["pause"]["because"] == "limit reached"
+    assert inspected["pause"]["paused_at"] > 0
+
+    # Idempotent while paused.
+    again = json.loads(db.run_pause("p1", because="again"))
+    assert again["already"] is True and again["status"] == "paused"
+    assert again["request"] == receipt["request"]
+
+    done = json.loads(db.run_resume("p1", tool_cmd=tool))
+    assert done.get("finished") == "Completed", done
+    assert _read_log(log) == ["a", "b", "c"], "every node exactly once, none re-executed"
+    assert json.loads(db.run_verify("p1"))["verified"] is True
+    assert json.loads(db.run_inspect("p1"))["phase"] == "finished"
+
+    with pytest.raises(ValueError, match="RUN-E029"):
+        db.run_pause("p1", because="too late")
+
+
+def test_run_cancel_on_a_paused_run_finalises_it(tmp_path):
+    db = areev.Areev(str(tmp_path / "pause.db"), ns="ops", actor="user:starter")
+    wf = _three_node_plan(db)
+    log = tmp_path / "calls.log"
+    tool = _logging_tool(log)
+
+    session, _ = _start_and_pause_on_first_checkpoint(db, wf, "p2", tool, "hold")
+    assert session["parked"]["reason"] == "paused", session
+    ran = len(_read_log(log))
+
+    assert json.loads(db.run_cancel("p2", because="abandon")) == {"canceled": "p2"}
+    assert json.loads(db.run_inspect("p2"))["phase"] == "finished"
+    after = json.loads(db.run_resume("p2", tool_cmd=tool))
+    assert after["finished"].startswith("Canceled"), after
+    assert len(_read_log(log)) == ran, "nothing ran after the pause"
+    assert json.loads(db.run_verify("p2"))["verified"] is True
+    with pytest.raises(ValueError, match="RUN-E029"):
+        db.run_pause("p2")

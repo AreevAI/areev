@@ -14,7 +14,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { existsSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import { fileURLToPath } from 'node:url'
@@ -1813,6 +1813,122 @@ test('a subscriber does not change what the run recorded', async () => {
   await m.close()
 })
 
+// ---- #344: a host pause, requested from onEvent -----------------------------
+//
+// A host metering work in its own units watches the stream and, when its
+// count crosses a limit, pauses the run instead of canceling it. The pause
+// lands at the next superstep boundary AFTER the callback runs — the event is
+// delivered asynchronously, and the superstep that follows a checkpoint is
+// already dispatched when the checkpoint is announced — so the test asserts
+// the contract (parked, resumable, every node exactly once), not which node
+// the boundary fell after.
+
+async function seedThreeNodePlan(m) {
+  const bind = {}
+  for (const [i, n] of ['a', 'b', 'c'].entries()) {
+    bind[n] = await m.add('tool', JSON.stringify({
+      tool_name: n, kind: 'definition', tool_description: `step ${n}`, created_at: 700 + i,
+    }), 'ops')
+  }
+  return m.add('workflow', JSON.stringify({
+    nodes: ['a', 'b', 'c'],
+    edges: [{ src: 'a', dst: 'b' }, { src: 'b', dst: 'c' }],
+    bindings: bind,
+    created_at: 710,
+  }), 'ops')
+}
+
+/// Each tool takes long enough for the pause to land mid-run, and appends
+/// its own name to `log` — the per-node invocation count the test asserts.
+const loggingTool = (log) =>
+  `sleep 0.4; echo "$AREEV_TOOL_NAME" >> '${log}'; printf '{}'`
+
+const readLog = (log) =>
+  existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean) : []
+
+test('runPause from onEvent parks the run; runResume finishes it under the same id', async () => {
+  const m = makeDb('ops')
+  const wf = await seedThreeNodePlan(m)
+  const log = join(mkdtempSync(join(tmpdir(), 'areev-pause-')), 'calls.log')
+  const tool = loggingTool(log)
+
+  let pauseCall = null
+  const onEvent = (line) => {
+    const e = JSON.parse(line)
+    if (e.event === 'CheckpointWritten' && pauseCall === null) {
+      pauseCall = m.runPause('p1', 'limit reached')
+    }
+  }
+  const session = JSON.parse(await m.runStart(
+    wf, 'p1', '{}', tool,
+    null, null, null, null, null, null, null, null, null, null, null, null, null,
+    onEvent,
+  ))
+  const receipt = JSON.parse(await pauseCall)
+  assert.equal(receipt.run_id, 'p1')
+  assert.equal(receipt.because, 'limit reached')
+  assert.equal(receipt.already, false)
+
+  assert.ok(session.parked, `expected a park, got ${JSON.stringify(session)}`)
+  assert.equal(session.parked.reason, 'paused')
+  assert.equal(session.parked.kind, 'paused')
+  assert.equal(session.parked.because, 'limit reached')
+  const before = readLog(log)
+  assert.ok(before.length >= 1 && before.length < 3, `paused mid-run: ${before}`)
+
+  const inspected = JSON.parse(await m.runInspect('p1'))
+  assert.equal(inspected.phase, 'paused')
+  assert.equal(inspected.pause.status, 'paused')
+  assert.equal(inspected.pause.because, 'limit reached')
+  assert.ok(inspected.pause.paused_by)
+  assert.ok(inspected.pause.requested_at > 0 && inspected.pause.paused_at > 0)
+
+  // Idempotent while paused: the standing request answers.
+  const again = JSON.parse(await m.runPause('p1', 'again'))
+  assert.equal(again.already, true)
+  assert.equal(again.status, 'paused')
+  assert.equal(again.request, receipt.request)
+
+  const done = JSON.parse(await m.runResume('p1', tool))
+  assert.equal(done.finished, 'Completed')
+  assert.deepEqual(readLog(log), ['a', 'b', 'c'], 'every node exactly once, none re-executed')
+  assert.equal(JSON.parse(await m.runVerify('p1')).verified, true)
+  assert.equal(JSON.parse(await m.runInspect('p1')).phase, 'finished')
+
+  // A finished run is refused with the documented code.
+  await assert.rejects(m.runPause('p1', 'too late'), /RUN-E029/)
+  await m.close()
+})
+
+test('runCancel on a paused run finalises it as canceled', async () => {
+  const m = makeDb('ops')
+  const wf = await seedThreeNodePlan(m)
+  const log = join(mkdtempSync(join(tmpdir(), 'areev-pause-')), 'calls.log')
+  const tool = loggingTool(log)
+  let pauseCall = null
+  const session = JSON.parse(await m.runStart(
+    wf, 'p2', '{}', tool,
+    null, null, null, null, null, null, null, null, null, null, null, null, null,
+    (line) => {
+      if (JSON.parse(line).event === 'CheckpointWritten' && pauseCall === null) {
+        pauseCall = m.runPause('p2', 'hold')
+      }
+    },
+  ))
+  await pauseCall
+  assert.equal(session.parked.reason, 'paused')
+  const ran = readLog(log).length
+
+  assert.deepEqual(JSON.parse(await m.runCancel('p2', 'abandon')), { canceled: 'p2' })
+  assert.equal(JSON.parse(await m.runInspect('p2')).phase, 'finished')
+  const after = JSON.parse(await m.runResume('p2', tool))
+  assert.match(after.finished, /^Canceled/)
+  assert.equal(readLog(log).length, ran, 'nothing ran after the pause')
+  assert.equal(JSON.parse(await m.runVerify('p2')).verified, true)
+  await assert.rejects(m.runPause('p2', 'hold'), /RUN-E029/)
+  await m.close()
+})
+
 test('bulk embeddings and the vector-index surface (#141)', async () => {
   const m = makeDb()
   const hs = []
@@ -2027,4 +2143,107 @@ test('grain attestation: keyed writes attest, require-policy import admits signe
   assert.equal(JSON.parse(await b.verifyAttestations()).unattested, 0, 'refused bundle wrote nothing')
   assert.throws(() => b.setAttestPolicy('maybe'), /CRY-E004/)
   b.close()
+})
+
+// --------------------------------------------------------------------------
+// 1.9.4 — egress floor on a bound handle (#345), loopRun gateway (#346),
+// reading a recommendation's proposal (#348)
+// --------------------------------------------------------------------------
+
+test('egress floor: raising needs no grant, lowering needs admin, the getter reads it back', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'areev-js-'))
+  const path = join(dir, 'floor.db')
+  let owner = new Areev(path, 'demo')
+  await owner.addFact('supplier', 'email', 'billing@acme.example')
+  await owner.cal('GRANT read, write ON demo TO "agent:d1"')
+  owner.close()
+
+  const bound = new Areev(path, 'demo', null, null, null, 'agent:d1')
+  assert.equal(await bound.anonymizeEgressFloor(), false)
+  await bound.setAnonymizeEgressFloor(true)
+  assert.equal(await bound.anonymizeEgressFloor(), true)
+  assert.ok(!(await bound.recall('supplier')).includes('billing@acme.example'))
+  await assert.rejects(() => bound.setAnonymizeEgressFloor(false), /AUT-E001/)
+  assert.equal(await bound.anonymizeEgressFloor(), true)
+  bound.close()
+
+  owner = new Areev(path, 'demo')
+  await owner.setAnonymizeEgressFloor(true)
+  assert.equal(await owner.anonymizeEgressFloor(), true)
+  await owner.setAnonymizeEgressFloor(false)
+  assert.equal(await owner.anonymizeEgressFloor(), false)
+  owner.close()
+})
+
+test('loopRun sends its model leg to baseUrl with the key named by keyEnv', async () => {
+  const seen = []
+  const server = createServer((req, res) => {
+    req.resume()
+    req.on('end', () => {
+      seen.push(req.headers.authorization)
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({
+        choices: [{ message: { role: 'assistant', content: '[]' } }],
+        usage: { prompt_tokens: 1, completion_tokens: 1 },
+      }))
+    })
+  })
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  const saved = { key: process.env.OPENAI_API_KEY, base: process.env.OPENAI_BASE_URL }
+  delete process.env.OPENAI_API_KEY
+  delete process.env.OPENAI_BASE_URL
+  process.env.AREEV_TEST_SCOPED_KEY = 'sk-sentinel-346'
+  try {
+    const m = makeDb()
+    for (let i = 0; i < 4; i++) await m.recordToolCall('stripe_refund', 'rate_limited 429', true)
+    await m.addFact('acme', 'tier', 'enterprise')
+    const out = JSON.parse(await m.loopRun(
+      null, null, null, 'openai:gpt-4o-mini', null, null, null, null, null, null,
+      `http://127.0.0.1:${server.address().port}/v1`, 'AREEV_TEST_SCOPED_KEY',
+    ))
+    assert.equal(out.outcome, 'ran')
+    assert.ok(seen.length, 'the model leg never reached the recorder')
+    assert.ok(seen.every((a) => a === 'Bearer sk-sentinel-346'), JSON.stringify(seen))
+    m.close()
+  } finally {
+    if (saved.key !== undefined) process.env.OPENAI_API_KEY = saved.key
+    if (saved.base !== undefined) process.env.OPENAI_BASE_URL = saved.base
+    delete process.env.AREEV_TEST_SCOPED_KEY
+    server.close()
+  }
+})
+
+test('recommendation(hash) and include:"proposal" expose what a recommendation would change', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'areev-js-'))
+  const path = join(dir, 'recs.db')
+  const m = new Areev(path, 'caller')
+  for (let i = 0; i < 4; i++) await m.recordToolCall('stripe_refund', 'rate_limited 429', true)
+  await m.loopRun()
+  const plain = JSON.parse(await m.recommendations())
+  assert.ok(plain.length)
+  const keys = ['analyzer', 'destructive', 'evalset_hash', 'hash', 'rollbackable',
+    'severity', 'status', 'summary', 'target_ref']
+  for (const r of plain) assert.deepEqual(Object.keys(r).sort(), keys) // default shape unchanged
+
+  const rows = JSON.parse(await m.recommendations('{"include":"proposal"}'))
+  assert.ok(rows.every((r) => r.action_kind && r.proposal))
+  await assert.rejects(() => m.recommendations('{"include":"everything"}'), /unknown include/)
+
+  const h = plain[0].hash
+  const one = JSON.parse(await m.recommendation(h.slice(0, 12))) // a prefix resolves, as in the CLI
+  assert.equal(one.hash, h)
+  assert.ok(one.action_kind && ['cal', 'edit', 'data'].includes(one.proposal))
+  const row = rows.find((r) => r.hash === h)
+  assert.equal(one.cal, row.cal)
+  await assert.rejects(() => m.recommendation('ffffffffffff'), /no recommendation matches/)
+  await m.cal('GRANT read ON "elsewhere" TO "agent:outsider"')
+  m.close()
+
+  // No read on "caller" and no whole-queue grant: refused on the queue, as
+  // the listing is, never naming or confirming the hash.
+  const outsider = new Areev(path, 'elsewhere', null, null, null, 'agent:outsider')
+  await assert.rejects(() => outsider.recommendations('{"status":"all"}'), /AUT-E001/)
+  await assert.rejects(() => outsider.recommendation(h), (e) =>
+    /AUT-E001/.test(e.message) && !e.message.includes(h.slice(0, 12)))
+  outsider.close()
 })
