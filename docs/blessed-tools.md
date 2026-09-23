@@ -273,3 +273,16 @@ stand-in, asserting the request each one builds, the answer each one returns,
 and that the import gate holds: a tool that declared no network does not get
 `areev::fetch` linked, and one that declared no blob read does not get
 `areev::blob_get`.
+
+## Writing your own, in a language other than Rust
+
+The blessed tools are `no_std` Rust, but the contract they implement is not
+Rust-specific. [`docs/sandbox-abi.md`](sandbox-abi.md) is that contract written
+out on its own — the exports and imports in WAT, the framing, the memory
+ceiling, fuel, and what determinism requires — with reference modules in C,
+Zig and AssemblyScript under `areev-tools/examples/` that CI rebuilds from
+source and runs through the sandbox (#340). It also records the choice made
+there: a documented **freestanding** ABI, rather than a WASI shim (which
+would fake the clock and randomness and silently change a program's
+meaning) or an interpreter module (which would pin the interpreter, not the
+tool).

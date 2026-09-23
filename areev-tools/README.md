@@ -69,6 +69,30 @@ The declared memory maximum comes from `.cargo/config.toml`
 one, and an absent maximum reads as unbounded — exactly what the sandbox's page
 ceiling exists to refuse.
 
+Written out without any Rust, for authors in other languages, in
+[`docs/sandbox-abi.md`](../docs/sandbox-abi.md) (#340).
+
+## Non-Rust reference modules — `examples/`
+
+`examples/` holds one echo module per non-Rust toolchain, each built from the
+contract page above rather than from `common`: C (`c/`, via `zig cc` or
+`clang --target=wasm32 -nostdlib`), Zig (`zig/`, `wasm32-freestanding`) and
+AssemblyScript (`assemblyscript/`, `--runtime stub`). They are examples, not
+blessed tools — not in this cargo workspace, not in `dist/blessed.json`, and
+nothing pins them.
+
+```bash
+examples/build.sh            # rebuild examples/dist/ (zig 0.15.2 + node/npm)
+examples/build.sh --check    # what CI asserts: a rebuild is byte-identical
+```
+
+Unlike the Rust blobs, these **are** checked for byte identity on rebuild: the
+toolchains are pinned (the official Zig 0.15.2 tarball, which bundles its own
+clang and wasm-ld; the AssemblyScript compiler from a committed lockfile) and
+reproduce the same bytes across macOS and Linux. `areev-sandbox/tests/abi_examples.rs`
+runs the committed bytes; `crates/areev-conformance/tests/sandbox_abi.rs` runs
+them through the sandbox binary.
+
 ## Rebuilding changes the addresses
 
 A different rustc emits different bytes. `build.sh --check` therefore verifies

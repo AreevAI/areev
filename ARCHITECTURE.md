@@ -2438,6 +2438,21 @@ tool-result or audit grains. An older peer that does not understand this
 mode has no `ref`; consumers must reject that answer, not interpret an empty
 text body as a successful artifact.
 
+### Tier C opens to other languages through a written ABI, not a WASI shim (#340)
+
+**Decision (2026-09-23):** a non-Rust author reaches `wasm32-areev` through
+[`docs/sandbox-abi.md`](docs/sandbox-abi.md) — the freestanding guest contract
+(three exports, one import, framing, limits, fuel, determinism) written
+independent of any crate — plus a reference module per toolchain (C, Zig,
+AssemblyScript) under `areev-tools/examples/`, rebuilt byte-identically in CI
+from pinned toolchains. The import set did not move: a
+`wasi_snapshot_preview1` import is still refused by name, and the refusal now
+names the page. A WASI shim was declined because it fakes syscalls (a clock
+that reads zero, randomness that never changes) — silently changing program
+semantics while widening the import surface the by-name refusal keeps closed;
+an interpreter module was declined because the pinned address would name the
+interpreter while the tool's logic rode in its input, outside every pin.
+
 ---
 
 ## 11. Deployment topology

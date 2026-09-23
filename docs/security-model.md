@@ -597,7 +597,10 @@ behind these flags.
 `areev-sandbox` runs a `wasm32` module with no WASI, a frozen import set, a fuel
 ceiling, a memory-page ceiling, and a module-size cap applied before the decoder
 sees the bytes. A module cannot open a socket, touch the filesystem, read an
-environment variable, see a clock, or run forever.
+environment variable, see a clock, or run forever. The guest contract is
+[`docs/sandbox-abi.md`](sandbox-abi.md); opening it to non-Rust toolchains
+(#340) added documentation and reference modules, not imports — a WASI import
+is still refused by default, and there is no flag that admits it.
 
 Be precise about what that buys. Tier C protects **the host from the tool**, and
 it is real isolation for parsing, extraction, classification and scoring. It is

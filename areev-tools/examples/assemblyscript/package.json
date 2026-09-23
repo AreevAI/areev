@@ -1,0 +1,9 @@
+{
+  "name": "areev-sandbox-echo-as",
+  "private": true,
+  "description": "wasm32-areev reference module in AssemblyScript (#340); the contract is docs/sandbox-abi.md",
+  "license": "MIT OR Apache-2.0",
+  "devDependencies": {
+    "assemblyscript": "0.28.20"
+  }
+}

@@ -77,6 +77,11 @@
 //! JSON in, JSON out, over linear memory. The same shape as every other seam,
 //! so a Tier C tool and a subprocess tool look identical from the outside.
 //!
+//! The contract is written down for authors who do not read Rust in
+//! `docs/sandbox-abi.md` ([`ABI_DOC`], #340), with reference modules in C, Zig
+//! and AssemblyScript under `areev-tools/examples/`. Every import refusal
+//! names that page.
+//!
 //! ## The limits, and why each one exists
 //!
 //! Fuel alone is not enough, which is the mistake worth not repeating: fuel
@@ -114,6 +119,11 @@ pub const DEFAULT_FUEL: u64 = 200_000_000;
 
 /// The only module namespace a Tier C guest may import from.
 pub const IMPORT_MODULE: &str = "areev";
+
+/// Where the guest contract is written down independent of any Rust crate
+/// (#340). Every import refusal names it, because the module that trips one
+/// was almost always built by a toolchain whose defaults assume an OS.
+pub const ABI_DOC: &str = "docs/sandbox-abi.md";
 
 /// Default ceiling on ONE brokered response, mirroring the broker's own.
 pub const DEFAULT_MAX_RESPONSE_BYTES: usize = 1024 * 1024;
@@ -205,12 +215,26 @@ impl std::fmt::Display for SandboxError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SandboxError::Module(w) => write!(f, "module rejected: {w}"),
-            SandboxError::ForbiddenImport { module, name } => write!(
-                f,
-                "module imports {module}::{name}, which is not in the frozen import set — \
-                 a Tier C module may import only {IMPORT_MODULE}::emit ({IMPORT_MODULE}::alloc \
-                 is a guest EXPORT the host calls, not an import)"
-            ),
+            SandboxError::ForbiddenImport { module, name } => {
+                write!(
+                    f,
+                    "module imports {module}::{name}, which is not in the frozen import set — \
+                     a Tier C module may import only {IMPORT_MODULE}::emit, plus \
+                     {IMPORT_MODULE}::fetch / {IMPORT_MODULE}::blob_get where the host links \
+                     them ({IMPORT_MODULE}::alloc is a guest EXPORT the host calls, not an \
+                     import)"
+                )?;
+                // The one refusal an ordinary toolchain produces by default:
+                // say what to do instead, not only what was wrong (#340).
+                if module.starts_with("wasi") {
+                    write!(
+                        f,
+                        "; WASI is not provided — build for a freestanding target \
+                         (no libc, no wasi-libc)"
+                    )?;
+                }
+                write!(f, ". The guest ABI is {ABI_DOC} (github.com/AreevAI/areev)")
+            }
             SandboxError::FuelExhausted => write!(f, "guest exhausted its fuel"),
             SandboxError::MemoryExhausted => write!(f, "guest exceeded its memory ceiling"),
             SandboxError::Trap(w) => write!(f, "guest trapped: {w}"),
