@@ -621,6 +621,96 @@ job_types! {
     BufferJob => Buffer,
 }
 
+/// Options for `packInstall` (#341). Every field is optional.
+#[napi(object)]
+#[derive(Default)]
+pub struct PackInstallOptions {
+    /// The plan hash the deployment expects: some Workflow grain in the pack
+    /// must build to it, else `PCK-E002` with nothing written.
+    pub expected_hash: Option<String>,
+    /// The namespace for grains when neither the grain nor the manifest names
+    /// one. Part of those grains' content when it applies.
+    pub ns: Option<String>,
+    /// Host executor pins, `{ tool: address }` (tool = `tool_name`, pack-local
+    /// grain id, or symbolic blob name; address = `<hex>`, `sha256:<hex>` or
+    /// `cas://sha256:<hex>`). Checked against the pack's code, never written;
+    /// a mismatch or a pin naming no code-carrying tool is `PCK-E005`.
+    pub executor_pins: Option<std::collections::HashMap<String, String>>,
+    /// Check everything, write nothing.
+    pub dry_run: Option<bool>,
+}
+
+/// The `DOMAIN-Ennn` code a message leads with, else napi's generic status.
+fn leading_code(msg: &str) -> String {
+    let tok = msg.split(':').next().unwrap_or("");
+    let ok = tok.len() >= 8
+        && tok.as_bytes()[..3].iter().all(u8::is_ascii_uppercase)
+        && tok[3..].starts_with("-E")
+        && tok[5..].bytes().all(|b| b.is_ascii_digit());
+    if ok { tok.to_string() } else { "GenericFailure".to_string() }
+}
+
+/// A pack job (#341): like [`StringJob`], but a refusal rejects with a JS
+/// `Error` whose `code` is the typed cause (`PCK-E002`, `AUT-E001`, …) rather
+/// than napi's generic `GenericFailure` — so a host branches on
+/// `err.code`, not on message text.
+pub struct PackJob {
+    work: Option<Box<PackWork>>,
+}
+
+/// `Ok(report JSON)` or `Err((code, message))`.
+type PackWork = dyn FnOnce() -> Result<String, (String, String)> + Send;
+
+impl PackJob {
+    fn spawn(
+        work: impl FnOnce() -> Result<String, (String, String)> + Send + 'static,
+    ) -> napi::bindgen_prelude::AsyncTask<Self> {
+        napi::bindgen_prelude::AsyncTask::new(PackJob { work: Some(Box::new(work)) })
+    }
+}
+
+impl napi::Task for PackJob {
+    type Output = Result<String, (String, String)>;
+    type JsValue = String;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        match self.work.take() {
+            Some(work) => Ok(work()),
+            None => Err(err("store job polled twice")),
+        }
+    }
+
+    fn resolve(&mut self, env: napi::Env, output: Self::Output) -> napi::Result<String> {
+        use napi::bindgen_prelude::JsObjectValue;
+        use napi::JsValue;
+        match output {
+            Ok(s) => Ok(s),
+            Err((code, msg)) => {
+                // `napi_create_error` sets `code` from the status string, so
+                // the coded error is built on the JS thread and rejected
+                // verbatim.
+                let mut obj = env.create_error(napi::Error::from_reason(msg))?;
+                obj.set_named_property("code", code)?;
+                Err(napi::Error::from(obj.to_unknown()))
+            }
+        }
+    }
+}
+
+/// Validate an agent pack directory with no memory at all (#341) — the
+/// library behind `areev pack validate`. Resolves to the pack report as a
+/// JSON string: grains with their content addresses, blobs, the registry
+/// keys, `allow_executor`, `executors` (every code-carrying tool with its
+/// address) and warnings. Rejects with `err.code` = `PCK-E001`..`PCK-E005`.
+#[napi(ts_return_type = "Promise<string>")]
+pub fn pack_validate(dir: String) -> napi::bindgen_prelude::AsyncTask<PackJob> {
+    PackJob::spawn(move || {
+        let r = areev_pack::pack::validate_pack(std::path::Path::new(&dir))
+            .map_err(|e| (e.code().to_string(), e.to_string()))?;
+        serde_json::to_string(&r).map_err(|e| ("SYS-E001".to_string(), e.to_string()))
+    })
+}
+
 /// One memory = one file. Open with `new Areev("caller.db", "caller")`.
 ///
 /// Every method returns a promise. Opening is the one exception — it is
@@ -1864,6 +1954,41 @@ impl Areev {
                 .store_checked(areev_core::authz::Verb::Admin, "*", |m| m.bundle_since(since.unwrap_or(0), &path))
                 .map_err(err)?;
             Ok(st.last_op_seq)
+        })
+    }
+
+    /// Install an agent pack directory into this memory (#341) — the library
+    /// behind `areev pack install`, under THIS handle's bound principal.
+    /// Resolves to the pack report as a JSON string (the fields
+    /// `areev pack install --format json` prints, plus `executors`).
+    ///
+    /// All-or-nothing: every grain is built and addressed, `expectedHash` and
+    /// `executorPins` are checked, and every write is authorized BEFORE the
+    /// first one; the grains then go in as one batch. A principal without
+    /// `write` on the pack's namespace rejects with `code: "AUT-E001"` and the
+    /// memory untouched. Rejections carry `err.code` = `PCK-E001`..`PCK-E005`
+    /// or the `AUT-*`/`STO-*` code passed through.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn pack_install(
+        &self,
+        dir: String,
+        options: Option<PackInstallOptions>,
+    ) -> napi::bindgen_prelude::AsyncTask<PackJob> {
+        let slot = self.facade.clone();
+        let o = options.unwrap_or_default();
+        let opts = areev_pack::pack::InstallOptions {
+            dry_run: o.dry_run.unwrap_or(false),
+            namespace: o.ns,
+            expected_hash: o.expected_hash,
+            executor_pins: o.executor_pins.unwrap_or_default().into_iter().collect(),
+        };
+        PackJob::spawn(move || {
+            // Through the facade, so the install is authorized as this
+            // handle's principal — never an owner store (#316).
+            let facade = take_facade(&slot).map_err(|e| (leading_code(&e.reason), e.reason))?;
+            let r = areev_pack::pack::install_pack(&facade, std::path::Path::new(&dir), &opts)
+                .map_err(|e| (e.code().to_string(), e.to_string()))?;
+            serde_json::to_string(&r).map_err(|e| ("SYS-E001".to_string(), e.to_string()))
         })
     }
 

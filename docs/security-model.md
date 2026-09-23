@@ -1205,6 +1205,15 @@ Three consequences worth knowing:
   `read`, `create`/`str_replace`/`insert`/`rename` take `write`, `delete` takes
   `delete`. An unrecognized command takes `admin`, so a command added to
   `MemoryTool` later is gated until someone maps it.
+- **A pack install is authorized whole, before its first write** (#341, the
+  bindings' `packInstall` / `pack_install` and `areev::pack::install_pack`):
+  `write` on every grain's namespace, `write` on the pack's namespace for its
+  blobs and for NEW saved-query/template rows, `admin` on `"*"` to REPLACE a
+  different registry row (what `DEFINE QUERY` takes) or to replay a bundle
+  pack. The blobs and registry rows used to be written unchecked ahead of the
+  grain batch, so a refused principal had already changed the memory. Host
+  executor pins passed to an install are checked against the pack's code and
+  never written (`PCK-E005`) — a pin stored in the memory it guards is no pin.
 
 Checks ask the facade's **effective** rights (`effective_authz()`) — an active
 `PrincipalSession`'s when one is on the thread, else the bound set — so the

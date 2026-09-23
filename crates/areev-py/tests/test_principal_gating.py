@@ -47,10 +47,24 @@ def seed(tmp_path):
     return path
 
 
+def tiny_pack(tmp_path):
+    """A one-grain pack seeding the ungranted `secret` namespace (#341)."""
+    root = tmp_path / "pack"
+    (root / "grains").mkdir(parents=True, exist_ok=True)
+    (root / "grains" / "010-tool.json").write_text(json.dumps({
+        "type": "tool", "kind": "definition", "tool_name": "lookup",
+        "tool_description": "look something up", "created_at": 500}))
+    (root / "pack.json").write_text(json.dumps({
+        "pack": "gate", "version": "1.0.0", "namespace": "secret",
+        "grains": ["grains/010-tool.json"]}))
+    return str(root)
+
+
 def calls(db, tmp_path):
     """Every gated method, as (name, thunk) against the ungranted `secret` ns."""
     blob = "cas://sha256:" + "00" * 32
     out = str(tmp_path / "out.mgb")
+    pack = tiny_pack(tmp_path)
     return [
         # namespace-scoped reads
         ("recall", lambda: db.recall("deal:2", None, 5, "secret")),
@@ -77,6 +91,8 @@ def calls(db, tmp_path):
         ("subject_report", lambda: db.subject_report("deal:2", "secret")),
         ("subject_bundle", lambda: db.subject_bundle(out, "deal:2", "secret")),
         ("forget_older_than", lambda: db.forget_older_than(1, "secret", None)),
+        # an agent pack installs under the handle's principal (#341)
+        ("pack_install", lambda: db.pack_install(pack)),
         # the memory tool: one method, three verbs
         ("memory_tool", lambda: db.memory_tool(
             json.dumps({"command": "view", "path": "/memories"}), "secret")),

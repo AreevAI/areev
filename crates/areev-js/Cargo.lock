@@ -150,6 +150,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "areev"
+version = "1.9.2"
+dependencies = [
+ "areev-cal",
+ "areev-context",
+ "areev-core",
+ "areev-llm",
+ "areev-loop",
+ "areev-loop-adapter",
+ "areev-mcp",
+ "areev-run",
+ "areev-run-core",
+ "areev-server",
+ "areev-store",
+ "areev-trigger",
+ "chrono",
+ "getrandom 0.4.3",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "zeroize",
+]
+
+[[package]]
 name = "areev-cal"
 version = "1.9.2"
 dependencies = [
@@ -171,6 +196,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "areev-context"
+version = "1.9.2"
+dependencies = [
+ "areev-cal",
+ "areev-core",
+ "chrono",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "areev-core"
 version = "1.9.2"
 dependencies = [
@@ -188,6 +224,7 @@ dependencies = [
 name = "areev-js"
 version = "1.9.2"
 dependencies = [
+ "areev",
  "areev-cal",
  "areev-core",
  "areev-llm",
@@ -236,6 +273,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "areev-mcp"
+version = "1.9.2"
+dependencies = [
+ "areev-cal",
+ "areev-core",
+ "areev-loop",
+ "areev-loop-adapter",
+ "areev-run",
+ "areev-store",
+ "serde_json",
+]
+
+[[package]]
 name = "areev-run"
 version = "1.9.2"
 dependencies = [
@@ -260,6 +310,19 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+]
+
+[[package]]
+name = "areev-server"
+version = "1.9.2"
+dependencies = [
+ "areev-cal",
+ "areev-core",
+ "areev-loop",
+ "areev-loop-adapter",
+ "areev-run",
+ "areev-store",
+ "serde_json",
 ]
 
 [[package]]

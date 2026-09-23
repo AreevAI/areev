@@ -212,6 +212,24 @@ fn err<E: std::fmt::Display>(e: E) -> PyErr {
     PyValueError::new_err(e.to_string())
 }
 
+pyo3::create_exception!(
+    areev,
+    PackError,
+    PyValueError,
+    "A pack validate/install refusal (#341). A `ValueError`, so existing \
+     handlers still catch it; `.code` carries the typed cause — `PCK-E001`..`PCK-E005`, \
+     or the `AUT-*`/`STO-*` code of a store or authorization refusal passed through \
+     unchanged."
+);
+
+/// A [`areev_pack::pack::PackError`] as `areev.PackError` with `.code` set,
+/// so a host branches on the cause rather than on message text.
+fn pack_err(py: Python<'_>, e: areev_pack::pack::PackError) -> PyErr {
+    let pe = PackError::new_err(e.to_string());
+    let _ = pe.value(py).setattr("code", e.code());
+    pe
+}
+
 
 /// Verb check for the binding methods that reach the store directly instead
 /// of through a gated `cal_*` facade method. `principal=` is documented to
@@ -1449,6 +1467,54 @@ impl Areev {
     fn put_blob(&self, py: Python<'_>, data: Vec<u8>) -> PyResult<String> {
         py.detach(|| self.facade.store_checked(areev_core::authz::Verb::Write, "*", |m| m.put_blob(&data)))
             .map_err(err)
+    }
+
+    /// Install an agent pack directory into this memory (#341) — the
+    /// library behind `areev pack install`, under THIS handle's bound
+    /// principal. Returns the pack report as a JSON string (the same fields
+    /// `areev pack install --format json` prints, plus `executors`).
+    ///
+    /// All-or-nothing: every grain is built and addressed, `expected_hash`
+    /// and `executor_pins` are checked, and every write is authorized BEFORE
+    /// the first one; the grains then go in as one batch. A principal without
+    /// `write` on the pack's namespace gets `AUT-E001` with the memory
+    /// untouched.
+    ///
+    /// - `expected_hash`: the plan hash the deployment expects (`PCK-E002`).
+    /// - `ns`: the namespace for grains when neither the grain nor the
+    ///   manifest names one (part of those grains' content when it applies).
+    /// - `executor_pins`: `{tool: address}` — checked against the pack's
+    ///   code-carrying tools, never written; a mismatch or a pin naming no
+    ///   such tool is `PCK-E005`. The report's `executors` lists every
+    ///   code-carrying tool with its address and whether it was pinned.
+    /// - `dry_run`: check everything, write nothing.
+    ///
+    /// Raises `areev.PackError` (a `ValueError`) with `.code`.
+    #[pyo3(signature = (dir, *, expected_hash = None, ns = None, executor_pins = None, dry_run = false))]
+    fn pack_install(
+        &self,
+        py: Python<'_>,
+        dir: String,
+        expected_hash: Option<String>,
+        ns: Option<String>,
+        executor_pins: Option<std::collections::BTreeMap<String, String>>,
+        dry_run: bool,
+    ) -> PyResult<String> {
+        let opts = areev_pack::pack::InstallOptions {
+            dry_run,
+            namespace: ns,
+            expected_hash,
+            executor_pins: executor_pins.unwrap_or_default(),
+        };
+        // Through the facade, so the install is authorized as this handle's
+        // principal — never an owner store (#316).
+        let facade = self.facade.clone();
+        let report = py
+            .detach(move || {
+                areev_pack::pack::install_pack(&facade, std::path::Path::new(&dir), &opts)
+            })
+            .map_err(|e| pack_err(py, e))?;
+        serde_json::to_string(&report).map_err(err)
     }
 
     /// Fetch blob bytes by `cas://sha256:` URI. The content address is
@@ -3720,9 +3786,25 @@ fn read_blob_offline<'py>(
     Ok(bytes.map(|b| PyBytes::new(py, &b)))
 }
 
+/// Validate an agent pack directory with no memory at all (#341) — the
+/// library behind `areev pack validate`. Every grain is built and addressed,
+/// the manifest's `expected_hash` entries are checked, and the report comes
+/// back as a JSON string: grains with their content addresses, blobs, the
+/// registry keys, `allow_executor`, `executors` (every code-carrying tool with
+/// its address) and warnings. Raises `areev.PackError` with `.code`.
+#[pyfunction]
+fn pack_validate(py: Python<'_>, dir: String) -> PyResult<String> {
+    let report = py
+        .detach(|| areev_pack::pack::validate_pack(std::path::Path::new(&dir)))
+        .map_err(|e| pack_err(py, e))?;
+    serde_json::to_string(&report).map_err(err)
+}
+
 #[pymodule]
 fn areev(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Areev>()?;
+    m.add_function(pyo3::wrap_pyfunction!(pack_validate, m)?)?;
+    m.add("PackError", m.py().get_type::<PackError>())?;
     m.add_function(pyo3::wrap_pyfunction!(drop_postgres_schema, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(read_blob_offline, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;

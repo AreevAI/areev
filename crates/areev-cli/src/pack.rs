@@ -58,7 +58,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use areev_cal::{AreevFacade, CalStoreFacade};
+use areev_cal::AreevFacade;
 use areev_core::error::Hash;
 use areev_core::types::{Grain, GrainType};
 use areev_store::Areev;
@@ -85,6 +85,10 @@ pub struct PackReport {
     pub bundle: Option<String>,
     /// Code addresses a host must pin before anything from this pack runs.
     pub allow_executor: Vec<String>,
+    /// Every code-carrying tool, with the address of the code it names
+    /// (#341) — so a host persists its executor pins from ONE install call
+    /// instead of re-deriving them from the grains.
+    pub executors: Vec<ExecutorRow>,
     pub warnings: Vec<String>,
     /// The reserved `"host"` object (#316), verbatim.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -96,6 +100,22 @@ pub struct GrainRow {
     pub file: String,
     pub grain_type: String,
     pub hash: String,
+}
+
+/// One code-carrying tool the pack installs (#341).
+///
+/// `executor_uri` is the address AFTER `blob:` resolution — the address a
+/// host pins (`--allow-executor`, or its own pin store). `pinned` says the
+/// caller's [`InstallOptions::executor_pins`] named this tool and the address
+/// agreed; the pin itself is never written anywhere.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ExecutorRow {
+    /// The Definition's `tool_name` (else its pack-local id).
+    pub tool: String,
+    /// The grain file that declares it.
+    pub file: String,
+    pub executor_uri: String,
+    pub pinned: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -126,6 +146,10 @@ pub enum PackError {
     /// `PCK-E004` — the address a grain stored under differs from the
     /// address it was built to.
     AddressDrift(String),
+    /// `PCK-E005` — a host executor pin disagrees with the code the pack
+    /// carries, or names no code-carrying tool in it (#341). Nothing is
+    /// written.
+    ExecutorPin(String),
     /// The store or the session refused. Passed through unchanged.
     Store(areev_core::error::AreevError),
 }
@@ -137,6 +161,7 @@ impl PackError {
             PackError::ExpectationMismatch { .. } => "PCK-E002",
             PackError::UnresolvedRef(_) => "PCK-E003",
             PackError::AddressDrift(_) => "PCK-E004",
+            PackError::ExecutorPin(_) => "PCK-E005",
             PackError::Store(e) => e.code(),
         }
     }
@@ -159,6 +184,7 @@ impl std::fmt::Display for PackError {
             ),
             PackError::UnresolvedRef(m) => write!(f, "{code}: {m}"),
             PackError::AddressDrift(m) => write!(f, "{code}: {m}"),
+            PackError::ExecutorPin(m) => write!(f, "{code}: {m}. Nothing was written"),
             PackError::Store(e) => write!(f, "{e}"),
         }
     }
@@ -172,14 +198,39 @@ impl From<areev_core::error::AreevError> for PackError {
     }
 }
 
-/// How to install a pack (#315).
+/// How to install a pack (#315, #341).
 #[derive(Debug, Clone, Default)]
 pub struct InstallOptions {
-    /// Report what would be written and write nothing.
+    /// Report what would be written and write nothing. Every check —
+    /// `expected_hash`, executor pins, authorization — still runs, so a dry
+    /// run refuses exactly what the real install would.
     pub dry_run: bool,
-    /// The namespace a grain with none of its own lands in. `None` uses the
-    /// facade's session namespace.
+    /// The namespace a grain lands in when NEITHER the grain nor the
+    /// manifest names one. `None` leaves such a grain to the facade's
+    /// session namespace. When it applies it is part of those grains'
+    /// content, so their addresses then differ from what `validate` (which
+    /// has no destination) reports; a manifest that declares `"namespace"` —
+    /// every shipped example does — is unaffected by it.
     pub namespace: Option<String>,
+    /// The content address the deployment expects the pack's PLAN to build
+    /// to (#341): some Workflow grain in the pack must address to it (for a
+    /// bundle pack, one of its `expect` entries must name it). Refused with
+    /// `PCK-E002` before anything is written. `<hex>` or `sha256:<hex>`.
+    pub expected_hash: Option<String>,
+    /// Host-side executor pins (#341): tool → content address. The key is a
+    /// code-carrying Definition's `tool_name`, its pack-local id, or the
+    /// manifest's symbolic blob name; the value is `<hex>`, `sha256:<hex>` or
+    /// `cas://sha256:<hex>`.
+    ///
+    /// Pins are CHECKED, never written. A pin is the host's trust decision,
+    /// and storing it in the memory it guards would defeat it; writing it
+    /// would also change the plan's hash and add a second write per tool to
+    /// every tenant's op-log. A pin that disagrees with the code the pack
+    /// carries, or names no code-carrying tool, refuses the WHOLE install
+    /// with `PCK-E005` before anything is written. The report's `executors`
+    /// marks each tool `pinned`, so a host persists its pins from the one
+    /// install call.
+    pub executor_pins: BTreeMap<String, String>,
 }
 
 
@@ -270,6 +321,7 @@ fn report_of(
         registry: pack.registry.keys().cloned().collect(),
         bundle: pack.bundle.clone(),
         allow_executor: pins(pack),
+        executors: executors_of(pack),
         warnings,
         host: pack.host.clone(),
     }
@@ -750,6 +802,9 @@ fn validate(dir: &Path, json_out: bool) -> Result<(), String> {
                 "blobs": r.blobs.iter().map(|b| json!({"name": b.name, "file": b.file, "bytes": b.bytes, "address": b.address})).collect::<Vec<_>>(),
                 "bundle": r.bundle,
                 "registry": r.registry,
+                // The pins it needs, and which tool each belongs to (#341).
+                "allow_executor": r.allow_executor,
+                "executors": r.executors,
                 // Verbatim, never interpreted (#316).
                 "host": r.host,
                 "warnings": r.warnings,
@@ -838,8 +893,52 @@ pub fn install_pack(
 ) -> Result<PackReport, PackError> {
     let mut pack = read_pack(dir).map_err(PackError::Malformed)?;
     if let Some(bundle) = pack.bundle.clone() {
+        // A bundle's grains are not known until it is imported, so there is
+        // nothing a pin could be checked against — refusing beats accepting
+        // a pin that was never compared with anything.
+        if let Some(key) = opts.executor_pins.keys().next() {
+            return Err(PackError::ExecutorPin(format!(
+                "pin {key:?} names no code-carrying tool: an exported (bundle) pack's \
+                 Definitions are not known before import, so no pin can be checked against \
+                 them — install it without pins and pin from `--allow-executor` afterwards"
+            )));
+        }
+        if let Some(want) = &opts.expected_hash {
+            let want = normalize_hash(want);
+            if !pack.expect.iter().any(|(_, h)| *h == want) {
+                return Err(PackError::ExpectationMismatch {
+                    file: "pack.json (expect)".into(),
+                    expected: want,
+                    built: pack
+                        .expect
+                        .iter()
+                        .map(|(_, h)| h.as_str())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                });
+            }
+        }
+        // Replaying a bundle is a memory-wide write (it carries the registry
+        // and retention policies too): the same `admin` on `*` the bindings'
+        // `import_bundle` takes.
+        facade.effective_authz().check(areev_core::authz::Verb::Admin, "*")?;
+        if opts.dry_run {
+            return Ok(report_of(&pack, &[], Vec::new()));
+        }
         install_bundle(facade, &pack, &bundle, false).map_err(classify)?;
         return Ok(report_of(&pack, &[], Vec::new()));
+    }
+    // `namespace` fills in only where neither a grain nor the manifest
+    // names one, and it must do so BEFORE addressing: a namespace is part
+    // of the grain, so filling it in afterwards would write a grain other
+    // than the one reported.
+    if pack.namespace.is_none() {
+        if let Some(ns) = &opts.namespace {
+            for e in pack.entries.iter_mut() {
+                e.fields.entry("namespace").or_insert_with(|| json!(ns));
+            }
+            pack.namespace = Some(ns.clone());
+        }
     }
     let addressed = resolve_addresses(&mut pack)?;
     let mut warnings = Vec::new();
@@ -854,10 +953,22 @@ pub fn install_pack(
         }
         check_evalset(e).map_err(PackError::Malformed)?;
     }
+    if let Some(want) = &opts.expected_hash {
+        check_expected_plan(&addressed, want)?;
+    }
+    let executors = check_pins(&pack, &opts.executor_pins)?;
+    // Authorization, all of it, BEFORE the first write (#341): the blobs and
+    // registry rows used to go in through the ungated `with_store` ahead of
+    // the batch, so a principal the batch then refused had already written
+    // them.
+    let registry_writes = preflight(facade, &pack)?;
+    let mut report = report_of(&pack, &addressed, warnings);
+    report.executors = executors;
     if opts.dry_run {
-        return Ok(report_of(&pack, &addressed, warnings));
+        return Ok(report);
     }
     for (name, (_, bytes, addr)) in &pack.blobs {
+        // Gated by `preflight` above (write on the pack's namespace).
         let stored = facade.with_store(|s| s.put_blob(bytes))?;
         if &stored != addr {
             return Err(PackError::AddressDrift(format!(
@@ -865,7 +976,9 @@ pub fn install_pack(
             )));
         }
     }
-    for (key, body) in &pack.registry {
+    for (key, body) in &registry_writes {
+        // Gated by `preflight` above (write for a new row, admin on `*` to
+        // replace a different one).
         facade.with_store(|s| s.meta_put(key, body))?;
     }
     // ALL-OR-NOTHING (#315): one batched write, so a refusal at write time —
@@ -890,7 +1003,168 @@ pub fn install_pack(
             )));
         }
     }
-    Ok(report_of(&pack, &addressed, warnings))
+    Ok(report)
+}
+
+/// `<hex>`, `sha256:<hex>` or `cas://sha256:<hex>` → lowercase `<hex>`.
+fn normalize_hash(raw: &str) -> String {
+    raw.trim()
+        .trim_start_matches("cas://")
+        .trim_start_matches("sha256:")
+        .to_ascii_lowercase()
+}
+
+/// The deployment's expected PLAN hash (#341): some Workflow grain in the
+/// pack must build to it. Per-grain `expected_hash` in the manifest is the
+/// author's claim; this is the deployer's, and it needs no edit to the pack.
+fn check_expected_plan(
+    addressed: &[(String, String, String)],
+    want: &str,
+) -> Result<(), PackError> {
+    let want = normalize_hash(want);
+    let plans: Vec<&(String, String, String)> =
+        addressed.iter().filter(|(_, ty, _)| ty == "workflow").collect();
+    if plans.iter().any(|(_, _, h)| *h == want) {
+        return Ok(());
+    }
+    Err(PackError::ExpectationMismatch {
+        file: plans
+            .first()
+            .map(|(f, _, _)| f.clone())
+            .unwrap_or_else(|| "pack (no workflow grain)".into()),
+        expected: want,
+        built: if plans.is_empty() {
+            "no plan".into()
+        } else {
+            plans.iter().map(|(_, _, h)| h.as_str()).collect::<Vec<_>>().join(",")
+        },
+    })
+}
+
+/// Every code-carrying tool the pack installs, unpinned.
+fn executors_of(pack: &Pack) -> Vec<ExecutorRow> {
+    pack.entries
+        .iter()
+        .filter_map(|e| {
+            let uri = e.fields.get("executor_uri").and_then(Value::as_str)?;
+            Some(ExecutorRow {
+                tool: e
+                    .fields
+                    .get("tool_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&e.id)
+                    .to_string(),
+                file: e.file.clone(),
+                executor_uri: uri.to_string(),
+                pinned: false,
+            })
+        })
+        .collect()
+}
+
+/// Check the host's executor pins against the code the pack carries (#341).
+///
+/// A pin key names a tool by its `tool_name`, its pack-local id, or the
+/// manifest's symbolic blob name (`blobs.<name>`), because those are the
+/// three names a host sees before install. Nothing here writes: a pin is
+/// host-side trust, and one stored in the memory it guards is no pin.
+fn check_pins(
+    pack: &Pack,
+    pins: &BTreeMap<String, String>,
+) -> Result<Vec<ExecutorRow>, PackError> {
+    let mut rows = executors_of(pack);
+    for (key, raw) in pins {
+        let want = normalize_hash(raw);
+        if want.len() != 64 || !want.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(PackError::ExecutorPin(format!(
+                "pin {key:?} = {raw:?} is not a content address — expected <64 hex>, \
+                 sha256:<hex> or cas://sha256:<hex>"
+            )));
+        }
+        let blob_addr = pack.blobs.get(key).map(|(_, _, a)| a.as_str());
+        let matched: Vec<usize> = pack
+            .entries
+            .iter()
+            .filter(|e| e.fields.get("executor_uri").and_then(Value::as_str).is_some())
+            .enumerate()
+            .filter(|(_, e)| {
+                let uri = e.fields.get("executor_uri").and_then(Value::as_str);
+                e.fields.get("tool_name").and_then(Value::as_str) == Some(key.as_str())
+                    || e.id == *key
+                    || (blob_addr.is_some() && uri == blob_addr)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if matched.is_empty() {
+            let known: Vec<&str> = rows.iter().map(|r| r.tool.as_str()).collect();
+            return Err(PackError::ExecutorPin(format!(
+                "pin {key:?} names no code-carrying tool in pack {} — its code-carrying \
+                 tools are [{}]. A pin that matches nothing guards nothing, and silently \
+                 ignoring it would let a host believe code is pinned that is not",
+                pack.name,
+                known.join(", ")
+            )));
+        }
+        for i in matched {
+            let row = &mut rows[i];
+            let have = normalize_hash(&row.executor_uri);
+            if have != want {
+                return Err(PackError::ExecutorPin(format!(
+                    "tool {:?} ({}) carries code at {} but the host pinned {want} — the \
+                     pack's code is not the code this host trusts. Re-pin deliberately if \
+                     the new code is intended",
+                    row.tool, row.file, row.executor_uri
+                )));
+            }
+            row.pinned = true;
+        }
+    }
+    Ok(rows)
+}
+
+/// Every authorization an install needs, checked before its first write
+/// (#341). Returns the registry rows that actually need writing.
+///
+/// - grains: `write` on each grain's namespace (the check `cal_add_batch`
+///   repeats; doing it here too is what keeps the blobs and registry rows
+///   below from landing ahead of a refusal);
+/// - blobs: `write` on the pack's namespace — content-addressed bytes the
+///   pack's own grains name, which a put can never replace;
+/// - registry (`qry:`/`tpl:`): a NEW row needs `write` on the pack's
+///   namespace; an identical row is skipped; REPLACING a different row is
+///   what `DEFINE QUERY` / `DEFINE TEMPLATE` do, and takes the same `admin`
+///   on `*`, so a writer cannot redefine a query other namespaces run.
+fn preflight(
+    facade: &AreevFacade,
+    pack: &Pack,
+) -> Result<Vec<(String, String)>, PackError> {
+    use areev_core::authz::Verb;
+    let rights = facade.effective_authz();
+    let session_ns = facade.session_namespace().unwrap_or("shared").to_string();
+    let pack_ns = pack.namespace.clone().unwrap_or_else(|| session_ns.clone());
+    for e in &pack.entries {
+        let ns = e
+            .fields
+            .get("namespace")
+            .and_then(Value::as_str)
+            .unwrap_or(&session_ns);
+        rights.check(Verb::Write, ns)?;
+    }
+    if !pack.blobs.is_empty() {
+        rights.check(Verb::Write, &pack_ns)?;
+    }
+    let mut writes = Vec::new();
+    for (key, body) in &pack.registry {
+        // Host metadata, read to decide which verb the write needs — the
+        // row's CONTENT is never returned to the caller.
+        match facade.with_store(|s| s.meta_get(key))? {
+            Some(existing) if existing == *body => continue,
+            Some(_) => rights.check(Verb::Admin, "*")?,
+            None => rights.check(Verb::Write, &pack_ns)?,
+        }
+        writes.push((key.clone(), body.clone()));
+    }
+    Ok(writes)
 }
 
 fn install(
@@ -900,114 +1174,112 @@ fn install(
     flags: &HashMap<String, String>,
     json_out: bool,
 ) -> Result<(), String> {
-    let mut pack = read_pack(dir)?;
+    let pack = read_pack(dir)?;
     let ns = pack.namespace.clone().unwrap_or_else(|| ns.to_string());
     let facade = AreevFacade::with_session(m, Some(ns.clone()), None);
 
+    let opts = InstallOptions {
+        dry_run: flag(flags, "dry-run").is_some(),
+        // Only an EXPLICIT --ns fills in a grain's namespace: the global
+        // default must not silently become part of a grain's content.
+        namespace: flag(flags, "ns"),
+        expected_hash: flag(flags, "expected-hash"),
+        executor_pins: parse_pins(flag(flags, "pin").as_deref())?,
+    };
+
     if let Some(bundle) = &pack.bundle {
+        if !opts.executor_pins.is_empty() || opts.expected_hash.is_some() || opts.dry_run {
+            // The checks live in the library; run them there, then print.
+            install_pack(&facade, dir, &InstallOptions { dry_run: true, ..opts.clone() })
+                .map_err(|e| e.to_string())?;
+            if opts.dry_run {
+                println!("pack {} {} — would import {bundle} (dry run)", pack.name, pack.version);
+                return Ok(());
+            }
+        }
         return install_bundle(&facade, &pack, bundle, json_out);
     }
 
-    // Everything is built and checked BEFORE anything is written: a refused
-    // pack must leave the memory exactly as it found it, and a half-installed
-    // agent is worse than an uninstalled one.
-    let addressed = resolve_addresses(&mut pack).map_err(|e| e.to_string())?;
-    let mut warnings = Vec::new();
-    for e in &pack.entries {
-        if e.grain_type == "tool" {
-            check_tool(e, &mut warnings)?;
-        }
+    // A PRINTER over the library (#315, #341): everything is built, checked
+    // and authorized BEFORE anything is written, and the grains go in as one
+    // all-or-nothing batch — so `areev pack install` and a host calling
+    // `install_pack` cannot disagree about what a pack installs, or at which
+    // addresses.
+    let r = install_pack(&facade, dir, &opts).map_err(|e| e.to_string())?;
+    for w in &r.warnings {
+        eprintln!("areev: pack: {w}");
     }
-    if flag(flags, "dry-run").is_some() {
-        println!("pack {} {} — would install {} grains, {} blobs (dry run)",
-                 pack.name, pack.version, addressed.len(), pack.blobs.len());
-        return Ok(());
-    }
-
-    let mut stored_blobs = Vec::new();
-    for (name, (_, bytes, addr)) in &pack.blobs {
-        let stored = facade
-            .with_store(|s| s.put_blob(bytes))
-            .map_err(|e| format!("storing blob {name}: {e}"))?;
-        if &stored != addr {
-            // Cannot happen — both are SHA-256 of the same bytes — but a
-            // silent disagreement here would mean a grain naming an address
-            // the store does not hold.
-            return Err(format!(
-                "blob {name} stored as {stored} but addressed as {addr} — refusing"
-            ));
-        }
-        stored_blobs.push((name.clone(), stored));
-    }
-
-    // Registry rows go in FIRST: a trigger naming a `context_query` is
-    // installable either way (the reference is a name, resolved at fire
-    // time), but an install that ordered them the other way would leave a
-    // window where the memory says it can assemble context it cannot.
-    for (key, body) in &pack.registry {
-        facade
-            .with_store(|s| s.meta_put(key, body))
-            .map_err(|e| format!("installing {key}: {e}"))?;
-    }
-
-    let mut written = Vec::new();
-    for (e, (_, ty, expected)) in pack.entries.iter().zip(addressed.iter()) {
-        let hash = facade
-            .cal_add(&e.grain_type, &e.fields)
-            .map_err(|err| format!("{}: {err}", e.file))?;
-        let hex = hash.to_hex();
-        // The address a pure build predicted and the address the store
-        // recorded are the same function of the same bytes; asserting it here
-        // is what lets `validate` speak for `install`.
-        if &hex != expected {
-            return Err(format!(
-                "{}: built to {expected} but stored as {hex} — refusing, because \
-                 validate no longer describes install",
-                e.file
-            ));
-        }
-        written.push(json!({ "file": e.file, "type": ty, "hash": hex }));
-    }
-
-    if json_out {
-        println!(
-            "{}",
-            json!({
-                "pack": pack.name, "version": pack.version, "namespace": ns,
-                "grains": written,
-                "blobs": stored_blobs.iter().map(|(n, a)| json!({"name": n, "address": a})).collect::<Vec<_>>(),
-                "allow_executor": pins(&pack),
-                "warnings": warnings,
-            })
-        );
-    } else {
-        println!("installed pack {} {} into ns '{}'", pack.name, pack.version, ns);
-        for key in pack.registry.keys() {
-            println!("  meta  {key}");
-        }
-        for (name, addr) in &stored_blobs {
-            println!("  blob  {name:16} {addr}");
-        }
-        for w in &written {
+    if opts.dry_run {
+        if json_out {
+            println!("{}", install_json(&r, &ns, true));
+        } else {
             println!(
-                "  grain {:16} {}  ({})",
-                w["type"].as_str().unwrap_or(""),
-                w["hash"].as_str().unwrap_or(""),
-                w["file"].as_str().unwrap_or("")
+                "pack {} {} — would install {} grains, {} blobs (dry run)",
+                r.pack,
+                r.version,
+                r.grains.len(),
+                r.blobs.len()
             );
         }
-        for w in &warnings {
-            eprintln!("areev: pack: {w}");
+        return Ok(());
+    }
+    if json_out {
+        println!("{}", install_json(&r, &ns, false));
+    } else {
+        println!("installed pack {} {} into ns '{}'", r.pack, r.version, ns);
+        for key in &r.registry {
+            println!("  meta  {key}");
         }
-        let pins = pins(&pack);
-        if !pins.is_empty() {
+        for b in &r.blobs {
+            println!("  blob  {:16} {}", b.name, b.address);
+        }
+        for g in &r.grains {
+            println!("  grain {:16} {}  ({})", g.grain_type, g.hash, g.file);
+        }
+        for x in r.executors.iter().filter(|x| x.pinned) {
+            println!("  pin   {:16} {}  (matches the host's pin)", x.tool, x.executor_uri);
+        }
+        if !r.allow_executor.is_empty() {
             println!(
                 "\nNothing code-carrying runs until this host pins it:\n  --allow-executor {}",
-                pins.join(",")
+                r.allow_executor.join(",")
             );
         }
     }
     Ok(())
+}
+
+/// `install --format json`: the shape it has always printed, plus
+/// `executors` (#341).
+fn install_json(r: &PackReport, ns: &str, dry_run: bool) -> Value {
+    let mut v = json!({
+        "pack": r.pack, "version": r.version, "namespace": ns,
+        "grains": r.grains.iter().map(|g| json!({"file": g.file, "type": g.grain_type, "hash": g.hash})).collect::<Vec<_>>(),
+        "blobs": r.blobs.iter().map(|b| json!({"name": b.name, "address": b.address})).collect::<Vec<_>>(),
+        "allow_executor": r.allow_executor,
+        "executors": r.executors,
+        "warnings": r.warnings,
+    });
+    if dry_run {
+        v["dry_run"] = json!(true);
+    }
+    v
+}
+
+/// `--pin tool=<address>[,tool=<address>…]` → the library's pin map.
+///
+/// Comma-separated like `--allow-executor`, because `parse_args` keeps the
+/// last value of a repeated flag.
+fn parse_pins(raw: Option<&str>) -> Result<BTreeMap<String, String>, String> {
+    let mut out = BTreeMap::new();
+    let Some(raw) = raw else { return Ok(out) };
+    for item in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        let (tool, addr) = item.split_once('=').ok_or_else(|| {
+            format!("--pin: expected tool=<address>, got {item:?}")
+        })?;
+        out.insert(tool.trim().to_string(), addr.trim().to_string());
+    }
+    Ok(out)
 }
 
 /// The addresses a host must pin to run this pack's code.

@@ -263,7 +263,14 @@ COMMANDS:
                                       rewritten to the addresses they turn out
                                       to have, saved queries restored. An
                                       expected_hash that does not match is
-                                      REFUSED with nothing written
+                                      REFUSED with nothing written.
+           [--expected-hash H]        refuse unless the pack's plan builds to H
+           [--pin TOOL=ADDR,...]      check this host's executor pins against
+                                      the pack's code (tool_name, grain id or
+                                      blob name → address); a mismatch or a
+                                      pin naming no code-carrying tool is
+                                      PCK-E005, nothing written. Pins are
+                                      checked, never stored
   pack     export --out DIR [--pack-format source|bundle] [--name N]
                                       turn this memory's namespace into an
                                       installable pack. `source` writes

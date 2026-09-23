@@ -100,12 +100,82 @@ Two properties the subprocess form could not give:
   at a time meant a pack refused halfway had already seeded the tools of an
   agent whose plan never arrived.
 
-Refusals are typed (`PCK-E001`–`PCK-E004`; see
+Refusals are typed (`PCK-E001`–`PCK-E005`; see
 [`ERROR_CODES.md`](../ERROR_CODES.md)), so a host branches on the CAUSE — an
 `expected_hash` mismatch is a deployment decision, a dangling reference is an
 authoring bug, and a store refusal is neither. Store and authorization errors
 pass through unchanged. `PackReport` carries exactly the fields
 `--format json` prints.
+
+### `InstallOptions`
+
+| Field | CLI | Binding (Node / Python) | What it does |
+|---|---|---|---|
+| `dry_run` | `--dry-run` | `dryRun` / `dry_run` | Every check below still runs; nothing is written |
+| `expected_hash` | `--expected-hash H` | `expectedHash` / `expected_hash` | The plan hash the DEPLOYMENT expects: some Workflow grain in the pack must build to it (for a bundle pack, one of its `expect` entries must name it), else `PCK-E002`, nothing written. The manifest's per-grain `expected_hash` is the author's claim; this is the deployer's, and needs no edit to the pack |
+| `namespace` | `--ns` (explicit only) | `ns` | The namespace a grain lands in when NEITHER the grain nor the manifest names one. It is part of those grains' content, so when it applies their addresses differ from what `validate` (which has no destination) prints. A manifest that declares `"namespace"` — every shipped example does — is unaffected |
+| `executor_pins` | `--pin TOOL=ADDR,…` | `executorPins` / `executor_pins` | Host executor pins — see [below](#executor-pins-are-checked-never-written) |
+
+### What an install needs to be authorized for
+
+All of it is checked BEFORE the first write (#341) — the blobs and
+registry rows used to go in through an unchecked store call ahead of the
+grain batch, so a principal the batch then refused had already written them:
+
+- **grains** — `write` on each grain's namespace (what `cal_add_batch`
+  checks);
+- **blobs** — `write` on the pack's namespace: content-addressed bytes the
+  pack's own grains name, which a put can never replace;
+- **saved queries / templates** — a NEW row needs `write` on the pack's
+  namespace, an identical row is skipped, and REPLACING a different row is
+  what `DEFINE QUERY` / `DEFINE TEMPLATE` do, so it takes the same `admin` on
+  `*` — a writer cannot redefine a query other namespaces' triggers run;
+- **a bundle pack** — `admin` on `*`, the verb the bindings' `importBundle`
+  takes: replaying a bundle is a memory-wide write.
+
+## From Node and Python
+
+The bindings expose the same two functions (#341), so a host written in
+Node or Python validates and installs through the handle it already holds —
+no installer of its own, no binary in its image, no `--format json` to parse.
+Both follow the bindings' convention: the report comes back as a **JSON
+string** (the `PackReport` fields, `executors` included), and the install runs
+under the handle's **bound principal** through the same gated library path —
+never an owner handle.
+
+```js
+const { Areev, packValidate } = require('@areev/areev')
+
+const report = JSON.parse(await packValidate('packs/invoice-to-accounting')) // no memory
+const tenant = new Areev(dsn, 'shared', undefined, undefined, undefined, 'svc:installer')
+const installed = JSON.parse(await tenant.packInstall('packs/invoice-to-accounting', {
+  expectedHash, ns, executorPins: { screen: pinnedAddress }, dryRun: false,
+}))
+// refusal: a rejected Error with e.code === 'PCK-E005' | 'PCK-E002' | 'AUT-E001' | …
+```
+
+```python
+report = json.loads(areev.pack_validate("packs/invoice-to-accounting"))
+tenant = areev.Areev(dsn, principal="svc:installer")
+installed = json.loads(tenant.pack_install(
+    "packs/invoice-to-accounting",
+    expected_hash=expected_hash, ns=None,
+    executor_pins={"screen": pinned_address}, dry_run=False))
+# refusal: areev.PackError (a ValueError) with e.code == "PCK-E005" | "AUT-E001" | …
+```
+
+The plan hash `packInstall` / `pack_install` reports is the one
+`areev pack validate` and `areev pack install --format json` print for the same
+directory — pins and `expectedHash` are checked, never written, so they cannot
+move it. Both bindings' test suites assert this for every example pack under
+`examples/` against the real binary. The one option that CAN change a hash is
+`ns`, and only for a pack whose manifest declares no namespace (see the table
+above); `areev pack install --ns <same>` then prints the same hash.
+
+The manifest's reserved `"host"` object comes back verbatim in the report, as
+it does from the CLI. There is deliberately no `host` INPUT option: install has
+nothing to do with a host object it would neither interpret nor write, and a
+host keeps its own per-install state beside its own pins.
 
 ## References are symbolic, because an address is a measurement
 
@@ -180,6 +250,32 @@ executable would be asking for the wrong permission.
 The pin lives on the host, never in the pack, for the reason it never lives in
 a bundle: a permission arriving with the code it authorizes is not a
 permission. See `docs/run.md`, "Code-carrying tools".
+
+### Executor pins are checked, never written
+
+A host that installs packs per tenant already holds pins — the content address
+it trusts for each code-carrying tool. It passes them to the install
+(`InstallOptions::executor_pins`, `executorPins`, `executor_pins`,
+`--pin TOOL=ADDR,…`), keyed by the Definition's `tool_name`, its pack-local
+grain id, or the manifest's symbolic blob name; the address may be `<hex>`,
+`sha256:<hex>` or `cas://sha256:<hex>`.
+
+Install **checks** each pin against the code the pack actually carries and
+refuses the WHOLE install with `PCK-E005`, before anything is written, when a
+pin disagrees, names no code-carrying tool (a typo pins nothing, and ignoring
+it would let a host believe code is pinned that is not), or is not a content
+address. It never **writes** a pin:
+
+- a pin stored in the memory it guards is no pin — the memory is exactly what
+  the pin exists to distrust;
+- writing it would change the plan's hash (or add a sibling grain), and a
+  second write per tool doubles the op-log for every tenant.
+
+So the host persists pins on its side, from ONE install call: the report's
+`executors` lists every code-carrying tool as `{tool, file, executor_uri,
+pinned}` — `pinned: true` where the host's pin matched — and `validate`
+returns the same list (all `pinned: false`) before any memory exists.
+`allow_executor` still lists the bare addresses for `--allow-executor`.
 
 ## Export
 

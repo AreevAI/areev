@@ -219,6 +219,7 @@ dependencies = [
 name = "areev-conformance"
 version = "1.9.2"
 dependencies = [
+ "areev",
  "areev-cal",
  "areev-core",
  "areev-run",
@@ -311,6 +312,7 @@ dependencies = [
 name = "areev-py"
 version = "1.9.2"
 dependencies = [
+ "areev",
  "areev-cal",
  "areev-core",
  "areev-llm",

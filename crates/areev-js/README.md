@@ -25,6 +25,30 @@ await mem.migrate('mem0', exportJson, historyJson) // import an existing corpus 
 await mem.memoryTool('{"command": "view", "path": "/memories"}') // Anthropic memory-tool backend
 ```
 
+## Agent packs
+
+Validate and install an agent pack (`docs/pack.md`) without shipping the
+`areev` binary. Both resolve to the pack report as a JSON string; a refusal
+rejects with an `Error` whose `code` is the typed cause (`PCK-E001`..`PCK-E005`,
+or the `AUT-*`/`STO-*` code passed through).
+
+```js
+const { Areev, packValidate } = require('@areev/areev')
+
+const report = JSON.parse(await packValidate('packs/invoice-to-accounting')) // no memory needed
+const tenant = new Areev('tenant.db', 'shared', undefined, undefined, undefined, 'svc:installer')
+try {
+  const installed = JSON.parse(await tenant.packInstall('packs/invoice-to-accounting', {
+    expectedHash: planHash,                 // refuse unless the plan builds to this
+    executorPins: { screen: pinnedAddr },   // checked, never written (PCK-E005)
+  }))
+} catch (e) {
+  console.log(e.code) // 'PCK-E002', 'PCK-E005', 'AUT-E001', …
+} finally {
+  tenant.close()
+}
+```
+
 ## Every method returns a promise
 
 Store calls run on libuv's thread pool, not on the thread running your

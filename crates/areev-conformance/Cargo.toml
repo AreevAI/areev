@@ -39,6 +39,9 @@ areev-cal = { path = "../areev-cal" }
 areev-run = { path = "../areev-run" }
 
 [dev-dependencies]
+# `areev::pack` (#341): the pack install the Node/Python bindings call,
+# driven over each backend. A dev-dependency on a `publish = false` crate.
+areev = { path = "../areev-cli" }
 # ONLY for the reconnect-after-outage case: simulating a managed-Postgres
 # restart means terminating the store's backend from a SECOND connection
 # (`pg_terminate_backend`), which no public store API can or should do. Both
