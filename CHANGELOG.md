@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.9.5] — 2026-09-24
+
 ### Fixed
 
 - **With an egress policy live, only what a model produced is rehydrated**
@@ -4464,7 +4466,8 @@ ecosystem adapters, and the enterprise plane.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.9.4...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.9.5...HEAD
+[1.9.5]: https://github.com/AreevAI/areev/compare/v1.9.4...v1.9.5
 [1.9.4]: https://github.com/AreevAI/areev/compare/v1.9.3...v1.9.4
 [1.9.3]: https://github.com/AreevAI/areev/compare/v1.9.2...v1.9.3
 [1.9.2]: https://github.com/AreevAI/areev/compare/v1.9.1...v1.9.2
