@@ -6,6 +6,58 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.9.4] — 2026-09-23
+
+### Added
+
+- **Host-initiated resumable run pause** (#344). `runPause(runId, because)`
+  (Node) / `run_pause` (Python), `areev run pause --run-id … --because …`
+  and the MCP tool `areev_run_pause` (27 tools; 15 in the runtime family)
+  ask a live run to stop at its next superstep boundary. The run parks with
+  reason `paused` (the checkpoint an uninterrupted run would have written,
+  holding no concurrency slot), `runInspect` reports phase `paused` with who
+  paused it, when and why, and the event stream ends with `RunPaused`.
+  `runResume` continues it under the SAME run id, manifest and pins, no node
+  re-executes, and `verify` passes across the pause. A repeat pause is
+  idempotent (`already: true`); cancel wins over pause and finalises a paused
+  run as canceled. Pause takes `run.execute`, the grant resume takes. Pausing
+  a finished run, or one with a cancel pending, is refused with the new
+  **`RUN-E029`**. Records are `mg:run_pause` / `mg:run_paused` /
+  `mg:run_unpause` Facts in the run's namespace (ARCHITECTURE.md §10).
+- **Built-in Indian tax-identifier detectors** (#347). Tier-0 categories
+  `in_gstin` (15-char GSTIN, state code 01–38/97/99, mod-36 check character;
+  validated) and `in_pan` (10-char PAN with holder-type letter,
+  cue-gated on `PAN` / `PAN No` / `Permanent Account Number` /
+  `Income Tax PAN`). A PAN inside a valid GSTIN is covered by the GSTIN
+  detection. Conformance-tested on both backends.
+- **`recommendation(hash)` on both bindings** (#348) returns the object
+  `areev loop show` prints, proposal body included (`cal` / `edit` /
+  `data`), so a host can measure a proposal before approving it; a hash
+  prefix resolves. `recommendations('{"include":"proposal"}')` adds
+  `action_kind` and the flattened proposal to each row; the default row is
+  unchanged. Both are coverage-filtered exactly like the listing (#312).
+  `areev loop show` and the bindings now share one builder
+  (`areev_loop_adapter::recommendation_detail`), and `show` gains
+  `action_kind`.
+- **`loopRun` gateway arguments** (#346). Node `loopRun(…, baseUrl, keyEnv)`
+  (appended, so positional callers are unchanged) / Python
+  `loop_run(base_url=, key_env=)` resolve the reflection AND grounding
+  models against a gateway with a key named by variable, matching the CLI's
+  `--llm-base-url` / `--llm-api-key-env` and `runStart`'s pair.
+- **`anonymizeEgressFloor()` / `anonymize_egress_floor()`** (#345) read
+  the egress floor back.
+
+### Changed
+
+- **Raising the egress anonymization floor needs no grant** (#345).
+  `setAnonymizeEgressFloor(true)` used to demand `admin` on `*`, so the
+  least-privilege principal-bound handle that most needs the floor could not
+  set it. Raising only strengthens protection and is now open to any handle.
+  Lowering it keeps the `admin` check (`AUT-E001`), so a bound agent can turn
+  the floor on but never off. The rule lives in
+  `AreevFacade::set_anonymize_egress_floor`, shared by both bindings
+  (docs/security-model.md, docs/compliance-profiles.md).
+
 ## [1.9.3] — 2026-09-23
 
 ### Added
@@ -4390,7 +4442,8 @@ ecosystem adapters, and the enterprise plane.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.9.3...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.9.4...HEAD
+[1.9.4]: https://github.com/AreevAI/areev/compare/v1.9.3...v1.9.4
 [1.9.3]: https://github.com/AreevAI/areev/compare/v1.9.2...v1.9.3
 [1.9.2]: https://github.com/AreevAI/areev/compare/v1.9.1...v1.9.2
 [1.9.1]: https://github.com/AreevAI/areev/compare/v1.9.0...v1.9.1
