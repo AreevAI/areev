@@ -370,6 +370,12 @@ facade's path after per-namespace authz). Under a multi-namespace scope the
 egress hint is `None`, so each grain resolves its own anon policy, and
 telemetry records the pattern as typed.
 
+`get` applies the egress boundary; **`get_stored`** does not (#350). It is for
+a host reading its OWN configuration — a run manifest freezing a Tool
+Definition, a trigger resolving its connector — where a pseudonymized
+`capabilities.http.hosts` (`http://[IPV4_1]:7792`) would refuse the tool's own
+call. Never expose it on a caller-facing surface without that surface's gate.
+
 Writes go one step further: `prep_from_blob(new_write=true)` calls
 `require_writable_ns`, which refuses a pattern **and** an unspellable name —
 whitespace, control or invisible formatting characters (VAL-E001). A local

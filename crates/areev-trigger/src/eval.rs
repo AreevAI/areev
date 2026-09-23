@@ -1300,7 +1300,7 @@ impl Evaluator {
         })?;
         let g = self
             .facade
-            .with_store(|m| m.get(&h))
+            .with_store(|m| m.get_stored(&h))
             .map_err(|e| refuse(format!("connector Definition {hex} is unreadable: {e}")))?;
         if g.grain_type != GrainType::Tool {
             return Err(refuse(format!(

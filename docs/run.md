@@ -356,8 +356,20 @@ boundary on *reads*, and an abstract node's prompt is not a read. A trigger
 hands its payload straight into `run start` in process, so the one place a
 model was actually called was the one place an `egress` policy did not reach.
 
-Four things follow from it:
+Five things follow from it:
 
+- **Only what a model produced is rehydrated** (#350). A placeholder is
+  resolved — or refused — only when a model turn of this run emitted it,
+  whether as a tool call's arguments or as output flowing into a downstream
+  node's input. A subgraph's result counts as model output too, since it may
+  carry a child's. Text a host or code tool wrote itself is dispatched
+  **verbatim**, even when it has the placeholder's shape: a pipeline that
+  pseudonymizes a record with its own `[PERSON_1]` markers, with no model in
+  the plan, is neither refused as "unresolvable" nor rewritten to whatever an
+  older run's mapping holds under that key. The run's own configuration —
+  Tool Definitions, their declared `capabilities.http.hosts`, the manifest,
+  a stored input — is frozen from the stored grain, never through the egress
+  rewrite, so a declared `http://127.0.0.1:7792` stays that host.
 - **Rehydration fails closed.** A placeholder the run cannot resolve — a model
   inventing `[EMAIL_DEADBEEF]`, say — **fails the node** rather than
   dispatching. Sending the placeholder itself to a vendor is worse than

@@ -290,6 +290,48 @@ fn substitute_strings(v: &Value, next: &mut std::vec::IntoIter<String>) -> Value
     }
 }
 
+/// Every placeholder-shaped token a model turn of this run produced — the
+/// set [`Runner::rehydrate_from_model`] is allowed to resolve or refuse.
+///
+/// Read off the journaled outcomes, not accumulated from live calls, so a
+/// resumed run and a fresh one agree: `results` holds every settled effect
+/// the journal records, replayed or not. "Model turn" means an LLM effect,
+/// and — conservatively — a subgraph's result, which may carry a child
+/// model's output into the parent.
+#[derive(Default)]
+struct ModelTokens {
+    scanned: std::collections::BTreeSet<JournalKey>,
+    tokens: std::collections::BTreeSet<String>,
+}
+
+impl ModelTokens {
+    fn refresh(
+        &mut self,
+        results: &BTreeMap<JournalKey, EffectOutcome>,
+        model_origin: &dyn Fn(&JournalKey) -> bool,
+        template: &str,
+    ) -> Result<(), String> {
+        let none = BTreeMap::new();
+        for (key, outcome) in results {
+            if self.scanned.contains(key) || !model_origin(key) {
+                continue;
+            }
+            self.scanned.insert(key.clone());
+            let EffectOutcome::Completed { result, .. } = outcome else { continue };
+            let mut strings = Vec::new();
+            collect_strings(result, &mut strings);
+            for s in strings {
+                // Against an empty mapping every placeholder is a leftover,
+                // in the policy's own shape.
+                let r = areev_core::anon::rehydrate_with_template(&s, &none, template)
+                    .map_err(|e| e.to_string())?;
+                self.tokens.extend(r.unmatched);
+            }
+        }
+        Ok(())
+    }
+}
+
 /// The anonymization boundary between run state and a model.
 ///
 /// ## Why this seam and not the tool seam
@@ -307,14 +349,24 @@ fn substitute_strings(v: &Value, next: &mut std::vec::IntoIter<String>) -> Value
 /// ## The round trip
 ///
 /// Out, in [`Runner::pseudonymize_for_model`]: every string in the LLM effect's input is
-/// pseudonymized. Back, in [`Runner::rehydrate_from_model`]: the tool-call arguments the
-/// model produced are rehydrated *before* dispatch, so the tool sees real
-/// values again.
+/// pseudonymized. Back, in [`Runner::rehydrate_from_model`]: placeholders a
+/// MODEL produced are rehydrated *before* dispatch, so the tool sees real
+/// values again — whether they arrive as a model's tool-call arguments or as
+/// its output flowing into a downstream node's input.
+///
+/// ## Only what a model produced (#350)
+///
+/// A token is rehydrated — or refused — only when it appears in the output of
+/// a model turn in this run ([`ModelTokens`]). Text a host or code tool wrote
+/// itself is dispatched verbatim, even when it has the placeholder's shape: a
+/// deterministic pipeline that pseudonymizes a record before it leaves writes
+/// `[PERSON_1]` markers no model produced, and neither failing them as
+/// "unresolvable" nor splicing in an older mapping's value for them is right.
 ///
 /// Rehydration **fails closed**. `rehydrate` leaves a token it cannot resolve
 /// intact and reports it; dispatching a partially rehydrated call would post a
-/// literal `[PERSON_A4F2]` to a vendor, so an unresolved token fails the node
-/// instead.
+/// literal `[PERSON_A4F2]` to a vendor, so an unresolved model-produced token
+/// fails the node instead.
 impl Runner {
     /// Is a model-facing anonymization policy live for this run's namespace?
     fn anon_boundary_active(&self) -> Result<bool, RunError> {
@@ -341,19 +393,27 @@ impl Runner {
         Ok(substitute_strings(input, &mut values.into_iter()))
     }
 
-    /// Rehydrate what came back, or say exactly which token could not be.
+    /// Rehydrate the placeholders a model produced, or say exactly which one
+    /// could not be.
+    ///
+    /// Scoped to [`ModelTokens`]: a placeholder-shaped string no model turn of
+    /// this run emitted is host-written text and passes through verbatim —
+    /// never failed as unresolvable, never rewritten to whatever an older
+    /// mapping of the namespace holds under that key (#350).
     ///
     /// `Err` here is the fail-closed case: the caller turns it into a failed
     /// effect rather than dispatching a call with a placeholder still in it.
-    fn rehydrate_from_model(&self, input: &Value) -> Result<Value, String> {
+    fn rehydrate_from_model(
+        &self,
+        input: &Value,
+        model: &mut ModelTokens,
+        results: &BTreeMap<JournalKey, EffectOutcome>,
+        model_origin: &dyn Fn(&JournalKey) -> bool,
+    ) -> Result<Value, String> {
         let active = self.anon_boundary_active().map_err(|e| e.to_string())?;
         if !active {
             return Ok(input.clone());
         }
-        let mapping = self
-            .facade
-            .with_store(|m| m.anon_mapping_for(&self.ns))
-            .map_err(|e| e.to_string())?;
         // The policy's OWN template, not the default. Scanning for the default
         // silhouette while the memory mints another shape would report no
         // leftovers and fail open — the exact inversion of what this check is
@@ -368,12 +428,26 @@ impl Runner {
         if values.is_empty() {
             return Ok(input.clone());
         }
+        model.refresh(results, model_origin, &template)?;
+        if model.tokens.is_empty() {
+            // No model turn produced a placeholder: nothing here is ours to
+            // resolve, whatever its shape.
+            return Ok(input.clone());
+        }
+        let mapping: BTreeMap<String, String> = self
+            .facade
+            .with_store(|m| m.anon_mapping_for(&self.ns))
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter(|(k, _)| model.tokens.contains(k))
+            .collect();
         let mut out = Vec::with_capacity(values.len());
         let mut unmatched: Vec<String> = Vec::new();
         for v in values {
             let r = areev_core::anon::rehydrate_with_template(&v, &mapping, &template)
                 .map_err(|e| e.to_string())?;
-            for u in r.unmatched {
+            // A leftover no model produced is host-written text, left as is.
+            for u in r.unmatched.into_iter().filter(|u| model.tokens.contains(u)) {
                 if !unmatched.contains(&u) {
                     unmatched.push(u);
                 }
@@ -1788,6 +1862,19 @@ impl Runner {
             .iter()
             .filter_map(|(k, e)| e.result.as_ref().map(|(_, o)| (k.clone(), o.clone())))
             .collect();
+        // What a model produced, for the egress round trip (#350).
+        let mut model_tokens = ModelTokens::default();
+        let model_origin = |k: &JournalKey| {
+            k.kind == areev_run_core::EffectKind::Llm
+                || plan
+                    .nodes
+                    .iter()
+                    .position(|n| *n == k.node)
+                    .and_then(|i| executors.get(i))
+                    .is_some_and(|e| {
+                        matches!(e, areev_run_core::NodeExecutor::Subgraph { .. })
+                    })
+        };
         let mut prev_ckpt: Option<Hash> = view.checkpoints.last().map(|c| c.hash);
         let mut input_cursor = view.cursor;
         // The host-pause state (#344): the standing request, if any, polled
@@ -2192,7 +2279,19 @@ impl Runner {
                         // Rehydrate for the tool, never for the record: the
                         // intent above journaled the pseudonymized input and
                         // `idem` derives from it, so verify replays identically.
-                        let input = match self.rehydrate_from_model(&input) {
+                        // An LLM turn is exempt: what it sends is `to_model`,
+                        // prepared above from the unrehydrated input.
+                        let rehydrated = if key.kind == areev_run_core::EffectKind::Llm {
+                            Ok(input)
+                        } else {
+                            self.rehydrate_from_model(
+                                &input,
+                                &mut model_tokens,
+                                &results,
+                                &model_origin,
+                            )
+                        };
+                        let input = match rehydrated {
                             Ok(v) => v,
                             Err(why) => {
                                 // Fail the node, not the run: a plan's retries
