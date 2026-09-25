@@ -568,7 +568,7 @@ COMMANDS:
                                       touching the principal's others
                                       (restart `areev ui` to apply)
   provision [--check [--format json]] --db DSN [--schema NAME]
-            [--telemetry off|aggregate|aggregate-hashed|full]
+            [--meta-schema NAME] [--telemetry off|aggregate|aggregate-hashed|full]
                                       create/migrate a postgres memory's
                                       schema AHEAD of use, so no request ever
                                       pays for bootstrap DDL. Postgres only
@@ -579,7 +579,14 @@ COMMANDS:
                                       `?provision=never` on its own DSN, which
                                       refuses (STO-E008) instead of issuing
                                       DDL. --schema supplies or overrides the
-                                      DSN's ?schema=. It also provisions the
+                                      DSN's ?schema=; --meta-schema supplies
+                                      or overrides ?meta_schema=, the PAIRED
+                                      layout that keeps the engine's metadata
+                                      (meta, counters, ns_reg, telem_*) in a
+                                      second, physically separate schema —
+                                      every later DSN must then name both
+                                      (a mismatched layout is refused,
+                                      STO-E011). It also provisions the
                                       telemetry tables, since --telemetry
                                       defaults to aggregate on every verb —
                                       pass --telemetry off to skip them.
@@ -6527,6 +6534,14 @@ fn run_provision(flags: &HashMap<String, String>) -> Result<(), String> {
     // least-privilege read-only role, and a release pipeline can decide
     // between a rolling swap and a drain window per deployment instead of
     // diffing three version constants out of source.
+    // `--meta-schema` (#353) is the flag spelling of `?meta_schema=`: the
+    // flag wins, exactly as `--schema` wins over `?schema=`, and the result
+    // rides the DSN from here on so the store reads the layout the one way
+    // it knows.
+    let db = match flag(flags, "meta-schema") {
+        Some(m) => with_meta_schema(&db, &m),
+        None => db,
+    };
     if flags.contains_key("check") || flags.contains_key("dry-run") {
         return check_provision_cmd(
             &db,
@@ -6536,6 +6551,19 @@ fn run_provision(flags: &HashMap<String, String>) -> Result<(), String> {
         );
     }
     provision_postgres(&db, flag(flags, "schema").as_deref(), tel_mode)
+}
+
+/// `db` with `?meta_schema=<m>` replacing whatever the DSN carried.
+#[cfg(feature = "postgres")]
+fn with_meta_schema(db: &str, m: &str) -> String {
+    let base = areev_store::pg::strip_meta_schema(db);
+    let sep = if base.contains('?') { '&' } else { '?' };
+    format!("{base}{sep}meta_schema={m}")
+}
+
+#[cfg(not(feature = "postgres"))]
+fn with_meta_schema(db: &str, _m: &str) -> String {
+    db.to_string()
 }
 
 /// Exit code 2 means "pending or absent" (the `loop list --fail-on`
@@ -6570,8 +6598,12 @@ fn check_provision_cmd(
         );
     } else {
         println!(
-            "schema {:?}: {}",
+            "schema {:?}{}: {}",
             report.schema,
+            match &report.meta_schema {
+                Some(m) => format!(" + metadata schema {m:?}"),
+                None => String::new(),
+            },
             if report.exists { "exists" } else { "ABSENT" }
         );
         for st in &report.stamps {
@@ -6638,7 +6670,11 @@ fn provision_postgres(
     let _ = m.telemetry_flush();
     drop(m);
     println!(
-        "provisioned postgres schema {schema:?}{} — the next open runs no DDL",
+        "provisioned postgres schema {schema:?}{}{} — the next open runs no DDL",
+        match areev_store::pg::meta_schema(&url).map_err(|e| e.to_string())? {
+            Some(m) => format!(" + metadata schema {m:?}"),
+            None => String::new(),
+        },
         match tel_mode {
             areev_store::TelemetryMode::Off => " (telemetry tables NOT created)",
             _ => " (including telemetry tables)",

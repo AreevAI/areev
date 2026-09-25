@@ -121,11 +121,21 @@ impl Backend for TursoBackend {
 /// (`conf_<pid>_<n>_<name>`), dropped on `Drop` — the schema-per-test
 /// analogue of the tempdir rule. No clock or RNG in the prefix (determinism
 /// rule), and a leaked schema from a killed run is prefix-recognizable.
+///
+/// Under the **paired** layout (#353, [`PgBackend::new_paired`]) every name
+/// maps to a memory schema PLUS a metadata schema (`<schema>_meta`, named on
+/// the DSN as `?meta_schema=`), so the identical case list runs against a
+/// memory whose engine metadata is physically elsewhere. `tests/pg.rs` runs
+/// the list single; `tests/pg_paired.rs` runs it paired.
 #[cfg(feature = "postgres")]
 pub struct PgBackend {
     url: String,
     prefix: String,
+    /// Every memory this backend opens gets a metadata schema beside it.
+    paired: bool,
     scratch: tempfile::TempDir,
+    /// The NAMES opened (not the schemas), so Drop can rebuild each name's
+    /// DSN — which is what carries the metadata schema to drop with it.
     opened: std::cell::RefCell<std::collections::HashSet<String>>,
 }
 
@@ -135,32 +145,70 @@ static PG_BACKEND_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU
 #[cfg(feature = "postgres")]
 impl PgBackend {
     pub fn new(url: &str) -> Self {
+        Self::with_layout(url, false)
+    }
+
+    /// A backend whose every memory is a memory schema + a metadata schema
+    /// pair (#353).
+    pub fn new_paired(url: &str) -> Self {
+        Self::with_layout(url, true)
+    }
+
+    fn with_layout(url: &str, paired: bool) -> Self {
         let n = PG_BACKEND_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Self {
             url: url.to_string(),
             prefix: format!("conf_{}_{}", std::process::id(), n),
+            paired,
             scratch: tempfile::TempDir::new().expect("tempdir"),
             opened: Default::default(),
         }
     }
 
+    pub fn is_paired(&self) -> bool {
+        self.paired
+    }
+
+    fn schema_name(&self, name: &str) -> String {
+        format!("{}_{}", self.prefix, name)
+    }
+
     /// The schema `open_named(name)` maps to — for tests that reach the same
     /// storage through a raw `open_postgres`. Registers the name for Drop
     /// cleanup exactly like `open_named`, so direct-open tests can't leak
-    /// schemas.
+    /// schemas. Pair it with [`url_for`](Self::url_for) as the URL argument,
+    /// or a paired backend's direct open would be a single-layout open of a
+    /// paired memory (refused, `STO-E011`).
     pub fn schema_for(&self, name: &str) -> String {
-        let schema = format!("{}_{}", self.prefix, name);
-        self.opened.borrow_mut().insert(schema.clone());
-        schema
+        self.opened.borrow_mut().insert(name.to_string());
+        self.schema_name(name)
+    }
+
+    /// The metadata schema `open_named(name)` pairs with `schema_for(name)`,
+    /// or `None` on a single-layout backend.
+    pub fn meta_schema_for(&self, name: &str) -> Option<String> {
+        self.paired.then(|| format!("{}_meta", self.schema_name(name)))
+    }
+
+    /// The URL to open `schema_for(name)` with: the base DSN, plus
+    /// `meta_schema=` under the paired layout. Always carries a `?` when
+    /// paired, so a test may append `&provision=never` and the like.
+    pub fn url_for(&self, name: &str) -> String {
+        match self.meta_schema_for(name) {
+            Some(m) => {
+                let sep = if self.url.contains('?') { '&' } else { '?' };
+                format!("{}{sep}meta_schema={m}", self.url)
+            }
+            None => self.url.clone(),
+        }
     }
 }
 
 #[cfg(feature = "postgres")]
 impl Backend for PgBackend {
     fn open_named(&self, name: &str) -> Areev {
-        let schema = format!("{}_{}", self.prefix, name);
-        self.opened.borrow_mut().insert(schema.clone());
-        Areev::open_postgres(&self.url, &schema).expect("open postgres store")
+        let schema = self.schema_for(name);
+        Areev::open_postgres(&self.url_for(name), &schema).expect("open postgres store")
     }
 
     fn try_open_named_with(
@@ -168,14 +216,14 @@ impl Backend for PgBackend {
         name: &str,
         opts: areev_store::AreevOptions,
     ) -> areev_core::error::Result<Areev> {
-        let schema = format!("{}_{}", self.prefix, name);
-        self.opened.borrow_mut().insert(schema.clone());
-        Areev::open_postgres_with(&self.url, &schema, opts)
+        let schema = self.schema_for(name);
+        Areev::open_postgres_with(&self.url_for(name), &schema, opts)
     }
 
     fn locator(&self, name: &str) -> String {
-        let sep = if self.url.contains('?') { '&' } else { '?' };
-        format!("{}{sep}schema={}_{}", self.url, self.prefix, name)
+        let url = self.url_for(name);
+        let sep = if url.contains('?') { '&' } else { '?' };
+        format!("{url}{sep}schema={}", self.schema_name(name))
     }
 
     fn scratch(&self) -> &Path {
@@ -183,15 +231,22 @@ impl Backend for PgBackend {
     }
 
     fn name(&self) -> &'static str {
-        "postgres"
+        if self.paired {
+            "postgres (paired layout)"
+        } else {
+            "postgres"
+        }
     }
 }
 
 #[cfg(feature = "postgres")]
 impl Drop for PgBackend {
     fn drop(&mut self) {
-        for schema in self.opened.borrow().iter() {
-            let _ = areev_store::pg::drop_postgres_schema(&self.url, schema);
+        let names: Vec<String> = self.opened.borrow().iter().cloned().collect();
+        for name in names {
+            // The name's own DSN: under the paired layout it carries the
+            // metadata schema, and `drop_postgres_schema` drops both.
+            let _ = areev_store::pg::drop_postgres_schema(&self.url_for(&name), &self.schema_name(&name));
         }
     }
 }

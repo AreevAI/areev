@@ -90,6 +90,30 @@ transports implement it:
   plaintext, and `disable`/`prefer` behave exactly as before. Pinned by a
   real handshake against a throwaway rcgen CA (`pgtls::handshake_tests`),
   which is what proves `verify-full` actually verifies.
+  **Paired layout (#353): `?meta_schema=<name>` on the DSN** puts the ENGINE
+  METADATA — `meta`, `counters`, `ns_reg`, `telem_*` (`pg::META_TABLES`,
+  with the classification argued in its doc comment) — in a second schema,
+  while the grains, every index over them, `oplog`, `terms` and `blobs` stay
+  in the memory schema. `PgLayout` is the ONE routing table: `qualify_tables`
+  asks it per table reference (DDL included — the bootstrap runs every
+  statement through the qualifier, which is also why `ON` is a trigger word,
+  for `CREATE INDEX … ON <table>`), the stamp reads/writes ask it per stamp
+  table, `drop_postgres_schema_with` drops every schema it names in one
+  batch, and nothing else in the backend knows which layout it is under. Read
+  off the DSN like `provision` (so every host reaches it with no new
+  parameter; `pgtls::SslRequest::split` and `pool_key` strip it), validated
+  like `schema`, refused when it equals `schema`. **An open never changes a
+  layout**: `check_layout` (SELECT-only, slow path only — a current stamp has
+  already proven its layout by where it was found) refuses `STO-E011` in both
+  directions — paired DSN over a schema that carries `meta` in-schema, or a
+  single DSN over a schema with `grains` but no `meta` — on read-write,
+  `provision=never` and read-only opens alike, because the alternative is a
+  second empty `meta`/`counters`/`ns_reg` and a memory running with every
+  hold and policy absent. Migration is the operator's `ALTER TABLE … SET
+  SCHEMA` (`docs/deployment-profile.md`, "Paired layout"). No schema version
+  moves. Conformance: `areev-conformance/tests/pg_paired.rs` runs the WHOLE
+  Pg case list a second time through `PgBackend::new_paired`, plus the
+  introspection, two-pair isolation, role and mismatch cases.
 
 In-memory counters (`next_seq/next_op/next_term/hlc_last`, BM25 stats)
 loaded on open are authoritative only on the embedded backend

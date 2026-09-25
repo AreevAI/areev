@@ -2594,6 +2594,55 @@ an LLM's stated confidence to omit (rule 2); placing a remote backend in the
 50 ms voice-loop gate (70–500 ms hosted; only a local encoder clone could
 qualify, still opt-in).
 
+### The memory schema holds only memory; engine metadata may live in its own schema (#353)
+
+**Decision (2026-09-25):** on the Postgres backend a memory may be a
+**pair** of schemas — `?meta_schema=<name>` on the DSN — with the engine's
+bookkeeping physically separate from the grains. The classification is by
+kind and lives in one place (`areev_store::pg::META_TABLES`): the `meta`
+table (declarations, stamps, saved queries and templates, retention and
+anonymization policies, the vault, legal holds, trigger leases), `counters`,
+`ns_reg` and the telemetry sidecar's `telem_*` are metadata; the grains,
+every index derived from them, the `oplog`, the `terms` dictionary and the
+CAS `blobs` are memory. The line was drawn where erasure and export already
+draw it: the memory schema is exactly what `pg_dump -n` must carry for the
+grains to be readable and what `DROP SCHEMA` must destroy for them to be
+gone. The telemetry tables follow the file backend's own answer — there the
+sidecar is a separate *file* beside the memory — and `meta` moves as one
+unit rather than key by key, so the one choke point every policy read shares
+never straddles two schemas. Raised by a clinic deployment whose production
+database contract requires each memory's metadata in a schema of its own.
+
+Three properties are load-bearing. **Routing is below every semantic.** The
+pair is decided at the one point statements are already schema-qualified
+(#181), by a `PgLayout` the handle consults per table reference — DDL
+included, which is why the bootstrap now runs through the qualifier and `ON`
+became a trigger word for `CREATE INDEX … ON` — so a write spanning both
+schemas is one transaction on one connection, and CAL, Run, Loop, content
+addresses, registry inverses and grants are unchanged by construction; no
+schema version moves. **It reaches every host through the DSN**, like
+`provision`: the CLI, the console, both bindings and the bench needed no new
+parameter, and `provision --check`, `drop_postgres_schema`,
+`provision=never` and `--read-only` all read the layout off the same
+string. **An open never changes a layout.** A DSN naming a metadata schema
+over a memory that carries `meta` in-schema, or naming none over a memory
+schema that holds `grains` without `meta`, is refused (`STO-E011`) before
+any lock or DDL, in every open mode — because the alternative is a second,
+empty `meta`/`counters`/`ns_reg` and a memory running with every hold and
+policy absent and two writers drawing ids from two counter rows. Moving a
+memory between layouts is the operator's explicit `ALTER TABLE … SET SCHEMA`
+with writers stopped.
+
+**Rejected:** a view of the metadata tables in the memory schema (a
+duplicate source of truth is what the contract forbids); an `AreevOptions`
+field alongside the DSN parameter (two spellings of one fact, and the DSN is
+what every host already passes); splitting `meta` by key prefix; and an
+automatic in-place migration on open (silent under a race, and a layout is a
+deployment decision, not something a request path should make). Contract and
+grants: [docs/deployment-profile.md](docs/deployment-profile.md) "Paired
+layout"; conformance: `areev-conformance/tests/pg_paired.rs` runs the whole
+Postgres case list under the pair.
+
 ---
 
 ## 11. Deployment topology

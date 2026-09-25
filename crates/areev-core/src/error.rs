@@ -146,6 +146,17 @@ pub enum AreevError {
     /// runtime WORKER — an open on the blocking pool (where `AsyncAreev` and
     /// `AsyncFacade` put theirs) is legal and unaffected.
     AsyncContext(String),
+    /// A postgres open was pointed at a memory whose on-disk layout does not
+    /// match the DSN (#353): the DSN names a metadata schema (`?meta_schema=`)
+    /// but the memory schema already carries its engine metadata in-schema
+    /// (the single-schema layout), or the DSN names none and the memory
+    /// schema holds memory tables without a `meta` table — which only a
+    /// paired-layout memory looks like. Either open would silently split the
+    /// engine's bookkeeping (counters, the namespace registry, legal holds,
+    /// retention policies, saved queries) across two places, so it is refused
+    /// before any DDL. A layout change is an explicit migration, never an
+    /// implicit one.
+    LayoutMismatch(String),
     SupersessionConflict(Hash),
     /// A supersession-chain walk (`Areev::supersession_chain`) did not reach
     /// a root within the bounded hop count. Real edit histories terminate in
@@ -209,6 +220,7 @@ impl AreevError {
             Self::SchemaNotProvisioned(_) => "STO-E008",
             Self::LegalHold(_) => "STO-E009",
             Self::AsyncContext(_) => "STO-E010",
+            Self::LayoutMismatch(_) => "STO-E011",
             Self::CryptoError(_) => "CRY-E001",
             Self::AttestationInvalid(_) => "CRY-E002",
             Self::AttestationRequired(_) => "CRY-E003",
@@ -254,6 +266,7 @@ impl std::fmt::Display for AreevError {
             Self::SchemaNotProvisioned(m) => write!(f, "STO-E008: {m}"),
             Self::LegalHold(m) => write!(f, "STO-E009: {m}"),
             Self::AsyncContext(m) => write!(f, "STO-E010: {m}"),
+            Self::LayoutMismatch(m) => write!(f, "STO-E011: {m}"),
             Self::CryptoError(m) => write!(f, "CRY-E001: crypto error: {m}"),
             Self::AttestationInvalid(m) => write!(f, "CRY-E002: attestation invalid: {m}"),
             Self::AttestationRequired(m) => write!(f, "CRY-E003: attestation required: {m}"),
@@ -300,6 +313,8 @@ mod error_code_tests {
             AreevError::ReadOnlyOpenFailed("x".into()),
             AreevError::SchemaNotProvisioned("x".into()),
             AreevError::LegalHold("x".into()),
+            AreevError::AsyncContext("x".into()),
+            AreevError::LayoutMismatch("x".into()),
             AreevError::CryptoError("x".into()),
             AreevError::AccumulateRetryExhausted,
             AreevError::AccumulateInternal("x".into()),
