@@ -120,6 +120,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   least-privilege role granted on both schemas (and refused once revoked on
   either), and the layout-mismatch refusals.
 
+### Fixed
+
+- **The egress broker gives back the memory it was lent when it is dropped,
+  not when its thread exits.** `Broker::drop` signals its detached accept
+  thread and returns; the thread noticed the flag on its next 5 ms poll and
+  only then dropped its clone of the store bound by `bind_artifact_store`.
+  An embedded memory's file lock is process-wide and lives as long as any
+  handle does, so a host that closed its handle and immediately handed the
+  file to another process — the Node binding's `close()` followed by a CLI
+  run on the same file — could find it still locked (`STO-E001`, "locked by
+  another process"), which is how the binding's egress parity test failed on
+  a slow macOS runner. The drop now takes the store out of the shared slot
+  itself; an upload in flight keeps its own clone until it lands. Pinned by
+  `dropping_the_broker_releases_the_bound_store_synchronously`.
+
 ## [1.9.5] — 2026-09-24
 
 ### Fixed

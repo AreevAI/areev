@@ -256,7 +256,7 @@ impl Drop for PgBackend {
 /// anywhere else does not compile. Each runner passes its own
 /// test-generating macro:
 ///
-/// ```ignore
+/// ```text
 /// macro_rules! my_case { ($name:ident) => { #[test] fn $name() { … } }; }
 /// areev_conformance::for_each_conformance_case!(my_case);
 /// ```

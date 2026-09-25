@@ -609,7 +609,7 @@ impl Memory {
     /// ledger rows this pass added and the hashes it applied.
     ///
     /// The review policy of the PUBLISHED runs: LLM findings stay advisory
-    /// (`llm_lessons = false`). The `loop+LLM` arm opts in via [`learn_with`].
+    /// (`llm_lessons = false`). The `loop+LLM` arm opts in via [`Memory::learn_with`].
     ///
     /// `triggering_actor` stays `None` deliberately: with it set, LLM-origin
     /// recommendations would carry a co-creator, and this bench's review is
@@ -635,7 +635,7 @@ impl Memory {
         self.learn_with(llm, ground, LearnConfig::default(), now_ms)
     }
 
-    /// [`learn`] with pre-built loop backends and an explicit [`LessonArms`]
+    /// [`Memory::learn`] with pre-built loop backends and an explicit [`LessonArms`]
     /// — which lesson ORIGINS this run may apply. The analyzers always run;
     /// only the review gate changes, so the 2x2 (analyzer on/off x llm
     /// on/off) varies one thing per axis. Advisory `Proposal::Data` findings

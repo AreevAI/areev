@@ -150,7 +150,9 @@ fn status_from_str(s: &str) -> Option<RecStatus> {
 
 /// Open on the server-tier postgres backend from a
 /// `postgres://…?schema=<name>` DSN, mirroring the file branches (explicit
-/// `index_text` re-stamps; telemetry rides the memory's schema). A
+/// `index_text` re-stamps; telemetry rides the memory's schema — or, with
+/// `&meta_schema=<name>` on the DSN, the paired layout's metadata schema,
+/// #353; the store reads that off the URL, so nothing here changes). A
 /// passphrase never applies here — the page cipher and `.kdf` sidecar are
 /// file-backend capabilities.
 #[cfg(feature = "postgres")]

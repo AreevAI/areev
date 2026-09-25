@@ -722,7 +722,7 @@ impl UiServer {
     }
 
     /// Accept a cross-origin **POST** whose `Origin` header exactly matches
-    /// this origin (scheme + host[:port], compared case-insensitively with a
+    /// this origin (scheme + `host[:port]`, compared case-insensitively with a
     /// single trailing `/` ignored). Call once per origin to allow — there
     /// is no wildcard or subdomain form, by design: naming
     /// `https://console.example.com` must never thereby accept

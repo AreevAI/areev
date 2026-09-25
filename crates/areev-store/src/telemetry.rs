@@ -290,7 +290,7 @@ impl Telemetry {
     /// default `--telemetry aggregate` from putting seven `CREATE TABLE`s and
     /// an `ALTER TABLE` back on the request path that issue #180 just cleared.
     ///
-    /// ⚠️ Bump [`TELEM_SCHEMA_VERSION`] whenever `TELEM_SCHEMA_PG` changes.
+    /// ⚠️ Bump `TELEM_SCHEMA_VERSION` whenever `TELEM_SCHEMA_PG` changes.
     #[cfg(feature = "postgres")]
     pub fn open_pg(url: &str, schema: &str, mode: TelemetryMode) -> Result<Self> {
         let pg = crate::pg::PgDb::open(

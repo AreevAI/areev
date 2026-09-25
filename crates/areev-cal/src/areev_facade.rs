@@ -421,7 +421,7 @@ impl AreevFacade {
     /// journal writes to a run's triggering principal — or a second approver
     /// answering a HITL ask while the run's own writes continue — needs
     /// concurrent per-principal rights, which a shared slot cannot express
-    /// without racing. A session resolves its fail-closed [`AuthzSet`] ONCE
+    /// without racing. A session resolves its fail-closed [`AuthzSet`](areev_core::authz::AuthzSet) ONCE
     /// here (grants written later need a new session, same rule as rebind)
     /// and never touches the shared slot; any number of sessions run
     /// concurrently over the same store handle.
@@ -461,7 +461,7 @@ impl AreevFacade {
     /// outlive the facade it authorizes against.
     ///
     /// Takes a RESTRICTED set only in practice: `resolve_rights` never returns
-    /// an owner set, and handing this an [`AuthzSet::owner`] would silently
+    /// an owner set, and handing this an [`AuthzSet::owner`](areev_core::authz::AuthzSet::owner) would silently
     /// promote a caller to the implicit superuser. It is not refused here
     /// because an owner-equivalent host legitimately builds one, but a host
     /// that accepts a principal name from a request must go through
@@ -1555,7 +1555,7 @@ impl PrincipalSession<'_> {
     }
 
     /// The attributed twin of [`AreevFacade::record_tool_call`] — one
-    /// field-builder ([`build_tool_call_fields`]), two authorization roots.
+    /// field-builder (`build_tool_call_fields`), two authorization roots.
     #[allow(clippy::too_many_arguments)]
     pub fn record_tool_call(
         &self,

@@ -1056,8 +1056,10 @@ impl Areev {
         //
         // A postgres://…?schema=<name> DSN selects the server-tier backend —
         // same API, the memory lives in a Postgres schema (stateless-host
-        // deployments; multiple concurrent writers per memory). The page
-        // cipher is file-backend-only, so a passphrase with a DSN is an error.
+        // deployments; multiple concurrent writers per memory); adding
+        // `&meta_schema=<name>` selects the paired layout (#353), which the
+        // store reads off the URL itself. The page cipher is
+        // file-backend-only, so a passphrase with a DSN is an error.
         // `index_text` follows the CLI's `--index-text` and Python's
         // `index_text=`: left unset, the file's own declaration wins; passed
         // explicitly it is a deliberate re-stamp, reported via

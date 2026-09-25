@@ -340,7 +340,7 @@ impl ProvisionMode {
 }
 
 /// Read `?provision=` off a DSN. The parameter is ours, not the driver's;
-/// [`crate::pgtls::SslRequest::split`] is what removes it before the DSN
+/// `pgtls::SslRequest::split` is what removes it before the DSN
 /// reaches `tokio_postgres`, exactly as it does for `sslmode`/`sslrootcert`,
 /// so every connect path (open, reconnect, `drop_postgres_schema`, the
 /// conformance escape hatches) tolerates it without knowing about it.
@@ -2634,7 +2634,7 @@ fn split_two_args(s: &str) -> Option<(&str, &str, usize)> {
 ///
 /// Everything else rides through untouched — including `sslmode`/`sslrootcert`
 /// and `provision`, which are read further down the stack
-/// ([`crate::pgtls::SslRequest::split`], [`provision_mode`]) off the URL this
+/// (`pgtls::SslRequest::split`, [`provision_mode`]) off the URL this
 /// returns. That is deliberate: every host that already calls this — the CLI,
 /// the console, both bindings — then gets those parameters for free, without
 /// this function's signature having to grow one member per option.
