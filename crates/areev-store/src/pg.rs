@@ -32,6 +32,17 @@
 //! bounds nothing on a host that gives every tenant its own ROLE — a
 //! different role is a different pool, so a long-lived worker accumulated one
 //! pool, and one connection, per tenant it had ever touched.
+//!
+//! A memory may keep its ENGINE METADATA in a second schema (#353, the
+//! **paired layout**): `?meta_schema=<name>` on the DSN sends `meta`,
+//! `counters`, `ns_reg` and the telemetry sidecar's `telem_*` tables there,
+//! while the grains, every index over them, the dictionary and the CAS blobs
+//! stay in the memory schema. [`PgLayout`] is the one routing table —
+//! `qualify_tables` consults it for every statement, DDL included, so nothing
+//! else in the backend knows which layout it is running under, and a write
+//! that touches both schemas is still one transaction on one connection.
+//! Without the parameter the layout is the historical single schema, byte
+//! for byte.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -378,6 +389,192 @@ pub fn strip_schema(url: &str) -> String {
     strip_param(url, "schema")
 }
 
+/// Our name for the paired layout's parameter (#353), in the places that
+/// must agree: the reader, the stripper, the pool key and the TLS splitter.
+pub const META_SCHEMA_PARAM: &str = "meta_schema";
+
+/// Read `?meta_schema=` off a DSN (#353): the schema the memory's ENGINE
+/// METADATA lives in, or `None` for the single-schema layout.
+///
+/// Carried on the DSN rather than in `AreevOptions` for the reason
+/// `provision` is: every host that already passes a DSN string — the CLI,
+/// the console, both bindings, the bench — reaches it without a new
+/// parameter, and a host that never heard of it keeps working. It is ours,
+/// not the driver's: the TLS splitter (`pgtls::SslRequest::split`) and the
+/// pool key both remove it. An empty value is a refusal rather than "single layout",
+/// because a DSN that SAYS `meta_schema=` and gets the other layout is the
+/// silent misconfiguration this parameter must never produce.
+pub fn meta_schema(url: &str) -> Result<Option<String>> {
+    let Some((_, query)) = url.split_once('?') else {
+        return Ok(None);
+    };
+    let mut found = None;
+    for pair in query.split('&') {
+        if let Some((k, v)) = pair.split_once('=') {
+            if k == META_SCHEMA_PARAM {
+                if v.is_empty() {
+                    return Err(AreevError::Validation(format!(
+                        "postgres URL: {META_SCHEMA_PARAM}= names no schema — omit the \
+                         parameter for the single-schema layout"
+                    )));
+                }
+                found = Some(v.to_string());
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// Strip `?meta_schema=` from a DSN, for a caller that names the metadata
+/// schema another way (`areev provision --meta-schema`).
+pub fn strip_meta_schema(url: &str) -> String {
+    strip_param(url, META_SCHEMA_PARAM)
+}
+
+/// The tables that are ENGINE METADATA rather than memory (#353): in the
+/// paired layout these live in the metadata schema, everything else in
+/// [`PG_TABLES`] lives in the memory schema. The classification, and why:
+///
+/// - `meta` — every file-carried declaration and registry row: the
+///   `pg_schema`/`link_index`/`ns_registry` stamps, `text_index` and
+///   `entity_relations`, embedding provenance, `min_reader_version`, saved
+///   queries and templates (`qry:`/`tpl:`), retention policies and floors,
+///   anonymization policies and the sealed mapping vault (`anon:`/`vault:`),
+///   legal holds (`hold:`) and trigger leases/cursors (`trg:`). The table
+///   moves as ONE unit: a key-by-key split would put the choke point every
+///   policy read shares (`meta_get`) on two schemas, and the one arguable
+///   family — the vault, whose rows are keyed by memory content — is still a
+///   mapping the engine keeps about the memory, not a grain of it.
+/// - `counters` — write-transaction id allocation.
+/// - `ns_reg` — the namespace inventory prefix scoping resolves against.
+/// - `telem_*` — the telemetry sidecar. On the embedded backend it is a
+///   separate FILE beside the memory; the separate schema is the same rule.
+///
+/// What stays with the memory: `grains` and every index derived from them
+/// (`triples`/`osp`/`entity_latest`/`heads`/`thread_idx`/`prov_idx`/`run_idx`/
+/// `corpus_idx`, the BM25 `fts_*` tables, `embeddings`), the `oplog`, the
+/// `terms` dictionary (every subject/relation/object string IS memory
+/// content) and the CAS `blobs`. That set is exactly what `pg_dump -n
+/// <memory schema>` must carry for the grains to be readable, and what a
+/// `DROP SCHEMA` erasure must destroy for them to be gone.
+pub const META_TABLES: &[&str] = &[
+    "counters",
+    "meta",
+    "ns_reg",
+    "telem_budget_stat",
+    "telem_grain_access",
+    "telem_meta",
+    "telem_query_stat",
+    "telem_recall_log",
+];
+
+/// Where a memory's tables live (#353): one schema for everything (the
+/// historical layout), or a memory schema plus a metadata schema for the
+/// [`META_TABLES`]. The one routing table in the backend — `qualify_tables`
+/// asks it per table reference, the bootstrap asks it per stamp, and nothing
+/// else needs to know which layout is in force.
+///
+/// Both names are validated to the same identifier rule and quoted on every
+/// use; they come from the DSN — host configuration — and from nowhere else,
+/// so no message, grain or model output can select a schema.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PgLayout {
+    schema: String,
+    /// Equal to `schema` in the single-schema layout.
+    meta_schema: String,
+}
+
+impl PgLayout {
+    /// The single-schema layout.
+    pub fn single(schema: &str) -> Result<Self> {
+        Self::validate_name(schema)?;
+        Ok(Self { schema: schema.to_string(), meta_schema: schema.to_string() })
+    }
+
+    /// The paired layout. The two names must differ: a pair that names one
+    /// schema twice is the single layout spelled confusingly, and refusing
+    /// it keeps "paired" meaning "physically separate".
+    pub fn paired(schema: &str, meta_schema: &str) -> Result<Self> {
+        Self::validate_name(schema)?;
+        Self::validate_name(meta_schema)?;
+        if schema == meta_schema {
+            return Err(AreevError::Validation(format!(
+                "postgres URL: {META_SCHEMA_PARAM}={meta_schema:?} names the memory schema \
+                 itself — the metadata schema must be a different schema; omit the parameter \
+                 for the single-schema layout"
+            )));
+        }
+        Ok(Self { schema: schema.to_string(), meta_schema: meta_schema.to_string() })
+    }
+
+    /// The layout a DSN asks for: paired when it carries `?meta_schema=`,
+    /// single otherwise. `schema` is the memory schema, already split off the
+    /// URL by [`split_schema_url`] (or named by a `--schema` flag).
+    pub fn from_url(url: &str, schema: &str) -> Result<Self> {
+        match meta_schema(url)? {
+            Some(m) => Self::paired(schema, &m),
+            None => Self::single(schema),
+        }
+    }
+
+    /// The memory schema.
+    pub fn schema(&self) -> &str {
+        &self.schema
+    }
+
+    /// The metadata schema, or `None` in the single-schema layout.
+    pub fn meta_schema(&self) -> Option<&str> {
+        self.is_paired().then_some(self.meta_schema.as_str())
+    }
+
+    pub fn is_paired(&self) -> bool {
+        self.schema != self.meta_schema
+    }
+
+    /// Which schema `table` lives in.
+    pub(crate) fn schema_for(&self, table: &str) -> &str {
+        if META_TABLES.contains(&table) {
+            &self.meta_schema
+        } else {
+            &self.schema
+        }
+    }
+
+    /// `"<schema>".<table>`, routed.
+    pub(crate) fn qualified(&self, table: &str) -> String {
+        format!("\"{}\".{table}", self.schema_for(table))
+    }
+
+    /// Every schema the layout occupies: the memory schema first.
+    pub(crate) fn schemas(&self) -> Vec<&str> {
+        match self.meta_schema() {
+            Some(m) => vec![&self.schema, m],
+            None => vec![&self.schema],
+        }
+    }
+
+    /// How the layout reads in an error message.
+    fn describe(&self) -> String {
+        match self.meta_schema() {
+            Some(m) => format!("{:?} (metadata schema {m:?})", self.schema),
+            None => format!("{:?}", self.schema),
+        }
+    }
+
+    fn validate_name(schema: &str) -> Result<()> {
+        if schema.is_empty()
+            || schema.len() > 63
+            || !schema.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            || schema.as_bytes()[0].is_ascii_digit()
+        {
+            return Err(AreevError::Validation(format!(
+                "postgres schema name must be [a-z_][a-z0-9_]* and <= 63 bytes, got {schema:?}"
+            )));
+        }
+        Ok(())
+    }
+}
+
 // ---- the process-wide pool (#181) -------------------------------------
 
 /// Connections one process may hold to one DSN when neither `?pool=` nor
@@ -577,10 +774,9 @@ fn registry() -> std::sync::MutexGuard<'static, Registry> {
 /// server, role and TLS setting, however many memories and whatever each of
 /// them asked for in `?pool=` / `?pool_idle_secs=`.
 fn pool_key(url: &str) -> String {
-    strip_param(
-        &strip_param(&strip_param(&strip_param(url, "pool"), POOL_IDLE_PARAM), "provision"),
-        "schema",
-    )
+    ["pool", POOL_IDLE_PARAM, "provision", "schema", META_SCHEMA_PARAM]
+        .iter()
+        .fold(url.to_string(), |acc, p| strip_param(&acc, p))
 }
 
 /// Does this process still hold a pool for `url`? The reaper's effect on the
@@ -782,7 +978,9 @@ impl PgPool {
 
 pub(crate) struct PgDb {
     pool: std::sync::Arc<PgPool>,
-    schema: String,
+    /// Which schema each table resolves to (#353). Every statement is routed
+    /// through it, so the handle itself never asks which layout it is under.
+    layout: PgLayout,
     /// The connection pinned for an open transaction: taken at `begin`,
     /// given back at `commit`/`rollback`. Outside one, every statement
     /// borrows for its own duration, so an idle handle holds nothing.
@@ -872,6 +1070,13 @@ impl PgDb {
     ///
     /// The connection borrowed for all of this goes back to the pool before
     /// this returns: an open handle holds none until it begins a transaction.
+    ///
+    /// The layout comes off `url` (#353): `?meta_schema=` makes this a paired
+    /// open, and every path below — the stamp probe, the read-only
+    /// verification, the `provision=never` refusal and the bootstrap — routes
+    /// through the resulting [`PgLayout`]. An open whose DSN disagrees with
+    /// the layout the memory already has is refused (`STO-E011`) before any
+    /// DDL, in both directions; see [`Self::check_layout`].
     pub(crate) fn open(
         url: &str,
         schema: &str,
@@ -879,18 +1084,10 @@ impl PgDb {
         read_only: bool,
         stamp: Option<PgStamp>,
     ) -> Result<Self> {
-        if schema.is_empty()
-            || schema.len() > 63
-            || !schema.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-            || schema.as_bytes()[0].is_ascii_digit()
-        {
-            return Err(AreevError::Validation(format!(
-                "postgres schema name must be [a-z_][a-z0-9_]* and <= 63 bytes, got {schema:?}"
-            )));
-        }
+        let layout = PgLayout::from_url(url, schema)?;
         let (pool, pool_warning) = PgPool::for_url(url)?;
         let mut co = pool.checkout()?;
-        let opened = Self::open_on(&pool, co.client(), url, schema, bootstrap, read_only, stamp);
+        let opened = Self::open_on(&pool, co.client(), url, &layout, bootstrap, read_only, stamp);
         let bootstrap_skipped = match opened {
             Ok(skipped) => skipped,
             Err(e) => {
@@ -901,7 +1098,7 @@ impl PgDb {
         drop(co);
         Ok(Self {
             pool,
-            schema: schema.to_string(),
+            layout,
             pinned: RefCell::new(None),
             in_txn: std::cell::Cell::new(false),
             ann_ef_search: std::cell::Cell::new(None),
@@ -919,13 +1116,13 @@ impl PgDb {
         pool: &PgPool,
         client: &tokio_postgres::Client,
         url: &str,
-        schema: &str,
+        layout: &PgLayout,
         bootstrap: &[&str],
         read_only: bool,
         stamp: Option<PgStamp>,
     ) -> Result<bool> {
         if read_only {
-            pool.block_on(Self::verify_read_only(client, schema))?;
+            pool.block_on(Self::verify_read_only(client, layout))?;
             return Ok(false);
         }
         // The fast path (issue #180). Ask the schema what shape it is in
@@ -933,19 +1130,23 @@ impl PgDb {
         // steady-state open ends here, having issued two SELECTs.
         let mut skipped = false;
         if let Some(st) = stamp {
-            skipped = pool.block_on(Self::schema_stamp(client, schema, st))?.as_deref()
+            skipped = pool.block_on(Self::schema_stamp(client, layout, st))?.as_deref()
                 == Some(st.version);
         }
         if skipped {
             return Ok(true);
         }
+        // Off the fast path, and before either refusal below or any DDL: a
+        // DSN whose layout disagrees with the memory's is refused outright
+        // (#353). SELECT-only, two `to_regclass` probes, first open only.
+        pool.block_on(Self::check_layout(client, layout))?;
         if provision_mode(url)? == ProvisionMode::Never {
             // `?provision=never`: refuse without touching anything. No
             // advisory lock, no DDL, not even the CREATE SCHEMA — the
             // whole point is a runtime role that holds no CREATE.
-            return Err(Self::not_provisioned(client, pool, schema, stamp));
+            return Err(Self::not_provisioned(client, pool, layout, stamp));
         }
-        match Self::bootstrap_once(pool, client, schema, bootstrap, stamp) {
+        match Self::bootstrap_once(pool, client, layout, bootstrap, stamp) {
             Ok(()) => Ok(false),
             // A concurrent opener won the race and created the schema first.
             // The advisory lock makes this rare, not impossible: the pool
@@ -960,7 +1161,7 @@ impl PgDb {
             Err(e) if Self::is_lost_bootstrap_race(&e) => {
                 let current = match stamp {
                     Some(st) => {
-                        pool.block_on(Self::schema_stamp(client, schema, st))?.as_deref()
+                        pool.block_on(Self::schema_stamp(client, layout, st))?.as_deref()
                             == Some(st.version)
                     }
                     None => false,
@@ -968,7 +1169,7 @@ impl PgDb {
                 if current {
                     Ok(true)
                 } else {
-                    Self::bootstrap_once(pool, client, schema, bootstrap, stamp).map(|()| false)
+                    Self::bootstrap_once(pool, client, layout, bootstrap, stamp).map(|()| false)
                 }
             }
             Err(e) => Err(e),
@@ -987,13 +1188,22 @@ impl PgDb {
 
     /// One bootstrap attempt: DDL + seeding in ONE transaction holding the
     /// advisory lock.
+    ///
+    /// Every statement goes through `qualify_tables` (#353), so a paired
+    /// layout's `meta`/`counters`/`ns_reg`/`telem_*` DDL lands in the
+    /// metadata schema and everything else in the memory schema — one
+    /// transaction, both schemas. The `search_path` is still set, for the
+    /// one thing qualification cannot reach: the `DO $$ … $$` migration
+    /// blocks in `PG_SEED` resolve `terms` (a memory table) through
+    /// `current_schema()` and `pg_get_serial_sequence`.
     fn bootstrap_once(
         pool: &PgPool,
         client: &tokio_postgres::Client,
-        schema: &str,
+        layout: &PgLayout,
         bootstrap: &[&str],
         stamp: Option<PgStamp>,
     ) -> Result<()> {
+        let schema = layout.schema();
         pool.block_on(async {
             // ONE transaction around the whole bootstrap. Postgres DDL
             // is transactional, so the statements are atomic, and
@@ -1001,6 +1211,8 @@ impl PgDb {
             // there is no unlock to forget on a failure path.
             client.batch_execute("BEGIN").await.map_err(pg_err)?;
             let boot = async {
+                // Keyed on the MEMORY schema: a pair is one memory, and two
+                // openers of one pair must serialise on one lock.
                 client
                     .query_one(
                         "SELECT pg_advisory_xact_lock(hashtext('areev_bootstrap'), hashtext($1))",
@@ -1008,12 +1220,15 @@ impl PgDb {
                     )
                     .await
                     .map_err(pg_err)?;
-                client
-                    .batch_execute(&format!("CREATE SCHEMA IF NOT EXISTS \"{schema}\""))
-                    .await
-                    .map_err(pg_err)?;
-                // LOCAL: the bare DDL below needs the schema on the path,
-                // and the pooled connection must not keep it afterwards.
+                for s in layout.schemas() {
+                    client
+                        .batch_execute(&format!("CREATE SCHEMA IF NOT EXISTS \"{s}\""))
+                        .await
+                        .map_err(pg_err)?;
+                }
+                // LOCAL: the DO-block migrations below need the memory
+                // schema on the path, and the pooled connection must not
+                // keep it afterwards.
                 client
                     .batch_execute(&format!(
                         "SET LOCAL search_path TO \"{schema}\", public, ext"
@@ -1021,9 +1236,10 @@ impl PgDb {
                     .await
                     .map_err(pg_err)?;
                 for sql in bootstrap {
-                    client.batch_execute(sql).await.map_err(|e| {
+                    let routed = qualify_tables(sql, layout);
+                    client.batch_execute(&routed).await.map_err(|e| {
                         AreevError::Storage(format!(
-                            "bootstrap failed: {} — in: {sql}",
+                            "bootstrap failed: {} — in: {routed}",
                             pg_err(e)
                         ))
                     })?;
@@ -1034,9 +1250,9 @@ impl PgDb {
                     client
                         .execute(
                             &format!(
-                                "INSERT INTO \"{schema}\".{}(k, v) VALUES ($1, $2) \
+                                "INSERT INTO {}(k, v) VALUES ($1, $2) \
                                  ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v",
-                                st.table
+                                layout.qualified(st.table)
                             ),
                             &[&st.key, &st.version],
                         )
@@ -1084,28 +1300,95 @@ impl PgDb {
     /// `pg_schema` row at all). Change one and re-read the other.
     async fn schema_stamp(
         client: &tokio_postgres::Client,
-        schema: &str,
+        layout: &PgLayout,
         stamp: PgStamp,
     ) -> Result<Option<String>> {
-        let present = client
-            .query_one(
-                "SELECT to_regclass($1) IS NOT NULL",
-                &[&format!("\"{schema}\".{}", stamp.table)],
-            )
-            .await
-            .map_err(pg_err)?
-            .get::<_, bool>(0);
-        if !present {
+        let table = layout.qualified(stamp.table);
+        if !Self::relation_present(client, &table).await? {
             return Ok(None);
         }
         let row = client
-            .query_opt(
-                &format!("SELECT v FROM \"{schema}\".{} WHERE k = $1", stamp.table),
-                &[&stamp.key],
-            )
+            .query_opt(&format!("SELECT v FROM {table} WHERE k = $1"), &[&stamp.key])
             .await
             .map_err(pg_err)?;
         Ok(row.and_then(|r| r.get::<_, Option<String>>(0)))
+    }
+
+    /// `to_regclass` on an already-qualified relation name: NULL — never an
+    /// error — when the schema or the table is absent. Needs no privilege
+    /// beyond `USAGE` on the schema.
+    async fn relation_present(client: &tokio_postgres::Client, qualified: &str) -> Result<bool> {
+        Ok(client
+            .query_one("SELECT to_regclass($1) IS NOT NULL", &[&qualified])
+            .await
+            .map_err(pg_err)?
+            .get::<_, bool>(0))
+    }
+
+    /// Does every schema the layout occupies exist?
+    async fn schemas_exist(client: &tokio_postgres::Client, layout: &PgLayout) -> Result<bool> {
+        for s in layout.schemas() {
+            let exists = client
+                .query_one(
+                    "SELECT EXISTS(SELECT 1 FROM information_schema.schemata WHERE schema_name = $1)",
+                    &[&s],
+                )
+                .await
+                .map_err(pg_err)?
+                .get::<_, bool>(0);
+            if !exists {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Refuse an open whose DSN disagrees with the layout the memory already
+    /// has (#353) — `STO-E011`, in BOTH directions, SELECT-only, before any
+    /// lock or DDL:
+    ///
+    /// - a paired DSN over a memory whose own schema carries `meta` (the
+    ///   single layout) would bootstrap a second, empty `meta`/`counters`/
+    ///   `ns_reg` in the metadata schema and run against those — every hold,
+    ///   policy and saved query silently gone, and two writers allocating ids
+    ///   from two counter rows;
+    /// - a single DSN over a memory whose schema holds `grains` but no `meta`
+    ///   — which is what a paired memory looks like from its memory schema,
+    ///   and nothing else does, since `meta` is the first table the bootstrap
+    ///   creates and the bootstrap is one transaction — would do the same in
+    ///   the other direction.
+    ///
+    /// Only the slow path pays for it: a stamped-current memory has already
+    /// proven its layout by where the stamp was found. A layout change is an
+    /// operator's explicit migration (`docs/deployment-profile.md`, "Paired
+    /// layout"), never something an open does by itself.
+    async fn check_layout(client: &tokio_postgres::Client, layout: &PgLayout) -> Result<()> {
+        let schema = layout.schema();
+        let in_schema_meta = Self::relation_present(client, &format!("\"{schema}\".meta")).await?;
+        match layout.meta_schema() {
+            Some(m) if in_schema_meta => Err(AreevError::LayoutMismatch(format!(
+                "postgres schema {schema:?} carries its engine metadata in-schema (the \
+                 single-schema layout), but this DSN names {META_SCHEMA_PARAM}={m:?} — \
+                 opening it paired would split counters, the namespace registry, legal holds, \
+                 retention policies and saved queries across two schemas. Either drop \
+                 {META_SCHEMA_PARAM} from the DSN, or move the metadata tables explicitly \
+                 (`ALTER TABLE … SET SCHEMA`, see docs/deployment-profile.md \"Paired \
+                 layout\") and retry"
+            ))),
+            None if !in_schema_meta
+                && Self::relation_present(client, &format!("\"{schema}\".grains")).await? =>
+            {
+                Err(AreevError::LayoutMismatch(format!(
+                    "postgres schema {schema:?} holds memory tables but no meta table — the \
+                     shape of a paired-layout memory whose engine metadata lives in a separate \
+                     schema — and this DSN names no {META_SCHEMA_PARAM}. Add \
+                     ?{META_SCHEMA_PARAM}=<its metadata schema> to the DSN; a single-schema \
+                     open would bootstrap a second, empty set of engine metadata beside the \
+                     real one"
+                )))
+            }
+            _ => Ok(()),
+        }
     }
 
     /// The `?provision=never` refusal. Names which of the two operator
@@ -1116,31 +1399,32 @@ impl PgDb {
     fn not_provisioned(
         client: &tokio_postgres::Client,
         pool: &PgPool,
-        schema: &str,
+        layout: &PgLayout,
         stamp: Option<PgStamp>,
     ) -> AreevError {
         let version = stamp.map(|s| s.version).unwrap_or(PG_SCHEMA_VERSION);
-        let exists = pool
-            .block_on(client.query_one(
-                "SELECT EXISTS(SELECT 1 FROM information_schema.schemata WHERE schema_name = $1)",
-                &[&schema],
-            ))
-            .map(|r| r.get::<_, bool>(0))
-            .unwrap_or(false);
+        let exists = pool.block_on(Self::schemas_exist(client, layout)).unwrap_or(false);
+        let what = layout.describe();
+        let schema = layout.schema();
+        // The DSN handed to `areev provision` must carry the same layout, so
+        // the pair — not just the memory schema — gets provisioned.
+        let hint = match layout.meta_schema() {
+            Some(m) => format!("`areev provision --db <dsn> --schema {schema} --meta-schema {m}`"),
+            None => format!("`areev provision --db <dsn> --schema {schema}`"),
+        };
         AreevError::SchemaNotProvisioned(if exists {
             format!(
-                "postgres schema {schema:?} exists but is not stamped at schema version \
+                "postgres schema {what} exists but is not stamped at schema version \
                  {version}, and this DSN says provision=never — so no bootstrap DDL was \
                  attempted. It was created by an older build, or a migration did not finish: \
-                 run `areev provision --db <dsn> --schema {schema}` (or your migration job) \
-                 with a role that owns the schema, then retry"
+                 run {hint} (or your migration job) with a role that owns the schema, then retry"
             )
         } else {
             format!(
-                "postgres schema {schema:?} does not exist, and this DSN says provision=never \
-                 — so no CREATE SCHEMA was attempted. Either the schema name is wrong, or the \
-                 memory has never been created: run `areev provision --db <dsn> --schema \
-                 {schema}` with a role that may create it, then retry"
+                "postgres schema {what} does not exist, and this DSN says provision=never \
+                 — so no CREATE SCHEMA was attempted. Either a schema name is wrong, or the \
+                 memory has never been created: run {hint} with a role that may create it, \
+                 then retry"
             )
         })
     }
@@ -1172,40 +1456,35 @@ impl PgDb {
     /// need editing: the list below, and `PG_SCHEMA_VERSION`.
     async fn verify_read_only(
         client: &tokio_postgres::Client,
-        schema: &str,
+        layout: &PgLayout,
     ) -> Result<()> {
-        let exists = client
-            .query_one(
-                "SELECT EXISTS(SELECT 1 FROM information_schema.schemata WHERE schema_name = $1)",
-                &[&schema],
-            )
-            .await
-            .map_err(pg_err)?
-            .get::<_, bool>(0);
-        if !exists {
+        let schema = layout.schema();
+        let what = layout.describe();
+        // Layout first (#353): a paired DSN over a single-schema memory has
+        // no metadata schema to find, and "does not exist" would send the
+        // operator to provision one — the wrong action. A read-only open of
+        // the wrong layout would otherwise not fail at all: it would read an
+        // empty `meta` and answer as if no hold, policy or query existed.
+        Self::check_layout(client, layout).await?;
+        if !Self::schemas_exist(client, layout).await? {
             return Err(AreevError::ReadOnlyOpenFailed(format!(
-                "postgres schema {schema:?} does not exist — a read-only open never runs \
-                 bootstrap DDL (CREATE SCHEMA included), so it cannot create it. Either the \
+                "postgres schema {what} does not exist — a read-only open never runs \
+                 bootstrap DDL (CREATE SCHEMA included), so it cannot create it. Either a \
                  schema name is wrong, or the memory has never been created: have the owning \
                  role open it read-write once (or run the migration), then retry read-only"
             )));
         }
         const CORE_TABLES: &[&str] = &["meta", "terms", "grains", "oplog", "fts_doc"];
-        let mut missing: Vec<&str> = Vec::new();
+        let mut missing: Vec<String> = Vec::new();
         for table in CORE_TABLES {
-            let qualified = format!("\"{schema}\".{table}");
-            let present = client
-                .query_one("SELECT to_regclass($1) IS NOT NULL", &[&qualified])
-                .await
-                .map_err(pg_err)?
-                .get::<_, bool>(0);
-            if !present {
-                missing.push(table);
+            let qualified = layout.qualified(table);
+            if !Self::relation_present(client, &qualified).await? {
+                missing.push(qualified);
             }
         }
         if !missing.is_empty() {
             return Err(AreevError::ReadOnlyOpenFailed(format!(
-                "postgres schema {schema:?} exists but is not fully initialized — missing \
+                "postgres schema {what} exists but is not fully initialized — missing \
                  table(s): {} — a read-only open never runs bootstrap DDL to add them. Have the \
                  owning role open this memory read-write once to finish migrating it, then \
                  retry read-only",
@@ -1317,7 +1596,7 @@ impl PgDb {
                 return Ok(t.clone());
             }
         }
-        let t = qualify_tables(&translate(sql)?, &self.schema);
+        let t = qualify_tables(&translate(sql)?, &self.layout);
         if hot {
             self.xlate.borrow_mut().insert(sql.to_string(), t.clone());
         }
@@ -1776,7 +2055,7 @@ impl Db for PgDb {
     }
 
     fn ensure_embeddings(&self, dim: usize) -> Result<()> {
-        let schema = self.schema.clone();
+        let schema = self.layout.schema.clone();
         self.with_conn(|pool, conn| {
             pool.block_on(async {
                 let client = &conn.client;
@@ -1858,7 +2137,7 @@ impl Db for PgDb {
                 "hnsw ef_construction must be 4..=1000, got {ef_construction}"
             )));
         }
-        let schema = self.schema.clone();
+        let schema = self.layout.schema.clone();
         self.with_conn(|pool, conn| {
             pool.block_on(async {
                 let client = &conn.client;
@@ -1930,7 +2209,7 @@ impl Db for PgDb {
     }
 
     fn drop_ann_index(&self) -> Result<()> {
-        let sql = format!("DROP INDEX IF EXISTS \"{}\".idx_embeddings_hnsw", self.schema);
+        let sql = format!("DROP INDEX IF EXISTS \"{}\".idx_embeddings_hnsw", self.layout.schema);
         self.with_conn(|pool, conn| pool.block_on(conn.client.batch_execute(&sql)).map_err(pg_err))
     }
 
@@ -1945,7 +2224,7 @@ impl Db for PgDb {
     }
 
     fn ann_index_name(&self) -> Result<Option<String>> {
-        let schema = self.schema.clone();
+        let schema = self.layout.schema.clone();
         self.with_conn(|pool, conn| {
             // Straight off the catalogs, by access method. `pg_indexes` would
             // do, but its `indexdef` column is `pg_get_indexdef()` over every
@@ -2081,8 +2360,9 @@ fn replace_suffix(table: &str) -> Option<(&'static str, &'static str)> {
 /// Every table the Postgres backend creates (`PG_SCHEMA`, `ensure_embeddings`,
 /// and the telemetry sidecar's `TELEM_SCHEMA_PG`). The qualifier rewrites a
 /// reference to any of these; catalog tables (`pg_class`, `information_schema`)
-/// are deliberately absent, since they must resolve globally.
-pub(crate) const PG_TABLES: &[&str] = &[
+/// are deliberately absent, since they must resolve globally. The subset in
+/// [`META_TABLES`] routes to the metadata schema under a paired layout.
+pub const PG_TABLES: &[&str] = &[
     "blobs", "corpus_idx", "counters", "embeddings", "entity_latest", "fts_doc", "fts_post",
     "fts_vocab", "grains", "heads", "meta", "ns_reg", "oplog", "osp", "prov_idx", "run_idx",
     "telem_budget_stat", "telem_grain_access", "telem_meta", "telem_query_stat",
@@ -2098,8 +2378,18 @@ pub(crate) const PG_TABLES: &[&str] = &[
 /// is left alone). Only the keywords a table name can follow trigger it, so
 /// `counters.v` in an `ON CONFLICT … DO UPDATE` stays the target's own name,
 /// which Postgres resolves without a schema.
-pub(crate) fn qualify_tables(sql: &str, schema: &str) -> String {
-    const TRIGGERS: &[&str] = &["FROM", "JOIN", "INTO", "UPDATE", "TABLE", "EXISTS"];
+///
+/// The schema each reference gets comes from the `layout` (#353): a paired
+/// layout sends the [`META_TABLES`] to the metadata schema and everything
+/// else to the memory schema, so one statement may legitimately name both
+/// (`INSERT INTO "m".counters … SELECT … FROM "s".grains`). `ON` is a
+/// trigger for the sake of `CREATE INDEX … ON <table>` — the bootstrap DDL
+/// goes through here too, which is what puts a metadata table's index in the
+/// metadata schema; an `ON <alias>.<col>` join condition names no table and
+/// is left alone, and `ON <table>.<col>` becomes a three-part name Postgres
+/// accepts.
+pub(crate) fn qualify_tables(sql: &str, layout: &PgLayout) -> String {
+    const TRIGGERS: &[&str] = &["FROM", "JOIN", "INTO", "UPDATE", "TABLE", "EXISTS", "ON"];
     let mut out = String::with_capacity(sql.len() + 64);
     let chars: Vec<char> = sql.chars().collect();
     let n = chars.len();
@@ -2148,7 +2438,7 @@ pub(crate) fn qualify_tables(sql: &str, schema: &str) -> String {
                 let preceded_by_dot = start > 0 && chars[start - 1] == '.';
                 if prev_word_is_trigger && !preceded_by_dot && PG_TABLES.contains(&word.as_str()) {
                     out.push('"');
-                    out.push_str(schema);
+                    out.push_str(layout.schema_for(&word));
                     out.push_str("\".");
                 }
                 out.push_str(&word);
@@ -2443,6 +2733,11 @@ impl StampState {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ProvisionReport {
     pub schema: String,
+    /// The metadata schema under a paired layout (#353); `None` for the
+    /// single-schema layout.
+    pub meta_schema: Option<String>,
+    /// Every schema the layout occupies exists — the memory schema, and the
+    /// metadata schema too when there is one.
     pub exists: bool,
     pub stamps: Vec<StampState>,
     /// Names of the stamps that are absent or behind — empty means current.
@@ -2471,23 +2766,18 @@ impl ProvisionReport {
 /// `telemetry` selects which telemetry stamp is expected; a schema
 /// provisioned with telemetry off and checked with the default correctly
 /// reports telemetry pending, because for that deployment it is.
+///
+/// The layout comes off `url` (#353): with `?meta_schema=` the stamps are
+/// read where a paired memory keeps them, and `exists` covers both schemas.
 pub fn check_provision(
     url: &str,
     schema: &str,
     telemetry: crate::TelemetryMode,
 ) -> Result<ProvisionReport> {
-    if !schema.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
-        return Err(AreevError::Validation(format!("invalid schema name {schema:?}")));
-    }
+    let layout = PgLayout::from_url(url, schema)?;
     let (pool, _) = PgPool::for_url(url)?;
     let co = pool.checkout()?;
-    let exists = pool
-        .block_on(co.client().query_one(
-            "SELECT EXISTS(SELECT 1 FROM information_schema.schemata WHERE schema_name = $1)",
-            &[&schema],
-        ))
-        .map(|r| r.get::<_, bool>(0))
-        .map_err(pg_err)?;
+    let exists = pool.block_on(PgDb::schemas_exist(co.client(), &layout))?;
 
     let mut stamps = Vec::new();
     let mut wanted: Vec<(&str, &str, &str, &str)> = vec![
@@ -2517,7 +2807,7 @@ pub fn check_provision(
         let found = if exists {
             pool.block_on(PgDb::schema_stamp(
                 co.client(),
-                schema,
+                &layout,
                 PgStamp { table, key, version: want },
             ))?
         } else {
@@ -2546,6 +2836,7 @@ pub fn check_provision(
     .to_string();
     Ok(ProvisionReport {
         schema: schema.to_string(),
+        meta_schema: layout.meta_schema().map(str::to_string),
         exists,
         stamps,
         pending,
@@ -2566,6 +2857,11 @@ fn version_lt(a: &str, b: &str) -> bool {
 /// erasure primitive (`DROP SCHEMA … CASCADE`), the analogue of deleting a
 /// memory file. Admin-surface only: not reachable from CAL, and hosts must
 /// gate it like any destructive operation.
+///
+/// Under a paired layout (`?meta_schema=` on `url`, #353) the metadata
+/// schema is dropped with the memory schema, in one transaction: a pair is
+/// one memory, and an erasure that left its holds, counters and registry
+/// behind would be neither complete nor safe to re-provision over.
 pub fn drop_postgres_schema(url: &str, schema: &str) -> Result<()> {
     drop_postgres_schema_with(url, schema, &DropOptions::default())
 }
@@ -2583,23 +2879,25 @@ pub struct DropOptions {
 /// [`drop_postgres_schema`] with an explicit override of any legal holds the
 /// schema carries.
 ///
-/// Reads `"<schema>".meta` for `hold:%` rows first. A schema that does not
-/// exist, or holds none, drops as before.
+/// Reads the memory's `meta` table — wherever the layout keeps it — for
+/// `hold:%` rows first. A schema that does not exist, or holds none, drops
+/// as before.
 pub fn drop_postgres_schema_with(
     url: &str,
     schema: &str,
     opts: &DropOptions,
 ) -> Result<()> {
-    if !schema.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
-        return Err(AreevError::Validation(format!("invalid schema name {schema:?}")));
-    }
+    let layout = PgLayout::from_url(url, schema)?;
     let (pool, _) = PgPool::for_url(url)?;
     let mut co = pool.checkout()?;
     if opts.override_hold.is_none() {
         // SELECT-only probe. A missing schema or meta table is not a hold;
         // the drop below is `IF EXISTS` and stays the authority on existence.
         let probe = pool.block_on(co.client().query(
-            &format!("SELECT k FROM \"{schema}\".meta WHERE k LIKE 'hold:%' ORDER BY k"),
+            &format!(
+                "SELECT k FROM {} WHERE k LIKE 'hold:%' ORDER BY k",
+                layout.qualified("meta")
+            ),
             &[],
         ));
         if let Ok(rows) = probe {
@@ -2618,9 +2916,15 @@ pub fn drop_postgres_schema_with(
             }
         }
     }
-    let r = pool
-        .block_on(co.client().batch_execute(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE")))
-        .map_err(pg_err);
+    // One simple-query batch = one implicit transaction, so a pair goes
+    // together or not at all.
+    let sql = layout
+        .schemas()
+        .iter()
+        .map(|s| format!("DROP SCHEMA IF EXISTS \"{s}\" CASCADE"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let r = pool.block_on(co.client().batch_execute(&sql)).map_err(pg_err);
     if let Err(e) = &r {
         co.note(e);
     }
@@ -2750,7 +3054,8 @@ mod tests {
 
     #[test]
     fn qualifies_every_table_reference_and_nothing_else() {
-        let q = |sql: &str| qualify_tables(sql, "s1");
+        let single = PgLayout::single("s1").unwrap();
+        let q = |sql: &str| qualify_tables(sql, &single);
         // Aliases, joins, subqueries, and INSERT's column list.
         assert_eq!(
             q("SELECT g.hash FROM embeddings e JOIN grains g ON g.seq = e.seq WHERE g.ns = $1"),
@@ -2770,11 +3075,113 @@ mod tests {
             "ALTER TABLE \"s1\".telem_recall_log ADD COLUMN run_id TEXT"
         );
         assert_eq!(q("DROP TABLE IF EXISTS meta"), "DROP TABLE IF EXISTS \"s1\".meta");
+        // `ON` (#353): index DDL names its table there, and nowhere else does
+        // a table follow it — a join condition's `ON g.seq` names an alias.
+        assert_eq!(
+            q("CREATE INDEX IF NOT EXISTS idx_grains_hash ON grains(hash)"),
+            "CREATE INDEX IF NOT EXISTS idx_grains_hash ON \"s1\".grains(hash)"
+        );
+        assert_eq!(
+            q("SELECT 1 FROM heads h LEFT JOIN grains g ON g.seq = h.seq"),
+            "SELECT 1 FROM \"s1\".heads h LEFT JOIN \"s1\".grains g ON g.seq = h.seq"
+        );
+    }
+
+    /// The paired layout (#353): the metadata tables route to the metadata
+    /// schema, everything else to the memory schema, within one statement.
+    #[test]
+    fn qualifier_routes_metadata_tables_to_the_metadata_schema() {
+        let pair = PgLayout::paired("s1", "m1").unwrap();
+        let q = |sql: &str| qualify_tables(sql, &pair);
+        assert_eq!(q("SELECT v FROM meta WHERE k = $1"), "SELECT v FROM \"m1\".meta WHERE k = $1");
+        assert_eq!(
+            q("UPDATE counters SET v = v + $1 WHERE name = 'seq' RETURNING name, v"),
+            "UPDATE \"m1\".counters SET v = v + $1 WHERE name = 'seq' RETURNING name, v"
+        );
+        assert_eq!(q("DELETE FROM ns_reg WHERE ns = $1"), "DELETE FROM \"m1\".ns_reg WHERE ns = $1");
+        // PG_SEED's counter seed reads memory and writes metadata.
+        assert_eq!(
+            q("INSERT INTO counters(name, v) SELECT 'seq', COALESCE(MAX(seq),0) FROM grains \
+               ON CONFLICT (name) DO UPDATE SET v = GREATEST(counters.v, EXCLUDED.v)"),
+            "INSERT INTO \"m1\".counters(name, v) SELECT 'seq', COALESCE(MAX(seq),0) FROM \"s1\".grains \
+             ON CONFLICT (name) DO UPDATE SET v = GREATEST(counters.v, EXCLUDED.v)"
+        );
+        // The sidecar's index DDL is the reason `ON` triggers: without it the
+        // index would resolve through the memory schema's search_path and
+        // fail to find a table that lives in the other one.
+        assert_eq!(
+            q("CREATE INDEX IF NOT EXISTS idx_telem_recall_ts ON telem_recall_log(ts_ms)"),
+            "CREATE INDEX IF NOT EXISTS idx_telem_recall_ts ON \"m1\".telem_recall_log(ts_ms)"
+        );
+        assert_eq!(
+            q("CREATE TABLE IF NOT EXISTS telem_meta(k text PRIMARY KEY, v text)"),
+            "CREATE TABLE IF NOT EXISTS \"m1\".telem_meta(k text PRIMARY KEY, v text)"
+        );
+        // Memory tables are untouched by the pairing.
+        assert_eq!(
+            q("SELECT body FROM blobs WHERE hash = $1"),
+            "SELECT body FROM \"s1\".blobs WHERE hash = $1"
+        );
+        // Every bootstrap statement routes somewhere the qualifier
+        // recognises, and every META table's DDL lands in the metadata schema
+        // — a statement that created one of them in the memory schema would
+        // be the "classified metadata left behind" the pair exists to rule out.
+        for sql in PG_SCHEMA.iter().chain(PG_SEED.iter()).chain(crate::telemetry::TELEM_SCHEMA_PG) {
+            let routed = q(sql);
+            for t in META_TABLES {
+                assert!(
+                    !routed.contains(&format!("\"s1\".{t}")),
+                    "metadata table {t} routed to the memory schema in: {routed}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn layout_reads_the_dsn_and_refuses_a_degenerate_pair() {
+        let single = PgLayout::from_url("postgres://h/db?pool=2", "s").unwrap();
+        assert!(!single.is_paired());
+        assert_eq!(single.meta_schema(), None);
+        assert_eq!(single.schemas(), vec!["s"]);
+        assert_eq!(single.schema_for("meta"), "s");
+
+        let pair = PgLayout::from_url("postgres://h/db?meta_schema=s_meta&sslmode=require", "s").unwrap();
+        assert!(pair.is_paired());
+        assert_eq!(pair.meta_schema(), Some("s_meta"));
+        assert_eq!(pair.schemas(), vec!["s", "s_meta"]);
+        for t in META_TABLES {
+            assert_eq!(pair.schema_for(t), "s_meta", "{t}");
+        }
+        for t in PG_TABLES.iter().filter(|t| !META_TABLES.contains(t)) {
+            assert_eq!(pair.schema_for(t), "s", "{t}");
+        }
+        assert_eq!(pair.qualified("counters"), "\"s_meta\".counters");
+        assert_eq!(pair.qualified("grains"), "\"s\".grains");
+
+        // The same name twice is not a pair.
+        let e = PgLayout::from_url("postgres://h/db?meta_schema=s", "s").unwrap_err();
+        assert!(e.to_string().contains("names the memory schema itself"), "{e}");
+        // An empty value is a refusal, never a silent fallback to single.
+        let e = PgLayout::from_url("postgres://h/db?meta_schema=", "s").unwrap_err();
+        assert!(e.to_string().contains("names no schema"), "{e}");
+        // Both names obey the identifier rule.
+        assert!(PgLayout::paired("s", "has space").is_err());
+        assert!(PgLayout::paired("9lead", "m").is_err());
+        assert_eq!(
+            strip_meta_schema("postgres://h/db?schema=s&meta_schema=m&provision=never"),
+            "postgres://h/db?schema=s&provision=never"
+        );
+        // The driver never sees it, and neither does the pool key.
+        let req = crate::pgtls::SslRequest::split("postgres://u@h/db?meta_schema=m&sslmode=disable")
+            .unwrap();
+        assert_eq!(req.dsn, "postgres://u@h/db");
+        assert_eq!(pool_key("postgres://u@h/db?schema=s&meta_schema=m&pool=3"), "postgres://u@h/db");
     }
 
     #[test]
     fn qualifier_leaves_data_catalogs_and_target_references_alone() {
-        let q = |sql: &str| qualify_tables(sql, "s1");
+        let single = PgLayout::single("s1").unwrap();
+        let q = |sql: &str| qualify_tables(sql, &single);
         // A table name inside a string literal is data.
         assert_eq!(q("SELECT k FROM meta WHERE v = 'FROM grains'"), "SELECT k FROM \"s1\".meta WHERE v = 'FROM grains'");
         // Catalog tables resolve globally and are not ours to move.
@@ -2801,7 +3208,8 @@ mod tests {
         // The integrity probe is emitted by translate itself; it must name
         // its tables in positions the qualifier recognises, or it would read
         // another schema's index rows under a pooler.
-        let out = qualify_tables(&translate("PRAGMA integrity_check").unwrap(), "s1");
+        let single = PgLayout::single("s1").unwrap();
+        let out = qualify_tables(&translate("PRAGMA integrity_check").unwrap(), &single);
         for t in ["heads", "grains", "entity_latest", "triples"] {
             assert!(out.contains(&format!("\"s1\".{t}")), "{t} unqualified in: {out}");
         }

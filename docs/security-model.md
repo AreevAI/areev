@@ -410,6 +410,18 @@ an untrusted issuer, that `verify-full` refuses the same certificate, that
 `sslrootcert` makes that private CA trusted, and that `verify-ca` drops only
 the hostname check.
 
+**Which schema a memory lives in is host configuration, never data.** The
+memory schema (`?schema=`) and, under the paired layout, the metadata schema
+(`?meta_schema=`, #353) come from the DSN the host was started with and from
+nowhere else; both are validated to `[a-z_][a-z0-9_]*` (63 bytes) and quoted
+on every use, and every table reference is schema-qualified by the store
+(#181) rather than resolved through the session. No grain, message, CAL
+statement or model output can name a schema, so a compromised or confused
+caller cannot redirect a read or a write to another tenant's schema — and an
+open whose DSN disagrees with the layout the memory already has is refused
+(`STO-E011`) rather than run against a second, empty set of engine metadata
+with every legal hold and policy absent.
+
 ### Connection strings are redacted at every console display surface
 
 The console (`areev ui`) never shows a Postgres DSN's password back to a

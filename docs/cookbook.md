@@ -1650,6 +1650,16 @@ tables are created too unless you pass `--telemetry off`, because every other
 verb defaults to `--telemetry aggregate` and would otherwise bootstrap the
 sidecar on its first real request.
 
+A deployment whose data contract wants the engine's bookkeeping *physically*
+apart from the memory — `meta`, `counters`, `ns_reg` and the telemetry tables
+in their own schema, nothing but grains and their indexes in the memory's —
+adds `--meta-schema` (or `&meta_schema=` on the DSN), and every later DSN
+names both (`?schema=desk_invoice&meta_schema=desk_invoice_metadata`). The
+layout is opt-in and fixed at provisioning: a DSN that names the other
+layout for an existing memory is refused (`STO-E011`) rather than half-
+honoured. Classification, grants for both schemas and the migration recipe:
+[deployment-profile.md](deployment-profile.md), "Paired layout".
+
 After that, an open of that schema issues **no DDL, takes no advisory lock,
 and writes no row** — it reads one stamp (`meta.pg_schema`) and gets on with
 the query. It happens automatically; nothing needs a flag.

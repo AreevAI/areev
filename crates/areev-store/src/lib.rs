@@ -2465,10 +2465,11 @@ pub fn is_pg_dsn(locator: &str) -> bool {
 #[cfg(feature = "postgres")]
 fn read_blob_pg(dsn: &str, hex: &str, uri: &str) -> Result<Vec<u8>> {
     let (url, schema) = pg::split_schema_url(dsn)?;
+    let layout = pg::PgLayout::from_url(&url, &schema)?;
     let raw = hex::decode(hex).map_err(|e| AreevError::Storage(e.to_string()))?;
     let (pool, _) = pg::PgPool::for_url(&url)?;
     let mut co = pool.checkout()?;
-    let sql = pg::qualify_tables("SELECT body FROM blobs WHERE hash = $1", &schema);
+    let sql = pg::qualify_tables("SELECT body FROM blobs WHERE hash = $1", &layout);
     let rows = pool.block_on(co.client().query(sql.as_str(), &[&raw])).map_err(pg::pg_err);
     let rows = match rows {
         Ok(rows) => rows,

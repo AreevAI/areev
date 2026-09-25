@@ -92,6 +92,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is a draft carrying `judged_by` provenance, **never auto-applied**, and an
   uncalibrated backend is never asked. The run report gains `decider`
   (backend, calibrated, calls, failures); new `LOP-E051` (never fatal).
+- **PostgreSQL paired layout: engine metadata in its own schema** (#353).
+  `?meta_schema=<name>` on the DSN puts a memory's engine metadata — the
+  `meta` table (declarations, stamps, saved queries/templates, retention and
+  anonymization policies, the vault, legal holds, trigger leases),
+  `counters`, `ns_reg` and the telemetry sidecar's `telem_*` — in a second,
+  physically separate schema, while the grains, every index over them, the
+  `terms` dictionary, the `oplog` and the CAS `blobs` stay in the memory
+  schema. One routing table (`pg::PgLayout` over `pg::META_TABLES`) drives
+  every statement, DDL included, so a write spanning both schemas is still one
+  transaction, and CAL/Run/Loop semantics, content addresses and grants are
+  unchanged. Reaches every host through the DSN — CLI, console, both
+  bindings, bench — with no new parameter; `areev provision` gains
+  `--meta-schema` and `provision --check` reports the pair;
+  `drop_postgres_schema` drops both; `provision=never` and `--read-only`
+  work on a pair exactly as on a single schema. An open whose DSN disagrees
+  with the memory's existing layout — in either direction — is refused with
+  the new **`STO-E011`** before any DDL: moving to the pair is an explicit
+  `ALTER TABLE … SET SCHEMA` step, documented in
+  `docs/deployment-profile.md` ("Paired layout") with the classification
+  table and the role grants. Opt-in; without the parameter the single-schema
+  layout is byte-for-byte what it was, and no schema version moves.
+  Conformance: the whole Postgres case list runs a second time under the
+  paired layout (`tests/pg_paired.rs`), plus introspection proving no
+  classified metadata is left in the memory schema, two pairs in one
+  database sharing no registry or counters, concurrent writers on a pair, a
+  least-privilege role granted on both schemas (and refused once revoked on
+  either), and the layout-mismatch refusals.
 
 ## [1.9.5] — 2026-09-24
 

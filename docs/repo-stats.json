@@ -2,16 +2,16 @@
   "version": "1.9.5",
   "crates": 17,
   "rust": {
-    "files": 350,
-    "physical_lines": 248570,
-    "source_code": 115008,
-    "test_code": 72753,
-    "unit_test_code": 29846,
-    "integration_test_code": 42907,
+    "files": 351,
+    "physical_lines": 249515,
+    "source_code": 115204,
+    "test_code": 73175,
+    "unit_test_code": 29931,
+    "integration_test_code": 43244,
     "example_code": 669,
-    "test_functions": 3325,
-    "test_ratio": 0.63,
-    "test_share": 38.7
+    "test_functions": 3335,
+    "test_ratio": 0.64,
+    "test_share": 38.8
   },
   "per_crate": [
     {
@@ -25,10 +25,10 @@
     {
       "name": "areev-store",
       "files": 45,
-      "physical": 29308,
-      "source_code": 13289,
-      "test_code": 7390,
-      "tests": 370
+      "physical": 29723,
+      "source_code": 13424,
+      "test_code": 7473,
+      "tests": 372
     },
     {
       "name": "areev-run",
@@ -41,8 +41,8 @@
     {
       "name": "areev-cli",
       "files": 25,
-      "physical": 23155,
-      "source_code": 9150,
+      "physical": 23191,
+      "source_code": 9179,
       "test_code": 9165,
       "tests": 253
     },
@@ -57,9 +57,9 @@
     {
       "name": "areev-core",
       "files": 52,
-      "physical": 19821,
-      "source_code": 9812,
-      "test_code": 4994,
+      "physical": 19836,
+      "source_code": 9815,
+      "test_code": 4996,
       "tests": 335
     },
     {
@@ -103,20 +103,20 @@
       "tests": 111
     },
     {
+      "name": "areev-conformance",
+      "files": 28,
+      "physical": 5796,
+      "source_code": 2791,
+      "test_code": 1535,
+      "tests": 34
+    },
+    {
       "name": "areev-server",
       "files": 3,
       "physical": 5589,
       "source_code": 2310,
       "test_code": 1726,
       "tests": 83
-    },
-    {
-      "name": "areev-conformance",
-      "files": 27,
-      "physical": 5317,
-      "source_code": 2762,
-      "test_code": 1198,
-      "tests": 26
     },
     {
       "name": "areev-js",
@@ -153,9 +153,9 @@
   ],
   "docs": {
     "files": 66,
-    "lines": 36213
+    "lines": 36426
   },
-  "error_codes": 126,
+  "error_codes": 127,
   "bindings": {
     "python_files": 95,
     "node_test_files": 7

@@ -115,7 +115,7 @@ impl SslRequest {
     /// is what keeps `tokio_postgres` — which rejects unknown options — from
     /// seeing a parameter that is ours. `open`, `reconnect`,
     /// `drop_postgres_schema` and the conformance escape hatches all tolerate
-    /// it for free as a result.
+    /// it for free as a result. `meta_schema` (#353) rides the same rule.
     pub(crate) fn split(url: &str) -> Result<Self> {
         let Some((base, query)) = url.split_once('?') else {
             return Ok(Self { dsn: url.to_string(), mode: SslMode::Prefer, root_cert: None });
@@ -127,7 +127,10 @@ impl SslRequest {
             match pair.split_once('=') {
                 Some(("sslmode", v)) => mode = SslMode::parse(v)?,
                 Some(("sslrootcert", v)) if !v.is_empty() => root_cert = Some(v.to_string()),
-                Some(("provision", _)) | Some(("pool", _)) | Some(("pool_idle_secs", _)) => {}
+                Some(("provision", _))
+                | Some(("pool", _))
+                | Some(("pool_idle_secs", _))
+                | Some((crate::pg::META_SCHEMA_PARAM, _)) => {}
                 _ => rest.push(pair),
             }
         }

@@ -388,6 +388,120 @@ renders. The same open is reachable from the bindings —
 so an embedded console, evaluator or analytics reader is handed the
 SELECT-only role rather than the owner's credential.
 
+**Paired layout — engine metadata in its own schema (#353).** By default
+one memory is one schema: the grains and the engine's bookkeeping about them
+share it. A data contract may require the bookkeeping to be *physically*
+elsewhere — a memory schema that holds nothing but memory, and a metadata
+schema beside it. Add `meta_schema=<name>` to the DSN:
+
+```
+postgres://app:***@pg:5432/areev?schema=drpaul_prod_memory&meta_schema=drpaul_prod_memory_metadata
+```
+
+Every table then has exactly one home. The classification is
+`areev_store::pg::META_TABLES`, and it is by *kind*, not by table name:
+
+| Where | Tables | Why |
+|---|---|---|
+| **memory schema** | `grains`, `triples`, `osp`, `entity_latest`, `heads`, `thread_idx`, `prov_idx`, `run_idx`, `corpus_idx`, `fts_vocab`/`fts_post`/`fts_doc`, `embeddings`, `oplog`, `terms`, `blobs` | the grains, every index derived from them, the op-log, the dictionary (every subject/relation/object string *is* content) and the CAS blobs — exactly what `pg_dump -n <memory>` must carry for the grains to be readable, and what a `DROP SCHEMA` must destroy for them to be gone |
+| **metadata schema** | `meta`, `counters`, `ns_reg`, `telem_meta`/`telem_recall_log`/`telem_grain_access`/`telem_query_stat`/`telem_budget_stat` | id allocation, the namespace inventory, the telemetry sidecar (a separate *file* on the embedded backend — the separate schema is the same rule), and the `meta` table as one unit |
+
+`meta` moves whole. Every key in it is engine bookkeeping about the memory
+rather than a grain of it: the `pg_schema`/`link_index`/`ns_registry` stamps;
+the `text_index`/`entity_relations` declarations and embedding provenance;
+`min_reader_version`; saved queries and templates (`qry:`/`tpl:`); retention
+policies and floors (`retention:`/`retention_floor:`); anonymization
+policies and the sealed mapping vault (`anon:`/`vault:`); legal holds
+(`hold:`); trigger leases and cursors (`trg:`). The vault is the one family
+someone could argue over — its rows are keyed by memory-derived tokens — and
+the decision is that a mapping the engine keeps about content is still
+metadata; splitting the table by key would put the one choke point every
+policy read shares on two schemas. Nothing is duplicated into the memory
+schema and no view stands in for it: introspecting the memory schema after
+any amount of use finds none of these tables, which the paired conformance
+runner asserts.
+
+What does **not** change: CAL, Run and Loop semantics, every content
+address, the registry's inverses and the `mg:permits` grants — the routing is
+below all of them, in the one place statements are schema-qualified (#181),
+so a write that touches both schemas is still one transaction on one
+connection, and a transaction-mode pooler is as safe as before. Both names
+come from the DSN and nowhere else, are validated to `[a-z_][a-z0-9_]*`
+and quoted on every use; no grain, message or model output can select a
+schema. No schema version moves: a paired memory and a single one carry the
+same `pg_schema` stamp (read from the metadata schema), so `rolling_deploy`
+verdicts apply unchanged.
+
+Provision the pair the way you provision a schema — the verb reads the
+layout off the DSN, or takes it as a flag:
+
+```bash
+areev provision --db 'postgres://owner:***@pg:5432/areev' \
+  --schema drpaul_prod_memory --meta-schema drpaul_prod_memory_metadata
+areev provision --check --db '…?schema=drpaul_prod_memory&meta_schema=drpaul_prod_memory_metadata'
+#   reports meta_schema, exists (both), every stamp, rolling_deploy
+```
+
+The runtime role needs the same grants as above **on both schemas** — and
+nothing on any other schema, which is the point of the layout:
+
+```sql
+GRANT CONNECT ON DATABASE areev TO areev_rw;
+GRANT USAGE ON SCHEMA "drpaul_prod_memory", "drpaul_prod_memory_metadata" TO areev_rw;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA "drpaul_prod_memory" TO areev_rw;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA "drpaul_prod_memory_metadata" TO areev_rw;
+GRANT USAGE ON ALL SEQUENCES IN SCHEMA "drpaul_prod_memory" TO areev_rw;
+GRANT USAGE ON ALL SEQUENCES IN SCHEMA "drpaul_prod_memory_metadata" TO areev_rw;
+ALTER DEFAULT PRIVILEGES IN SCHEMA "drpaul_prod_memory"
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO areev_rw;
+ALTER DEFAULT PRIVILEGES IN SCHEMA "drpaul_prod_memory_metadata"
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO areev_rw;
+```
+
+`?provision=never` and `--read-only` behave on a pair exactly as on a single
+schema: the stamp is read from the metadata schema, an absent or stale pair
+is `STO-E008` naming both schemas, a read-only open verifies both and never
+creates either. Erasure is `drop_postgres_schema` on the same DSN, which
+drops **both** schemas in one transaction after reading the holds from where
+they now live; export is `pg_dump -n <memory> -n <metadata>`, and a restore
+of the pair to one recovery point restores one memory (the stamps, counters
+and registry it needs are in the second schema, so restore them together).
+
+**A layout is a property of the memory, and an open never changes it.** A
+DSN that names `meta_schema=` over a memory whose own schema already holds
+`meta` (the single layout), or one that names none over a memory schema that
+holds `grains` without `meta` (what a paired memory looks like from its
+memory schema — nothing else does, since `meta` is the first table the
+bootstrap creates and the bootstrap is one transaction), is refused with
+**`STO-E011`** before any lock or DDL, on read-write, `provision=never` and
+read-only opens alike. The alternative — quietly bootstrapping a second,
+empty `meta`/`counters`/`ns_reg` beside the real one — would run the memory
+with every hold, policy, saved query and trigger lease absent and two writers
+allocating ids from two counter rows. Moving an existing single-schema memory
+to the pair is therefore an explicit operator step, with every writer
+stopped:
+
+```sql
+BEGIN;
+CREATE SCHEMA "drpaul_prod_memory_metadata";
+ALTER TABLE "drpaul_prod_memory".meta              SET SCHEMA "drpaul_prod_memory_metadata";
+ALTER TABLE "drpaul_prod_memory".counters          SET SCHEMA "drpaul_prod_memory_metadata";
+ALTER TABLE "drpaul_prod_memory".ns_reg            SET SCHEMA "drpaul_prod_memory_metadata";
+ALTER TABLE "drpaul_prod_memory".telem_meta        SET SCHEMA "drpaul_prod_memory_metadata";
+ALTER TABLE "drpaul_prod_memory".telem_recall_log  SET SCHEMA "drpaul_prod_memory_metadata";
+ALTER TABLE "drpaul_prod_memory".telem_grain_access SET SCHEMA "drpaul_prod_memory_metadata";
+ALTER TABLE "drpaul_prod_memory".telem_query_stat  SET SCHEMA "drpaul_prod_memory_metadata";
+ALTER TABLE "drpaul_prod_memory".telem_budget_stat SET SCHEMA "drpaul_prod_memory_metadata";
+COMMIT;
+```
+
+(`ALTER TABLE … SET SCHEMA` moves a table's indexes and owned sequences with
+it; skip the `telem_*` lines for a memory provisioned with `--telemetry
+off`.) Then add `meta_schema=` to every DSN that names the memory and
+re-grant the runtime role on the new schema. The reverse migration is the
+same statements the other way. Opt-in throughout: a DSN without the
+parameter is the single-schema layout, byte for byte what it was.
+
 ## Async hosts
 
 `Areev` is **blocking and drives its own Tokio runtime** — a current-thread
