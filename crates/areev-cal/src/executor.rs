@@ -381,7 +381,13 @@ pub struct CalGrainResult {
     pub hash: String,
     /// Canonical grain type name (e.g. `"fact"`, `"event"`).
     pub grain_type: String,
-    /// Final relevance score (RRF-fused).
+    /// Final relevance score in `[0, 1]`. For a recall with a free-text leg
+    /// (ABOUT / LIKE) it is the store's rank-normalized RRF-fused score —
+    /// the best-fused hit is exactly `1.0` — or, when `WITH rerank` ran an
+    /// installed reranker, that reranker's scores min-max normalized over the
+    /// candidate pool. Structural-only recalls (no free-text query) and the
+    /// unranked scans carry the sentinel `1.0`. `WITH recency_weight`
+    /// replaces it with the blended recency score.
     pub score: f64,
     /// All grain fields as a JSON object.
     pub fields: serde_json::Value,
@@ -2556,6 +2562,33 @@ impl CalExecutor {
                     // result to whichever grain types happen to have it.
                     None => true,
                 });
+            }
+        }
+
+        // ── WITH min_score(x) on RECALL ──────────────────────────────────
+        //
+        // Set on `RecallParams` since 1.0 and read by nothing on a single
+        // RECALL — only the ASSEMBLE post-merge stage applied it, and there
+        // every score was the constant 1.0, so it could not drop anything.
+        // Hybrid hits now carry the store's normalized score (top = 1.0), so
+        // the floor means something: it applies to recalls with an ABOUT leg,
+        // under the same rule ASSEMBLE's post-merge stage uses — deterministic
+        // (no-ABOUT) grains carry a structural sentinel, not a relevance
+        // signal, and are exempt. On a no-ABOUT RECALL the option therefore
+        // cannot change the result, which is said rather than implied.
+        if let Some(min) = params.min_score {
+            if recall.about.is_some() {
+                grains.retain(|g| g.is_deterministic || g.score >= min);
+            } else {
+                exec_warnings.push(
+                    super::errors::CalWarning::WithOptionInert {
+                        option: "min_score",
+                        statement: "RECALL",
+                        why: "a RECALL with no ABOUT clause ranks structurally and every hit \
+                              carries the sentinel score 1.0, which min_score exempts",
+                    }
+                    .to_string(),
+                );
             }
         }
 

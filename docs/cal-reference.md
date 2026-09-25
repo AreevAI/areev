@@ -266,6 +266,27 @@ turns were trimmed — it will publish a number produced from a truncated prompt
 and never know. `RECALL` has announced the same kind of cut as `CAL-W015` since
 1.5.1.
 
+**With a decision backend installed** (`AreevFacade::set_decider` — host
+config, e.g. the CLI's `--decide` chain; see
+[`decision-model-proposal.md`](decision-model-proposal.md) row A2), each
+non-pinned source whose sub-query is a `RECALL … ABOUT "…"` has its hits
+judged before its share of the budget is spent: per hit, how relevant it is to
+the `ABOUT` text (a four-level `score`: off-topic, tangential, relevant,
+directly answers). The source's trim then keeps the **most relevant hits
+first** instead of cutting the tail — survivors keep their recall order, and
+the first hit still always fits. A **calibrated** backend may also omit hits
+judged below relevance 0.10 before the budget applies; they go to
+`ELEMENT_OMIT` like any budget cut, `total_available` still counts them, and
+the omission is announced as `CAL-W019` naming the sources, the count and the
+provider. An **uncalibrated** backend (e.g. an `llm:` emulation) only changes
+the trim order — it never drops. `PIN` sources, `LITERAL`s and sources with no
+`ABOUT` are never judged, and any backend error, deadline or malformed answer
+falls back to the tail-first trim above. No syntax changes: the same statement
+means the same thing with or without a backend. Because the tier a template
+renders at (§6, `select_tier`) is set from tokens per surviving grain, fewer
+grains after a drop can raise it. `RECALL` itself is untouched by this — its
+ranking is the reranker's job (`WITH rerank`), not the assembler's.
+
 **Render order is FROM-clause order, and nothing else changes it.** Sections
 appear in the order their labels are written. `PRIORITY` weights how the token
 budget is *shared*; it does not reorder. A pipeline `ORDER BY` on an assembly
@@ -1038,7 +1059,7 @@ representative selection:
 | `WITH rerank` / `WITH rerank("model")` | Cross-encoder reranking (feature-gated) |
 | `WITH query_expansion` / `WITH query_decompose` / `WITH hyde` | Query rewriting strategies |
 | `WITH multi_hop(2)` | Entity-graph expansion (1–3 hops): follows the entities named by the first-pass results and adds what they anchor to the candidate pool, competing within `LIMIT` |
-| `WITH recency_weight(0.3)` / `WITH min_score(0.6)` | Scoring controls. `recency_weight(w)` scores `final = (1-w)·relevance + w·freshness`, `freshness = 1/(1 + age_hours)`, where relevance is the candidate's rank in fusion order; **state facts are exempt** (a current fact should not sink below a stale event just for being older). It re-ranks the retrieved candidates *before* the result is bounded. |
+| `WITH recency_weight(0.3)` / `WITH min_score(0.6)` | Scoring controls. `recency_weight(w)` scores `final = (1-w)·relevance + w·freshness`, `freshness = 1/(1 + age_hours)`, where relevance is the candidate's rank in fusion order; **state facts are exempt** (a current fact should not sink below a stale event just for being older). It re-ranks the retrieved candidates *before* the result is bounded. `min_score(x)` drops grains whose `score` (see [the result `score`](#the-result-score)) is below `x` — on a `RECALL … ABOUT` and at ASSEMBLE's post-merge stage. No-`ABOUT` grains carry the structural sentinel and are exempt, so on a `RECALL` without `ABOUT` it emits `CAL-W014`. |
 | `WITH conflict_resolution` | Keep only the newest grain per `(subject, relation)` |
 | `WITH contradiction_detection` | Keep everything, but stamp `contested_by` on grains that are live tips of an open fork |
 | `WITH annotate_relative_time` | Add "2 weeks ago"-style labels |
@@ -1048,6 +1069,33 @@ representative selection:
 RECALL facts ABOUT "dietary restrictions" WITH rerank, diversity(0.4), min_score(0.5)
 RECALL facts WHERE subject = "john" WITH superseded, provenance
 ```
+
+#### The result `score`
+
+Every grain in a `RECALL` result carries a `score` in `[0, 1]`:
+
+- **A recall with a free-text leg** (`ABOUT` / `LIKE`) — the rank-normalized
+  fused score: each grain's Reciprocal Rank Fusion score across the legs that
+  found it (structural, BM25, vector), divided by the best-fused grain's, so
+  **the top hit is exactly `1.0`** and the rest are non-increasing below it.
+  It compares grains *within one result*; it is not a calibrated probability
+  and is not comparable across queries.
+- **With `WITH rerank` and a reranker installed** (the host's reranker — e.g.
+  `AREEV_RERANK_CMD` on the MCP server) — the reranker's own scores, min-max
+  normalized over the candidate pool: best `1.0`, worst `0.0`, every grain
+  `1.0` when the reranker cannot tell them apart. A reranker that fails falls
+  back to fusion order *and* fusion scores.
+- **`WITH diversity`** reorders; each grain keeps its fusion score, so the
+  list need not be monotone. **`WITH multi_hop`** caps an associative grain at
+  the weakest direct hit's score. **`WITH recency_weight`** replaces the score
+  with its blended value.
+- **A structural-only recall** (no free-text leg — `WHERE subject = …`,
+  `RECENT n`, a session scan) carries the sentinel `1.0` on every grain: a
+  single structural leg orders by position, which is not a relevance signal.
+
+`min_score(x)` filters on this value (so `min_score(0.5)` keeps the grains
+that fused at least half as well as the best one), and `WHERE score >= …`
+reads it like any other field.
 
 Options requiring an unavailable backend (e.g. a reranker feature that is not
 compiled in) return an honest error rather than silently degrading. An option

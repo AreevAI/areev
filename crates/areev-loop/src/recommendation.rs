@@ -53,12 +53,25 @@ fn builtin_template(id: &str) -> Option<&'static str> {
         "duplicate.near" => {
             "Consolidate {count} near-duplicate observations (similarity ≥ {threshold})"
         }
+        "duplicate.judged" => {
+            "Consolidate {count} observations a decision model judged to state the same claim (p = {p}; token similarity {similarity})"
+        }
         "contradiction.functional" => {
             "\"{subject}\" holds {count} live values for functional relation \"{relation}\""
+        }
+        // E2: a relation outside the functional set, judged by a decision
+        // model — the summary says both, so the reviewer knows no one
+        // declared the relation single-valued.
+        "contradiction.judged" => {
+            "\"{subject}\" holds {count} live values for relation \"{relation}\" that a decision model judged cannot both be true (p = {p}); \"{relation}\" is not a seeded functional relation"
         }
         "tool_failure.cluster" => {
             "Tool \"{tool}\" failed {count} times ({rate}% of the calls that could \
              fail this way): {signature}"
+        }
+        "tool_failure.cluster_cause" => {
+            "Tool \"{tool}\" failed {count} times ({rate}% of the calls that could \
+             fail this way): {signature} (cause: {cause})"
         }
         "staleness.expired" => "Expire \"{subject}\": past its declared valid_to ({age_days}d ago)",
         "fork.multi_head" => "Entity \"{entity}\" has {count} competing heads",
@@ -513,6 +526,11 @@ pub struct RecDraft {
     pub importance: f64,
     /// Rule E1 pin for `code_revision` drafts (see [`validate_code_rules`]).
     pub evalset_hash: Option<String>,
+    /// Set when a decision backend's probability shaped this draft (a sweep
+    /// pair judged the same claim / not both true, a classified tool cause).
+    /// Carried onto the recommendation; a judged recommendation never
+    /// auto-applies.
+    pub judged_by: Option<crate::decide::JudgedBy>,
 }
 
 impl RecDraft {
@@ -534,7 +552,13 @@ impl RecDraft {
             confidence: 0.8,
             importance: 0.5,
             evalset_hash: None,
+            judged_by: None,
         }
+    }
+
+    pub fn judged_by(mut self, j: crate::decide::JudgedBy) -> Self {
+        self.judged_by = Some(j);
+        self
     }
 
     pub fn severity(mut self, s: Severity) -> Self {
@@ -857,6 +881,18 @@ pub struct Recommendation {
     /// covered only by a whole-queue grant (fail closed).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scope: Vec<String>,
+    /// The decision backend that shaped this recommendation, with the
+    /// probabilities it answered (`docs/decision-model-proposal.md` rule 4).
+    /// A recommendation carrying one is NEVER auto-applied: a decision model
+    /// may score, only code — and a human — gates. Absent (and so absent from
+    /// the stored body) when no decision backend was involved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judged_by: Option<crate::decide::JudgedBy>,
+    /// An LLM draft's verifier self-reported confidence, kept beside
+    /// `confidence` when a calibrated decision backend supplied the routing
+    /// number instead — so a reviewer sees any disagreement between the two.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_confidence: Option<f64>,
     #[serde(skip)]
     pub status: RecStatus,
 }
@@ -1166,6 +1202,8 @@ mod tests {
             replay: None,
             status: RecStatus::Pending,
             scope: Vec::new(),
+            judged_by: None,
+            llm_confidence: None,
         };
         let spec = rec.to_grain_spec("ns").unwrap();
         assert!(Recommendation::from_fields("h", &spec.fields).is_err());
@@ -1204,6 +1242,8 @@ mod tests {
             replay: None,
             status: RecStatus::Pending,
             scope: Vec::new(),
+            judged_by: None,
+            llm_confidence: None,
         };
         let spec = rec.to_grain_spec("ns").unwrap();
         // hash and status are excluded from the immutable body.

@@ -897,7 +897,7 @@ fn validate_cal(cal: &str) -> WResult<()> {
 
 /// The loop's persisted state, read straight off an open store.
 ///
-/// The read-only half of [`load_state`], for surfaces that hold a `&mut
+/// The read-only half of `load_state`, for surfaces that hold a `&mut
 /// Areev` rather than a facade — `areev audit export --with-outcomes`
 /// (#319), above all. `Value::Null` when the loop has never run.
 pub fn loop_state_of(m: &mut areev_store::Areev) -> WResult<Value> {

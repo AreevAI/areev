@@ -3,7 +3,7 @@
 //! `vector_distance_cos`; the postgres backend uses an in-schema `blobs`
 //! table and pgvector. Same contract either way.
 
-use crate::{fact, Backend};
+use crate::{fact, fact_at, Backend};
 use areev_core::error::Result;
 use areev_store::EmbedBackend;
 
@@ -141,6 +141,56 @@ pub fn vector_leg_roundtrip(b: &dyn Backend) {
     assert_eq!(m.get(&near[0].0).unwrap().get_str("object"), Some("toast with jam"));
 }
 
+/// Scored hybrid recall (decision-backend phase 0): a relevance score now
+/// leaves the store, so its semantics must match across backends. The scored
+/// call returns EXACTLY the unscored call's order, the best hit scores 1.0,
+/// and fusion scores never increase down the list — over all three legs
+/// (structural, BM25, vector), a prefix scope, and the resolved-list path.
+pub fn scored_recall_matches_unscored_order(b: &dyn Backend) {
+    use areev_store::RecallTuning;
+    let mut m = b.open();
+    m.set_embedder(Box::new(HistEmbed));
+    let t0 = 1_700_000_000_000;
+    m.add(&fact_at("org.a", "john", "drinks", "espresso every morning", t0)).unwrap();
+    m.add(&fact_at("org.a", "john", "eats", "toast with jam and espresso", t0 + 1)).unwrap();
+    m.add(&fact_at("org.a", "mary", "drinks", "green tea", t0 + 2)).unwrap();
+    m.add(&fact_at("org.b", "john", "likes", "espresso martinis", t0 + 3)).unwrap();
+    m.add(&fact_at("org.b", "zed", "reads", "novels", t0 + 4)).unwrap();
+
+    let check = |plain: Vec<areev_core::format::deserialize::DeserializedGrain>,
+                 scored: Vec<(areev_core::format::deserialize::DeserializedGrain, f32)>,
+                 what: &str| {
+        assert!(!scored.is_empty(), "[{}] {what}: no hits", b.name());
+        assert_eq!(
+            plain.iter().map(|g| g.hash).collect::<Vec<_>>(),
+            scored.iter().map(|(g, _)| g.hash).collect::<Vec<_>>(),
+            "[{}] {what}: scored order must equal unscored order",
+            b.name()
+        );
+        let s: Vec<f32> = scored.iter().map(|(_, s)| *s).collect();
+        assert_eq!(s[0], 1.0, "[{}] {what}: top hit scores exactly 1.0: {s:?}", b.name());
+        assert!(s.windows(2).all(|w| w[0] >= w[1]), "[{}] {what}: non-increasing: {s:?}", b.name());
+        assert!(s.iter().all(|x| *x > 0.0 && *x <= 1.0), "[{}] {what}: in (0,1]: {s:?}", b.name());
+    };
+
+    let d = RecallTuning::default();
+    for (ns, subject, query) in [
+        ("org.a", Some("john"), Some("espresso")),
+        ("org.a", None, Some("espresso every morning")),
+        ("org.a", Some("john"), None),
+        ("org.*", None, Some("espresso")),
+    ] {
+        let plain = m.recall_hybrid_tuned(ns, subject, None, query, 8, None, d).unwrap();
+        let scored = m.recall_hybrid_scored(ns, subject, None, query, 8, None, d).unwrap();
+        check(plain, scored, &format!("{ns}/{subject:?}/{query:?}"));
+    }
+    let list = vec!["org.a".to_string(), "org.b".to_string()];
+    let plain = m.recall_hybrid_scoped(&list, Some("john"), None, Some("espresso"), 8, None, d).unwrap();
+    let scored =
+        m.recall_hybrid_scoped_scored(&list, Some("john"), None, Some("espresso"), 8, None, d).unwrap();
+    check(plain, scored, "resolved list");
+}
+
 /// `forget` must reclaim a tombstoned grain's CAS attachments when nothing
 /// else references them — on the origin AND on a replica replaying the
 /// tombstone. An erasure whose attachment bytes survive on the replica's
@@ -266,3 +316,96 @@ pub fn a_refused_vector_declares_nothing(b: &dyn Backend) {
     );
 }
 
+
+/// A decision-backend reranker (`DecisionRerank`, proposal §4 A1) over a
+/// real `areev_llm` chain talking to an in-process fake `/v1/systemone`:
+/// with `rerank: true` the scored recall follows the backend's relevance
+/// levels (top = 1.0, min-max over the pool), and a backend answering 503
+/// falls back to EXACTLY the fusion order and fusion scores — on both
+/// backends. The fake's hit counter is the positive control: the fallback
+/// is only meaningful because the reranker demonstrably ran.
+pub fn decision_rerank_orders_by_the_backend_and_falls_back_on_failure(b: &dyn Backend) {
+    use crate::systemone_fake::{score_candidates, FakeSystemOne, Reply};
+    use areev_store::{DecisionRerank, RecallTuning};
+    use std::time::Duration;
+
+    let chain = |url: &str| {
+        areev_llm::resolve_chain_with(
+            Some(&format!("systemone:{url}#fake-jev")),
+            None,
+            Some(Duration::from_secs(5)),
+            |_| None,
+        )
+        .expect("resolve")
+        .expect("a chain")
+    };
+    let t0 = 1_700_000_000_000;
+    let seed = |m: &mut areev_store::Areev| {
+        m.add(&fact_at("drk", "john", "drinks", "espresso every morning", t0)).unwrap();
+        m.add(&fact_at("drk", "john", "eats", "toast with jam and a small espresso on the side", t0 + 1)).unwrap();
+        m.add(&fact_at("drk", "ann", "likes", "espresso martinis", t0 + 2)).unwrap();
+        m.add(&fact_at("drk", "mary", "drinks", "green tea", t0 + 3)).unwrap();
+    };
+    let objects = |hits: &[(areev_core::format::deserialize::DeserializedGrain, f32)]| {
+        hits.iter().map(|(g, _)| g.get_str("object").unwrap_or("").to_string()).collect::<Vec<_>>()
+    };
+    let fusion = RecallTuning::default();
+    let rerank = RecallTuning { rerank: true, ..RecallTuning::default() };
+
+    // --- the backend's order wins -------------------------------------------
+    let fake = FakeSystemOne::start(|req| {
+        Reply::ok(score_candidates(req, |t| {
+            if t.contains("toast") {
+                3
+            } else if t.contains("martini") {
+                2
+            } else {
+                0
+            }
+        }))
+    });
+    let mut m = b.open_named("decision_rerank_ok");
+    seed(&mut m);
+    let plain = m.recall_hybrid_scored("drk", None, None, Some("espresso"), 8, None, fusion).unwrap();
+    m.set_reranker(Box::new(DecisionRerank::new(chain(&fake.url))));
+    let hits = m.recall_hybrid_scored("drk", None, None, Some("espresso"), 8, None, rerank).unwrap();
+    let got = objects(&hits);
+    assert_eq!(
+        &got[..2],
+        ["toast with jam and a small espresso on the side", "espresso martinis"],
+        "[{}] reranked order must follow the backend's levels: {got:?}",
+        b.name()
+    );
+    assert_ne!(got, objects(&plain), "[{}] the fixture must make reranking visible", b.name());
+    let s: Vec<f32> = hits.iter().map(|(_, s)| *s).collect();
+    assert_eq!(s[0], 1.0, "[{}] top reranked hit is 1.0: {s:?}", b.name());
+    assert!(s.windows(2).all(|w| w[0] >= w[1]), "[{}] {s:?}", b.name());
+    assert_eq!(fake.hits(), 1, "[{}] one reranked recall = one decision request", b.name());
+    let sent = &fake.bodies()[0];
+    assert_eq!(sent["model"], "fake-jev");
+    assert_eq!(sent["state"]["query"], "espresso");
+    // The cache: the same recall again sends nothing.
+    m.recall_hybrid_scored("drk", None, None, Some("espresso"), 8, None, rerank).unwrap();
+    assert_eq!(fake.hits(), 1, "[{}] cached candidates are not re-sent", b.name());
+    drop(m);
+
+    // --- a failing backend falls back to fusion, exactly --------------------
+    let down = FakeSystemOne::start(|_| Reply::status(503, r#"{"error":{"message":"overloaded"}}"#));
+    let mut m = b.open_named("decision_rerank_503");
+    seed(&mut m);
+    let plain = m.recall_hybrid_scored("drk", None, None, Some("espresso"), 8, None, fusion).unwrap();
+    m.set_reranker(Box::new(DecisionRerank::new(chain(&down.url))));
+    let fell_back = m.recall_hybrid_scored("drk", None, None, Some("espresso"), 8, None, rerank).unwrap();
+    assert!(down.hits() >= 1, "[{}] positive control: the reranker must have been asked", b.name());
+    assert_eq!(
+        fell_back.iter().map(|(g, s)| (g.hash, *s)).collect::<Vec<_>>(),
+        plain.iter().map(|(g, s)| (g.hash, *s)).collect::<Vec<_>>(),
+        "[{}] a 503 must yield the fusion order AND fusion scores",
+        b.name()
+    );
+
+    // --- a structural-only recall never calls the reranker -------------------
+    let before = down.hits();
+    m.recall_hybrid_scored("drk", Some("john"), None, None, 8, None, rerank).unwrap();
+    assert_eq!(down.hits(), before, "[{}] no query, no rerank request", b.name());
+}

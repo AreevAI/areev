@@ -12,8 +12,8 @@ pub mod policy;
 pub mod presets;
 pub mod render;
 
-pub use assembly::{ContextAssembler, FormattedContext, RenderingHints};
+pub use assembly::{ContextAssembler, DecisionProvenance, FormattedContext, RenderingHints};
 pub use budget::Allocation;
 pub use policy::{
-    FormatPolicy, GrainTypeOverride, MetadataLevel, Ordering, OutputFormat, SectionConfig,
+    DecidePolicy, FormatPolicy, GrainTypeOverride, MetadataLevel, Ordering, OutputFormat, SectionConfig,
 };

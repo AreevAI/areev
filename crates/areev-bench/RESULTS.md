@@ -600,6 +600,86 @@ measuring the corpus or the embedder, not the index — and it should not be
 quoted either as a reason to adopt ANN or as a reason to avoid it. Re-run the
 two commands above against the model you will actually deploy.
 
+## 9. Decision-backend reranking — LoCoMo retrieval A/B
+
+Does a decision (System One) model reorder recall better than fusion? Same
+harness and corpus as §4 (full LoCoMo: 10 conversations, 5,882 turns, 1,982
+answerable QAs, k=20), the same no-API retrieval leg (TF-IDF+bigram vector
+leg — no embedding key, so the lexical floor), and one change: a
+`DecisionRerank` installed on each conversation's store, recall run with
+`rerank: true`. Each recall sends its fused candidate pool (up to 64 turns,
+`REFINE_POOL`) as ONE request: one `score` question per candidate over four
+levels (off-topic / tangential / relevant / directly answers). Retrieval
+metrics only — no reader, no judge. Measured 2026-09-25.
+
+| arm | reranker | hit@1 | hit@5 | hit@10 | hit@20 | MRR@10 |
+|---|---|---|---|---|---|---|
+| baseline | none (RRF fusion order) | 18.6% | 33.4% | 40.7% | 49.3% | 0.250 |
+| **decision** | `openrouter:jev-latest` → `typesafe/jev-1.13-20260917`, calibrated | **51.8%** | **63.5%** | **65.3%** | **65.9%** | **0.567** |
+| positive control | oracle: gold-evidence turns = 1.0, all else 0.0 | 66.3% | 66.3% | 66.3% | 66.3% | 0.663 |
+| *pool recall* | *(baseline at k=64: a gold turn is in the pool at all)* | | | | *hit@64 = 66.3%* | |
+
+**Read it against the control.** A reranker can only reorder the pool it is
+given, so the ceiling is the pool's own recall — 66.3%, which the oracle
+reaches exactly at hit@1 (the rerank plumbing reaches the metric; a zero here
+would have been the harness, not the model). The decision backend closes
+**70% of the baseline→ceiling gap at hit@1** (18.6 → 51.8 of a possible 66.3)
+and **98% at hit@20** (49.3 → 65.9), and more than doubles MRR@10. Per
+category (hit@20): multi-hop 31.6 → 58.9, temporal 53.6 → 71.7, open-domain
+27.2 → 48.9, single-hop 53.9 → 67.3, adversarial 53.6 → 67.3. What it cannot
+fix is the other 34%: questions whose gold turn never reached the pool — the
+embedder's job (§4's real-embedding row), not the reranker's.
+
+| run facts | |
+|---|---|
+| provider / served model | OpenRouter → TypeSafe, `typesafe/jev-1.13-20260917`, `calibrated = true` |
+| decision requests | 1,972 for 1,982 recalls (10 were identical repeats, answered from the in-process cache; 640 candidate cache hits) |
+| candidates scored | 126,186 |
+| tokens (provider-reported) | 14,472,137 in / 1,880,004 out |
+| cost | **$0.61** (OpenRouter account-usage delta across the run) |
+| failed requests | 1 of 1,972 (a transient DNS failure, `DEC-E002`) — that recall fell back to fusion order |
+| per-request latency | 0.43 s mean (843.5 s summed) |
+| wall time | 242 s, 4 conversations in parallel, `AREEV_DECIDE_TIMEOUT_MS=5000` |
+
+**The first run found a bug, and is recorded too.** The first full run
+(identical config) measured hit@1 51.1 / hit@5 63.2 / hit@10 64.4 / hit@20
+65.3 / MRR 0.560 with **55 of 1,972 requests failing `DEC-E003`**: the
+provider rounds each probability to two places, so an honest four-level
+distribution can sum to 0.99, which f32 addition makes 0.98999995 — and the
+strict parser refused it against a bare `≤ 1e-2`. Every failure fell back to
+fusion order (fail-open worked as designed), which is why that run's numbers
+are a little lower. Fixed in `areev_core::decide` with a float slack and a
+regression test over every two-place split summing to 0.99/1.01
+(`two_place_rounding_at_the_tolerance_edge_normalizes`); the table above is
+the re-run. Total spend for both runs plus a 50-QA pilot and a 60-QA
+diagnosis: ~$1.25.
+
+**What this does and does not show.** It shows the decision seam reorders a
+lexical-floor pool close to that pool's ceiling at ~$0.0003 and ~0.4 s per
+recall. It does not show an end-to-end answer-accuracy gain (no reader/judge
+was run), and it does not measure a real-embedding pool, where the baseline
+is already 33.1% hit@1 (§4) and the headroom differs. The per-call latency
+rules it out of the voice path (proposal §8) — it is a turn-level refinement.
+One provider, one day, one model version; the served model string is quoted
+so a re-run can be compared like for like.
+
+Reproduce (the key never leaves the environment):
+```
+# baseline
+cargo run --release -p areev-bench --bin accuracy -- locomo10.json 10
+# positive control (keyless)
+cargo run --release -p areev-bench --bin accuracy -- locomo10.json 10 --rerank-oracle
+# decision reranker
+AREEV_DECIDE=openrouter:jev-latest AREEV_DECIDE_TIMEOUT_MS=5000 AREEV_BENCH_WORKERS=4 \
+  cargo run --release -p areev-bench --bin accuracy -- locomo10.json 10
+# pool recall (the ceiling)
+AREEV_TOPK=64 cargo run --release -p areev-bench --bin accuracy -- locomo10.json 10
+```
+Calibration of a chain on a labeled set: `decide_calibrate` (accuracy, ECE@10,
+Brier per provider and question type, plus a noul F1 threshold and the 5%
+two-band suggestion); `crates/areev-bench/data/decide_calibrate_sample.jsonl`
+is a 12-row synthetic smoke set — it proves the plumbing, not calibration.
+
 ## Governed self-improvement on real, public data
 
 Two harnesses measure the same claim as the A/B/A/B bench below, on

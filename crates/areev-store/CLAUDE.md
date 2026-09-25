@@ -529,6 +529,56 @@ pool-capped at `REFINE_POOL`=64):
   it with `supersession_map(&[Hash])` to label which results are stale;
   returning history unmarked is worse than not returning it.
 
+**Scores leave the store** (decision-backend phase 0).
+`recall_hybrid_scored` / `recall_hybrid_scoped_scored` return
+`Vec<(DeserializedGrain, f32)>`; `recall_hybrid`/`_tuned`/`_scoped` are thin
+wrappers that drop the score, over the SAME body (`recall_hybrid_ids` returns
+grains + a positionally aligned score vec, so the egress pass still works on a
+grain slice and the unscored path pays nothing) — which is what makes "scored
+order == unscored order" structural rather than tested-for (it is tested for
+too: `tests/scored_recall_tests.rs`, conformance
+`scored_recall_matches_unscored_order`, both backends). Semantics: fusion =
+RRF ÷ the pool maximum, so the best-fused hit is exactly 1.0; rerank = the
+backend's raw scores min-max normalized over the reranked pool
+(`normalize_rerank_scores`: all-equal → 1.0, non-finite → pool minimum), and a
+failed/wrong-length rerank falls back to fusion order AND fusion scores
+(`rerank_pool` returns `None`); MMR reorders and keeps each hit's fusion score
+(so not monotone). The CAL facade turns a query-less (structural-only) recall
+back into the 1.0 sentinel — a single leg's normalized RRF is position, not
+relevance.
+
+`CommandRerank::new(cmd, model)` is `CommandEmbed`'s reranking twin (CLI
+`--rerank-cmd`, MCP `AREEV_RERANK_CMD`): whitespace-split argv, no shell,
+`areev_core::proc::run`; stdin `{"query": "...", "docs": ["..."]}`, stdout a
+JSON array of exactly `docs.len()` numbers (else `Validation`). No setup probe
+— a reranker has no dimension to learn, and a broken one fails open at recall.
+
+`DecisionRerank::new(Arc<dyn areev_core::decide::DecisionBackend>)` (decision
+phase 2, proposal §4 A1) is the reranker over a decision (System One) backend
+— the pure seam lives in `areev_core::decide`, so the store takes a backend
+with no LLM/HTTP dependency; the adapters and chain are `areev-llm`'s. One
+`score` question per candidate (`c<i>`, "How relevant is candidates[i] to
+`query`…", default levels off-topic/tangential/relevant/directly answers),
+batched as `state = {"query", "candidates": [{"i","text"}]}`; score =
+probability-weighted level ÷ (levels−1). Default batch = `REFINE_POOL` (64),
+so one reranked recall is ONE request whenever the pool fits the ~28k-token
+state budget (chars/4; larger batches split, a lone oversize candidate is
+truncated on a char boundary) — `areev_search` reranks on every call, so an
+extra request is an extra round trip on the recall path. In-process LRU
+(4096 entries) keyed by `(sha256(levels+question version), sha256(query),
+sha256(doc))`: a cached candidate is never re-sent, nothing is persisted.
+A failure in ANY batch is an `Err` for the whole call (never a partial
+vector), so `rerank_pool` falls back to fusion order + scores; batches that
+answered stay cached. No deadline reaches `RerankBackend::rerank`, so each
+request uses the backend's default (`DecideRequest.deadline = None`).
+`model()` = the backend's `describe()`; `calibrated()` forwards (reranking
+only orders, so an uncalibrated backend is acceptable here). `stats()` hands
+out shared counters (requests, failures by `DEC` code, tokens, cache hits,
+last served provider/model) that survive `set_reranker` taking ownership.
+Tests: `tests/decision_rerank_tests.rs`; conformance
+`decision_rerank_orders_by_the_backend_and_falls_back_on_failure` (both
+backends, a real `areev_llm` chain against a fake `/v1/systemone`).
+
 CAL reaches these via the already-ported `WITH diversity|rerank|
 query_expansion|superseded` options (executor → `RecallParams` →
 `AreevFacade` → `RecallTuning`). Covered by `tests/recall_tuning_tests.rs`
@@ -819,6 +869,12 @@ is what lets an embedded reader hold the SELECT-only role too.
 - `fork_merge_tests.rs` — fork → provisional head → merge (uses **fixed**
   `created_at` values to make the tiebreak deterministic — copy that pattern).
 - `fts_hybrid_tests.rs` — RRF ranking, zero-deadline fail-open.
+- `decision_rerank_tests.rs` — `DecisionRerank` batching boundaries, state
+  split/truncation, cache hits/eviction, whole-call error propagation.
+- `scored_recall_tests.rs` — scored == unscored order, top = 1.0,
+  non-increasing; reranker min-max normalization + fallback; `CommandRerank`
+  round-trip (Python script, skipped when no Python — `command_embed_tests.rs`'s
+  pattern).
 - `multilingual_vector_tests.rs` — `TrigramEmbed` test backend, EN/AR/ZH.
 - `bundle_blob_tests.rs` — CAS + bundle replication.
 - `memtool_remember_tests.rs` — memory-tool cookbook flows, `remember()`.

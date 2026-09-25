@@ -50,6 +50,7 @@ everything runs when you run it.
 | **[Areev Trigger](docs/triggers.md)** — the cadence | Standing rules that start workflows — eight kinds, from cron to memory-predicates | The rule is a **grain**, so the cadence travels with the memory. **No daemon** — evaluation is a cheap idempotent command |
 | **[CAL](docs/cal-reference.md)** — the context | A query language that **assembles**, not just retrieves: budget-aware rendering, Full → Summary → Omit | A turn needs a *budget-shaped* prompt, and deterministic allocation is what makes a replay comparable |
 | **[The store](docs/why-areev.md#storage-a-plain-sqlite-file-or-a-postgres-schema)** — the record | A provenance graph in a plain **SQLite file** ([Turso](https://github.com/tursodatabase/turso)), or a **PostgreSQL** schema for the server tier | **~30 µs** recall in-process; one conformance suite pins both backends to identical semantics |
+| **[Decision backends](docs/decision-model-proposal.md)** — the judgment (optional) | Typed, calibrated answers — `noul` / `choice` / `score` with probabilities, no text — from a System One model (TypeSafe Jev via any gateway, a self-hosted clone, or an LLM in emulation) scoring recall, disclosure, transcript folds and plan branches | A model **scores and orders; only code omits, gates, approves or applies**. Off by default, fails open to the deterministic rule. Measured: LoCoMo retrieval hit@1 **18.6% → 51.8%** ([RESULTS.md §9](crates/areev-bench/RESULTS.md)) |
 
 Every screen below is the real console over the demo memory committed to
 this repo — click through:

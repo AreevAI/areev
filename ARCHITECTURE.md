@@ -612,7 +612,10 @@ Two properties shape everything below:
   text blobs, analyzers compute over declared semantics (`Event.is_error`, a
   Fact's subject/relation/object, supersession chains, `valid_to`) and produce
   useful recommendations with **zero model calls**. An LLM is strictly additive
-  enrichment — it can never gate, approve, or apply anything.
+  enrichment — it can never gate, approve, or apply anything. The same holds
+  for an optional decision (System One) model: it may score and order, never
+  omit, gate, approve or apply (§10, "A decision model may score and order;
+  only code omits, gates, approves or applies").
 - **Governance is native.** Every change passes four gates and lands as
   hash-chained audit grains. There is no daemon and no scheduler anywhere; a
   loop run is a cheap, idempotent command a host triggers however it already
@@ -2524,6 +2527,72 @@ harness Facts like cancel, because two pause cycles in one millisecond must
 not rank arbitrarily. It needs `run.execute` (resume's grant, not cancel's
 low bar), is idempotent, and is refused with `RUN-E029` on a finished run or
 a pending cancel: cancel wins, and cancel on a paused run finalizes it.
+
+### A decision model may score and order; only code omits, gates, approves or applies
+
+**Decision (2026-09-25):** every judgment on the context path is a constant or
+a keyword list — RRF order with the score thrown away, a per-grain-type
+priority table, the 70%/95% budget rule, twenty substrings for temporal
+intent, bigram Jaccard for dedup, newest-wins for conflicts — and the loop's
+verifier gates on an LLM's *self-reported* confidence. A **decision (System
+One) model** takes a `state` plus named typed questions (`noul` / `choice` /
+`score`) and returns typed answers with probabilities in one evaluation, no
+text generated. That is the shape of every one of those judgments, so Areev
+gains one optional seam for it — `areev_llm::decide`
+([`docs/decision-model-proposal.md`](docs/decision-model-proposal.md) is the
+contract) — under four rules:
+
+1. **A decision model may score and order; only code omits, gates, approves
+   or applies.** This is §8's "deterministic core; LLM optional" extended to
+   decision models. The 70/95 budget rule, the loop's four gates, the run
+   scheduler and the authz set stay code; a backend's answer is an input to
+   them, never a replacement.
+2. **An uncalibrated backend may reorder, never omit.** Every `Decision`
+   carries `calibrated`. An LLM-emulated backend (`llm:<spec>`) reports
+   `false` — its probability is a self-report, the thing rule 1 exists to
+   distrust — and policy code that would omit, drop or skip on a probability
+   checks the flag and falls back to rank-only behaviour. A chain is
+   calibrated only if every entry is.
+3. **Fail open to the deterministic rule — except anonymization, which fails
+   safe.** A transport error, deadline, 429 or malformed answer moves to the
+   next chain entry, then to today's rule; an invalid question (`DEC-E006`,
+   a `422`) is not retried. In `anon` a backend may raise a tier-0
+   detection's confidence or add a category; it may never suppress one.
+4. **Every judgment that shaped output is attributable.** `provider`,
+   `model`, `calibrated` and latency travel with the answer — into the recall
+   explanation, the telemetry sidecar, `areev decide` output and
+   `GET /api/config` — so a reordered context can always say who reordered it.
+
+**A seam, not an integration.** TypeSafe's Jev defined the wire shape
+(`POST /v1/systemone`), but TypeSafe is US-hosted with no EU/UK/CA residency
+and paused signups on 2026-09-22, and the same shape is served by OpenRouter,
+Vercel AI Gateway, Cloudflare Workers AI, LiteLLM passthrough and several
+Apache/MIT self-hosted clones. Binding Areev to one vendor would have made a
+residency requirement or a signup freeze a product outage. So the seam is a
+`DecisionBackend` trait with one adapter per wire envelope (`SystemOneHttp`,
+`CloudflareWorkersAi`, `LlmEmulated`, `CommandDecide`), and the host configures
+an **ordered chain** (`--decide typesafe:jev-latest,cloudflare:typesafe/jev,llm:…`,
+`--decide-cmd` appended last) whose floor is always the deterministic rule. A
+chain never exceeds its caller's deadline (`--decide-timeout-ms`, default
+2000 ms). No new dependency: the HTTP adapters ride the blocking client
+`areev-llm` already has.
+
+**Nothing is default-on, and the keyless floor does not move.** With no
+`--decide`/`AREEV_DECIDE` configured `resolve_chain` returns nothing and every
+path is byte-identical to before. A `state` sent to a remote backend is memory
+egress and goes through the same pseudonymization path as LLM egress
+([`docs/security-model.md`](docs/security-model.md), "Decision backends
+(egress)"). Judgments are never persisted in the memory file — the rerank
+cache is in-process, keyed by content hash, and host config is per-process,
+never written to the file.
+
+**Rejected:** a TypeSafe-specific integration (one vendor's residency and
+availability become Areev's); new CAL syntax for model-driven ranking
+(`WITH rerank` / `WITH dedup` keep their meaning — a backend changes *how*
+they decide, not *what* they mean, and syntax is an OMS decision); trusting
+an LLM's stated confidence to omit (rule 2); placing a remote backend in the
+50 ms voice-loop gate (70–500 ms hosted; only a local encoder clone could
+qualify, still opt-in).
 
 ---
 

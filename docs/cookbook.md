@@ -1933,6 +1933,164 @@ absent from the MCP tool and `/api/run/shadow`: those are reads, and a read
 that executes code is not a read. Full reference:
 [`run.md`](run.md#verify-and-shadow).
 
+## 27. Decision backends: typed, calibrated judgments
+
+Recall orders its results by RRF today, and that stays the floor. A
+**decision (System One) backend** can score and order them instead: it takes
+a `state` plus named typed questions — `noul` (yes/no), `choice` (one of
+named options), `score` (ordered levels) — and returns probabilities, with no
+text generated. It is **off unless you configure it**, and it may score and
+order, never omit: the budget rule, the loop's gates and authorization stay
+code. Contract: [`decision-model-proposal.md`](decision-model-proposal.md).
+
+### Choose a chain
+
+`--decide` is a global flag (like `--embed-cmd`, it works on any verb) taking
+a comma-separated, **ordered** list of providers. Entries are tried in order;
+a transport error, a timeout, a 429 or a 503 moves to the next; when every
+entry fails, the deterministic rule answers. `--decide-timeout-ms` (default
+2000) bounds the whole chain.
+
+```bash
+# Hosted, with a ZDR fallback and a local LLM as the last model entry
+export TYPESAFE_API_KEY=… CLOUDFLARE_API_TOKEN=… CLOUDFLARE_ACCOUNT_ID=…
+areev search --db john.db --ns caller --query "seat preference" -k 10 \
+  --decide typesafe:jev-latest,cloudflare:typesafe/jev,llm:ollama:qwen3.5:4b
+
+# Self-hosted clone on loopback (von, kev, jev-rs, oido, LiteLLM /typesafe, …)
+areev search --db john.db --ns caller --query "seat preference" \
+  --decide systemone:http://127.0.0.1:8009          # AREEV_DECIDE_API_KEY if it wants a bearer
+
+# Your own process: stdin gets the wire request JSON, stdout returns the wire
+# response JSON. No shell; it is always the LAST entry, after any --decide.
+areev search --db john.db --ns caller --query "seat preference" \
+  --decide systemone:http://127.0.0.1:8009 --decide-cmd "python3 my_decider.py"
+```
+
+Only the first colon splits provider from target, so URLs and nested LLM
+specs pass through. The provider table (endpoints, key variables) and which
+chain fits a residency requirement are in
+[`deployment-profile.md`](deployment-profile.md#decision-backends-optional);
+`openjev:` is for development only, never for customer memories.
+
+**Calibrated vs emulated.** `typesafe:`, `openrouter:`, `vercel:`,
+`cloudflare:`, `openjev:` and `systemone:` speak the System One wire shape and
+report `calibrated: true`. `llm:<spec>` *emulates* it — the probability is a
+model's self-report — and reports `calibrated: false`. **An uncalibrated backend may reorder,
+never omit**, and a chain counts as calibrated only when every entry is.
+
+### Smoke-test it
+
+```bash
+areev decide --decide systemone:http://127.0.0.1:8009 \
+  --state "Customer asked twice for a window seat on the LHR leg." \
+  --noul "The customer has a seating preference"
+#   -> the wire response, plus which entry answered (a shorthand asks one
+#      question, id "q"):
+#   { "model": "jev-latest",
+#     "answers": { "q": { "type": "noul", "noul": 0.94 } },
+#     "provider": "systemone", "calibrated": true, "latency_ms": 41 }
+
+areev decide --decide openjev:openjev --state @ticket.txt \
+  --choice "Route this ticket" --option billing="money owed or charged" \
+  --option support="the product misbehaves"
+
+areev decide --decide typesafe:jev-latest --state @ticket.txt \
+  --questions @questions.json      # the wire `questions` object, several at once
+```
+
+`--state` is text or `@file`, used as JSON when it parses as a JSON string,
+object or array. `--score` takes repeated `--level`s, lowest first. `decide`
+takes no `--db` — it names no memory. A `DEC-E007` with a `Retry-After` is
+retried once (waiting at most 60 s); nothing on the recall path ever waits.
+
+A failure names its code: `DEC-E001` (no backend / bad spec), `DEC-E002`
+(transport/HTTP), `DEC-E004` (deadline), `DEC-E005` (chain exhausted, with each
+entry's error), `DEC-E007` (rate limited) — see
+[`../ERROR_CODES.md`](../ERROR_CODES.md).
+
+### Use it as the reranker
+
+With `--decide` set, recall installs the backend as its reranker
+(`DecisionRerank`, phase 2 of the proposal): each
+candidate is scored and the result reordered — never dropped — and the hit's
+`score` (and the MCP `areev_search` row's `score` + `provider`) says what
+ordered it. `areev search`, `areev recall-hook` and MCP `areev_search` rerank
+whenever a reranker is installed; a CAL `RECALL` does under `WITH rerank`.
+`--rerank-cmd` (below) wins over `--decide` when both are given. Under an
+egress anonymization policy (or `--anonymize-egress`) the candidates' text is
+pseudonymized before it leaves the process. Without
+one, `score` is the rank-normalized RRF score (top = 1.0) — real now, where it
+used to be a constant, so `min_score` filters mean something.
+
+A plain command reranker needs no decision backend at all:
+
+```bash
+# stdin: {"query": "...", "docs": ["...", ...]}  stdout: [0.91, 0.12, ...]
+areev search --db john.db --ns caller --query "seat preference" \
+  --rerank-cmd "python3 my_reranker.py" --recall-deadline-ms 300
+```
+
+`--recall-deadline-ms` bounds the recall (`0` or unset = none); a backend
+that misses it fails open to the RRF order. `areev recall-hook` defaults it to
+1500 ms whenever a reranker is installed, so a prompt is never held up long. A hosted backend costs 70–500 ms, so keep it out of a 50 ms
+voice loop.
+
+### MCP, the Claude Code hook, and the bindings
+
+The MCP server and the hooks read the same settings from the environment
+(`areev recall-hook` also takes the global flags directly); `AREEV_DECIDE` is
+the bindings' default too:
+
+| Env | Meaning |
+|---|---|
+| `AREEV_DECIDE` | the chain spec |
+| `AREEV_DECIDE_CMD` | command backend, appended last |
+| `AREEV_DECIDE_TIMEOUT_MS` | per-call deadline (default 2000) |
+| `AREEV_DECIDE_API_KEY` | bearer for `systemone:<url>` |
+| `AREEV_RECALL_DEADLINE_MS` | recall deadline |
+| `AREEV_RERANK_CMD` | command reranker |
+
+```bash
+claude mcp add \
+  -e AREEV_DECIDE=cloudflare:typesafe/jev -e CLOUDFLARE_API_TOKEN=… -e CLOUDFLARE_ACCOUNT_ID=… \
+  areev -- areev serve --mcp --db ~/.areev/code.db --ns claude-code
+```
+
+```python
+import areev, json
+
+m = areev.Areev("john.db", ns="caller")
+m.set_decider("typesafe:jev-latest,llm:ollama:qwen3.5:4b", timeout_ms=1500)
+m.set_recall_deadline_ms(400)
+print(m.decide("Customer asked twice for a window seat.",
+               json.dumps({"pref": {"type": "noul",
+                                    "instructions": "The customer has a seating preference"}})))
+m.set_reranker_command("python3 my_reranker.py")   # an explicit command reranker wins
+```
+
+```js
+const m = new Areev('john.db', 'caller')
+m.setDecider('typesafe:jev-latest,llm:ollama:qwen3.5:4b', null, 1500)
+m.setRecallDeadlineMs(400)
+console.log(await m.decide('Customer asked twice for a window seat.',
+  JSON.stringify({ pref: { type: 'noul', instructions: 'The customer has a seating preference' } })))
+m.setRerankerCommand('python3 my_reranker.py')
+```
+
+`decide` returns (in Node, resolves to) the wire response plus `provider`, `calibrated` and `latency_ms`
+as a JSON string. `set_decider` / `setDecider` also installs the chain as the
+reranker `search()` uses — unless `set_reranker_command` / `setRerankerCommand`
+installed a command reranker, which always wins — and every `search()` row
+carries its `score` (the MCP `areev_search` row). With no arguments it reads
+`AREEV_DECIDE` / `AREEV_DECIDE_CMD` / `AREEV_DECIDE_TIMEOUT_MS`; `spec=""`
+clears it. `set_recall_deadline_ms(None)` / `setRecallDeadlineMs(null)` (or
+`0`) restores the unbounded default; set it while no call is in flight on the
+handle. What a remote backend receives is the `state` — which can
+hold grain text — so it goes through the same pseudonymization as LLM egress
+and nothing it answers is written into the memory file
+([`security-model.md`](security-model.md#decision-backends-egress)).
+
 ## See also
 
 - [`../ARCHITECTURE.md`](../ARCHITECTURE.md) — how Areev is built
@@ -1944,5 +2102,6 @@ that executes code is not a read. Full reference:
 - [`run.md`](run.md) — the governed workflow runtime
 - [`docker.md`](docker.md) — the container image: compose, heartbeat, cloud deploys
 - [`gdpr.md`](gdpr.md) — GDPR obligations → capabilities (for a DPIA)
+- [`decision-model-proposal.md`](decision-model-proposal.md) — decision backends: the seam, providers, rules
 - [`../FAQ.md`](../FAQ.md) — concepts and comparisons
 - [`../SECURITY.md`](../SECURITY.md) — trust model and hardening

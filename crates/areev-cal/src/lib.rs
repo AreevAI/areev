@@ -14,6 +14,7 @@ pub mod executor;
 pub mod facade;
 pub mod humanize;
 pub mod json;
+pub mod judge;
 pub mod json_build;
 pub mod lexer;
 pub mod areev_facade;

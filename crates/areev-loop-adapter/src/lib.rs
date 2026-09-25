@@ -16,9 +16,11 @@
 //! println!("proposed {} recommendation(s)", result.stored);
 //! ```
 
+mod decide;
 mod governance;
 mod substrate;
 
+pub use decide::LoopDecider;
 pub use governance::LoopGovernance;
 pub use substrate::{loop_state_of, AreevSubstrate, BorrowedSubstrate};
 
@@ -194,6 +196,16 @@ pub fn recommendation_detail(r: &areev_loop::Recommendation) -> serde_json::Valu
     }
     if let Some(gd) = &r.guidance {
         o.insert("guidance".into(), serde_json::Value::from(gd.clone()));
+    }
+    // A decision backend's part in this finding (provider, model,
+    // calibrated, latency, the probabilities) and, for an LLM draft routed
+    // on the decision, the verifier's own self-report beside it — the
+    // reviewer sees who judged, and any disagreement.
+    if let Some(j) = &r.judged_by {
+        o.insert("judged_by".into(), serde_json::json!(j));
+    }
+    if let Some(c) = r.llm_confidence {
+        o.insert("llm_confidence".into(), serde_json::json!(c));
     }
     out
 }

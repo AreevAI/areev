@@ -182,6 +182,13 @@ pub trait CalStoreFacade: Send + Sync {
     /// budget? Default no-op — only a telemetry-backed store overrides it.
     fn note_assembly_budget(&self, _overflow: bool) {}
 
+    /// The host's decision backend, if one is installed (decision-backend
+    /// phase 3). Multi-source `ASSEMBLE` consults it to trim each source by
+    /// judged relevance. Default `None` — today's tail-first trim.
+    fn decider(&self) -> Option<std::sync::Arc<dyn areev_core::decide::DecisionBackend>> {
+        None
+    }
+
     /// Anonymization egress report for payload flags (proposal §4.1):
     /// `Some({"namespaces": [...], "floor": bool, "mappings": [{ns,
     /// mapping_id}]})` when an egress policy or floor is active on the

@@ -37,6 +37,11 @@ serde_json = "1"
 # edge reaches a shipped artifact.
 areev-cal = { path = "../areev-cal" }
 areev-run = { path = "../areev-run" }
+# The DecisionRerank case drives a real `areev_llm` decision chain
+# (`systemone:<url>`) against an in-process fake `/v1/systemone` server, so
+# the reranker's HTTP path is exercised end to end on each backend.
+# `publish = false`, so this edge reaches no shipped artifact.
+areev-llm = { path = "../areev-llm" }
 
 [dev-dependencies]
 # `areev::pack` (#341): the pack install the Node/Python bindings call,

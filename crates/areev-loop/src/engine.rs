@@ -137,6 +137,12 @@ pub struct RunResult {
     /// still deserializes.
     #[serde(default)]
     pub withdrawn: u64,
+    /// What the optional decision backend did this run (who it was, whether
+    /// it is calibrated, calls and failures). `None` when none is installed —
+    /// and then absent from the serialized result, so a run without one
+    /// reads exactly as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decider: Option<crate::decide::DeciderReport>,
 }
 
 /// The DISCOVER pipeline's attrition, counted.
@@ -212,6 +218,7 @@ impl RunResult {
             analyzers_run: vec![],
             analyzers_skipped: vec![],
             withdrawn: 0,
+            decider: None,
         }
     }
 
@@ -233,6 +240,9 @@ pub struct Engine {
     /// specialized model (or take the generative model out of grounding
     /// entirely) without changing the proposer/verifier.
     ground_llm: Option<Box<dyn crate::llm::LlmBackend>>,
+    /// Optional decision backend (`docs/decision-model-proposal.md` E1–E3).
+    /// `None` → every stage it touches runs today's rule.
+    decider: Option<crate::decide::Decider>,
 }
 
 pub(crate) struct AnalysisPass {
@@ -242,6 +252,7 @@ pub(crate) struct AnalysisPass {
     analyzers_run: Vec<String>,
     pub(crate) analyzers_skipped: Vec<AnalyzerSkip>,
     llm_funnel: Option<LlmFunnel>,
+    decider: Option<crate::decide::DeciderReport>,
 }
 
 impl Engine {
@@ -253,6 +264,7 @@ impl Engine {
             policy: crate::policy::Policy::default(),
             llm: None,
             ground_llm: None,
+            decider: None,
         }
     }
 
@@ -263,6 +275,7 @@ impl Engine {
             policy: crate::policy::Policy::default(),
             llm: None,
             ground_llm: None,
+            decider: None,
         }
     }
 
@@ -287,6 +300,49 @@ impl Engine {
     pub fn with_ground_llm(mut self, backend: Box<dyn crate::llm::LlmBackend>) -> Self {
         self.ground_llm = Some(backend);
         self
+    }
+
+    /// Attach an optional decision backend (`docs/decision-model-proposal.md`
+    /// §4, E1–E3). It scores; it never approves, applies or rolls back:
+    ///
+    /// - **GROUND / VERIFY** (with an LLM attached): a calibrated backend's
+    ///   `noul` per draft × cited evidence replaces the LLM GROUND call, and
+    ///   its "is it sound?" `noul` is the routing number at the confidence
+    ///   floor — the LLM's keep/kill still runs, and its self-report is kept
+    ///   beside it as `llm_confidence`.
+    /// - **Sweeps**: `duplicate_sweep` asks "same claim?" of observation pairs
+    ///   below the Jaccard threshold, `contradiction_sweep` asks "can both be
+    ///   true?" of values under relations outside the functional set.
+    /// - **Tool failure cause**: a free-text cause is classified into the
+    ///   closed cause vocabulary.
+    ///
+    /// An uncalibrated backend is never used to drop or propose anything —
+    /// those stages keep today's rule. A backend error drops that stage's
+    /// contribution for the run (`LOP-E051`, counted on
+    /// [`RunResult::decider`]), never the run. Every recommendation a
+    /// decision shaped carries `judged_by` and is never auto-applied.
+    pub fn with_decider(mut self, backend: Box<dyn crate::decide::DecideBackend>) -> Self {
+        let cap = self.decider.as_ref().map(|d| d.pair_cap());
+        let mut d = crate::decide::Decider::new(backend);
+        if let Some(cap) = cap {
+            d = d.with_pair_cap(cap);
+        }
+        self.decider = Some(d);
+        self
+    }
+
+    /// Cap the pairs each sweep (and the distinct causes the tool-failure
+    /// classifier) may send to the decision backend per run (default
+    /// [`crate::decide::DEFAULT_PAIR_CAP`] = 200). No effect without
+    /// [`Engine::with_decider`].
+    pub fn with_decider_pair_cap(mut self, cap: usize) -> Self {
+        self.decider = self.decider.take().map(|d| d.with_pair_cap(cap));
+        self
+    }
+
+    /// The installed decision backend, if any.
+    pub fn decider(&self) -> Option<&crate::decide::Decider> {
+        self.decider.as_ref()
     }
 
     pub fn policy(&self) -> &crate::policy::Policy {
@@ -397,6 +453,7 @@ impl Engine {
             analyzers_run,
             analyzers_skipped,
             llm_funnel,
+            decider,
         } = self.analysis_pass(
             &*sub,
             &persisted,
@@ -467,6 +524,7 @@ impl Engine {
             analyzers_skipped,
             llm_funnel,
             withdrawn,
+            decider,
         })
     }
 
@@ -525,6 +583,13 @@ impl Engine {
         let mut candidates: Vec<Recommendation> = Vec::new();
         let caps = sub.capabilities();
         let verdicts = latest_verdicts(persisted);
+        // A rehearsal is a pure function of the grains; a decision backend is
+        // a remote model, so replay never consults one (the same rule as the
+        // LLM stage).
+        let decider = if replay.is_none() { self.decider.as_ref() } else { None };
+        if let Some(d) = decider {
+            d.reset();
+        }
 
         for analyzer in &self.analyzers {
             let m = analyzer.manifest();
@@ -596,7 +661,8 @@ impl Engine {
                 now_ms,
                 outcome_inputs,
                 &verdicts,
-            );
+            )
+            .with_decider(decider);
             match analyzer.analyze(&ctx) {
                 Ok(drafts) => {
                     analyzers_run.push(m.id.clone());
@@ -670,6 +736,7 @@ impl Engine {
             analyzers_run,
             analyzers_skipped,
             llm_funnel: self.llm.is_some().then_some(funnel),
+            decider: decider.map(|d| d.report()),
         })
     }
 
@@ -1062,6 +1129,13 @@ impl Engine {
                 evidence: ev_for(&v.cited),
             })
             .collect();
+        // With a CALIBRATED decision backend, GROUND is its per-evidence
+        // `noul` (and the same request carries VERIFY's "is it sound?"), so
+        // the LLM GROUND call is skipped. Uncalibrated, absent, or failed →
+        // `None`, and the LLM GROUND below runs exactly as before (rule 2:
+        // an uncalibrated number never drops a draft; rule 3: fail open to
+        // today's rule).
+        let decided = self.decide_ground_verify(&validated, &claims);
         let ground_req = GroundRequest {
             loop_proto: 1,
             op: "ground",
@@ -1073,23 +1147,28 @@ impl Engine {
         // the first is the gate doing its job, the second is a backend having
         // a bad minute while the engine fail-softs. Count the verdicts
         // actually returned so the two are distinguishable afterwards.
-        let grounded: std::collections::BTreeSet<usize> = match serde_json::to_string(&ground_req)
-            .ok()
-            .and_then(|b| ground.complete(&b).ok())
-        {
-            Some(raw) => {
-                let parsed = parse_ground(&raw);
-                funnel.ground_verdicts = parsed.results.len() as u64;
-                parsed
-                    .results
-                    .into_iter()
-                    .filter(|r| r.supported)
-                    .map(|r| r.id)
-                    .collect()
-            }
-            None => {
-                funnel.ground_call_failed = true;
-                return Vec::new();
+        let grounded: std::collections::BTreeSet<usize> = if let Some(d) = &decided {
+            funnel.ground_verdicts = d.len() as u64;
+            d.iter().filter(|(_, j)| j.grounded).map(|(i, _)| *i).collect()
+        } else {
+            match serde_json::to_string(&ground_req)
+                .ok()
+                .and_then(|b| ground.complete(&b).ok())
+            {
+                Some(raw) => {
+                    let parsed = parse_ground(&raw);
+                    funnel.ground_verdicts = parsed.results.len() as u64;
+                    parsed
+                        .results
+                        .into_iter()
+                        .filter(|r| r.supported)
+                        .map(|r| r.id)
+                        .collect()
+                }
+                None => {
+                    funnel.ground_call_failed = true;
+                    return Vec::new();
+                }
             }
         };
         funnel.grounded = grounded.len() as u64;
@@ -1137,7 +1216,12 @@ impl Engine {
         // stamp — not the proposer's self-report.
         let mut out = Vec::new();
         for (i, v) in validated.into_iter().enumerate() {
-            if let Some(&conf) = verdicts.get(&i) {
+            if let Some(&self_report) = verdicts.get(&i) {
+                // The routing number: a calibrated decision's p(sound) when
+                // one answered for this draft, else the verifier's
+                // self-report as before. The LLM's keep/kill already ran.
+                let judged = decided.as_ref().and_then(|d| d.get(&i));
+                let conf = judged.map_or(self_report, |j| j.sound);
                 if conf >= MIN_LLM_CONFIDENCE {
                     // A lesson that restates, in other words, a live lesson
                     // on the same entity. `authored_dedup_key` collapses the
@@ -1179,6 +1263,12 @@ impl Engine {
                         now_ms,
                         scope,
                     );
+                    if let Some(j) = judged {
+                        // Both numbers on the record, so a reviewer sees
+                        // when the decision and the verifier disagree.
+                        rec.llm_confidence = Some(self_report);
+                        rec.judged_by = Some(j.judged_by.clone());
+                    }
                     if let Some(best) = near.first() {
                         // The summary says so, and names the closest rule.
                         rec.summary.args.insert("near_count".into(), Value::from(near.len() as u64));
@@ -1203,6 +1293,65 @@ impl Engine {
         }
         funnel.stored = out.len() as u64;
         out
+    }
+
+    /// E1: GROUND + VERIFY's routing number from a CALIBRATED decision
+    /// backend. One request per draft carrying one `noul` per cited evidence
+    /// grain (`ev_<bundle id>`: does it contain the premise?) and one `sound`
+    /// (is the recommendation sound given only this evidence?). A draft is
+    /// grounded when any cited grain reaches [`crate::decide::DECIDE_MIN_P`].
+    ///
+    /// `None` — and the LLM GROUND runs as before — when no backend is
+    /// installed, it is uncalibrated (rule 2), or ANY request fails or answers
+    /// uncalibrated (fail-soft: the whole stage falls back, so one run never
+    /// mixes two grounding rules).
+    fn decide_ground_verify(
+        &self,
+        validated: &[ValidatedDraft],
+        claims: &[crate::llm::GroundItem],
+    ) -> Option<BTreeMap<usize, DecidedDraft>> {
+        use crate::decide::{Ask, DECIDE_MIN_P};
+        let d = self.decider.as_ref()?;
+        if !d.calibrated() {
+            return None;
+        }
+        let backend = d.describe();
+        let mut out = BTreeMap::new();
+        for (i, (v, c)) in validated.iter().zip(claims).enumerate() {
+            let evidence: Vec<Value> = c
+                .evidence
+                .iter()
+                .map(|e| serde_json::json!({"id": e.id, "grain_type": e.grain_type, "text": e.text}))
+                .collect();
+            let state = serde_json::json!({
+                "recommendation": {"summary": c.claim, "guidance": v.draft.guidance},
+                "evidence": evidence,
+            });
+            let mut asks: Vec<Ask> = c
+                .evidence
+                .iter()
+                .map(|e| Ask::Noul {
+                    id: format!("ev_{}", e.id),
+                    instructions: format!(
+                        "Does evidence item \"{}\" (in state.evidence) contain the premise the recommendation relies on?",
+                        e.id
+                    ),
+                })
+                .collect();
+            asks.push(Ask::Noul {
+                id: "sound".into(),
+                instructions: "Given only this evidence, is the recommendation sound?".into(),
+            });
+            let a = d.ask(state, &asks).ok().filter(|a| a.calibrated)?;
+            let sound = *a.noul.get("sound")?;
+            let grounded = a
+                .noul
+                .iter()
+                .any(|(id, p)| id.starts_with("ev_") && *p >= DECIDE_MIN_P);
+            let judged_by = a.judged_by(&backend, "ground_verify", a.noul.clone());
+            out.insert(i, DecidedDraft { grounded, sound, judged_by });
+        }
+        Some(out)
     }
 
     /// Recent operator decisions on `origin = llm` findings — approved (incl.
@@ -1291,6 +1440,13 @@ impl Engine {
     /// auto-applies.
     fn can_auto_apply<S: OmsSubstrate>(&self, sub: &S, rec: &Recommendation) -> bool {
         if !rec.origin.auto_apply_eligible() || rec.destructive {
+            return false;
+        }
+        // A decision model may score; only code gates (decision-model
+        // proposal, rule 1). A recommendation whose existence a model's
+        // probability decided is always a human's call, whatever the policy
+        // grants and whatever shape the payload has.
+        if rec.judged_by.is_some() {
             return false;
         }
         // The analyzer must declare its curation auto-appliable. An analyzer
@@ -2929,6 +3085,14 @@ fn claim_text(d: &crate::llm::LlmDraft, resolved: Option<&ResolvedProposal>) -> 
 /// so both gates judge exactly what an apply would do — the rule the authored
 /// lesson already followed, generalized to the whole vocabulary. It also means
 /// a malformed proposal costs no model call: it dies here, not at apply.
+/// One draft's calibrated GROUND/VERIFY decision (E1).
+struct DecidedDraft {
+    grounded: bool,
+    /// p(sound): VERIFY's routing number in place of the self-report.
+    sound: f64,
+    judged_by: crate::decide::JudgedBy,
+}
+
 struct ValidatedDraft {
     draft: crate::llm::LlmDraft,
     target_ref: String,
@@ -3600,6 +3764,8 @@ fn stamp_llm(
         // be widening its own audience, so the field is overwritten here
         // with the namespaces the pass was actually run over.
         scope: crate::recommendation::normalize_scope(scope),
+        judged_by: None,
+        llm_confidence: None,
         status: RecStatus::Pending,
     }
 }
@@ -4406,6 +4572,10 @@ fn stamp(
         // widen, and the whole point is that it names what was actually
         // read.
         scope: crate::recommendation::normalize_scope(scope),
+        // The decision that shaped the draft, if any — carried so the
+        // auto-apply gate can refuse it and a reviewer can see it.
+        judged_by: d.judged_by,
+        llm_confidence: None,
         status: RecStatus::Pending,
     })
 }

@@ -214,6 +214,7 @@ fn to_draft(f: ExternalFinding) -> Option<RecDraft> {
         // External analyzers cannot pin evalsets: code_revision drafts from
         // a subprocess would fail Rule E1 at stamp anyway (advisory only).
         evalset_hash: None,
+        judged_by: None,
     })
 }
 

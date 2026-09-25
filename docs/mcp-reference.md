@@ -188,10 +188,31 @@ CAL's `RECALL ... ABOUT "..."` and the CLI's `areev search`.
 | `namespace` | string | no | Defaults to the session namespace; accepts an `"org.*"` prefix scope |
 | `k` | integer | no | Max results (default 10) |
 
-Returns the same `{ hash, type, fields }` shape as `areev_recall`. Fails
+Returns `{ hash, type, fields, score }` rows — `areev_recall`'s shape plus a
+relevance `score` in `[0, 1]`, best first. The score is the fused RRF score
+normalized to the call's best hit (which is exactly `1.0`): it compares rows
+within one call and is not a probability or comparable across queries. When
+the server has a reranker installed (`$AREEV_RERANK_CMD` or `$AREEV_DECIDE`, below) this tool
+always runs it, and `score` is the reranker's own score min-max normalized over
+the candidate pool (best `1.0`, worst `0.0`; a reranker that fails falls back
+to fusion order and fusion scores). Fails
 loudly — not an empty list — when the memory has neither a text index nor an
 embedder: restart the server with `--index-text true` and `reindex`, or with
 `--embed-cmd`.
+
+These server-start environment variables tune this tool and every hybrid
+recall behind `areev_cal` (host config — an MCP client cannot set any of them).
+`areev serve --mcp` also takes each as a flag (`--recall-deadline-ms`,
+`--rerank-cmd`, `--decide`, `--decide-cmd`, `--decide-timeout-ms`); an
+explicit flag wins over its variable:
+
+| Variable | Effect |
+|---|---|
+| `AREEV_RECALL_DEADLINE_MS` | Per-recall deadline in milliseconds, threaded into every hybrid recall (`areev_search`, and each leg of a CAL `RECALL`, including `subject IN` and `multi_hop` legs). Past it a leg fails **open** — partial results, never an error. `0` or unset = no deadline. A non-numeric value refuses to start the server. |
+| `AREEV_RERANK_CMD` | Installs a command reranker on the memory. Per call the command reads `{"query": "...", "docs": ["...", ...]}` on stdin and prints a JSON array of exactly `docs.len()` numbers (higher = more relevant) on stdout; split on whitespace, no shell. `areev_search` uses it whenever it is set; CAL uses it under `WITH rerank`. A program that is neither an existing file nor on `PATH` refuses to start the server. One process spawn per recall — turn-level, not the voice path. |
+| `AREEV_DECIDE` | A decision-backend chain (comma-separated, ordered: `typesafe:…`, `openrouter:…`, `vercel:…`, `openjev:…`, `cloudflare:…`, `systemone:<url>[#model]`, `llm:<spec>`), installed as the reranker: each candidate is scored for relevance and the pool reordered, never omitted. Ignored as a reranker when `AREEV_RERANK_CMD` is set (the command wins). Under an egress anonymization policy (any namespace declaring `egress`, or the host floor) the candidates' text is pseudonymized before it leaves. An unknown provider or a missing provider key refuses to start the server (`DEC-E001`). See [`decision-model-proposal.md`](decision-model-proposal.md). |
+| `AREEV_DECIDE_CMD` | A command decision backend, appended as the **last** chain entry: wire request JSON on stdin, wire response JSON on stdout; split on whitespace, no shell. |
+| `AREEV_DECIDE_TIMEOUT_MS` | The chain's per-call deadline in milliseconds (default `2000`; `llm:` entries usually need more). A non-numeric value refuses to start the server. |
 
 ```json
 { "name": "areev_search", "arguments": { "query": "refund policy for enterprise accounts" } }

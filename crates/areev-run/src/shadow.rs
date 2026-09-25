@@ -778,10 +778,14 @@ impl ShadowCtx<'_> {
         manifest.max_effects_per_attempt = incumbent.max_effects_per_attempt;
         manifest.llm_tool_result_chars = incumbent.llm_tool_result_chars;
         manifest.llm_context_tokens = incumbent.llm_context_tokens;
+        // The incumbent's decision backend, so the candidate asks what the
+        // incumbent asked; every answer comes from the journal either way.
+        manifest.decider = incumbent.decider.clone();
         let executors = manifest.executors();
         let arg_schemas = arg_schemas_for(self.facade, &manifest)?;
         let validate_args = make_validate_args(&arg_schemas);
         let reduce = crate::reducers::make_reduce(&manifest.reducers);
+        let decide_ctx = decide_context_for(self.facade, &manifest)?;
         let env = StepEnv {
             plan,
             executors: &executors,
@@ -794,6 +798,7 @@ impl ShadowCtx<'_> {
             max_effects_per_attempt: manifest.max_effects_per_attempt(),
             llm_tool_result_chars: manifest.llm_tool_result_chars,
             llm_context_tokens: manifest.llm_context_tokens,
+            decide: decide_ctx.env(&manifest),
         };
 
         // The incumbent's side of the ledger. Deserialized ONCE: the terminal
@@ -1068,7 +1073,12 @@ pub(crate) fn arg_schemas_for(
 ) -> Result<std::collections::BTreeMap<String, Value>, RunError> {
     let mut schemas = std::collections::BTreeMap::new();
     for p in &manifest.pinned {
-        if p.executor != "host" || p.tool_hash.is_empty() {
+        // A decision node's strict schema applies to the `{state, questions}`
+        // the driver builds for it (C3), as a strict host tool's applies to
+        // a model's call.
+        if !(p.executor == "host" || p.executor == crate::manifest::DECIDE_EXECUTOR)
+            || p.tool_hash.is_empty()
+        {
             continue;
         }
         let h = Hash::from_hex(&p.tool_hash).map_err(|e| RunError::Storage { detail: e.to_string() })?;
@@ -1084,4 +1094,64 @@ pub(crate) fn arg_schemas_for(
         }
     }
     Ok(schemas)
+}
+
+/// The narrowing context (C1) a run's decision asks are built from: the
+/// plan's human label and each pinned host tool's one-line description.
+///
+/// A pure function of the manifest — the plan and every Definition are read
+/// by their frozen hashes — so drive, verify and shadow build the same
+/// table, and the scheduler never touches the store. Empty (and no store
+/// read at all) when the manifest pins no decision backend.
+#[derive(Default)]
+pub(crate) struct DecideContext {
+    plan_label: Option<String>,
+    tool_descriptions: std::collections::BTreeMap<String, String>,
+}
+
+impl DecideContext {
+    /// The scheduler's view, or `None` when the manifest pinned no backend.
+    pub(crate) fn env<'a>(&'a self, manifest: &RunManifest) -> Option<areev_run_core::DecideEnv<'a>> {
+        manifest.decider.as_ref().map(|d| areev_run_core::DecideEnv {
+            calibrated: d.calibrated,
+            plan_label: self.plan_label.as_deref(),
+            tool_descriptions: &self.tool_descriptions,
+        })
+    }
+}
+
+pub(crate) fn decide_context_for(
+    facade: &areev_cal::AreevFacade,
+    manifest: &RunManifest,
+) -> Result<DecideContext, RunError> {
+    if manifest.decider.is_none() {
+        return Ok(DecideContext::default());
+    }
+    let storage = |e: areev_core::error::AreevError| RunError::Storage { detail: e.to_string() };
+    let mut ctx = DecideContext::default();
+    if let Ok(h) = Hash::from_hex(&manifest.plan_hash) {
+        if let Ok(plan) = facade.with_store(|m| m.get_stored(&h)) {
+            let field = |k: &str| plan.get_str(k).map(str::trim).filter(|v| !v.is_empty());
+            ctx.plan_label = match (field("name"), field("goal").or_else(|| field("description"))) {
+                (Some(n), Some(g)) => Some(format!("{n} — {g}")),
+                (Some(n), None) => Some(n.to_string()),
+                (None, Some(g)) => Some(g.to_string()),
+                (None, None) => None,
+            };
+        }
+    }
+    for p in &manifest.pinned {
+        if p.executor != "host" || p.tool_hash.is_empty() {
+            continue;
+        }
+        let h = Hash::from_hex(&p.tool_hash).map_err(storage)?;
+        let def = facade.with_store(|m| m.get_stored(&h)).map_err(storage)?.to_tool().map_err(storage)?;
+        if let Some(d) = def.tool_description {
+            // One line: the first, trimmed — a description is context for a
+            // choice, not a manual.
+            let line = d.lines().next().unwrap_or_default().trim().to_string();
+            ctx.tool_descriptions.insert(p.tool_name.clone(), line);
+        }
+    }
+    Ok(ctx)
 }

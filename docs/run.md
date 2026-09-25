@@ -1724,6 +1724,154 @@ effect, written before the node failed and untouched by its failure. Every turn
 and every tool result is still addressable, and `run-trace` still shows all of
 them. The transcript is scheduler state; the record is the journal.
 
+## Decisions in a run
+
+A **decision backend** answers typed questions with calibrated probabilities
+— no text, one call, 70–500 ms hosted ([decision-model-proposal.md](decision-model-proposal.md)).
+The runtime uses one in three places. All three are opt-in, all three fall
+back to what the run did before, and none can approve, apply or gate anything:
+a decision model may score and order, but only code omits or branches.
+
+The host installs a backend with one call, `Runner::with_decider(backend)`,
+which wraps whatever executor stack it already built. Hosts install their
+configured chain (`--decide <chain>` / `--decide-cmd`, `$AREEV_DECIDE`)
+through it. The run pins what it started under in its manifest
+(`decider: {describe, calibrated}`), so `resume` and `verify` ask exactly what
+the run asked, whatever host they run on. A run on a host with no backend pins
+nothing, asks nothing, and writes the same bytes it always did.
+
+### The decision node (`executor_uri: "areev://decide"`)
+
+A Tool Definition whose `executor_uri` is the reserved `areev://decide` is a
+**decision node**. The driver answers it through the host's backend, never
+through `--tool-cmd` and never through the pool. It journals the answer as an
+ordinary Tool execution grain under the Definition's own name, so `run-trace`,
+`step-actions` and the loop's `run_outcome` see it like any other tool.
+Edges branch on the answer in the frozen condition grammar:
+
+```json
+{"kind": "definition", "tool_name": "triage", "executor_uri": "areev://decide",
+ "input_schema": {"type": "object", "properties": {"state": {}, "questions": {"type": "object"}},
+                  "required": ["state", "questions"]},
+ "strict": true,
+ "decide": {"questions": {"route": {"type": "choice",
+              "instructions": "Does this item need a person today?",
+              "criteria": {"escalate": "a person must act today", "ignore": "routine"}}}}}
+```
+
+```json
+{"nodes": ["triage", "escalate", "file"],
+ "edges": [{"src": "triage", "dst": "escalate", "cond": "triage.answers.route.choice == \"escalate\""},
+           {"src": "triage", "dst": "file",     "cond": "triage.answers.route.choice == \"ignore\""}],
+ "bindings": {"triage": "<definition hash>", "escalate": "<…>", "file": "<…>"}}
+```
+
+- **The request.** The node's input is the run's state, as for any bound
+  node. `state` is the input's `state` key when it has one, and the whole
+  input otherwise. `questions` are the Definition's `decide.questions`, frozen
+  at start. They win over any `questions` key in the input, so a payload a
+  trigger handed the run cannot change what the plan asks. Without frozen
+  questions, the input must carry them. A `strict` Definition's
+  `input_schema` is checked against that `{state, questions}`, the same way a
+  model's call to a strict tool is checked. A violation is
+  `SchemaValidationFailed`, and nothing is asked.
+- **The result** is `Decision::to_json()` — `{answers, model, provider,
+  calibrated, latency_ms, usage?}` — under the node's own id. `decide.into`
+  names a different key. The decision's usage counts against the run's token
+  budget.
+- **No backend, no run.** A plan that binds a decision node on a host without
+  a backend is refused with `RUN-E030` at start, naming the node, before the
+  run exists. `resume` checks the same before it takes the lease. A malformed
+  `decide` declaration (an unaskable question, an unknown key, an `into` that
+  is empty or `$`-prefixed) is `RUN-E019` at start.
+- **Failures follow the node's retry table.** Deadline → `Timeout`;
+  transport, malformed answer, rate limit or an exhausted chain →
+  `ExecutorError` (retryable under `retries`); an unaskable question →
+  `SchemaValidationFailed`; a refused egress → `Unknown`. A decision node has
+  no deterministic fallback, because it is the branch point you asked for.
+  Give it `retries`.
+- A decision node can be a `$send` target, which gives one judgment per
+  fanned-out item. It is never offered to an abstract node's model.
+
+### The decision-guided fold
+
+When the [fold](#the-fold-what-happens-when-the-transcript-outgrows-the-window)
+triggers and the run pinned a **calibrated** backend, the backend gets the
+first look at the foldable window. The scheduler emits one decision effect,
+journaled as `mg:decide`. The request's `state` is the window, oldest first,
+with every tool result replaced by a note (`"ok, 4213 chars (omitted)"`) —
+the backend never sees a result's contents. For each result entry `n` it asks
+two yes/no questions: `keep_call_n` ("does the fact that this call happened
+still matter?") and `keep_result_n` ("are its contents still needed
+verbatim?"). Only on a calibrated answer:
+
+| Answer | What the next turn sees |
+|---|---|
+| `keep_result ≥ 0.5` | the entry, verbatim |
+| `keep_call ≥ 0.5 > keep_result` | the call, and the result cut to 300 characters plus a note |
+| both `< 0.5` | nothing — dropped from the **prompt** |
+
+A result never leaves its call behind. A round (an assistant entry and the
+results that answer it) leaves the prompt only whole, assistant entry
+included. In a round with anything kept, every call stays and a result marked
+for dropping is truncated instead. A note naming the dropped and truncated
+entries, the backend and the `effect_seq` takes the window's place, as the
+summarizer's note does.
+
+Then the next turn goes out and the provider measures the pruned transcript.
+If it is **still** over the ceiling, or the provider refuses it, the next
+trigger goes straight to the summarizer fold. A window is never asked about
+twice.
+
+It **fails open**. An uncalibrated answer, a failed call, a malformed answer
+or an answer that keeps everything means nothing is edited, and the
+summarizer fold runs over exactly the window it would have folded with no
+backend. A run whose pinned backend is uncalibrated is never asked at all: an
+uncalibrated backend may reorder but never omit, and this omits.
+
+### Narrowing the tool offer
+
+An abstract node is offered every pinned host tool. When a calibrated backend
+is pinned and **more than 8** tools are, the scheduler asks one `choice` over
+the tool names before the node's first turn. The state is the node's
+instruction and input, the plan's `name` (and `goal`/`description`), and each
+tool's one-line description. The offer keeps the **top 8 by probability plus
+any tool at p ≥ 0.05**, in manifest order. The manifest's pinned set is the
+universe, and narrowing only removes from it. A pinned tool the model was not
+shown is unknown to it: calling one is the unknown-tool re-prompt. An
+uncalibrated answer, a failure or a table that does not cover every tool
+leaves the full offer.
+
+The narrowed set rides every turn's journaled input as `offer` —
+`{tools, seq, provider, model, calibrated, latency_ms}`. The driver offers
+exactly those Definitions, keyed off the journal the way the summarizer's
+no-tools rule is. That makes `verify` offer the same set.
+
+### What the journal holds
+
+- **Every decision is an effect**: an intent and a result grain under the
+  node, attempt and `effect_seq` it was asked at. A crash re-delivers it under
+  the same key. `verify` and `shadow` answer it from the journal and **never
+  ask the backend again**.
+- **Provenance travels with the answer.** `provider`, `model`, `calibrated` and
+  `latency_ms` are in the result grain (and so in the state a decision node
+  writes). A narrowing carries them in the turn's `offer`. A fold carries them
+  in its record.
+- **A fold's record** is in the superstep's decision record (the checkpoint's
+  `decisions.folds`). It is the `kind: "decide"` variant of a fold, alongside
+  the summarizer's `input.fold`: `{kind, v, node, attempt, seq, from, to,
+  kept, truncated, dropped, applied, reason?, provenance?}`. `dropped` names
+  every entry removed from the prompt, and every one of them is still a
+  journaled grain. `applied: false` with a `reason` records a fail-open.
+- **Versioned wording.** The questions' text rides the journal inside each
+  request. `FOLD_DECIDE_V` versions it the way `FOLD_PROMPT_V` versions the
+  summarizer's prompt, which did not change.
+- **Egress.** A decision's `state` crosses the same namespace boundary an
+  abstract node's prompt does (an `egress`/`both` anonymization policy
+  pseudonymizes it first), and the host's backend should itself be the
+  pseudonymizing chain (`PseudonymizingDecider`). If the transform fails,
+  nothing is sent.
+
 ## Fan-out (`Send`)
 
 A node's result may carry the reserved `$send` key:
@@ -1940,7 +2088,8 @@ transcript over `--llm-context-tokens` with nothing left to fold,
 `RUN-E025` the model this run started under is not the one on offer (fork),
 `RUN-E026` a different scheduler epoch wrote this run (fork), `RUN-E027` a
 concurrency cap — retryable, and nothing was written, `RUN-E029` a pause
-asked of a run that already finished or has a cancel pending. The full registry is
+asked of a run that already finished or has a cancel pending, `RUN-E030` a
+decision node on a host with no decision backend. The full registry is
 [`ERROR_CODES.md`](../ERROR_CODES.md).
 
 ## Bounds, stated

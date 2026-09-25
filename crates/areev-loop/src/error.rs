@@ -40,6 +40,10 @@ pub enum Error {
     /// The optional LLM enrichment backend (`--llm-cmd`) is misconfigured or
     /// failed. Never fatal to a run — the LLM contribution is dropped.
     LlmBackend(String),
+    /// The optional decision backend (`Engine::with_decider`) failed or
+    /// returned a malformed answer. Never fatal to a run — that stage's
+    /// decision contribution is dropped and today's rule applies.
+    DecideBackend(String),
     /// No recommendation exists at the given hash.
     NotFound(String),
     /// An unexpected internal fault (should not happen — file a bug).
@@ -63,6 +67,7 @@ impl Error {
             Error::ParamInvalid(_) => "LOP-E031",
             Error::CapabilityMissing(_) => "LOP-E032",
             Error::LlmBackend(_) => "LOP-E050",
+            Error::DecideBackend(_) => "LOP-E051",
             Error::NotFound(_) => "LOP-E040",
             Error::Internal(_) => "LOP-E099",
         }
@@ -88,6 +93,7 @@ impl fmt::Display for Error {
             Error::ParamInvalid(m) => write!(f, "{code} analyzer parameter invalid: {m}"),
             Error::CapabilityMissing(m) => write!(f, "{code} required capability missing: {m}"),
             Error::LlmBackend(m) => write!(f, "{code} LLM backend error: {m}"),
+            Error::DecideBackend(m) => write!(f, "{code} decision backend error: {m}"),
             Error::NotFound(m) => write!(f, "{code} recommendation not found: {m}"),
             Error::Internal(m) => write!(f, "{code} internal error: {m}"),
         }
@@ -127,6 +133,7 @@ mod tests {
             Error::ParamInvalid(String::new()),
             Error::CapabilityMissing(String::new()),
             Error::LlmBackend(String::new()),
+            Error::DecideBackend(String::new()),
             Error::NotFound(String::new()),
             Error::Internal(String::new()),
         ];

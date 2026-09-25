@@ -40,7 +40,7 @@ replays identically, which is exactly what the epoch is about.
 
 ## Module map
 
-- `error.rs` — the `RUN-Ennn` domain (E001–E029, append-only; format and
+- `error.rs` — the `RUN-Ennn` domain (E001–E030, append-only; format and
   uniqueness pinned by tests).
 - `cond.rs` — the frozen v1 condition grammar (`==`/`!=`/`exists`/truthy;
   strict JSON equality, NO coercion, `1 != 1.0` deliberately). Parse errors
@@ -187,10 +187,61 @@ replays identically, which is exactly what the epoch is about.
   in the manifest); merge order is static results by node index, then Send
   results by task path.
 
+## Decisions (C1–C3, `docs/decision-model-proposal.md`) — pinned
+
+A decision is an EFFECT, never a call: `NodeExecutor::Decide { tool_hash,
+tool_name }`, `EffectKind::Tool`, WriteIntent + Dispatch + `EffectResolved`.
+That shape is the whole purity story — the driver answers and journals it,
+verify answers it from the journal, a crash re-delivers it under its key —
+and it is why there is NO new Command/Event pair: a bespoke `Decide`/`Decided`
+would have needed its own journaling, redelivery, verify and shadow paths.
+
+- **C3, the decision node**: the manifest maps a `decide` pin to
+  `NodeExecutor::Decide` (never Host — the memory-read rule), and the
+  scheduler dispatches it exactly like Host; a legal `$send` target. The
+  scheduler never reads its answer: the result merges like any result and
+  edges branch on it in the frozen grammar (`cond.rs` did not move).
+- **`StepEnv.decide: Option<DecideEnv>`** is the manifest's frozen pin
+  (`calibrated`, plan label, tool one-liners). `None` asks nothing. A pin with
+  `calibrated: false` ALSO asks nothing — both scheduler uses OMIT something,
+  and rule 2 says an uncalibrated backend may reorder, never omit.
+- **Scheduler asks** (C1/C2) are `mg:decide` effects inside an abstract flow,
+  under the flow's next `effect_seq`; the request rides `input.decide`
+  (`{purpose, v, state, questions}`). In-flight = `AbstractFlow.deciding`
+  (`DecideInFlight::{Fold, Offer}`), routed in `resolve_effect` BEFORE the
+  pending-tool check. At the effect cap a decision is simply not emitted
+  (`emit_decide_effect` → false): an optional look must never fail the node.
+- **C2 fold**: `dispatch_llm_turn`'s trigger tries `emit_fold_decide` once
+  per trigger (`decide_fold_tried`), else the summarizer. `plan_prune` is pure:
+  keep_result ≥ 0.5 verbatim; keep_call ≥ 0.5 > keep_result truncate to
+  `FOLD_TRUNCATE_CHARS` (300 chars); else drop — and a round leaves only
+  WHOLE (assistant entry included), otherwise drops downgrade to truncation.
+  Editing `tool_calls` would desync `provider_content` (#284); never do it.
+  Applied → `last_prompt_tokens = 0`, `fold_forced = false`, `folds += 1`;
+  not applied → nothing edited, `decide_fold_tried` set, the still-true
+  trigger re-enters and the summarizer folds the SAME window (tests compare
+  against a no-backend run's fold input byte for byte). `decide_fold_tried`
+  clears when a real measurement comes back under the ceiling, or after a
+  summarizer fold. Every outcome pushes a `FoldRecord` to the open
+  superstep's `DecisionRecord.folds` (`skip_serializing_if` empty).
+- **C1 narrowing**: `start_flow` asks once when calibrated and > `OFFER_TOP_K`
+  (8) tools; keep = top 8 by p (ties by manifest order) ∪ p ≥ `OFFER_KEEP_P`
+  (0.05), manifest order; a table not covering every tool is malformed → full
+  offer. The narrowed set is `AbstractFlow.offer`, ridden into every turn's
+  input as `offer` (the driver filters Definitions off the JOURNAL), and the
+  unknown-tool check uses the narrowed set — narrowing only removes.
+- **No epoch bump**: every new field is `skip_serializing_if`, and nothing is
+  asked without a manifest pin, so every existing journal replays identically.
+  `FOLD_DECIDE_V` versions the questions' wording (rides the journal);
+  `FOLD_PROMPT_V` did not move.
+
 ## Tests
 
 `cargo test -p areev-run-core`. `tests/scheduler_tests.rs` is the mini-DST
 harness: a simulated driver with an adversarial completion-order permutation
 knob (hand-rolled xorshift — no rand even in dev-deps). The permutation test
 IS the §5.5 gate-3 in miniature; extend it when the scheduler grows (Send,
-subgraphs) or the gate proves the wrong thing.
+subgraphs) or the gate proves the wrong thing. The decisions block at its end
+plays the driver with scripted turns and scripted `Decision::to_json()`
+answers; its fail-open tests compare against a `decide: None` run's commands
+byte for byte — keep that shape when adding an ask.

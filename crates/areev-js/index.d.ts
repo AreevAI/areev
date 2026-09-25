@@ -41,6 +41,68 @@ export declare class Areev {
    */
   setEmbedderCommand(cmd: string, model?: string | undefined | null): Promise<void>
   /**
+   * Install a decision (System One) backend chain
+   * (docs/decision-model-proposal.md) — the JS mirror of Python's
+   * `set_decider`. `spec` is the ordered, comma-separated provider list
+   * (`typesafe:jev-latest,llm:ollama:…`); `cmd` a command backend appended
+   * last (stdin: wire request JSON, stdout: wire response JSON; no shell);
+   * `timeoutMs` the per-call deadline (default 2000). With neither `spec`
+   * nor `cmd`, the chain comes from `AREEV_DECIDE` / `AREEV_DECIDE_CMD` /
+   * `AREEV_DECIDE_TIMEOUT_MS`; when nothing is configured anywhere (or
+   * `spec` is `''`), the decider is cleared. A bad spec or a missing
+   * provider key throws (`DEC-E001`). Synchronous: resolving a chain does
+   * no I/O. Needs `admin` on `"*"` — a command backend is a subprocess.
+   * Host config — never persisted in the file.
+   *
+   * Installing a chain also installs it as the recall reranker
+   * (`DecisionRerank`: `search()` reorders by it and each row's `score` is
+   * its answer) — unless `setRerankerCommand` installed a command
+   * reranker, which always wins. Clearing the chain uninstalls the
+   * decision reranker (recall falls back to fusion order). Under egress
+   * anonymization the backend sees pseudonymized state, both here and in
+   * `decide`.
+   */
+  setDecider(spec?: string | undefined | null, cmd?: string | undefined | null, timeoutMs?: number | undefined | null): void
+  /**
+   * Ask the installed decision backend typed questions about `state` —
+   * the JS mirror of Python's `decide`. `state` is text, or a JSON
+   * string/object/array document; `questions` is the wire `questions`
+   * object as JSON. Resolves to the wire response plus provenance as JSON:
+   * `{model, answers, usage?, provider, calibrated, latency_ms}`. No
+   * decider → rejects with `DEC-E001`; every failure names its `DEC-Ennn`
+   * code. A promise: a remote backend is a network round trip.
+   */
+  decide(state: string, questions: string): Promise<string>
+  /**
+   * Bound every hybrid recall this handle makes — `search()` and CAL's
+   * free-text `RECALL` — to `ms` milliseconds (the JS mirror of Python's
+   * `set_recall_deadline_ms`); past it a leg fails open (partial results,
+   * never an error) and a reranker that has not started is skipped.
+   * `null` or `0` restores the unbounded default. Host config, never
+   * persisted. Set it while no call is in flight on this handle (a
+   * running call shares the facade), else it throws.
+   */
+  setRecallDeadlineMs(ms?: number | undefined | null): void
+  /**
+   * The recall deadline `setRecallDeadlineMs` installed, in ms (`null` =
+   * unbounded).
+   */
+  recallDeadlineMs(): number | null
+  /**
+   * Install a command reranker — the JS mirror of Python's
+   * `set_reranker_command` (same contract as the CLI's `--rerank-cmd` and
+   * MCP's `AREEV_RERANK_CMD`): the command gets `{"query": "...", "docs":
+   * ["...", ...]}` on stdin and prints a JSON array of `docs.length`
+   * numbers, higher = more relevant. No shell; not probed (synchronous) —
+   * a broken command fails open to fusion order at recall time.
+   * `search()` then reorders by it, each row's `score` being its
+   * min-max-normalized answer (top = 1.0); CAL uses it under `WITH
+   * rerank`. `model` is the observability label. An explicit command
+   * reranker wins over the decision reranker `setDecider` installs. Needs
+   * `admin` on `"*"`.
+   */
+  setRerankerCommand(cmd: string, model?: string | undefined | null): void
+  /**
    * Install an embedding callback: `embed(text: string): number[]` —
    * the JS mirror of Python's `set_embedder`. Probed once here (on the
    * JS thread) to learn the dimension, recorded as the file's embedding
@@ -61,7 +123,11 @@ export declare class Areev {
    * Free-text recall over the BM25 (and vector, when an embedder is
    * installed) legs — the JS mirror of Python's `search`, the same path
    * as `areev search` and CAL's `RECALL … ABOUT`. Returns a JSON list
-   * string shaped like `recall()`. Errors loudly when the file has
+   * string shaped like `recall()` plus each hit's `score` in `[0, 1]`
+   * (the MCP `areev_search` row): rank-normalized fusion (top = 1.0), or
+   * the installed reranker's normalized answer (`setRerankerCommand` /
+   * `setDecider`), which search always uses when present.
+   * `setRecallDeadlineMs` bounds it. Errors loudly when the file has
    * neither leg, instead of a silent empty list.
    */
   search(query: string, subject?: string | undefined | null, relation?: string | undefined | null, k?: number | undefined | null, ns?: string | undefined | null): Promise<string>

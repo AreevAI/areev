@@ -122,6 +122,76 @@ const RUN_FAMILY: &[&str] = &[
     "areev_recommendations",
 ];
 
+/// Apply the recall host config the environment names (see
+/// [`McpServer::try_new`]). Empty/whitespace values count as unset.
+fn apply_recall_env(facade: &mut AreevFacade) -> Result<(), String> {
+    if let Ok(v) = std::env::var("AREEV_RECALL_DEADLINE_MS") {
+        let v = v.trim();
+        if !v.is_empty() {
+            let ms: u64 = v.parse().map_err(|_| {
+                format!("$AREEV_RECALL_DEADLINE_MS must be a whole number of milliseconds, got {v:?}")
+            })?;
+            facade.set_recall_deadline((ms > 0).then(|| std::time::Duration::from_millis(ms)));
+        }
+    }
+    let rerank_cmd = std::env::var("AREEV_RERANK_CMD").ok().filter(|c| !c.trim().is_empty());
+    if let Some(cmd) = &rerank_cmd {
+        let program = cmd.split_whitespace().next().unwrap_or_default();
+        if !program_resolves(program) {
+            return Err(format!(
+                "$AREEV_RERANK_CMD: '{program}' is not an executable file or a command on PATH"
+            ));
+        }
+        let rr = areev_store::CommandRerank::new(cmd, None)
+            .map_err(|e| format!("$AREEV_RERANK_CMD: {e}"))?;
+        facade.set_reranker(Box::new(rr));
+    }
+    // The decision chain is resolved even when it will not be installed, so
+    // a bad $AREEV_DECIDE fails startup instead of lying dormant.
+    let chain = areev_llm::env_chain().map_err(|e| e.to_string())?;
+    if let (Some(chain), None) = (chain, &rerank_cmd) {
+        // Egress is active when the host floor is on or any namespace
+        // declares `egress` — the same test the recall payload flag uses.
+        let egress = areev_cal::CalStoreFacade::anon_egress_report(facade).is_some();
+        let chain: std::sync::Arc<dyn areev_llm::DecisionBackend> = if egress {
+            let policy = areev_core::anon::AnonPolicy { scope: "session".into(), ..Default::default() };
+            std::sync::Arc::new(
+                areev_llm::PseudonymizingDecider::new(chain, policy).map_err(|e| e.to_string())?,
+            )
+        } else {
+            chain
+        };
+        facade.set_reranker(Box::new(areev_store::DecisionRerank::new(chain)));
+    }
+    Ok(())
+}
+
+/// Whether `program` names something spawnable: a path that exists, or a
+/// bare name found in a `$PATH` directory (with `$PATHEXT` suffixes on
+/// Windows). A cheap startup check — no spawn, so a reranker that cannot
+/// answer an empty request is not refused for that. Public so the `areev`
+/// binary refuses a bad `--rerank-cmd` by the same rule.
+pub fn program_resolves(program: &str) -> bool {
+    let p = std::path::Path::new(program);
+    if p.components().count() > 1 || p.is_absolute() {
+        return p.is_file();
+    }
+    let exts: Vec<String> = if cfg!(windows) {
+        std::env::var("PATHEXT")
+            .unwrap_or_else(|_| ".EXE;.CMD;.BAT;.COM".into())
+            .split(';')
+            .map(|e| e.to_string())
+            .chain(std::iter::once(String::new()))
+            .collect()
+    } else {
+        vec![String::new()]
+    };
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths)
+            .any(|dir| exts.iter().any(|ext| dir.join(format!("{program}{ext}")).is_file()))
+    })
+}
+
 pub struct McpServer {
     facade: std::sync::Arc<AreevFacade>,
     executor: CalExecutor,
@@ -144,7 +214,56 @@ pub struct McpServer {
 }
 
 impl McpServer {
+    /// Build a server over `facade`, applying the recall host config from
+    /// the environment ([`Self::try_new`]). A bad `$AREEV_RECALL_DEADLINE_MS`
+    /// or `$AREEV_RERANK_CMD` aborts startup with a message naming the
+    /// variable — a server that silently ignored its operator's reranker or
+    /// deadline would serve different recall than was configured. Hosts that
+    /// want the error as a value call `try_new`.
     pub fn new(facade: AreevFacade, default_ns: Option<String>) -> Self {
+        Self::try_new(facade, default_ns).unwrap_or_else(|e| panic!("areev-mcp: {e}"))
+    }
+
+    /// [`Self::new`], returning a bad recall env var as an error. Reads, at
+    /// server start and never per call (host config, not client-settable):
+    ///
+    /// - `$AREEV_RECALL_DEADLINE_MS` — the per-recall deadline threaded into
+    ///   every hybrid recall (`areev_recall`'s CAL path and `areev_search`);
+    ///   `0` or unset = no deadline. Past it a recall leg fails open.
+    /// - `$AREEV_RERANK_CMD` — a command reranker ([`CommandRerank`]):
+    ///   stdin `{"query": "...", "docs": [...]}`, stdout a JSON array of
+    ///   `docs.len()` numbers. Installed on the memory; `areev_search` uses it
+    ///   whenever it is installed, and CAL uses it under `WITH rerank`.
+    /// - `$AREEV_DECIDE`, `$AREEV_DECIDE_CMD`, `$AREEV_DECIDE_TIMEOUT_MS` —
+    ///   a decision-backend chain (`areev_llm::env_chain`), installed as a
+    ///   [`DecisionRerank`] unless `$AREEV_RERANK_CMD` names a command (an
+    ///   explicit command wins). Under an egress anonymization policy (the
+    ///   host floor, or any namespace declaring `egress`) the chain is wrapped
+    ///   in `PseudonymizingDecider`, so the candidates' text leaves the
+    ///   process pseudonymized. A bad spec is `DEC-E001` here, at startup.
+    ///
+    /// A host that resolves these itself (the `areev` binary, whose flags
+    /// outrank the variables) uses [`Self::host_configured`] instead, so the
+    /// environment cannot override what it installed.
+    ///
+    /// [`CommandRerank`]: areev_store::CommandRerank
+    /// [`DecisionRerank`]: areev_store::DecisionRerank
+    pub fn try_new(mut facade: AreevFacade, default_ns: Option<String>) -> Result<Self, String> {
+        apply_recall_env(&mut facade)?;
+        Ok(Self::build(facade, default_ns))
+    }
+
+    /// [`Self::try_new`] WITHOUT reading the recall environment: the host
+    /// has already installed its recall deadline and reranker (decision
+    /// chain or command) on `facade` from its own configuration. `areev
+    /// serve --mcp` uses this — its `--recall-deadline-ms`, `--rerank-cmd`
+    /// and `--decide*` flags fall back to the same variables, and an explicit
+    /// flag must not be overridden by an ambient one.
+    pub fn host_configured(facade: AreevFacade, default_ns: Option<String>) -> Self {
+        Self::build(facade, default_ns)
+    }
+
+    fn build(facade: AreevFacade, default_ns: Option<String>) -> Self {
         // Single source of truth for the session namespace: explicit arg,
         // else the facade's capability default, else "shared".
         let default_ns = default_ns
@@ -558,19 +677,29 @@ impl McpServer {
                             .to_string(),
                     );
                 }
-                let grains = self
+                // Scored: each row carries the store's normalized relevance
+                // (top hit = 1.0; the reranker's min-max-normalized score when
+                // `$AREEV_RERANK_CMD` installed one, which this tool then
+                // always uses). The server's recall deadline applies.
+                let deadline = self.facade.recall_deadline();
+                let hits = self
                     .facade
                     .store_read(&ns, |m| {
-                        m.recall_hybrid(&ns, subject, relation, Some(query), k, None)
+                        let tuning = areev_store::RecallTuning {
+                            rerank: m.has_reranker(),
+                            ..Default::default()
+                        };
+                        m.recall_hybrid_scored(&ns, subject, relation, Some(query), k, deadline, tuning)
                     })
                     .map_err(|e| e.to_string())?;
-                let out: Vec<Value> = grains
+                let out: Vec<Value> = hits
                     .iter()
-                    .map(|g| {
+                    .map(|(g, score)| {
                         json!({
                             "hash": g.hash.to_hex(),
                             "type": format!("{:?}", g.grain_type).to_lowercase(),
                             "fields": g.fields,
+                            "score": score,
                         })
                     })
                     .collect();
@@ -1224,7 +1353,7 @@ fn all_tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "areev_search",
-            "description": "Free-text recall (BM25, plus a vector leg when the server has an embedder) fused with the structural leg when subject/relation is given. Use this over areev_recall when you have a natural-language query rather than an exact subject you already know. Requires the server to have a text index or an embedder installed; fails loudly (not an empty list) if it has neither.",
+            "description": "Free-text recall (BM25, plus a vector leg when the server has an embedder) fused with the structural leg when subject/relation is given. Use this over areev_recall when you have a natural-language query rather than an exact subject you already know. Each row carries a relevance `score` in [0,1] (the best hit is 1.0; comparable within one call, not across calls). Requires the server to have a text index or an embedder installed; fails loudly (not an empty list) if it has neither.",
             "inputSchema": {"type": "object", "properties": {
                 "query": s("free-text query, e.g. \"what do we know about the Johnson account\""),
                 "subject": s("optional subject to narrow the structural leg"),

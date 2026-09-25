@@ -159,6 +159,30 @@ pub struct FoldInFlight {
     pub effect_seq: u32,
 }
 
+/// A decision effect in flight inside an abstract flow (C1/C2): what it was
+/// asked FOR, and the `effect_seq` it was dispatched under.
+///
+/// Held in state for the [`FoldInFlight`] reason: the window a fold decision
+/// covers is fixed when it is asked and must not be re-derived when it is
+/// answered.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum DecideInFlight {
+    /// The decision-guided fold (C2) over transcript entries `from..to`.
+    Fold { from: usize, to: usize, effect_seq: u32 },
+    /// The tool-offer narrowing (C1), asked before the flow's first turn.
+    Offer { effect_seq: u32 },
+}
+
+impl DecideInFlight {
+    pub fn effect_seq(&self) -> u32 {
+        match self {
+            DecideInFlight::Fold { effect_seq, .. } | DecideInFlight::Offer { effect_seq } => {
+                *effect_seq
+            }
+        }
+    }
+}
+
 /// In-flight LLM-loop state for one abstract node at its current attempt
 /// (§6.2's "a workflow with abstract nodes is an agent — same runtime").
 /// Every entry is built from journaled outcomes, so the transcript is
@@ -213,6 +237,24 @@ pub struct AbstractFlow {
     /// visible in `run-trace`) rather than this counter.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub folds: u32,
+    /// A decision effect outstanding for this flow (C1/C2); taken at its
+    /// resolution. Like every field below, absent unless a decision backend
+    /// is pinned in the manifest, so existing checkpoints are byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deciding: Option<DecideInFlight>,
+    /// A decision-guided fold (C2) has already been tried since the
+    /// transcript was last measured UNDER its ceiling. While set, the next
+    /// fold trigger goes straight to the summarizer — the "still too long
+    /// afterwards" fall-through, and the guard that stops a flow asking the
+    /// same window twice.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub decide_fold_tried: bool,
+    /// The narrowed tool offer (C1) and its provenance —
+    /// `{tools, seq, provider, model, calibrated, latency_ms}` — ridden into
+    /// every turn's journaled input as `offer`, which is what the driver
+    /// filters the offered Definitions by. `None` = the full pinned set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offer: Option<Value>,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -376,6 +418,9 @@ mod tests {
             folding: None,
             fold_forced: false,
             folds: 0,
+            deciding: None,
+            decide_fold_tried: false,
+            offer: None,
         }
     }
 

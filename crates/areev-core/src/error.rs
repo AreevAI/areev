@@ -312,13 +312,36 @@ mod error_code_tests {
         ]
     }
 
+    /// One representative of every `DecideError` variant (the `DEC` domain,
+    /// `crate::decide`) — extend when adding one.
+    fn all_decide_variants() -> Vec<crate::decide::DecideError> {
+        use crate::decide::DecideError;
+        vec![
+            DecideError::NotConfigured("x".into()),
+            DecideError::Provider { provider: "p".into(), status: Some(500), message: "x".into(), retryable: true },
+            DecideError::Malformed("x".into()),
+            DecideError::Deadline("x".into()),
+            DecideError::ChainExhausted(vec![("p".into(), DecideError::Deadline("x".into()))]),
+            DecideError::InvalidQuestion("x".into()),
+            DecideError::RateLimited { provider: "p".into(), retry_after_secs: Some(3) },
+            DecideError::EgressRefused("x".into()),
+        ]
+    }
+
+    /// `(code, Display)` for every coded variant core owns.
+    fn all_codes() -> Vec<(&'static str, String)> {
+        all_variants()
+            .into_iter()
+            .map(|e| (e.code(), e.to_string()))
+            .chain(all_decide_variants().into_iter().map(|e| (e.code(), e.to_string())))
+            .collect()
+    }
+
     /// The reported code must be the leading token of the message, so a user
     /// pasting either gives us the same handle.
     #[test]
     fn code_prefixes_every_display() {
-        for e in all_variants() {
-            let msg = e.to_string();
-            let code = e.code();
+        for (code, msg) in all_codes() {
             assert!(
                 msg.starts_with(&format!("{code}: ")),
                 "`{msg}` must start with its code `{code}`"
@@ -326,12 +349,24 @@ mod error_code_tests {
         }
     }
 
+    /// No two variants share a code — a reported code must name exactly one
+    /// cause. Covers `AreevError` and `DecideError` together, so a new `DEC`
+    /// code cannot collide with a core one either.
+    #[test]
+    fn codes_are_unique() {
+        let mut seen = std::collections::BTreeMap::new();
+        for (code, msg) in all_codes() {
+            if let Some(prev) = seen.insert(code, msg.clone()) {
+                panic!("{code} is used twice: `{prev}` and `{msg}`");
+            }
+        }
+    }
+
     /// Every code matches the `DOMAIN-Ennn` standard (see ERROR_CODES.md):
     /// a 3-letter uppercase domain, `-E`, then digits.
     #[test]
     fn codes_follow_the_repo_standard() {
-        for e in all_variants() {
-            let c = e.code();
+        for (c, _) in all_codes() {
             let (domain, num) = c.split_once("-E").unwrap_or_else(|| panic!("bad code: {c}"));
             assert_eq!(domain.len(), 3, "{c}: domain must be 3 letters");
             assert!(domain.chars().all(|ch| ch.is_ascii_uppercase()), "{c}: domain uppercase");

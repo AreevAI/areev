@@ -18,6 +18,7 @@ use areev_core::types::{Fact, Grain};
 use areev_store::Areev;
 
 pub mod cases;
+pub mod systemone_fake;
 
 /// A conformance backend: a factory of isolated stores.
 ///
@@ -266,6 +267,8 @@ macro_rules! for_each_conformance_case {
         $per_case!(blob_reads_without_opening_the_memory);
         $per_case!(bm25_leg_finds_text);
         $per_case!(vector_leg_roundtrip);
+        $per_case!(scored_recall_matches_unscored_order);
+        $per_case!(decision_rerank_orders_by_the_backend_and_falls_back_on_failure);
         $per_case!(external_vectors_need_no_embedder);
         $per_case!(a_refused_vector_declares_nothing);
         $per_case!(bulk_embeddings_land_atomically);

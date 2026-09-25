@@ -19,6 +19,12 @@ areev-cal = { path = "../areev-cal", version = "1.9.1" }
 areev-loop = { path = "../areev-loop", version = "1.9.1" }
 areev-loop-adapter = { path = "../areev-loop-adapter", version = "1.9.1" }
 areev-run = { path = "../areev-run", version = "1.9.1" }
+# The decision-backend chain ($AREEV_DECIDE*, docs/decision-model-proposal.md).
+# Already in this crate's graph via areev-run; `default-features = false` for
+# the same reason areev-run gives (#289): this crate only resolves the chain,
+# and which LLM providers an `llm:` entry can reach is the HOST's feature
+# choice (the `areev` binary keeps the defaults).
+areev-llm = { path = "../areev-llm", version = "1.9.1", default-features = false }
 serde_json = "1"
 
 [dev-dependencies]

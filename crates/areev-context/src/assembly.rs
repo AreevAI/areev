@@ -19,12 +19,16 @@
 
 use areev_core::verification::Trust;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use areev_cal::judge::{self, JudgeProvenance, Judgment, QueryIntent};
 use areev_cal::store_types::{RecallSource, SearchHit, SupersessionStatus};
+use areev_core::decide::DecisionBackend;
 use areev_core::types::GrainType;
 
 use super::budget::{self, Allocation, ScoredEntry};
-use super::policy::{FormatPolicy, Ordering, OutputFormat};
+use super::policy::{FormatPolicy, MetadataLevel, Ordering, OutputFormat};
 use super::render::{GrainRenderer, RendererRegistry};
 
 /// RF-4: Hints from the recall query/result that guide rendering mode selection.
@@ -60,6 +64,88 @@ pub struct FormattedContext {
     pub omitted_count: usize,
     /// Whether any grains were omitted.
     pub truncated: bool,
+    /// Which decision backend shaped this assembly, when one did
+    /// (`docs/decision-model-proposal.md` §2 rule 4). `None` — and absent
+    /// from the serialized form — when no backend is installed, none was
+    /// asked, or every call failed and today's rules applied.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decision: Option<DecisionProvenance>,
+}
+
+/// Provenance of the decision-backend judgments that shaped a
+/// [`FormattedContext`] (decision-backend phase 3, rows A2/A3).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct DecisionProvenance {
+    /// `Decision.provider` (several, `,`-joined, when a chain fell back
+    /// between requests).
+    pub provider: String,
+    /// `Decision.model`, joined the same way.
+    pub model: String,
+    /// AND over every decision applied. `false` means the relevance only
+    /// reordered the allocation — nothing was omitted or forced Full on it.
+    pub calibrated: bool,
+    /// Backend calls whose answers were applied.
+    pub requests: u32,
+    /// Sum of those calls' latencies.
+    pub latency_ms: u64,
+    /// The A3 intent choice (`"timeline"`, `"current_state"`, `"general"`)
+    /// when the intent question was asked and answered.
+    pub intent: Option<String>,
+}
+
+/// Per-hit A2 judgments aligned with the `hits` slice a pass renders.
+#[derive(Debug, Clone)]
+struct Judged {
+    per_hit: Vec<Option<Judgment>>,
+    calibrated: bool,
+    drop_below: f32,
+    full_above: f32,
+}
+
+/// Everything a decision backend decided for one assembly, threaded into the
+/// passes. `Shaping::default()` is today's behaviour exactly.
+#[derive(Debug, Clone, Default)]
+struct Shaping {
+    /// A3's answer, when asked and answered.
+    intent: Option<(QueryIntent, bool)>,
+    /// A2's judgments, when asked and answered.
+    judged: Option<Judged>,
+}
+
+impl Shaping {
+    /// The shaping for a sub-slice of hits (the census split).
+    fn subset(&self, indices: &[usize]) -> Shaping {
+        Shaping {
+            intent: self.intent,
+            judged: self.judged.as_ref().map(|j| Judged {
+                per_hit: indices.iter().map(|&i| j.per_hit.get(i).copied().flatten()).collect(),
+                ..j.clone()
+            }),
+        }
+    }
+
+    /// Timeline mode (A3): the hint flags win; then a decided intent; then
+    /// the keyword list. Choosing timeline only re-orders and re-frames, so
+    /// an uncalibrated answer may decide it.
+    fn temporal(&self, hints: &RenderingHints, hits: &[&SearchHit]) -> bool {
+        if hints.has_temporal_expr || hints.has_time_range {
+            return true;
+        }
+        match self.intent {
+            Some((intent, _)) => intent == QueryIntent::Timeline,
+            None => detect_temporal_intent(hints, hits),
+        }
+    }
+
+    /// Recency mode (A3): suppresses the outdated value of a Knowledge
+    /// Update chain — an omission, so only a CALIBRATED answer decides it;
+    /// otherwise the keyword list (proposal §2 rule 2).
+    fn recency(&self, query_text: Option<&str>) -> bool {
+        match self.intent {
+            Some((intent, true)) => intent == QueryIntent::CurrentState,
+            _ => is_recency_query(query_text),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -261,6 +347,9 @@ fn is_leap(y: i32) -> bool {
 /// The main assembly engine.
 pub struct ContextAssembler {
     registry: RendererRegistry,
+    /// Decision backend (decision-backend phase 3). Host config — per
+    /// process, never in the file. `None` = today's rules, byte for byte.
+    decider: Option<Arc<dyn DecisionBackend>>,
 }
 
 impl Default for ContextAssembler {
@@ -273,12 +362,36 @@ impl ContextAssembler {
     pub fn new() -> Self {
         Self {
             registry: RendererRegistry::new(),
+            decider: None,
         }
     }
 
     /// Register a custom renderer (replaces default for that grain type).
     pub fn with_renderer(mut self, renderer: Box<dyn GrainRenderer>) -> Self {
         self.registry.register(renderer);
+        self
+    }
+
+    /// Install a decision backend (`docs/decision-model-proposal.md` rows
+    /// A2/A3). With one installed and a query text on the policy (or the
+    /// hints), [`Self::format_with_hints`] asks it:
+    ///
+    /// - **A3** — one `choice` on the query (timeline / current_state /
+    ///   general) in place of the temporal and recency keyword lists. The
+    ///   hint flags (`has_temporal_expr`, `has_time_range`) still win.
+    /// - **A2** — per candidate (≥ 2 hits), relevance (`score`, 4 levels)
+    ///   and whether a summary would lose a needed detail (`noul`). The
+    ///   relevance replaces the recall score's input to the priority; for a
+    ///   CALIBRATED backend a candidate below `drop_below` is omitted and one
+    ///   at or above `full_above` prefers Full (the 95% budget line stays
+    ///   final). Uncalibrated: reorder only.
+    ///
+    /// Any backend error or malformed answer falls back to today's rule for
+    /// that question. [`FormatPolicy::decide`] tunes it; `None` there means
+    /// [`DecidePolicy::default`](crate::policy::DecidePolicy::default). The result's `decision` field says who
+    /// judged. Host config — the backend is never persisted anywhere.
+    pub fn with_decider(mut self, decider: Arc<dyn DecisionBackend>) -> Self {
+        self.decider = Some(decider);
         self
     }
 
@@ -307,6 +420,112 @@ impl ContextAssembler {
         policy: &FormatPolicy,
         hints: &RenderingHints,
     ) -> FormattedContext {
+        let Some(decider) = self.decider.as_deref() else {
+            return self.format_shaped(hits, policy, hints, &Shaping::default());
+        };
+        let (shaping, provenance) = self.decide(decider, hits, policy, hints);
+        let mut ctx = self.format_shaped(hits, policy, hints, &shaping);
+        ctx.decision = provenance;
+        ctx
+    }
+
+    /// Ask the decision backend A3 and A2 for this assembly. Each question
+    /// fails open on its own: an error leaves its part of the shaping unset.
+    fn decide(
+        &self,
+        decider: &dyn DecisionBackend,
+        hits: &[SearchHit],
+        policy: &FormatPolicy,
+        hints: &RenderingHints,
+    ) -> (Shaping, Option<DecisionProvenance>) {
+        let dp = policy.decide.clone().unwrap_or_default();
+        let query = policy
+            .query_text
+            .as_deref()
+            .or(hints.query_text.as_deref())
+            .filter(|q| !q.trim().is_empty());
+        let mut shaping = Shaping::default();
+        let (Some(query), true) = (query, hits.len() >= 2) else {
+            return (shaping, None);
+        };
+        let started = Instant::now();
+        let deadline = dp.deadline_ms.map(Duration::from_millis);
+        let left = || match deadline {
+            None => Some(None),
+            Some(d) => d.checked_sub(started.elapsed()).filter(|r| !r.is_zero()).map(Some),
+        };
+        let mut provenance: Option<JudgeProvenance> = None;
+        let mut intent_label = None;
+
+        // A3 — the hint flags already decide timeline, and recency only
+        // matters for supersession chains (≥ 2 hits), so ask only when the
+        // answer can change something.
+        if dp.intent && !(hints.has_temporal_expr || hints.has_time_range) {
+            if let Some(Ok(j)) = left().map(|d| judge::judge_intent(decider, query, d)) {
+                shaping.intent = Some((j.intent, j.provenance.calibrated));
+                intent_label = Some(j.intent.as_str().to_string());
+                provenance = Some(j.provenance);
+            }
+        }
+
+        // A2 — withheld (retracted) grains are never rendered, so they are
+        // never sent to be judged either.
+        if dp.disclosure {
+            let text_policy = FormatPolicy::new(OutputFormat::PlainText).metadata(MetadataLevel::None);
+            let asked: Vec<usize> = (0..hits.len())
+                .filter(|&i| {
+                    policy.include_retracted
+                        || Trust::from_field(hits[i].grain.get_str("verification_status")).is_actionable()
+                })
+                .collect();
+            let texts: Vec<String> = asked
+                .iter()
+                .map(|&i| match self.registry.get(hits[i].grain.grain_type) {
+                    Some(r) => r.render(&hits[i].grain, &text_policy),
+                    None => format!("[{}]", hits[i].grain.grain_type.as_str()),
+                })
+                .collect();
+            if asked.len() >= 2 {
+                if let Some(Ok(j)) = left().map(|d| judge::judge_candidates(decider, query, &texts, d)) {
+                    if j.per_candidate.len() == asked.len() {
+                        let mut per_hit = vec![None; hits.len()];
+                        for (&i, judgment) in asked.iter().zip(&j.per_candidate) {
+                            per_hit[i] = Some(*judgment);
+                        }
+                        shaping.judged = Some(Judged {
+                            per_hit,
+                            calibrated: j.provenance.calibrated,
+                            drop_below: dp.drop_below,
+                            full_above: dp.full_above,
+                        });
+                        provenance = Some(match provenance {
+                            Some(p) => p.merge(&j.provenance),
+                            None => j.provenance,
+                        });
+                    }
+                }
+            }
+        }
+
+        let provenance = provenance.map(|p| DecisionProvenance {
+            provider: p.provider,
+            model: p.model,
+            calibrated: p.calibrated,
+            requests: p.requests,
+            latency_ms: p.latency_ms,
+            intent: intent_label,
+        });
+        (shaping, provenance)
+    }
+
+    /// The assembly proper, under a (possibly empty) decision shaping.
+    fn format_shaped(
+        &self,
+        hits: &[SearchHit],
+        policy: &FormatPolicy,
+        hints: &RenderingHints,
+        shaping: &Shaping,
+    ) -> FormattedContext {
         if hits.is_empty() {
             return FormattedContext {
                 text: String::new(),
@@ -314,14 +533,15 @@ impl ContextAssembler {
                 included_count: 0,
                 omitted_count: 0,
                 truncated: false,
+                decision: None,
             };
         }
 
         // RF-4 Mode 2: Check for temporal intent — timeline rendering takes
         // priority over census/relevance highlighting.
         let hit_refs: Vec<&SearchHit> = hits.iter().collect();
-        if detect_temporal_intent(hints, &hit_refs) && hits.len() >= 2 {
-            return self.format_timeline_pass(hits, policy);
+        if shaping.temporal(hints, &hit_refs) && hits.len() >= 2 {
+            return self.format_timeline_pass(hits, policy, shaping);
         }
 
         // Split hits into primary and census groups based on recall_source.
@@ -330,7 +550,7 @@ impl ContextAssembler {
             .any(|h| h.recall_source == Some(RecallSource::Census));
 
         if !has_census {
-            return self.format_single_pass(hits, policy);
+            return self.format_single_pass(hits, policy, shaping);
         }
 
         // Partition indices into primary and census.
@@ -367,11 +587,12 @@ impl ContextAssembler {
                 included_count: 0,
                 omitted_count: 0,
                 truncated: false,
+                decision: None,
             }
         } else {
             // Build a temporary vec for format_single_pass (borrows as slice).
             let primary_owned: Vec<SearchHit> = primary_hits.iter().map(|h| (*h).clone()).collect();
-            self.format_single_pass(&primary_owned, &primary_policy)
+            self.format_single_pass(&primary_owned, &primary_policy, &shaping.subset(&primary_indices))
         };
 
         // Render census grains with 20% budget in a separate section.
@@ -387,7 +608,7 @@ impl ContextAssembler {
         let census_ctx = if census_hits.is_empty() {
             None
         } else {
-            let ctx = self.format_census_section(&census_hits, &census_policy);
+            let ctx = self.format_census_section(&census_hits, &census_policy, &shaping.subset(&census_indices));
             if ctx.text.is_empty() {
                 None
             } else {
@@ -426,11 +647,17 @@ impl ContextAssembler {
             included_count,
             omitted_count,
             truncated: omitted_count > 0,
+            decision: None,
         }
     }
 
     /// Format a set of hits without census separation (standard pipeline).
-    fn format_single_pass(&self, hits: &[SearchHit], policy: &FormatPolicy) -> FormattedContext {
+    fn format_single_pass(
+        &self,
+        hits: &[SearchHit],
+        policy: &FormatPolicy,
+        shaping: &Shaping,
+    ) -> FormattedContext {
         if hits.is_empty() {
             return FormattedContext {
                 text: String::new(),
@@ -438,6 +665,7 @@ impl ContextAssembler {
                 included_count: 0,
                 omitted_count: 0,
                 truncated: false,
+                decision: None,
             };
         }
 
@@ -460,7 +688,7 @@ impl ContextAssembler {
             .into_iter()
             .filter(|c| !withheld.contains(&c.old_index) && !withheld.contains(&c.new_index))
             .collect();
-        let recency = is_recency_query(policy.query_text.as_deref());
+        let recency = shaping.recency(policy.query_text.as_deref());
         let ku_section = self.render_knowledge_updates(&chains, &policy.format, recency);
 
         // Collect indices consumed by KU chains — these are removed from
@@ -498,31 +726,7 @@ impl ContextAssembler {
             filtered.into_iter().filter(|i| !withheld.contains(i)).collect();
 
         // Step 2: Score + measure each hit
-        let mut scored: Vec<ScoredEntry> = filtered
-            .iter()
-            .enumerate()
-            .map(|(i, &idx)| {
-                let hit = &hits[idx];
-                let gt = hit.grain.grain_type;
-                let renderer = self.registry.get(gt);
-                let (priority, full_tokens) = match renderer {
-                    Some(r) => (
-                        r.context_priority(&hit.grain, hit),
-                        r.token_estimate(&hit.grain, policy),
-                    ),
-                    None => (0.5, estimate_default_tokens(hit)),
-                };
-                // Summary is roughly 1/3 of full (heuristic from architecture design)
-                let summary_tokens = (full_tokens / 3).max(1);
-                ScoredEntry {
-                    priority,
-                    full_tokens,
-                    summary_tokens,
-                    original_index: i,
-                    grain_type: gt,
-                }
-            })
-            .collect();
+        let mut scored = self.score_entries(hits, &filtered, policy, shaping);
 
         // Step 3: Allocate budget (diversity-aware when configured).
         let mut allocations = match policy.grain_type_diversity {
@@ -642,6 +846,7 @@ impl ContextAssembler {
             included_count: primary_ordered.len() + expansion_count + ku_grain_count,
             omitted_count,
             truncated: omitted_count > 0,
+            decision: None,
         }
     }
 
@@ -649,7 +854,12 @@ impl ContextAssembler {
     ///
     /// Runs the standard budget-allocation pipeline, then sorts included
     /// entries by `created_at` ascending and delegates to `render_timeline`.
-    fn format_timeline_pass(&self, hits: &[SearchHit], policy: &FormatPolicy) -> FormattedContext {
+    fn format_timeline_pass(
+        &self,
+        hits: &[SearchHit],
+        policy: &FormatPolicy,
+        shaping: &Shaping,
+    ) -> FormattedContext {
         // Reuse the standard pipeline for filtering + budget allocation.
         let filtered = self.apply_overrides(hits, policy);
         let filtered = if policy.metadata != super::policy::MetadataLevel::Full {
@@ -658,30 +868,7 @@ impl ContextAssembler {
             filtered
         };
 
-        let mut scored: Vec<ScoredEntry> = filtered
-            .iter()
-            .enumerate()
-            .map(|(i, &idx)| {
-                let hit = &hits[idx];
-                let gt = hit.grain.grain_type;
-                let renderer = self.registry.get(gt);
-                let (priority, full_tokens) = match renderer {
-                    Some(r) => (
-                        r.context_priority(&hit.grain, hit),
-                        r.token_estimate(&hit.grain, policy),
-                    ),
-                    None => (0.5, estimate_default_tokens(hit)),
-                };
-                let summary_tokens = (full_tokens / 3).max(1);
-                ScoredEntry {
-                    priority,
-                    full_tokens,
-                    summary_tokens,
-                    original_index: i,
-                    grain_type: gt,
-                }
-            })
-            .collect();
+        let mut scored = self.score_entries(hits, &filtered, policy, shaping);
 
         let mut allocations = match policy.grain_type_diversity {
             Some(ref diversity) => {
@@ -714,6 +901,7 @@ impl ContextAssembler {
             included_count: included.len(),
             omitted_count,
             truncated: omitted_count > 0,
+            decision: None,
         }
     }
 
@@ -722,9 +910,10 @@ impl ContextAssembler {
         &self,
         census_hits: &[SearchHit],
         policy: &FormatPolicy,
+        shaping: &Shaping,
     ) -> FormattedContext {
         // Format the census hits using the standard pipeline.
-        let inner = self.format_single_pass(census_hits, policy);
+        let inner = self.format_single_pass(census_hits, policy, shaping);
         if inner.text.is_empty() {
             return inner;
         }
@@ -875,7 +1064,59 @@ impl ContextAssembler {
             included_count: inner.included_count,
             omitted_count: inner.omitted_count,
             truncated: inner.truncated,
+            decision: None,
         }
+    }
+
+    /// Score and measure the `filtered` hits for allocation. With no A2
+    /// judgment for a hit this is today's computation exactly. With one, the
+    /// judged relevance stands in for the recall score as the priority's
+    /// input (so an uncalibrated backend still reorders), and — CALIBRATED
+    /// only — sets the allocator's `force_omit` / `prefer_full` inputs.
+    fn score_entries(
+        &self,
+        hits: &[SearchHit],
+        filtered: &[usize],
+        policy: &FormatPolicy,
+        shaping: &Shaping,
+    ) -> Vec<ScoredEntry> {
+        filtered
+            .iter()
+            .enumerate()
+            .map(|(i, &idx)| {
+                let hit = &hits[idx];
+                let gt = hit.grain.grain_type;
+                let judgment = shaping
+                    .judged
+                    .as_ref()
+                    .and_then(|j| j.per_hit.get(idx).copied().flatten().map(|v| (j, v)));
+                let renderer = self.registry.get(gt);
+                let (priority, full_tokens) = match renderer {
+                    Some(r) => {
+                        let priority = match judgment {
+                            None => r.context_priority(&hit.grain, hit),
+                            Some((_, v)) => {
+                                let mut judged_hit = hit.clone();
+                                judged_hit.score = f64::from(v.relevance);
+                                r.context_priority(&hit.grain, &judged_hit)
+                            }
+                        };
+                        (priority, r.token_estimate(&hit.grain, policy))
+                    }
+                    None => (0.5, estimate_default_tokens(hit)),
+                };
+                // Summary is roughly 1/3 of full (heuristic from architecture design)
+                let summary_tokens = (full_tokens / 3).max(1);
+                let mut entry = ScoredEntry::new(priority, full_tokens, summary_tokens, i, gt);
+                if let Some((j, v)) = judgment {
+                    if j.calibrated {
+                        entry.force_omit = v.relevance < j.drop_below;
+                        entry.prefer_full = v.p_verbatim >= j.full_above;
+                    }
+                }
+                entry
+            })
+            .collect()
     }
 
     // -----------------------------------------------------------------------
@@ -2251,6 +2492,7 @@ mod tests {
             included_count: 1,
             omitted_count: 0,
             truncated: false,
+            decision: None,
         };
         let json = serde_json::to_string(&ctx).unwrap();
         assert!(json.contains("\"text\":\"test\""));

@@ -1626,6 +1626,26 @@ pub enum CalWarning {
         /// Grains that were grouped.
         grains: usize,
     },
+
+    /// CAL-W019 — A calibrated decision backend judged grains off-topic for
+    /// their `ASSEMBLE` source's query and they were omitted before the
+    /// budget was applied (decision-backend phase 3, row A2).
+    ///
+    /// The same rule as `CAL-W017`: a path that discards grains an assembly
+    /// already retrieved announces it. The warning names the backend
+    /// (proposal §2 rule 4 — every judgment that shaped output is
+    /// attributable) and the threshold that bound. An uncalibrated backend
+    /// never drops, so it never raises this.
+    AssembleDecisionDropped {
+        /// Source labels that lost grains, in FROM-clause order.
+        labels: Vec<String>,
+        /// Grains omitted across those sources.
+        dropped: usize,
+        /// `DecisionBackend` provider(s) that judged, e.g. `"typesafe"`.
+        provider: String,
+        /// The relevance line, in `[0, 1]`.
+        drop_below: f32,
+    },
 }
 
 impl CalWarning {
@@ -1649,6 +1669,7 @@ impl CalWarning {
             Self::PipelineStageInert { .. } => "CAL-W016",
             Self::AssembleBudgetDropped { .. } => "CAL-W017",
             Self::GroupKeyAbsent { .. } => "CAL-W018",
+            Self::AssembleDecisionDropped { .. } => "CAL-W019",
         }
     }
 
@@ -1671,7 +1692,8 @@ impl CalWarning {
             | Self::ScanBounded { .. }
             | Self::PipelineStageInert { .. }
             | Self::AssembleBudgetDropped { .. }
-            | Self::GroupKeyAbsent { .. } => None,
+            | Self::GroupKeyAbsent { .. }
+            | Self::AssembleDecisionDropped { .. } => None,
         }
     }
 }
@@ -1807,6 +1829,18 @@ impl std::fmt::Display for CalWarning {
                 write!(
                     f,
                     "CAL-W018: none of the {grains} grains carries \"{field}\", so they were all grouped under the empty key — this ranking has one group because the key is absent, not because one value dominates. Check the field name against DESCRIBE FIELDS."
+                )
+            }
+            Self::AssembleDecisionDropped {
+                labels,
+                dropped,
+                provider,
+                drop_below,
+            } => {
+                write!(
+                    f,
+                    "CAL-W019: decision backend {provider} judged {dropped} grain(s) from source(s) [{}] off-topic for the source's query (relevance below {drop_below}) and they were omitted before the budget applied. Remove the decider to see them.",
+                    labels.join(", ")
                 )
             }
         }
@@ -2035,6 +2069,15 @@ mod tests {
         };
         assert_eq!(w.code(), "CAL-W001");
         assert!(w.to_string().starts_with("CAL-W001"));
+        let w = CalWarning::AssembleDecisionDropped {
+            labels: vec!["e".into()],
+            dropped: 2,
+            provider: "fake".into(),
+            drop_below: 0.1,
+        };
+        assert_eq!(w.code(), "CAL-W019");
+        assert!(w.to_string().starts_with("CAL-W019: "));
+        assert!(w.span().is_none());
     }
 
     #[test]

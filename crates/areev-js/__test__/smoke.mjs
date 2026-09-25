@@ -2247,3 +2247,303 @@ test('recommendation(hash) and include:"proposal" expose what a recommendation w
     /AUT-E001/.test(e.message) && !e.message.includes(h.slice(0, 12)))
   outsider.close()
 })
+
+// ---------------------------------------------------------------------------
+// decision backends (docs/decision-model-proposal.md §5) — keyless: the
+// backend is a scripted command speaking the wire shape on stdin/stdout,
+// mirroring test_areev.py's FAKE_DECIDER_PY. Written in JS and run with this
+// very node binary, so it needs no python.
+// ---------------------------------------------------------------------------
+
+const FAKE_DECIDER_JS = `
+let buf = ''
+process.stdin.on('data', (d) => { buf += d })
+process.stdin.on('end', () => {
+  const req = JSON.parse(buf)
+  // A log path: record the state exactly as it left the process.
+  if (process.argv[2]) require('node:fs').appendFileSync(process.argv[2], JSON.stringify(req.state) + '\\n')
+  const answers = {}
+  for (const [id, q] of Object.entries(req.questions)) {
+    if (q.type === 'noul') {
+      // An object state proves decide() parsed JSON; a string stays text.
+      const obj = req.state !== null && typeof req.state === 'object' && !Array.isArray(req.state)
+      answers[id] = { type: 'noul', noul: obj ? 0.9 : 0.2 }
+    } else if (q.type === 'choice') {
+      const keys = Object.keys(q.criteria).sort()
+      const rest = 0.25 / (keys.length - 1)
+      const probabilities = Object.fromEntries(keys.map((k, i) => [k, i === 0 ? 0.75 : rest]))
+      answers[id] = { type: 'choice', choice: keys[0], probabilities }
+    } else {
+      const n = q.criteria.length
+      const probabilities = Object.fromEntries(Array.from({ length: n }, (_, i) => [String(i), 0]))
+      const cands = req.state && typeof req.state === 'object' ? req.state.candidates : null
+      if (cands) {
+        // DecisionRerank's batch: candidate c<i> scores higher the later it
+        // came in fusion order, so a reranked recall comes back reversed.
+        const t = (Number(id.slice(1)) + 1) / (cands.length + 1)
+        probabilities['0'] = 1 - t
+        probabilities[String(n - 1)] = t
+      } else {
+        probabilities['0'] = 0.3
+        probabilities[String(n - 1)] = 0.7
+      }
+      answers[id] = { type: 'score', probabilities }
+    }
+  }
+  process.stdout.write(JSON.stringify({ model: 'fake-decider-1', answers }))
+})
+`
+
+/// A `cmd` string for the scripted System One backend — no network, no key.
+function fakeDecider() {
+  const dir = mkdtempSync(join(tmpdir(), 'areev-fake-decider-'))
+  const script = join(dir, 'fake_decider.cjs')
+  writeFileSync(script, FAKE_DECIDER_JS)
+  return `${process.execPath} ${script}`
+}
+
+const DECIDE_QUESTIONS = JSON.stringify({
+  pref: { type: 'noul', instructions: 'The customer has a seating preference' },
+  route: {
+    type: 'choice',
+    instructions: 'Route this ticket',
+    criteria: { billing: 'money owed', support: 'the product misbehaves' },
+  },
+  urgency: { type: 'score', instructions: 'How urgent is it', criteria: ['low', 'medium', 'high'] },
+})
+
+const near = (a, b) => Math.abs(a - b) < 1e-4
+
+test('decide round-trips all three question types', async () => {
+  const m = makeDb()
+  m.setDecider(null, fakeDecider(), 30000)
+  const out = JSON.parse(await m.decide('{"ticket": "window seat, twice"}', DECIDE_QUESTIONS))
+
+  assert.equal(out.model, 'fake-decider-1')
+  assert.equal(out.provider, 'cmd')
+  assert.equal(out.calibrated, true)
+  assert.equal(typeof out.latency_ms, 'number')
+
+  const a = out.answers
+  assert.deepEqual(Object.keys(a.pref).sort(), ['noul', 'type'])
+  assert.ok(near(a.pref.noul, 0.9), `object state parsed as JSON: ${a.pref.noul}`)
+  assert.equal(a.route.choice, 'billing')
+  assert.ok(near(a.route.probabilities.billing, 0.75) && near(a.route.probabilities.support, 0.25))
+  // (n·p_max − 1)/(n − 1), recomputed when the provider sends none.
+  assert.ok(near(a.route.confidence, 0.5), `${a.route.confidence}`)
+  assert.equal(a.urgency.type, 'score')
+  assert.ok(near(a.urgency.score, 1.4), `${a.urgency.score}`) // 0·0.3 + 2·0.7
+  assert.deepEqual(a.urgency.legend, { 0: 'low', 1: 'medium', 2: 'high' })
+  m.close()
+})
+
+test('decide keeps non-JSON state as text', async () => {
+  const m = makeDb()
+  m.setDecider(null, fakeDecider(), 30000)
+  const q = JSON.stringify({ pref: { type: 'noul', instructions: 'has a preference' } })
+  const text = JSON.parse(await m.decide('Customer asked twice for a window seat.', q))
+  assert.ok(near(text.answers.pref.noul, 0.2))
+  // A number parses as JSON but is not a valid state — still sent as text.
+  const num = JSON.parse(await m.decide('42', q))
+  assert.ok(near(num.answers.pref.noul, 0.2))
+  m.close()
+})
+
+test('setDecider with a bad spec throws DEC-E001', () => {
+  const m = makeDb()
+  assert.throws(() => m.setDecider('nosuchprovider:model'), /DEC-E001/)
+  m.close()
+})
+
+test('decide without a decider rejects with DEC-E001', async () => {
+  const saved = { d: process.env.AREEV_DECIDE, c: process.env.AREEV_DECIDE_CMD }
+  delete process.env.AREEV_DECIDE
+  delete process.env.AREEV_DECIDE_CMD
+  try {
+    const m = makeDb()
+    const q = JSON.stringify({ pref: { type: 'noul', instructions: 'x' } })
+    await assert.rejects(m.decide('state', q), /DEC-E001/)
+    // Nothing configured in the environment either: setDecider() installs nothing.
+    m.setDecider()
+    await assert.rejects(m.decide('state', q), /DEC-E001/)
+    m.close()
+  } finally {
+    if (saved.d !== undefined) process.env.AREEV_DECIDE = saved.d
+    if (saved.c !== undefined) process.env.AREEV_DECIDE_CMD = saved.c
+  }
+})
+
+test('decide rejects an invalid question with DEC-E006', async () => {
+  const m = makeDb()
+  m.setDecider(null, fakeDecider())
+  const oneOption = JSON.stringify({ c: { type: 'choice', instructions: 'x', criteria: { a: 'only' } } })
+  await assert.rejects(m.decide('state', oneOption), /DEC-E006/)
+  await assert.rejects(m.decide('state', 'not json'), /DEC-E006/)
+  m.close()
+})
+
+test('setDecider with no arguments reads the environment', async () => {
+  const saved = {
+    d: process.env.AREEV_DECIDE,
+    c: process.env.AREEV_DECIDE_CMD,
+    t: process.env.AREEV_DECIDE_TIMEOUT_MS,
+  }
+  delete process.env.AREEV_DECIDE
+  process.env.AREEV_DECIDE_CMD = fakeDecider()
+  process.env.AREEV_DECIDE_TIMEOUT_MS = '30000'
+  try {
+    const m = makeDb()
+    m.setDecider()
+    const out = JSON.parse(await m.decide('{"a": 1}', DECIDE_QUESTIONS))
+    assert.equal(out.provider, 'cmd')
+    assert.ok(near(out.answers.pref.noul, 0.9))
+    // An explicit empty spec clears it again.
+    m.setDecider('')
+    await assert.rejects(m.decide('state', DECIDE_QUESTIONS), /DEC-E001/)
+    m.close()
+  } finally {
+    for (const [k, v] of [['AREEV_DECIDE', saved.d], ['AREEV_DECIDE_CMD', saved.c], ['AREEV_DECIDE_TIMEOUT_MS', saved.t]]) {
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
+  }
+})
+
+test('decide pseudonymizes state under egress', async () => {
+  // `state` sent to a decision backend is memory egress: under an egress
+  // policy (here the host floor) it leaves pseudonymized, like LLM egress.
+  const log = join(mkdtempSync(join(tmpdir(), 'areev-decide-log-')), 'states.log')
+  const m = makeDb()
+  m.setDecider(null, `${fakeDecider()} ${log}`, 30000)
+  const q = JSON.stringify({ pref: { type: 'noul', instructions: 'asks for a callback' } })
+  const secret = 'Call jane.doe@example.com back about the refund.'
+
+  await m.decide(secret, q)
+  assert.ok(readFileSync(log, 'utf8').includes('jane.doe@example.com'), 'no policy: state goes out as given')
+
+  writeFileSync(log, '')
+  await m.setAnonymizeEgressFloor(true)
+  const out = JSON.parse(await m.decide(secret, q))
+  const sent = readFileSync(log, 'utf8')
+  assert.ok(sent.trim(), 'the backend was called')
+  assert.ok(!sent.includes('jane.doe@example.com'), sent)
+  assert.equal(out.provider, 'cmd')
+  m.close()
+})
+
+// ---------------------------------------------------------------------------
+// recall deadline + rerankers (proposal §5, phase 0/2): search() rows carry
+// the MCP `areev_search` score, and an installed reranker orders them.
+// Mirrors test_areev.py.
+// ---------------------------------------------------------------------------
+
+/// A command reranker script: `order` 'reverse' scores later docs higher,
+/// 'keep' scores earlier docs higher.
+function fakeReranker(order) {
+  const dir = mkdtempSync(join(tmpdir(), 'areev-fake-rerank-'))
+  const script = join(dir, 'fake_rerank.cjs')
+  const sign = order === 'reverse' ? 1 : -1
+  writeFileSync(
+    script,
+    `let b = ''
+process.stdin.on('data', (d) => { b += d })
+process.stdin.on('end', () => {
+  const docs = JSON.parse(b).docs
+  process.stdout.write(JSON.stringify(docs.map((_, i) => ${sign} * i)))
+})
+`,
+  )
+  return `${process.execPath} ${script}`
+}
+
+async function threeWindows() {
+  const m = makeDb()
+  await m.addFact('john', 'prefers', 'window seat')
+  await m.addFact('mary', 'prefers', 'window table by the window')
+  await m.addFact('bob', 'prefers', 'window view')
+  return m
+}
+
+const objects = (hits) => hits.map((h) => h.fields.object)
+
+test('search rows carry a normalized score', async () => {
+  const m = await threeWindows()
+  const hits = JSON.parse(await m.search('window'))
+  assert.equal(hits.length, 3)
+  const scores = hits.map((h) => h.score)
+  assert.ok(scores.every((s) => s > 0 && s <= 1), `${scores}`)
+  assert.equal(scores[0], 1, 'the best-fused hit is exactly 1.0')
+  assert.deepEqual(scores, [...scores].sort((a, b) => b - a), 'fusion scores follow the order')
+  m.close()
+})
+
+test('recall deadline round-trips', async () => {
+  const m = makeDb()
+  assert.equal(m.recallDeadlineMs(), null)
+  m.setRecallDeadlineMs(250)
+  assert.equal(m.recallDeadlineMs(), 250)
+  await m.addFact('john', 'prefers', 'window seat')
+  assert.deepEqual(objects(JSON.parse(await m.search('window'))), ['window seat'])
+  m.setRecallDeadlineMs(0)
+  assert.equal(m.recallDeadlineMs(), null, '0 is unbounded, like AREEV_RECALL_DEADLINE_MS')
+  m.setRecallDeadlineMs(250)
+  m.setRecallDeadlineMs(null)
+  assert.equal(m.recallDeadlineMs(), null)
+  m.close()
+})
+
+test('a command reranker reorders search', async () => {
+  const m = await threeWindows()
+  const fused = objects(JSON.parse(await m.search('window')))
+  m.setRerankerCommand(fakeReranker('reverse'), 'fake-rerank')
+  const hits = JSON.parse(await m.search('window'))
+  assert.deepEqual(objects(hits), [...fused].reverse())
+  // The reranker's min-max-normalized answer: top 1.0, pool worst 0.0.
+  assert.deepEqual(hits.map((h) => h.score), [1, 0.5, 0])
+  m.close()
+})
+
+test('setDecider installs a decision reranker', async () => {
+  const m = await threeWindows()
+  const fused = objects(JSON.parse(await m.search('window')))
+  m.setDecider(null, fakeDecider(), 30000)
+  const hits = JSON.parse(await m.search('window'))
+  assert.deepEqual(objects(hits), [...fused].reverse())
+  assert.equal(hits[0].score, 1)
+  // Clearing the chain uninstalls it: fusion order and fusion scores again.
+  m.setDecider('')
+  const back = JSON.parse(await m.search('window'))
+  assert.deepEqual(objects(back), fused)
+  assert.equal(back[0].score, 1)
+  m.close()
+})
+
+test('a command reranker wins over the decision reranker', async () => {
+  const m = await threeWindows()
+  const fused = objects(JSON.parse(await m.search('window')))
+  m.setRerankerCommand(fakeReranker('keep'))
+  m.setDecider(null, fakeDecider(), 30000) // would reverse — must not
+  assert.deepEqual(objects(JSON.parse(await m.search('window'))), fused)
+  // decide() itself still answers from the chain.
+  const q = JSON.stringify({ pref: { type: 'noul', instructions: 'x' } })
+  assert.equal(JSON.parse(await m.decide('state', q)).provider, 'cmd')
+  m.close()
+})
+
+test('the decision reranker sees pseudonymized text under egress', async () => {
+  const log = join(mkdtempSync(join(tmpdir(), 'areev-rerank-log-')), 'states.log')
+  const m = makeDb()
+  await m.addFact('john', 'email', 'reach jane.doe@example.com by window')
+  await m.addFact('mary', 'prefers', 'window table')
+  m.setDecider(null, `${fakeDecider()} ${log}`, 30000)
+  await m.search('window')
+  assert.ok(readFileSync(log, 'utf8').includes('jane.doe@example.com'), 'no policy: grain text goes out as stored')
+
+  writeFileSync(log, '')
+  await m.setAnonymizeEgressFloor(true) // re-wraps the installed decision reranker
+  await m.search('window')
+  const sent = readFileSync(log, 'utf8')
+  assert.ok(sent.trim(), 'the reranker was called')
+  assert.ok(!sent.includes('jane.doe@example.com'), sent)
+  m.close()
+})

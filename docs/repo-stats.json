@@ -2,73 +2,73 @@
   "version": "1.9.5",
   "crates": 17,
   "rust": {
-    "files": 333,
-    "physical_lines": 234789,
-    "source_code": 108862,
-    "test_code": 68277,
-    "unit_test_code": 29369,
-    "integration_test_code": 38908,
+    "files": 350,
+    "physical_lines": 248570,
+    "source_code": 115008,
+    "test_code": 72753,
+    "unit_test_code": 29846,
+    "integration_test_code": 42907,
     "example_code": 669,
-    "test_functions": 3153,
+    "test_functions": 3325,
     "test_ratio": 0.63,
-    "test_share": 38.5
+    "test_share": 38.7
   },
   "per_crate": [
     {
       "name": "areev-cal",
-      "files": 46,
-      "physical": 60313,
-      "source_code": 25684,
-      "test_code": 20740,
-      "tests": 1076
+      "files": 49,
+      "physical": 61446,
+      "source_code": 26134,
+      "test_code": 21118,
+      "tests": 1091
     },
     {
       "name": "areev-store",
-      "files": 43,
-      "physical": 28239,
-      "source_code": 12886,
-      "test_code": 6959,
-      "tests": 352
+      "files": 45,
+      "physical": 29308,
+      "source_code": 13289,
+      "test_code": 7390,
+      "tests": 370
     },
     {
       "name": "areev-run",
-      "files": 30,
-      "physical": 26517,
-      "source_code": 9201,
-      "test_code": 10606,
-      "tests": 304
+      "files": 31,
+      "physical": 27686,
+      "source_code": 9550,
+      "test_code": 11172,
+      "tests": 316
     },
     {
       "name": "areev-cli",
-      "files": 24,
-      "physical": 21644,
-      "source_code": 8867,
-      "test_code": 8233,
-      "tests": 233
+      "files": 25,
+      "physical": 23155,
+      "source_code": 9150,
+      "test_code": 9165,
+      "tests": 253
     },
     {
       "name": "areev-loop",
-      "files": 36,
-      "physical": 21099,
-      "source_code": 14221,
-      "test_code": 2133,
-      "tests": 246
+      "files": 38,
+      "physical": 23046,
+      "source_code": 15696,
+      "test_code": 2182,
+      "tests": 271
     },
     {
       "name": "areev-core",
-      "files": 51,
-      "physical": 18844,
-      "source_code": 9218,
-      "test_code": 4843,
-      "tests": 327
+      "files": 52,
+      "physical": 19821,
+      "source_code": 9812,
+      "test_code": 4994,
+      "tests": 335
     },
     {
       "name": "areev-bench",
-      "files": 20,
-      "physical": 12262,
-      "source_code": 6586,
-      "test_code": 2831,
-      "tests": 111
+      "files": 21,
+      "physical": 12780,
+      "source_code": 6973,
+      "test_code": 2869,
+      "tests": 115
     },
     {
       "name": "areev-trigger",
@@ -79,113 +79,113 @@
       "tests": 141
     },
     {
-      "name": "areev-server",
-      "files": 3,
-      "physical": 5545,
-      "source_code": 2301,
-      "test_code": 1709,
-      "tests": 82
+      "name": "areev-llm",
+      "files": 11,
+      "physical": 6717,
+      "source_code": 2941,
+      "test_code": 2221,
+      "tests": 107
     },
     {
       "name": "areev-run-core",
       "files": 8,
-      "physical": 5353,
-      "source_code": 2494,
-      "test_code": 1388,
-      "tests": 48
+      "physical": 6713,
+      "source_code": 3064,
+      "test_code": 1874,
+      "tests": 59
     },
     {
       "name": "areev-context",
-      "files": 8,
-      "physical": 5335,
-      "source_code": 1918,
-      "test_code": 2481,
-      "tests": 94
+      "files": 9,
+      "physical": 6273,
+      "source_code": 2151,
+      "test_code": 2944,
+      "tests": 111
+    },
+    {
+      "name": "areev-server",
+      "files": 3,
+      "physical": 5589,
+      "source_code": 2310,
+      "test_code": 1726,
+      "tests": 83
     },
     {
       "name": "areev-conformance",
-      "files": 26,
-      "physical": 5051,
-      "source_code": 2543,
+      "files": 27,
+      "physical": 5317,
+      "source_code": 2762,
       "test_code": 1198,
       "tests": 26
     },
     {
-      "name": "areev-llm",
-      "files": 9,
-      "physical": 4801,
-      "source_code": 2248,
-      "test_code": 1384,
-      "tests": 70
-    },
-    {
       "name": "areev-js",
       "files": 2,
-      "physical": 4402,
-      "source_code": 3258,
+      "physical": 4720,
+      "source_code": 3457,
       "test_code": 0,
       "tests": 0
     },
     {
       "name": "areev-py",
       "files": 2,
-      "physical": 3901,
-      "source_code": 2772,
+      "physical": 4190,
+      "source_code": 2949,
       "test_code": 0,
       "tests": 0
     },
     {
       "name": "areev-loop-adapter",
-      "files": 7,
-      "physical": 2934,
-      "source_code": 1179,
-      "test_code": 1052,
-      "tests": 43
+      "files": 9,
+      "physical": 3131,
+      "source_code": 1211,
+      "test_code": 1180,
+      "tests": 47
     },
     {
       "name": "areev-mcp",
       "files": 1,
-      "physical": 1485,
-      "source_code": 1289,
+      "physical": 1614,
+      "source_code": 1362,
       "test_code": 0,
       "tests": 0
     }
   ],
   "docs": {
-    "files": 65,
-    "lines": 35058
+    "files": 66,
+    "lines": 36213
   },
-  "error_codes": 116,
+  "error_codes": 126,
   "bindings": {
     "python_files": 95,
     "node_test_files": 7
   },
   "coverage": {
-    "line_coverage": 82.9,
-    "lines_covered": 58828,
-    "lines_total": 70984,
-    "files": 173,
+    "line_coverage": 83.6,
+    "lines_covered": 63676,
+    "lines_total": 76211,
+    "files": 181,
     "global_floor": 75.0,
     "per_crate": [
       {
         "name": "areev-conformance",
-        "line_coverage": 97.9,
-        "lines_covered": 1857,
-        "lines_total": 1897,
+        "line_coverage": 97.6,
+        "lines_covered": 2174,
+        "lines_total": 2227,
         "floor": 95.0
       },
       {
         "name": "areev-loop",
-        "line_coverage": 94.5,
-        "lines_covered": 10383,
-        "lines_total": 10988,
+        "line_coverage": 94.7,
+        "lines_covered": 11023,
+        "lines_total": 11634,
         "floor": 90.0
       },
       {
         "name": "areev-run-core",
-        "line_coverage": 91.6,
-        "lines_covered": 1638,
-        "lines_total": 1788,
+        "line_coverage": 92.4,
+        "lines_covered": 2070,
+        "lines_total": 2240,
         "floor": 89.0
       },
       {
@@ -197,78 +197,78 @@
       },
       {
         "name": "areev-run",
-        "line_coverage": 88.4,
-        "lines_covered": 6033,
-        "lines_total": 6826,
+        "line_coverage": 88.9,
+        "lines_covered": 6893,
+        "lines_total": 7756,
         "floor": 79.0
       },
       {
         "name": "areev-store",
-        "line_coverage": 85.0,
-        "lines_covered": 7767,
-        "lines_total": 9136,
+        "line_coverage": 85.6,
+        "lines_covered": 8208,
+        "lines_total": 9590,
         "floor": 83.0
       },
       {
         "name": "areev-core",
-        "line_coverage": 84.4,
-        "lines_covered": 5872,
-        "lines_total": 6956,
+        "line_coverage": 85.2,
+        "lines_covered": 6384,
+        "lines_total": 7490,
         "floor": 80.0
       },
       {
         "name": "areev-loop-adapter",
-        "line_coverage": 84.3,
-        "lines_covered": 809,
-        "lines_total": 960,
+        "line_coverage": 84.6,
+        "lines_covered": 878,
+        "lines_total": 1038,
         "floor": 78.0
       },
       {
-        "name": "areev-server",
-        "line_coverage": 82.1,
-        "lines_covered": 1027,
-        "lines_total": 1251,
-        "floor": 75.0
-      },
-      {
         "name": "areev-context",
-        "line_coverage": 82.0,
-        "lines_covered": 1276,
-        "lines_total": 1556,
+        "line_coverage": 83.6,
+        "lines_covered": 1449,
+        "lines_total": 1733,
         "floor": 79.0
       },
       {
+        "name": "areev-server",
+        "line_coverage": 82.3,
+        "lines_covered": 1038,
+        "lines_total": 1262,
+        "floor": 75.0
+      },
+      {
         "name": "areev-llm",
-        "line_coverage": 79.4,
-        "lines_covered": 1339,
-        "lines_total": 1687,
+        "line_coverage": 81.3,
+        "lines_covered": 1807,
+        "lines_total": 2222,
         "floor": 73.0
       },
       {
-        "name": "areev-mcp",
-        "line_coverage": 79.3,
-        "lines_covered": 876,
-        "lines_total": 1104,
-        "floor": 71.0
-      },
-      {
         "name": "areev-cli",
-        "line_coverage": 75.9,
-        "lines_covered": 5044,
-        "lines_total": 6642,
+        "line_coverage": 76.7,
+        "lines_covered": 5382,
+        "lines_total": 7017,
         "floor": 70.0
       },
       {
+        "name": "areev-mcp",
+        "line_coverage": 76.6,
+        "lines_covered": 914,
+        "lines_total": 1193,
+        "floor": 71.0
+      },
+      {
         "name": "areev-cal",
-        "line_coverage": 72.5,
-        "lines_covered": 13478,
-        "lines_total": 18601,
+        "line_coverage": 73.0,
+        "lines_covered": 14027,
+        "lines_total": 19217,
         "floor": 70.0
       }
     ],
     "comparisons": {
-      "same_scope_with_test_code": 86.3,
-      "whole_unfiltered_trace": 81.8
+      "same_scope_with_test_code": 86.8,
+      "whole_unfiltered_trace": 82.1
     },
     "excluded_from_scope": [
       {

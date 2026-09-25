@@ -278,6 +278,7 @@ version = "1.9.5"
 dependencies = [
  "areev-cal",
  "areev-core",
+ "areev-llm",
  "areev-loop",
  "areev-loop-adapter",
  "areev-run",

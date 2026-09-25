@@ -52,11 +52,15 @@ pub use egress::{EgressDenied, EgressPolicy};
 pub use egress_spec::EgressSpec;
 pub use executor::{
     env_allow_policy, is_sandbox_runtime, runtime_allows_capabilities, CodeExecutor,
-    CommandExecutor, EgressHandle, ExecResult, ExecutorRegistry, HostToolExecutor, PreparedCode,
+    CommandExecutor, DecidingExecutor, EgressHandle, ExecResult, ExecutorRegistry,
+    HostToolExecutor, PreparedCode,
 };
 pub use manifest::{
-    abstract_nodes, pin_from_definition, BudgetsSpec, ForkBase, PinnedTool, RunManifest,
+    abstract_nodes, pin_from_definition, BudgetsSpec, DeciderPin, ForkBase, PinnedTool,
+    RunManifest, DECIDE_EXECUTOR,
 };
+// The decision seam's reserved names, for hosts authoring decision nodes.
+pub use areev_run_core::{DECIDE_TOOL, DECIDE_URI};
 pub use runner::{ns_in_scope, subgraph_run_id, CrashPoint, OnDangling, RunOptions, Runner};
 pub use otel::OtelObserver;
 pub use stream::{RunEvent, RunObserver};

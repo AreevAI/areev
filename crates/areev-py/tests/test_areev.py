@@ -1836,3 +1836,268 @@ def test_run_cancel_on_a_paused_run_finalises_it(tmp_path):
     assert json.loads(db.run_verify("p2"))["verified"] is True
     with pytest.raises(ValueError, match="RUN-E029"):
         db.run_pause("p2")
+
+
+# --------------------------------------------------------------------------
+# decision backends (docs/decision-model-proposal.md §5) — keyless: the
+# backend is a scripted command speaking the wire shape on stdin/stdout.
+# --------------------------------------------------------------------------
+
+FAKE_DECIDER_PY = """
+import json, sys
+req = json.loads(sys.stdin.read())
+if len(sys.argv) > 1:  # a log path: record the state exactly as it left the process
+    with open(sys.argv[1], "a") as f:
+        f.write(json.dumps(req["state"]) + "\\n")
+answers = {}
+for qid, q in req["questions"].items():
+    t = q["type"]
+    if t == "noul":
+        # An object state proves `decide` parsed JSON; a string stays text.
+        answers[qid] = {"type": "noul", "noul": 0.9 if isinstance(req["state"], dict) else 0.2}
+    elif t == "choice":
+        keys = sorted(q["criteria"])
+        rest = 0.25 / (len(keys) - 1)
+        probs = {k: (0.75 if i == 0 else rest) for i, k in enumerate(keys)}
+        answers[qid] = {"type": "choice", "choice": keys[0], "probabilities": probs}
+    else:
+        n = len(q["criteria"])
+        probs = {str(i): 0.0 for i in range(n)}
+        cands = req["state"].get("candidates") if isinstance(req["state"], dict) else None
+        if cands:
+            # DecisionRerank's batch: candidate `c<i>` scores higher the later
+            # it came in fusion order, so a reranked recall comes back reversed.
+            t = (int(qid[1:]) + 1) / (len(cands) + 1)
+            probs["0"], probs[str(n - 1)] = 1 - t, t
+        else:
+            probs["0"], probs[str(n - 1)] = 0.3, 0.7
+        answers[qid] = {"type": "score", "probabilities": probs}
+print(json.dumps({"model": "fake-decider-1", "answers": answers}))
+"""
+
+
+@pytest.fixture
+def fake_decider(tmp_path):
+    """A `cmd=` string for a scripted System One backend — no network, no key."""
+    script = tmp_path / "fake_decider.py"
+    script.write_text(FAKE_DECIDER_PY)
+    return f"{sys.executable} {script}"
+
+
+DECIDE_QUESTIONS = json.dumps({
+    "pref": {"type": "noul", "instructions": "The customer has a seating preference"},
+    "route": {"type": "choice", "instructions": "Route this ticket",
+              "criteria": {"billing": "money owed", "support": "the product misbehaves"}},
+    "urgency": {"type": "score", "instructions": "How urgent is it",
+                "criteria": ["low", "medium", "high"]},
+})
+
+
+def test_decide_round_trips_all_three_question_types(tmp_path, fake_decider):
+    m = make_db(tmp_path)
+    m.set_decider(cmd=fake_decider, timeout_ms=30000)
+    out = json.loads(m.decide('{"ticket": "window seat, twice"}', DECIDE_QUESTIONS))
+
+    assert out["model"] == "fake-decider-1"
+    assert out["provider"] == "cmd"
+    assert out["calibrated"] is True
+    assert isinstance(out["latency_ms"], int)
+
+    a = out["answers"]
+    assert a["pref"] == {"type": "noul", "noul": pytest.approx(0.9)}
+    assert a["route"]["choice"] == "billing"
+    assert a["route"]["probabilities"] == {"billing": pytest.approx(0.75),
+                                           "support": pytest.approx(0.25)}
+    # (n·p_max − 1)/(n − 1), recomputed when the provider sends none.
+    assert a["route"]["confidence"] == pytest.approx(0.5)
+    assert a["urgency"]["type"] == "score"
+    assert a["urgency"]["score"] == pytest.approx(1.4)  # 0·0.3 + 2·0.7
+    assert a["urgency"]["legend"] == {"0": "low", "1": "medium", "2": "high"}
+
+
+def test_decide_keeps_non_json_state_as_text(tmp_path, fake_decider):
+    m = make_db(tmp_path)
+    m.set_decider(cmd=fake_decider, timeout_ms=30000)
+    q = json.dumps({"pref": {"type": "noul", "instructions": "has a preference"}})
+    # Plain text is not JSON: it reaches the backend as a string state.
+    assert json.loads(m.decide("Customer asked twice for a window seat.", q))["answers"]["pref"]["noul"] \
+        == pytest.approx(0.2)
+    # A number parses as JSON but is not a valid state — still sent as text.
+    assert json.loads(m.decide("42", q))["answers"]["pref"]["noul"] == pytest.approx(0.2)
+
+
+def test_set_decider_bad_spec_raises_dec_e001(tmp_path):
+    m = make_db(tmp_path)
+    with pytest.raises(ValueError, match="DEC-E001"):
+        m.set_decider("nosuchprovider:model")
+
+
+def test_decide_without_a_decider_raises_dec_e001(tmp_path, monkeypatch):
+    for k in ("AREEV_DECIDE", "AREEV_DECIDE_CMD"):
+        monkeypatch.delenv(k, raising=False)
+    m = make_db(tmp_path)
+    q = json.dumps({"pref": {"type": "noul", "instructions": "x"}})
+    with pytest.raises(ValueError, match="DEC-E001"):
+        m.decide("state", q)
+    # With nothing configured in the environment either, set_decider() is a
+    # no-op install — the decider stays absent.
+    m.set_decider()
+    with pytest.raises(ValueError, match="DEC-E001"):
+        m.decide("state", q)
+
+
+def test_decide_rejects_an_invalid_question(tmp_path, fake_decider):
+    m = make_db(tmp_path)
+    m.set_decider(cmd=fake_decider)
+    one_option = json.dumps({"c": {"type": "choice", "instructions": "x", "criteria": {"a": "only"}}})
+    with pytest.raises(ValueError, match="DEC-E006"):
+        m.decide("state", one_option)
+    with pytest.raises(ValueError, match="DEC-E006"):
+        m.decide("state", "not json")
+
+
+def test_set_decider_with_no_arguments_reads_the_environment(tmp_path, fake_decider, monkeypatch):
+    monkeypatch.delenv("AREEV_DECIDE", raising=False)
+    monkeypatch.setenv("AREEV_DECIDE_CMD", fake_decider)
+    monkeypatch.setenv("AREEV_DECIDE_TIMEOUT_MS", "30000")
+    m = make_db(tmp_path)
+    m.set_decider()
+    out = json.loads(m.decide('{"a": 1}', DECIDE_QUESTIONS))
+    assert out["provider"] == "cmd"
+    assert out["answers"]["pref"]["noul"] == pytest.approx(0.9)
+
+    # An explicit empty spec clears it again.
+    m.set_decider("")
+    with pytest.raises(ValueError, match="DEC-E001"):
+        m.decide("state", DECIDE_QUESTIONS)
+
+
+def test_decide_pseudonymizes_state_under_egress(tmp_path, fake_decider):
+    """`state` sent to a decision backend is memory egress: under an egress
+    policy (here the host floor) it leaves pseudonymized, like LLM egress."""
+    log = tmp_path / "decide_states.log"
+    m = make_db(tmp_path)
+    m.set_decider(cmd=f"{fake_decider} {log}", timeout_ms=30000)
+    q = json.dumps({"pref": {"type": "noul", "instructions": "asks for a callback"}})
+    secret = "Call jane.doe@example.com back about the refund."
+
+    m.decide(secret, q)
+    assert "jane.doe@example.com" in log.read_text(), "no policy: state goes out as given"
+
+    log.write_text("")
+    m.set_anonymize_egress_floor(True)
+    out = json.loads(m.decide(secret, q))
+    sent = log.read_text()
+    assert sent.strip(), "the backend was called"
+    assert "jane.doe@example.com" not in sent, sent
+    assert out["provider"] == "cmd"
+
+
+# --------------------------------------------------------------------------
+# recall deadline + rerankers (proposal §5, phase 0/2): search() rows carry
+# the MCP `areev_search` score, and an installed reranker orders them.
+# --------------------------------------------------------------------------
+
+FAKE_RERANK_PY = """
+import json, sys
+req = json.loads(sys.stdin.read())
+# Later docs score higher: a reranked recall comes back in reverse fusion order.
+print(json.dumps([float(i) for i in range(len(req["docs"]))]))
+"""
+
+
+def _three_windows(tmp_path):
+    m = make_db(tmp_path)
+    m.add_fact("john", "prefers", "window seat")
+    m.add_fact("mary", "prefers", "window table by the window")
+    m.add_fact("bob", "prefers", "window view")
+    return m
+
+
+def _objects(hits):
+    return [h["fields"]["object"] for h in hits]
+
+
+def test_search_rows_carry_a_normalized_score(tmp_path):
+    m = _three_windows(tmp_path)
+    hits = json.loads(m.search("window"))
+    assert len(hits) == 3
+    scores = [h["score"] for h in hits]
+    assert all(0.0 < s <= 1.0 for s in scores), scores
+    assert scores[0] == 1.0, "the best-fused hit is exactly 1.0"
+    assert scores == sorted(scores, reverse=True), "fusion scores follow the order"
+
+
+def test_recall_deadline_round_trips(tmp_path):
+    m = make_db(tmp_path)
+    assert m.recall_deadline_ms() is None
+    m.set_recall_deadline_ms(250)
+    assert m.recall_deadline_ms() == 250
+    m.add_fact("john", "prefers", "window seat")
+    assert _objects(json.loads(m.search("window"))) == ["window seat"], "a roomy deadline changes nothing"
+    m.set_recall_deadline_ms(0)
+    assert m.recall_deadline_ms() is None, "0 is unbounded, like AREEV_RECALL_DEADLINE_MS"
+    m.set_recall_deadline_ms(250)
+    m.set_recall_deadline_ms(None)
+    assert m.recall_deadline_ms() is None
+
+
+def test_command_reranker_reorders_search(tmp_path):
+    m = _three_windows(tmp_path)
+    fused = _objects(json.loads(m.search("window")))
+
+    script = tmp_path / "fake_rerank.py"
+    script.write_text(FAKE_RERANK_PY)
+    m.set_reranker_command(f"{sys.executable} {script}", model="fake-rerank")
+    hits = json.loads(m.search("window"))
+    assert _objects(hits) == list(reversed(fused))
+    # The reranker's min-max-normalized answer: top 1.0, pool worst 0.0.
+    assert [h["score"] for h in hits] == [1.0, 0.5, 0.0]
+
+
+def test_set_decider_installs_a_decision_reranker(tmp_path, fake_decider):
+    m = _three_windows(tmp_path)
+    fused = _objects(json.loads(m.search("window")))
+
+    m.set_decider(cmd=fake_decider, timeout_ms=30000)
+    hits = json.loads(m.search("window"))
+    assert _objects(hits) == list(reversed(fused))
+    assert hits[0]["score"] == 1.0
+
+    # Clearing the chain uninstalls it: fusion order and fusion scores again.
+    m.set_decider("")
+    back = json.loads(m.search("window"))
+    assert _objects(back) == fused
+    assert back[0]["score"] == 1.0
+
+
+def test_command_reranker_wins_over_the_decision_reranker(tmp_path, fake_decider):
+    m = _three_windows(tmp_path)
+    fused = _objects(json.loads(m.search("window")))
+    # A command reranker that keeps fusion order (earlier docs score higher).
+    keep = tmp_path / "keep_rerank.py"
+    keep.write_text("import json,sys\nd=json.loads(sys.stdin.read())['docs']\n"
+                    "print(json.dumps([float(-i) for i in range(len(d))]))\n")
+    m.set_reranker_command(f"{sys.executable} {keep}")
+    m.set_decider(cmd=fake_decider, timeout_ms=30000)  # would reverse — must not
+    assert _objects(json.loads(m.search("window"))) == fused
+    # decide() itself still answers from the chain.
+    q = json.dumps({"pref": {"type": "noul", "instructions": "x"}})
+    assert json.loads(m.decide("state", q))["provider"] == "cmd"
+
+
+def test_decision_reranker_sees_pseudonymized_text_under_egress(tmp_path, fake_decider):
+    log = tmp_path / "rerank_states.log"
+    m = make_db(tmp_path)
+    m.add_fact("john", "email", "reach jane.doe@example.com by window")
+    m.add_fact("mary", "prefers", "window table")
+    m.set_decider(cmd=f"{fake_decider} {log}", timeout_ms=30000)
+    json.loads(m.search("window"))
+    assert "jane.doe@example.com" in log.read_text(), "no policy: grain text goes out as stored"
+
+    log.write_text("")
+    m.set_anonymize_egress_floor(True)  # re-wraps the installed decision reranker
+    json.loads(m.search("window"))
+    sent = log.read_text()
+    assert sent.strip(), "the reranker was called"
+    assert "jane.doe@example.com" not in sent, sent

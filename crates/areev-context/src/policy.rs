@@ -77,6 +77,47 @@ impl Default for GrainTypeOverride {
     }
 }
 
+/// How a decision backend installed with
+/// [`ContextAssembler::with_decider`](crate::ContextAssembler::with_decider)
+/// may shape assembly (decision-backend phase 3, rows A2/A3). With no backend
+/// installed this is inert; with one installed and `FormatPolicy.decide`
+/// left `None`, [`DecidePolicy::default`] applies.
+///
+/// Rule 2 of `docs/decision-model-proposal.md` binds the thresholds: they act
+/// only when the backend's `Decision.calibrated` is true. An uncalibrated
+/// backend's relevance reorders the allocation and nothing else.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DecidePolicy {
+    /// A3: ask whether the query wants a timeline, the current value, or
+    /// neither, in place of the keyword lists. Default true.
+    pub intent: bool,
+    /// A2: ask per candidate how relevant it is and whether a summary would
+    /// lose a needed detail, and feed both to the allocator. Default true.
+    pub disclosure: bool,
+    /// Calibrated only: relevance (`score / 3`) below this is Omitted
+    /// regardless of budget. Default 0.10.
+    pub drop_below: f32,
+    /// Calibrated only: `p(summary loses a needed detail)` at or above this
+    /// prefers the Full render — the budget's 95% line still bounds it.
+    /// Default 0.50.
+    pub full_above: f32,
+    /// Deadline for ALL of one assembly's backend calls together, in
+    /// milliseconds. `None` = the backend's (chain's) own default.
+    pub deadline_ms: Option<u64>,
+}
+
+impl Default for DecidePolicy {
+    fn default() -> Self {
+        Self {
+            intent: true,
+            disclosure: true,
+            drop_below: areev_cal::judge::DEFAULT_DROP_BELOW,
+            full_above: areev_cal::judge::DEFAULT_FULL_ABOVE,
+            deadline_ms: None,
+        }
+    }
+}
+
 /// Complete formatting policy. Constructed via builder pattern.
 #[derive(Debug, Clone)]
 pub struct FormatPolicy {
@@ -100,6 +141,10 @@ pub struct FormatPolicy {
     /// forensic reads, which want the withdrawn record precisely because it
     /// was withdrawn.
     pub include_retracted: bool,
+    /// How an installed decision backend may shape this assembly. `None`
+    /// with a backend installed = [`DecidePolicy::default`]; with no backend
+    /// installed this field is never read.
+    pub decide: Option<DecidePolicy>,
 }
 
 impl FormatPolicy {
@@ -114,7 +159,14 @@ impl FormatPolicy {
             query_text: None,
             grain_type_diversity: Some(GrainTypeDiversityConfig::default()),
             include_retracted: false,
+            decide: None,
         }
+    }
+
+    /// Set how an installed decision backend may shape this assembly.
+    pub fn decide(mut self, policy: DecidePolicy) -> Self {
+        self.decide = Some(policy);
+        self
     }
 
     pub fn include_retracted(mut self, on: bool) -> Self {

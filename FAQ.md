@@ -422,6 +422,14 @@ a host-installed embedder. LLM-dependent recall options fail loudly with a clear
 error rather than silently doing nothing. This keeps the engine small,
 predictable, and free of hidden model costs.
 
+That stays true with **decision backends**: a host may opt in to a decision
+(System One) model — hosted, self-hosted, or its own command — that scores and
+orders recall with calibrated probabilities (`--decide`,
+[cookbook §27](docs/cookbook.md#27-decision-backends-typed-calibrated-judgments)).
+It is never on by default, needs no key unless you configure one, and may only
+score and order — never omit, gate, approve or apply. If it is absent, slow or
+failing, the deterministic path answers; that path is the floor.
+
 ### How do I contribute?
 
 Contributions are welcome — bugs, docs, tests, code. Sign off your commits

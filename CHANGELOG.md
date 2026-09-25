@@ -6,6 +6,93 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Decision backends: typed, calibrated judgments as an optional seam**
+  (`docs/decision-model-proposal.md`). `areev_llm::decide` takes a `state`
+  plus named `noul` / `choice` / `score` questions and returns typed answers
+  with probabilities, `provider`, `model`, `calibrated` and latency. One
+  wire shape (`POST /v1/systemone`), many providers: `typesafe:`,
+  `openrouter:`, `vercel:`, `cloudflare:`, `openjev:` (development only),
+  self-hosted `systemone:<url>[#model]`, the LLM-emulated `llm:<spec>`
+  (`calibrated = false`) and a JSON-on-stdio `--decide-cmd`. The host orders
+  them as a **chain** that fails open to the deterministic rule under one
+  deadline (default 2000 ms). Nothing is default-on; with no chain
+  configured every path is unchanged. Rules recorded in ARCHITECTURE.md §10:
+  a decision model may score and order, only code omits/gates/approves/
+  applies; an uncalibrated backend may reorder, never omit. New error domain
+  **`DEC`** (`DEC-E001`…`DEC-E008`; `E008` is the fail-closed egress refusal
+  that stops a chain). The pure seam lives in `areev_core::decide`, the
+  adapters in `areev_llm::decide`. No new dependency.
+- **Decision surfaces.** Global flags `--decide`, `--decide-cmd`,
+  `--decide-timeout-ms`; the verb `areev decide --state … (--questions |
+  --noul | --choice … --option k=desc | --score … --level desc)`; MCP reads
+  `AREEV_DECIDE` / `AREEV_DECIDE_CMD` / `AREEV_DECIDE_TIMEOUT_MS` (tool count
+  unchanged); `set_decider` / `decide` (Python) and `setDecider` / `decide`
+  (Node); `GET /api/config` reports `decide: { chain, calibrated }`.
+- **Real recall scores.** `SearchHit.score` carries the fused score
+  (rank-normalized RRF, top = 1.0, or the reranker's score normalized to
+  [0,1]) instead of a constant, and MCP `areev_search` rows gain `score` (and
+  `provider` when a reranker answered), so `min_score` filters on something.
+- **Command reranker.** `CommandRerank` (stdin `{"query", "docs"}` → stdout
+  an array of scores, mirroring `CommandEmbed`) via `--rerank-cmd` /
+  `AREEV_RERANK_CMD`, `set_reranker_command` / `setRerankerCommand`.
+- **Recall deadline.** `--recall-deadline-ms` / `AREEV_RECALL_DEADLINE_MS`,
+  `set_recall_deadline_ms` / `setRecallDeadlineMs` and the facade's
+  `set_recall_deadline` thread a deadline into hybrid recall; a reranker
+  that misses it fails open to the RRF order.
+- **`DecisionRerank`.** With `--decide` set, recall installs the decision
+  chain as its reranker (batched `score` questions, in-process LRU keyed by
+  content hash — nothing persisted in the memory file). Measured on full
+  LoCoMo retrieval (`crates/areev-bench/RESULTS.md` §9): hit@1 18.6% →
+  51.8%, MRR@10 0.250 → 0.567, against an oracle ceiling of 66.3%; one run
+  cost $0.61. An egress policy wraps the chain in `PseudonymizingDecider`
+  on every surface; `areev-bench` gains `decide_calibrate` (ECE / Brier /
+  threshold bands over a labeled JSONL) and `accuracy` gains `AREEV_DECIDE`
+  plus a `--rerank-oracle` positive control.
+- **Decision-guided context assembly** (`areev-context`, CAL `ASSEMBLE`).
+  With a decider installed, one request per assembly asks the query's
+  intent (`timeline` / `current_state` / `general`, replacing the keyword
+  lists) and, per candidate, a relevance `score` and a "would a summary lose
+  a needed detail" `noul`. Only a **calibrated** answer may omit
+  (relevance below 0.10) or prefer Full (verbatim ≥ 0.50, still under the
+  95% budget line); an uncalibrated one only reorders; any failure is the
+  old allocation byte for byte. `FormattedContext.decision` carries the
+  provenance; `FormatPolicy.decide` tunes the thresholds; ASSEMBLE's
+  calibrated drops warn `CAL-W019`. The Claude Code `recall-hook` uses it
+  under its 1500 ms deadline. Rendering is unchanged (`render_parity` pins
+  it).
+- **Decisions in a run** (`docs/run.md`, "Decisions in a run").
+  A Tool Definition whose `executor_uri` is the reserved `areev://decide` is
+  a **decision node**: the driver answers it through the host's chain,
+  journals the answer as an ordinary Tool execution grain, and edges branch
+  on it in the frozen condition grammar (`triage.answers.route.choice ==
+  "escalate"`); a host with no backend refuses at start with **`RUN-E030`**.
+  Two scheduler-internal decisions, both calibrated-only and journaled as
+  `mg:decide` effects: the **decision-guided fold** prunes a transcript
+  (keep / truncate / drop per entry, results never separated from calls,
+  index-layer only) before the summarizer fold, and **tool-offer narrowing**
+  keeps the top 8 plus anything at p ≥ 0.05 when more than 8 tools are
+  pinned. The run pins `decider: {describe, calibrated}` in its manifest so
+  `resume` and `verify` replay without asking. `Runner::with_decider` is
+  the host call; `run start`/`resume` and `trigger run` wire `--decide`.
+  Packs may carry a decision node: it needs no `--allow-executor` pin and
+  raises no warning (`docs/pack.md`). `docs/triggers.md` shows a polling
+  trigger judging items through one, with the Trigger grain unchanged.
+- **Decisions in the loop** (`docs/loop.md`, "Decision backend (optional)").
+  `areev loop run --decide …` (or `$AREEV_DECIDE`) gives the engine a
+  calibrated judge, through the loop's own dependency-free
+  `areev_loop::DecideBackend` trait and the `areev_loop_adapter::LoopDecider`
+  bridge: GROUND and VERIFY take their 0.75 routing number from a `noul`
+  over the draft and its evidence (the LLM's self-report is kept beside it
+  as `llm_confidence`); the duplicate sweep asks "same claim?" for pairs
+  between Jaccard 0.5 and 0.9; the contradiction sweep asks "can both be
+  true?" on relations outside the seeded functional set; a free-text tool
+  failure cause is classified into the closed enum. Everything it touches
+  is a draft carrying `judged_by` provenance, **never auto-applied**, and an
+  uncalibrated backend is never asked. The run report gains `decider`
+  (backend, calibrated, calls, failures); new `LOP-E051` (never fatal).
+
 ## [1.9.5] — 2026-09-24
 
 ### Fixed

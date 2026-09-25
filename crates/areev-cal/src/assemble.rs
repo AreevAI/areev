@@ -304,6 +304,17 @@ impl<'a> AssembleEngine<'a> {
             .collect();
         let source_count = source_results.len();
 
+        // Decision backend (decision-backend phase 3, row A2): per source with
+        // a query text, judged relevance decides the trim order, and a
+        // CALIBRATED backend may also drop off-topic grains first. Fail open:
+        // no backend, no query, or any backend error → the tail-first trim.
+        let decider = store.decider();
+        let source_by_label: HashMap<&str, &NamedSource> =
+            sources.iter().map(|s| (s.label.as_str(), s)).collect();
+        let mut decision_dropped = 0usize;
+        let mut decision_labels: Vec<String> = Vec::new();
+        let mut decision_providers: Vec<String> = Vec::new();
+
         // 5. Trim grains per source to fit allocated budget (single-pass greedy).
         let mut final_grains: Vec<CalGrainResult> = Vec::new();
         let mut meta: Vec<SourceMeta> = Vec::new();
@@ -337,17 +348,57 @@ impl<'a> AssembleEngine<'a> {
                 allocated.min(remaining_budget)
             };
 
-            // Split rather than copy: the kept grains and the omitted tail are
-            // both already in `grains`, and cloning either would hold a second
-            // copy of an assembly's whole result set for the life of the query
-            // — which is the opposite of what a budget is for.
-            let (keep, tokens_used) = self.budget_prefix(&grains, effective_allocation);
-            let budget_omitted = grains.split_off(keep);
+            // A pin is never judged: it is non-degradable by contract, and a
+            // LITERAL has no query to judge against.
+            let judged = match (&decider, is_pinned) {
+                (Some(d), false) => source_by_label
+                    .get(label.as_str())
+                    .and_then(|src| source_query_text(src))
+                    .and_then(|q| judge_source(d.as_ref(), &q, &grains)),
+                _ => None,
+            };
+
+            let mut decision_omitted: Vec<CalGrainResult> = Vec::new();
+            let (grains, tokens_used, budget_omitted) = match judged {
+                None => {
+                    // Split rather than copy: the kept grains and the omitted
+                    // tail are both already in `grains`, and cloning either
+                    // would hold a second copy of an assembly's whole result
+                    // set for the life of the query — which is the opposite of
+                    // what a budget is for.
+                    let (keep, tokens_used) = self.budget_prefix(&grains, effective_allocation);
+                    let tail = grains.split_off(keep);
+                    (grains, tokens_used, tail)
+                }
+                Some(j) => {
+                    let mut rel: Vec<crate::judge::Judgment> = j.per_candidate;
+                    if j.provenance.calibrated {
+                        // Rule 2: only a calibrated backend may omit.
+                        let (kept, gone, kept_rel) = split_off_topic(grains, &rel);
+                        if !gone.is_empty() {
+                            decision_dropped += gone.len();
+                            decision_labels.push(label.clone());
+                            for p in j.provenance.provider.split(',') {
+                                if !decision_providers.iter().any(|x| x == p) {
+                                    decision_providers.push(p.to_string());
+                                }
+                            }
+                        }
+                        decision_omitted = gone;
+                        grains = kept;
+                        rel = kept_rel;
+                    }
+                    let (kept, tokens_used, tail) =
+                        budget_by_relevance(grains, &rel, effective_allocation);
+                    (kept, tokens_used, tail)
+                }
+            };
             if !budget_omitted.is_empty() {
                 dropped_labels.push(label.clone());
             }
             dropped += budget_omitted.len();
-            let mut omitted = budget_omitted;
+            let mut omitted = decision_omitted;
+            omitted.extend(budget_omitted);
             if let Some(cap_tail) = capped_omitted.remove(&label) {
                 // The post-dedup cap already warned for itself above; this
                 // only folds its tail into the omitted set for ELEMENT_OMIT.
@@ -372,6 +423,19 @@ impl<'a> AssembleEngine<'a> {
         // Record one budget sample for the `budget_pressure` analyzer (telemetry
         // §8): overflow = the token budget forced grains to be dropped.
         store.note_assembly_budget(dropped > 0);
+
+        // Say what the decision backend cut, and who judged (rule 4).
+        if decision_dropped > 0 {
+            warnings.push(
+                super::errors::CalWarning::AssembleDecisionDropped {
+                    labels: decision_labels,
+                    dropped: decision_dropped,
+                    provider: decision_providers.join(","),
+                    drop_below: crate::judge::DEFAULT_DROP_BELOW,
+                }
+                .to_string(),
+            );
+        }
 
         // Say what the budget cut. RECALL has announced the same kind of cut
         // as CAL-W015 since 1.5.1 — an assembly making it silently is how a
@@ -686,6 +750,112 @@ impl<'a> AssembleEngine<'a> {
             })
             .collect()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Decision-backend trim (decision-backend phase 3, row A2)
+// ---------------------------------------------------------------------------
+
+/// The text a source's grains are judged against: a RECALL's `ABOUT "…"`.
+/// `None` (a literal, a structural read) — nothing to judge relevance to, so
+/// the tail-first trim applies.
+fn source_query_text(src: &NamedSource) -> Option<String> {
+    if src.literal.is_some() {
+        return None;
+    }
+    match src.query.as_ref() {
+        crate::ast::CalStatement::Recall(r) => r
+            .about
+            .as_ref()
+            .map(|a| a.text.clone())
+            .filter(|q| !q.trim().is_empty()),
+        _ => None,
+    }
+}
+
+/// The text a grain is judged by: the shared `text` render (the one
+/// `crate::render` implementation — no second format here).
+fn judge_text(g: &CalGrainResult) -> String {
+    let view = crate::render::GrainView {
+        grain_type: &g.grain_type,
+        hash: &g.hash,
+        fields: &g.fields,
+        created_at_sec: crate::render::created_at_sec_from_fields(&g.fields),
+    };
+    crate::render::render_grain_text_line(&view, None)
+}
+
+/// Ask the backend about one source's grains. `None` on any failure (fail
+/// open) or when there is nothing to judge.
+fn judge_source(
+    d: &dyn areev_core::decide::DecisionBackend,
+    query: &str,
+    grains: &[CalGrainResult],
+) -> Option<crate::judge::Judgments> {
+    if grains.is_empty() {
+        return None;
+    }
+    let texts: Vec<String> = grains.iter().map(judge_text).collect();
+    crate::judge::judge_candidates(d, query, &texts, None)
+        .ok()
+        .filter(|j| j.per_candidate.len() == grains.len())
+}
+
+/// Split `grains` into (kept, judged off-topic, kept judgments) against
+/// [`crate::judge::DEFAULT_DROP_BELOW`]. Callers apply this only for a
+/// calibrated backend.
+fn split_off_topic(
+    grains: Vec<CalGrainResult>,
+    rel: &[crate::judge::Judgment],
+) -> (Vec<CalGrainResult>, Vec<CalGrainResult>, Vec<crate::judge::Judgment>) {
+    let mut kept = Vec::with_capacity(grains.len());
+    let mut gone = Vec::new();
+    let mut kept_rel = Vec::with_capacity(grains.len());
+    for (g, j) in grains.into_iter().zip(rel.iter()) {
+        if j.relevance < crate::judge::DEFAULT_DROP_BELOW {
+            gone.push(g);
+        } else {
+            kept.push(g);
+            kept_rel.push(*j);
+        }
+    }
+    (kept, gone, kept_rel)
+}
+
+/// The relevance-aware counterpart of `budget_prefix`: spend the budget on
+/// the highest-relevance grains first (ties in recall order), with the same
+/// stop rule — the first grain that does not fit ends the pass, and the
+/// first grain always fits. Kept grains stay in their recall order; the
+/// rest come back as the omitted tail, also in recall order.
+fn budget_by_relevance(
+    grains: Vec<CalGrainResult>,
+    rel: &[crate::judge::Judgment],
+    budget: u32,
+) -> (Vec<CalGrainResult>, u32, Vec<CalGrainResult>) {
+    let mut order: Vec<usize> = (0..grains.len()).collect();
+    crate::judge::by_relevance_desc(&mut order, rel);
+    let mut keep = vec![false; grains.len()];
+    let mut kept = 0usize;
+    let mut tokens_used: u32 = 0;
+    for i in order {
+        let t = estimate_grain_tokens(&grains[i]);
+        if tokens_used + t > budget && kept > 0 {
+            break;
+        }
+        tokens_used += t;
+        kept += 1;
+        keep[i] = true;
+    }
+    let mut kept_grains = Vec::with_capacity(kept);
+    let mut tail = Vec::new();
+    for (g, k) in grains.into_iter().zip(keep) {
+        if k {
+            kept_grains.push(g);
+        } else {
+            tail.push(g);
+        }
+    }
+    (kept_grains, tokens_used, tail)
 }
 
 // ---------------------------------------------------------------------------

@@ -126,6 +126,10 @@ def calls(db, tmp_path):
         # protection and needs no grant (#345, EXEMPT below as the getter).
         ("set_anonymize_egress_floor", lambda: db.set_anonymize_egress_floor(False)),
         ("set_anonymizer_command", lambda: db.set_anonymizer_command("cat")),
+        # A decision backend can be a subprocess and receives memory text as
+        # its state — host config, admin on "*" like the embedder.
+        ("set_decider", lambda: db.set_decider(cmd="cat")),
+        ("set_reranker_command", lambda: db.set_reranker_command("cat")),
         ("set_trigger_paused", lambda: db.trigger_pause("abc", "because")),
     ]
 
@@ -159,6 +163,10 @@ EXEMPT = {
     "scan_text": "pure text analysis, no store read",
     "anonymize_text": "pure text transform, no store read",
     "rehydrate_text": "pure text transform over a caller-supplied mapping",
+    "set_recall_deadline_ms": "a per-handle latency bound; reads and writes nothing",
+    "recall_deadline_ms": "reports the per-handle latency bound",
+    "decide": "judges caller-supplied state, no store read; the backend is installed "
+              "only via admin-gated set_decider; egress policy consulted fail-safe",
     # --- filtered per row rather than refused outright --------------------
     "changes_since": "scope checked; rows filtered to readable namespaces",
     "provenance": "children filtered to readable namespaces",

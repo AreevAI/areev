@@ -327,6 +327,45 @@ evidence. Responding and resuming are separate acts.
   plain call). The §6.10 check: journals identical with no/normal/slow
   subscriber.
 
+## Decisions (C1–C3, `docs/decision-model-proposal.md`; `docs/run.md` "Decisions in a run")
+
+- **The backend is a HOST capability on the executor**, like `code_allowed`:
+  `HostToolExecutor::decider()` (default `None`), installed by
+  `Runner::with_decider(Arc<dyn DecisionBackend>)` → `DecidingExecutor`
+  wrapping the host's stack (every other trait method passes through;
+  `CodeExecutor` forwards `decider()` to its inner). Not a `Runner` field:
+  `Runner` is built by struct literal in five other crates.
+- **Pinned at start**: `RunManifest.decider: Option<DeciderPin{describe,
+  calibrated}>` (`skip_serializing_if`), via the fallible
+  `with_decider_pin(pin)?` on start and the migrating fork (and a same-plan
+  fork pins the forker's). That builder IS the V7 check: a `decide` pin with
+  no backend → `RUN-E030` naming the node, before anything is written.
+  `resume_run` re-checks (`check_decider`) beside the LLM pin, before the lease.
+  `StepEnv.decide` is built from the PIN (`shadow::decide_context_for` +
+  `.env(manifest)`) in drive, verify AND shadow — never from the host at hand.
+- **`pin_from_definition`**: `executor_uri == "areev://decide"` on a non-client
+  Definition → `executor: "decide"`, `executor_uri: None` (so no code path
+  mistakes it for a `cas://` blob — start's `code_allowed`, `code_prepared`,
+  shadow's re-execution), `runtime` refused, `decide` pin normalized by
+  `parse_decide` (`{into, questions?}`; bad questions/keys → `RUN-E019`).
+  `executors()` maps it to `NodeExecutor::Decide` (never Host) and the abstract
+  offer (host-only) never includes it. `arg_schemas_for` includes decide pins.
+- **Dispatch**: intercepted INLINE on the driver thread beside subgraphs and
+  memory reads (`run_decide`); the pool refuses the variant if one ever
+  arrives. Decision-node request: pinned questions win over input
+  `questions`; `state` = input `state` else the whole input; strict schema
+  checked on `{state, questions}`; `state` goes through
+  `pseudonymize_for_model` (the abstract node's egress boundary) — the host's
+  `PseudonymizingDecider` wrapper is additionally the host's job. Result =
+  `{into: Decision::to_json()}` (bare for `mg:decide` asks), usage counted as
+  tokens. Errors → FailCause via `decide_fail_cause` (E004 Timeout, E006
+  SchemaValidationFailed, E001/E008 Unknown, else ExecutorError).
+- **Journal**: `base_tool`'s Decide arm names the grain by the Definition
+  (C3) or `mg:decide` (C1/C2). C1's narrowed offer is read off the LLM
+  turn's journaled `input.offer.tools` at prepare time, like `input.fold`.
+- Tests: `tests/decide_tests.rs` (fake backend counting calls — every test
+  asserts verify never re-asks).
+
 ## Declared memory reads (`memread.rs`, #255)
 
 A plan's `reads` field makes a node a `memory` executor the DRIVER answers:

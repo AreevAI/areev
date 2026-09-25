@@ -93,20 +93,24 @@ pub fn run_trigger(
     positional: &[String],
 ) -> Result<(), String> {
     let sub = positional.first().map(|s| s.as_str()).unwrap_or("status");
-    let facade = Arc::new(AreevFacade::with_session(m, Some(ns.to_string()), None));
+    // Read before `m` moves into the facade (it consults the handle's egress
+    // declarations); handed to the starter's runner below so a plan a
+    // trigger starts sees the same decision chain `run start` would.
+    let decider = crate::run_stack::decider(flags, &m)?;
+    let facade = Arc::new(crate::run_stack::host_facade(m, Some(ns.to_string()), flags)?);
     let json_out = flag(flags, "format").as_deref() == Some("json");
 
     match sub {
         "add" => add(&facade, ns, flags, json_out),
         "list" => list(&facade, ns, json_out),
         "show" => show(&facade, ns, positional.get(1), json_out),
-        "run" => evaluate(facade, ns, db, flags, json_out),
+        "run" => evaluate(facade, ns, db, flags, decider, json_out),
         "retarget" => retarget(&facade, ns, positional.get(1), flags, json_out),
         "pause" => set_paused(&facade, ns, positional.get(1), flags, true, json_out),
         "resume" => set_paused(&facade, ns, positional.get(1), flags, false, json_out),
         "status" => status(&facade, ns, json_out),
         "render" => render_target(&facade, ns, flags, positional.get(1)),
-        "deliver" => deliver(facade, ns, db, flags, json_out),
+        "deliver" => deliver(facade, ns, db, flags, decider, json_out),
         other => Err(format!(
             "unknown trigger subcommand '{other}' \
              (add|list|show|status|run|render|deliver|retarget|pause|resume)"
@@ -129,6 +133,7 @@ fn evaluator(
     ns: &str,
     db: &str,
     flags: &HashMap<String, String>,
+    decider: Option<Arc<dyn areev_core::decide::DecisionBackend>>,
 ) -> Result<(Evaluator, Option<Arc<areev_run::Broker>>), String> {
     let principal = flag(flags, "as").unwrap_or_else(|| "user:local".into());
     // The same seam host tools use. A connector IS a tool — JSON in, JSON out,
@@ -169,6 +174,10 @@ fn evaluator(
             observer: run_stack::observer(flags)?,
             ns: ns.to_string(),
             principal: principal.clone(),
+        };
+        let runner = match decider.clone() {
+            Some(d) => runner.with_decider(d),
+            None => runner,
         };
         Some(Arc::new(RunnerStarter { runner, opts: run_stack::run_options(flags) })
             as Arc<dyn RunStarter>)
@@ -596,9 +605,10 @@ fn evaluate(
     ns: &str,
     db: &str,
     flags: &HashMap<String, String>,
+    decider: Option<Arc<dyn areev_core::decide::DecisionBackend>>,
     json_out: bool,
 ) -> Result<(), String> {
-    let (ev, broker) = evaluator(facade, ns, db, flags)?;
+    let (ev, broker) = evaluator(facade, ns, db, flags, decider)?;
     let mut opts = EvalOptions { dry_run: flag(flags, "dry-run").is_some(), ..Default::default() };
     if let Some(id) = flag(flags, "id") {
         opts.only = Some(id);
@@ -710,6 +720,7 @@ fn deliver(
     ns: &str,
     db: &str,
     flags: &HashMap<String, String>,
+    decider: Option<Arc<dyn areev_core::decide::DecisionBackend>>,
     json_out: bool,
 ) -> Result<(), String> {
     let id = need(flags, "id")?;
@@ -730,7 +741,7 @@ fn deliver(
     let payload: serde_json::Value =
         serde_json::from_str(raw.trim()).map_err(|e| format!("payload is not JSON: {e}"))?;
 
-    let (ev, broker) = evaluator(facade, ns, db, flags)?;
+    let (ev, broker) = evaluator(facade, ns, db, flags, decider)?;
     let report = ev.deliver(&id, payload).map_err(|e| e.to_string())?;
     if json_out {
         println!("{}", serde_json::to_string(&report).map_err(|e| e.to_string())?);
