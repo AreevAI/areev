@@ -54,10 +54,20 @@ Egress: `state` sent to a remote backend is memory egress and goes through
 the same pseudonymization path as LLM egress (`areev-llm/src/pseudonymize.rs`).
 `docs/security-model.md` records it.
 
-## 3. The seam — `areev_llm::decide`
+## 3. The seam — `areev_core::decide` (types) + `areev_llm::decide` (adapters)
 
-File: `crates/areev-llm/src/decide.rs` (always compiled; `ureq` is already
-a non-optional dependency of areev-llm; no new dependency).
+The **pure seam** — the question/answer types, `DecideRequest`, `Decision`,
+the `DecisionBackend` trait, `DecideError`, the wire (de)serialization
+helpers and the confidence formula — lives in `crates/areev-core/src/decide.rs`
+(no HTTP, no new dependency), so the facade in areev-cal and the allocator in
+areev-context can consume a `dyn DecisionBackend` without the memory stack
+taking an areev-llm dependency. The **adapters** (`SystemOneHttp`,
+`CloudflareWorkersAi`, `CommandDecide`, `LlmEmulated`, `Chain`,
+`resolve_chain`, `env_chain`, `PseudonymizingDecider`) live in
+`crates/areev-llm/src/decide.rs`, which re-exports the core types so
+`areev_llm::decide::*` is one import for hosts. `ureq` is already a
+non-optional dependency of areev-llm; nothing new is added. `DecisionRerank`
+(phase 2) lives in areev-store beside `CommandRerank`, over the core trait.
 
 ```rust
 pub enum Question {
@@ -137,6 +147,7 @@ field means one thing across providers). Noul has no confidence field.
 | `DEC-E005` | Chain exhausted (every entry failed; carries each entry's error) |
 | `DEC-E006` | Invalid question (criteria count out of range, empty instructions) |
 | `DEC-E007` | Rate limited (429) — carries `Retry-After` seconds when present |
+| `DEC-E008` | Egress pseudonymization failed — nothing was sent, and the chain **stops** (a wrapped entry's refusal must never fall through to an unwrapped one) |
 
 `DecideError` lives in `decide.rs`, `Display` leads with the code, and has
 `code()`, mirroring `areev_loop::Error`.
@@ -165,12 +176,22 @@ pub fn resolve_chain(spec: Option<&str>, cmd: Option<&str>, default_deadline: Op
 // None spec and None cmd → Ok(None) (deterministic floor). Otherwise a Chain, even of one.
 ```
 
-**Chain semantics.** Entries are tried in order. `DEC-E002/E004/E007` and
-a `503` move to the next entry; `DEC-E006` (our own bad question) and
-`422` do not — an invalid request is not retried. The chain's `Decision`
-reports the entry that answered. `calibrated()` on a chain is the AND of
-its entries (rank-only if any entry could answer uncalibrated).
-`describe()` joins entries with `,`.
+**Chain semantics.** Entries are tried in order. Every `DEC-E002` (any
+HTTP status other than 400/422, and every transport error — a bad key on
+one entry must not kill the chain), `DEC-E003`, `DEC-E004` and `DEC-E007`
+move to the next entry; `DEC-E006` (our own bad question) and a
+provider's HTTP 400/422 stop the chain and are returned directly — an
+invalid request is not retried anywhere. `DecideError::Provider.retryable`
+still distinguishes 5xx/transport (true) from 4xx (false) for callers that
+want it. The chain's `Decision` reports the entry that answered;
+`latency_ms` is the whole chain's time including failed entries.
+`calibrated()` on a chain is the AND of its entries (rank-only if any entry
+could answer uncalibrated). `describe()` joins entries with `,`.
+
+**Command backend calibration.** `CommandDecide` is calibrated unless a
+response carries a top-level `"calibrated": false`, after which that
+backend reports uncalibrated; an optional top-level `"provider"` string in
+the response becomes `Decision.provider` (default `"cmd"`).
 
 **Deadline.** `DecideRequest.deadline` overrides the chain default
 (`--decide-timeout-ms`, env `AREEV_DECIDE_TIMEOUT_MS`, default **2000**).
@@ -181,10 +202,23 @@ what the next entry gets; a chain never exceeds the caller's deadline.
 cannot afford it); it returns `DEC-E007` with the header value so the
 caller/chain moves on. `areev decide` (the CLI verb) may honour it once.
 
-**Cache.** `DecisionRerank` (phase 2) keeps an in-process LRU keyed by
-`(question-set version, sha256(state))`; grains are immutable so a
-grain-side key never invalidates. Nothing is persisted in the memory file
-(host config is per-process by invariant).
+**Cache.** `DecisionRerank` (phase 2, `areev_store::DecisionRerank`) keeps
+an in-process LRU keyed per candidate by `(levels + question version,
+sha256(query), sha256(doc))`, so a candidate already judged for a query is
+never re-sent even when the rest of the pool changed; grains are immutable
+so the doc-side key never invalidates. Default batch = 64 = the store's
+refine pool, so one reranked recall is one request whenever the pool fits;
+4,096 entries; state capped at ~28k estimated tokens per request. Nothing
+is persisted in the memory file (host config is per-process by invariant).
+`DecisionRerankStats` exposes requests, failures by `DEC` code, cache hits,
+tokens and latency for the bench and for `/api/config`-style reporting.
+
+**Measured (2026-09-25, `crates/areev-bench/RESULTS.md` §9).** Full LoCoMo
+retrieval, 1,982 questions, lexical-floor recall (no embedding key), Jev
+via OpenRouter (`typesafe/jev-1.13-20260917`, calibrated): hit@1 18.6% →
+51.8%, hit@10 40.7% → 65.3%, MRR@10 0.250 → 0.567; the oracle positive
+control reaches the pool ceiling (66.3%) exactly. 1,972 requests, $0.61,
+242 s wall at 4 workers.
 
 ### 3.2 Env summary
 
@@ -248,10 +282,13 @@ wire response + provenance as JSON), `set_recall_deadline_ms(ms: int | None)`,
 `setRecallDeadlineMs(ms)`, `setRerankerCommand(cmd, model?)`; regenerate
 `index.d.ts`.
 
-**Facade (`areev-cal`):** `AreevFacade::set_decider(Arc<dyn DecisionBackend>)`
-(stored for phases 3+; phase 2 installs `DecisionRerank` through
-`set_reranker`), `set_reranker(Box<dyn RerankBackend>)`,
-`set_recall_deadline(Option<Duration>)`.
+**Facade (`areev-cal`):** `set_reranker(Box<dyn RerankBackend>)` and
+`set_recall_deadline(Option<Duration>)` (phase 0). The hosts (CLI, MCP,
+bindings) hold the `Arc<dyn areev_core::decide::DecisionBackend>` and
+install `areev_store::DecisionRerank::new(chain)` through `set_reranker`
+(phase 2); an explicit `--rerank-cmd` wins over the chain. Phase 3 adds
+`AreevFacade::set_decider(Arc<dyn DecisionBackend>)` for the context
+allocator's questions (the trait is in areev-core, so no areev-llm edge).
 
 **Store (`areev-store`):** `CommandRerank` (stdin `{"query": "...", "docs": ["..."]}` →
 stdout JSON array of `docs.len()` numbers; mirrors `CommandEmbed`), and a

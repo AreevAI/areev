@@ -80,6 +80,30 @@ pub struct PinnedTool {
     /// existing manifests serialize byte-identically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ask_kind: Option<String>,
+    /// A decision node (C3, `executor_uri: "areev://decide"`): the
+    /// Definition's `decide` declaration, normalized and frozen at start —
+    /// `{"into": "<state key>", "questions": {<wire questions>}?}`. Present
+    /// exactly when `executor` is [`DECIDE_EXECUTOR`]; absent for every other
+    /// pin, so existing manifests serialize byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decide: Option<serde_json::Value>,
+}
+
+/// The `executor` a decision node (C3) pins as.
+pub const DECIDE_EXECUTOR: &str = "decide";
+
+/// The decision backend a run STARTED under (C1–C3), frozen like the model.
+///
+/// What the scheduler may ASK is decided from this, never from the host at
+/// hand: `calibrated` gates the fold and the narrowing (proposal rule 2), and
+/// a resume or `verify` under a different host must make the same choices
+/// the run made. Whoever ANSWERS a later ask is recorded per decision, in the
+/// journaled result's own provenance.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DeciderPin {
+    /// `DecisionBackend::describe()`, e.g. `"typesafe:jev-latest+anon"`.
+    pub describe: String,
+    pub calibrated: bool,
 }
 
 /// The manifest, as serialized into the run-config State grain.
@@ -191,6 +215,11 @@ pub struct RunManifest {
     /// weaken a parked approval.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub allow_confirmation_asks: bool,
+    /// The decision backend this run started under (C1–C3), or `None` — which
+    /// is every run before decisions existed, and every run on a host without
+    /// one: the scheduler then asks nothing, byte-for-byte as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decider: Option<DeciderPin>,
 }
 
 /// The model configuration a run is pinned to (#287).
@@ -389,6 +418,7 @@ impl RunManifest {
                     capabilities: None,
                     read: Some(spec),
                     ask_kind: None,
+                    decide: None,
                 });
                 continue;
             }
@@ -413,6 +443,7 @@ impl RunManifest {
                             capabilities: None,
                             read: None,
                             ask_kind: None,
+                            decide: None,
                         }
                     } else {
                         pin_from_definition(node, &h, &g)?
@@ -458,6 +489,7 @@ impl RunManifest {
                             capabilities: None,
                             read: None,
                             ask_kind: None,
+                            decide: None,
                         },
                         None => return Err(RunError::NoToolLlm { node: node.clone() }),
                     }
@@ -510,6 +542,7 @@ impl RunManifest {
             input_ref: None,
             harness_ns: None,
             allow_confirmation_asks: false,
+            decider: None,
         })
     }
 
@@ -522,6 +555,25 @@ impl RunManifest {
     pub fn with_llm_pin(mut self, pin: Option<LlmPin>) -> Self {
         self.llm = pin;
         self
+    }
+
+    /// Freeze the host's decision backend (C1–C3) — and refuse, naming the
+    /// node, a plan that binds a decision node when there is none
+    /// (`RUN-E030`).
+    ///
+    /// A builder beside [`with_llm_pin`](Self::with_llm_pin), for the reason
+    /// that method gives, but fallible: this is the V7 half of resolution for
+    /// decision nodes. Called right after `resolve` on every path that makes
+    /// a run (start, a migrating fork), so the refusal lands before the run
+    /// exists — never as a node failing mid-run.
+    pub fn with_decider_pin(mut self, pin: Option<DeciderPin>) -> std::result::Result<Self, RunError> {
+        if pin.is_none() {
+            if let Some(p) = self.pinned.iter().find(|p| p.executor == DECIDE_EXECUTOR) {
+                return Err(RunError::NoDecider { node: p.node.clone() });
+            }
+        }
+        self.decider = pin;
+        Ok(self)
     }
 
     /// Stamp the engine that is writing this run (#288).
@@ -641,6 +693,12 @@ impl RunManifest {
                     }
                 }
                 "abstract" => NodeExecutor::Abstract { tools: offered.clone() },
+                // Never Host, for the memory-read reason: a decision that
+                // fell through to `--tool-cmd` would let a tool answer it.
+                DECIDE_EXECUTOR => NodeExecutor::Decide {
+                    tool_hash: p.tool_hash.clone(),
+                    tool_name: p.tool_name.clone(),
+                },
                 _ => NodeExecutor::Host {
                     tool_hash: p.tool_hash.clone(),
                     tool_name: p.tool_name.clone(),
@@ -853,6 +911,11 @@ pub fn pin_from_definition(
         Some("client") => "client",
         _ => "host",
     };
+    // A decision node (C3): the reserved URI names the HOST's decision
+    // backend, not code. A client tool naming it is refused below with every
+    // other client `executor_uri`.
+    let decide_node =
+        executor == "host" && g.get_str("executor_uri") == Some(areev_run_core::DECIDE_URI);
     // `executor_uri` used to be written, parsed, CAL-buildable — and read by
     // nothing, so a Definition naming `executor://crm.lookup@v3` executed
     // whatever `--tool-cmd` happened to be. That is the failure with no
@@ -869,6 +932,7 @@ pub fn pin_from_definition(
                 ),
             })
         }
+        Some(_) if decide_node => None,
         Some(uri) => {
             let hex = crate::executor::strip_cas(uri);
             if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -890,6 +954,15 @@ pub fn pin_from_definition(
     // native exec, which would run wasm bytes as a program.
     let runtime = match g.get_str("runtime") {
         None | Some("native") => None,
+        Some(rt) if decide_node => {
+            return Err(RunError::CodeExecRefused {
+                condition: format!(
+                    "node '{node}' is a decision node ({}) but declares runtime {rt:?} — \
+                     the host's decision backend answers it, and there is no code to run",
+                    areev_run_core::DECIDE_URI
+                ),
+            })
+        }
         Some(rt) if executor_uri.is_none() => {
             return Err(RunError::CodeExecRefused {
                 condition: format!(
@@ -976,18 +1049,66 @@ pub fn pin_from_definition(
             })
         }
     };
+    let decide = if decide_node { Some(parse_decide(node, g.fields.get("decide"))?) } else { None };
     Ok(PinnedTool {
         node: node.to_string(),
         tool_hash: h.to_hex(),
         tool_name,
-        executor: executor.into(),
+        executor: if decide_node { DECIDE_EXECUTOR.into() } else { executor.into() },
         executor_uri,
         runtime,
         runtime_limits,
         capabilities,
         read: None,
         ask_kind,
+        decide,
     })
+}
+
+/// Validate and normalize a decision node's `decide` declaration (C3):
+/// `{"questions": {<wire questions>}, "into": "<state key>"}`, both optional.
+///
+/// - `questions` — the typed questions, in the wire shape. When present they
+///   are FROZEN here and win over any `questions` key in the node's input, so
+///   a payload a trigger handed the run cannot rewrite what the plan asks.
+///   When absent, the node's input must carry them at dispatch.
+/// - `into` — the state key the decision lands under; default the node's own
+///   id. Edges then branch on it in the frozen grammar, e.g.
+///   `triage.answers.route.choice == "escalate"`.
+///
+/// Refused at start, never at dispatch: an unaskable question (`DEC-E006`) or
+/// a reserved key is a plan defect.
+fn parse_decide(
+    node: &str,
+    decl: Option<&serde_json::Value>,
+) -> std::result::Result<serde_json::Value, RunError> {
+    let bad = |why: String| RunError::InvalidPlan { why: format!("decision node '{node}': {why}") };
+    let decl = match decl {
+        None | Some(serde_json::Value::Null) => serde_json::Map::new(),
+        Some(serde_json::Value::Object(o)) => o.clone(),
+        Some(_) => return Err(bad("`decide` must be an object".into())),
+    };
+    if let Some(k) = decl.keys().find(|k| !matches!(k.as_str(), "questions" | "into")) {
+        return Err(bad(format!("unknown `decide` key {k:?} (accepted: questions, into)")));
+    }
+    let into = match decl.get("into") {
+        None => node.to_string(),
+        Some(serde_json::Value::String(s)) if !s.is_empty() && !s.starts_with('$') => s.clone(),
+        Some(other) => {
+            return Err(bad(format!(
+                "`into` must be a non-empty state key not starting with '$', got {other}"
+            )))
+        }
+    };
+    let mut out = json!({ "into": into });
+    if let Some(q) = decl.get("questions") {
+        let parsed = areev_core::decide::questions_from_wire(q).map_err(|e| bad(e.to_string()))?;
+        if parsed.is_empty() {
+            return Err(bad("`questions` is empty".into()));
+        }
+        out["questions"] = areev_core::decide::questions_to_wire(&parsed);
+    }
+    Ok(out)
 }
 
 /// A Client ask a SECOND person must answer — the default, and what every
@@ -1120,6 +1241,7 @@ mod tests {
             input_ref: None,
             harness_ns: None,
             allow_confirmation_asks: false,
+            decider: None,
         }
     }
 
@@ -1135,6 +1257,7 @@ mod tests {
             capabilities: None,
             read: None,
             ask_kind: None,
+            decide: None,
         }
     }
 
@@ -1157,6 +1280,7 @@ mod tests {
                 capabilities: None,
                 read: None,
                 ask_kind: None,
+                decide: None,
             },
             host_pin("reply_done", "reply_email"),
             host_pin("reply_rejected", "reply_email"),
@@ -1201,6 +1325,7 @@ mod tests {
             capabilities: None,
             read,
             ask_kind: None,
+            decide: None,
         };
         let mut m = bare();
         m.pinned = vec![

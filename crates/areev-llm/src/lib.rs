@@ -26,8 +26,14 @@
 //! [`extract`] rides the same protocol for a second consumer: turning the free
 //! text passed to `remember()` into Fact drafts, so the extraction seam is
 //! reachable from the CLI and the bindings and not just from in-process Rust.
+//!
+//! [`decide`] is a different kind of model seam: typed, calibrated judgments
+//! from a decision (System One) model over TypeSafe's `/v1/systemone` shape,
+//! with an ordered provider [`Chain`] and an LLM-emulated fallback. Optional
+//! and never default-on (`docs/decision-model-proposal.md`).
 
 pub mod cred;
+pub mod decide;
 pub mod extract;
 pub mod llm_detect;
 pub mod profile;
@@ -35,9 +41,14 @@ pub mod pseudonymize;
 pub mod toolcall;
 mod toolcall_stream;
 
+pub use decide::{
+    env_chain, resolve_chain, resolve_chain_with, Answer, Chain, CloudflareWorkersAi, CommandDecide,
+    DecideError, DecideRequest, Decision, DecisionBackend, LlmEmulated, NoulCriteria, Question,
+    SystemOneHttp,
+};
 pub use extract::{extract_facts, extract_pipeline, ground_facts, ExtractedFact, Extraction};
 pub use llm_detect::LlmDetector;
-pub use pseudonymize::PseudonymizingBackend;
+pub use pseudonymize::{PseudonymizingBackend, PseudonymizingDecider};
 pub use toolcall::{
     ChatMessage, StopReason, ToolCallError, ToolCallLlm, ToolCallOut, ToolCallRequest,
     ToolCallResponse, ToolChoice, Usage,

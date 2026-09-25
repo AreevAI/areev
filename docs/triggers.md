@@ -367,6 +367,55 @@ is retried per the node's `retries`, and the pass still reports
 `runs_started: 1` with an empty `errors` list — the firing genuinely succeeded;
 the run is what failed.
 
+## Judging a polled item
+
+A polling trigger starts a run for **every** new item. Some items do not
+deserve one: most of a shared mailbox is not an invoice. Do not filter in the
+trigger. Make the started plan's first node a **decision node**: a Tool
+Definition with `executor_uri: "areev://decide"`, answered by the host's
+decision backend ([`run.md`](run.md#decisions-in-a-run)). Then branch on its
+answer:
+
+```json
+{"kind": "definition", "tool_name": "judge", "executor_uri": "areev://decide",
+ "decide": {"questions": {"route": {"type": "choice",
+   "instructions": "Is this email an invoice we must process?",
+   "criteria": {"invoice": "a supplier invoice or credit note",
+                "other": "anything else: newsletters, replies, receipts"}}}}}
+```
+
+```json
+{"nodes": ["judge", "extract", "archive"],
+ "edges": [{"src": "judge", "dst": "extract", "cond": "judge.answers.route.choice == \"invoice\""},
+           {"src": "judge", "dst": "archive", "cond": "judge.answers.route.choice == \"other\""}],
+ "bindings": {"judge": "<definition hash>", "extract": "<…>", "archive": "<…>"}}
+```
+
+The run's input is the [wrapped item](#what-the-run-receives), and the decision
+node judges that input whole: `{trigger, connector, scope, item}`. The
+questions are frozen from the Definition, so nothing in the item can rewrite
+what is asked. The answer lands under `judge`, with the backend's `provider`,
+`model`, `calibrated` and `latency_ms`, and the journal keeps it as the
+`judge` node's ordinary Tool execution grain.
+
+What this does **not** change:
+
+- **The Trigger grain is unchanged.** It gains no field, no filter and no
+  model. It still names a plan by hash, and the judgment is a step of that
+  plan, recorded in the run's journal like every other step.
+- **Evaluation stays deterministic.** `trigger run` decides what is due, which
+  items are new (the dedup key), and which run id each one gets exactly as
+  before. It never consults a model. Every new item still starts its run. A
+  run whose judgment was "other" is a short, completed run whose `archive`
+  step says so, not an item the evaluator silently dropped.
+- **The host still authorizes the backend.** The firing's runner is the
+  runner `run start` builds, so a plan with a decision node needs a host with
+  a decision backend installed. Without one, its start is refused with
+  `RUN-E030`. Like any [refused start](#a-refused-run-start-does-not-consume-the-item-16x-129),
+  that holds the cursor rather than consuming the item.
+- **No backend answer, no guess.** A decision node has no fallback branch. A
+  backend that times out or errors fails the node under its `retries`.
+
 ## Budgets
 
 A firing starts a real run, so it takes the same ceilings `run start` does —

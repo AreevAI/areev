@@ -109,6 +109,90 @@ pub trait HostToolExecutor: Send + Sync {
     fn runtime_supported(&self, _runtime: &str) -> bool {
         false
     }
+
+    /// The host's decision backend (`docs/decision-model-proposal.md` C1–C3),
+    /// or `None` — the default, and the deterministic floor.
+    ///
+    /// Held here, beside [`code_allowed`](Self::code_allowed), because it is
+    /// the same kind of thing: a HOST capability a plan can ask for but never
+    /// grant itself. A plan binding a `areev://decide` node on a host whose
+    /// executor answers `None` refuses at start (`RUN-E030`); the scheduler's
+    /// own optional asks (the decision-guided fold and the tool-offer
+    /// narrowing) are simply never made. Hosts install one with
+    /// [`crate::Runner::with_decider`] (or [`DecidingExecutor`]) — which
+    /// should be the pseudonymizing chain the host already built
+    /// (`areev_llm::PseudonymizingDecider` over `resolve_chain`), since a
+    /// remote backend is memory egress.
+    fn decider(&self) -> Option<Arc<dyn areev_core::decide::DecisionBackend>> {
+        None
+    }
+}
+
+/// Any host executor, plus a decision backend (C1–C3).
+///
+/// A wrapper rather than a field on each executor, so ONE call installs a
+/// backend whatever stack the host built — `--tool-cmd`, a pinned code
+/// executor, a registry, a test double — and every other trait method passes
+/// straight through to `inner`. [`crate::Runner::with_decider`] is the usual
+/// way in.
+pub struct DecidingExecutor {
+    inner: Arc<dyn HostToolExecutor>,
+    decider: Arc<dyn areev_core::decide::DecisionBackend>,
+}
+
+impl DecidingExecutor {
+    pub fn new(
+        inner: Arc<dyn HostToolExecutor>,
+        decider: Arc<dyn areev_core::decide::DecisionBackend>,
+    ) -> Self {
+        DecidingExecutor { inner, decider }
+    }
+}
+
+impl HostToolExecutor for DecidingExecutor {
+    fn execute(
+        &self,
+        tool_name: &str,
+        tool_hash: &str,
+        input: &Value,
+        idempotency_key: &str,
+    ) -> ExecResult {
+        self.inner.execute(tool_name, tool_hash, input, idempotency_key)
+    }
+    fn code_allowed(&self, tool_hash: &str, uri: &str) -> bool {
+        self.inner.code_allowed(tool_hash, uri)
+    }
+    fn refusals(&self) -> Vec<crate::broker::EgressRefusal> {
+        self.inner.refusals()
+    }
+    fn calls(&self) -> Vec<crate::broker::EgressCall> {
+        self.inner.calls()
+    }
+    fn blob_reads(&self) -> Vec<crate::broker::BlobRead> {
+        self.inner.blob_reads()
+    }
+    fn bind_run_principal(&self, principal: &str) {
+        self.inner.bind_run_principal(principal)
+    }
+    fn bind_artifact_store(&self, store: Arc<areev_cal::AreevFacade>) {
+        self.inner.bind_artifact_store(store)
+    }
+    fn execute_code(
+        &self,
+        tool_name: &str,
+        tool_hash: &str,
+        code: &PreparedCode,
+        input: &Value,
+        idempotency_key: &str,
+    ) -> ExecResult {
+        self.inner.execute_code(tool_name, tool_hash, code, input, idempotency_key)
+    }
+    fn runtime_supported(&self, runtime: &str) -> bool {
+        self.inner.runtime_supported(runtime)
+    }
+    fn decider(&self) -> Option<Arc<dyn areev_core::decide::DecisionBackend>> {
+        Some(Arc::clone(&self.decider))
+    }
 }
 
 /// A registry-backed executor: tools dispatch by name; unknown names fail
@@ -680,6 +764,12 @@ impl HostToolExecutor for CodeExecutor {
         is_sandbox_runtime(runtime) && self.sandbox_cmd.is_some()
     }
 
+    /// A decision backend installed on the wrapped executor stays installed
+    /// when a host layers pinned code on top of it.
+    fn decider(&self) -> Option<Arc<dyn areev_core::decide::DecisionBackend>> {
+        self.inner.decider()
+    }
+
     fn execute_code(
         &self,
         tool_name: &str,
@@ -1000,9 +1090,12 @@ impl Pool {
                     // and handing it to the host executor would let a tool
                     // forge the answer — so it fails without touching
                     // `executor` at all.
-                    NodeExecutor::MemoryRead { .. } => {
-                        let detail = "a declared memory read reached the tool pool — the \
-                                      runtime answers it, never a tool"
+                    NodeExecutor::MemoryRead { .. } | NodeExecutor::Decide { .. } => {
+                        // Same for a decision effect (C1–C3): the driver
+                        // answers it through the host's decision backend.
+                        let detail = "a runtime-answered effect (memory read or decision) \
+                                      reached the tool pool — the runtime answers it, never \
+                                      a tool"
                             .to_string();
                         let outcome = EffectOutcome::Failed {
                             journal_bytes: detail.len() as u64,

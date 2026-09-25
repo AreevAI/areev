@@ -39,6 +39,55 @@ pub fn flag_or_env(flags: &HashMap<String, String>, key: &str, var: &str) -> Opt
         .filter(|v| !v.is_empty())
 }
 
+/// The host's hybrid-recall deadline: `--recall-deadline-ms <n>`, else
+/// `$AREEV_RECALL_DEADLINE_MS`. `Ok(None)` = unbounded (the default; `0`
+/// also means none, as for the MCP server). Past it a recall fails open to
+/// what it has gathered — never an error. A value that is not a whole number
+/// is refused, so a typo cannot silently mean "no deadline".
+pub fn recall_deadline(flags: &HashMap<String, String>) -> Result<Option<std::time::Duration>, String> {
+    match flag_or_env(flags, "recall-deadline-ms", "AREEV_RECALL_DEADLINE_MS") {
+        None => Ok(None),
+        Some(ms) => match ms.parse::<u64>() {
+            Ok(n) => Ok((n > 0).then(|| std::time::Duration::from_millis(n))),
+            Err(_) => Err(format!(
+                "--recall-deadline-ms (or $AREEV_RECALL_DEADLINE_MS) must be a whole number of \
+                 milliseconds, got {ms:?}"
+            )),
+        },
+    }
+}
+
+/// A facade over `m` for `ns`, carrying the host's recall deadline
+/// ([`recall_deadline`]) — every CLI verb that recalls through a facade is
+/// built here so `--recall-deadline-ms` reaches it.
+pub fn host_facade(
+    m: areev_store::Areev,
+    ns: Option<String>,
+    flags: &HashMap<String, String>,
+) -> Result<areev_cal::AreevFacade, String> {
+    let mut f = areev_cal::AreevFacade::with_session(m, ns, None);
+    f.set_recall_deadline(recall_deadline(flags)?);
+    Ok(f)
+}
+
+/// The host's decision chain for a run — `--decide` / `--decide-cmd` /
+/// `--decide-timeout-ms`, else their `$AREEV_DECIDE*` variables — wrapped
+/// for egress under the same rule the reranker uses, so a decision node
+/// (`areev://decide`), the transcript fold and the tool-offer narrowing all
+/// see pseudonymized `state` when an anonymization policy is active.
+/// `Ok(None)` = no backend: a plan binding `areev://decide` then refuses at
+/// start with `RUN-E030` rather than failing mid-run. Built here so
+/// `run start`/`resume` and `trigger run` get the same chain (#90).
+pub fn decider(
+    flags: &HashMap<String, String>,
+    m: &areev_store::Areev,
+) -> Result<Option<std::sync::Arc<dyn areev_core::decide::DecisionBackend>>, String> {
+    match crate::resolve_decider(flags)? {
+        Some(chain) => Ok(Some(crate::decider_for_egress(chain, crate::store_egress_active(m))?)),
+        None => Ok(None),
+    }
+}
+
 /// The no-command fallback: refuse to fake tool execution.
 pub struct NoExecutor;
 

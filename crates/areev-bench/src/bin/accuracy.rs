@@ -18,6 +18,21 @@
 //!     OpenAI adapter. $AREEV_LLM_DEBUG=1 logs every (question, gold, answer,
 //!     verdict) tuple. Unset ⇒ this leg is skipped with instructions.
 //!
+//! RERANKING (optional, retrieval leg only)
+//!   `AREEV_DECIDE` (+ `AREEV_DECIDE_CMD`, `AREEV_DECIDE_TIMEOUT_MS`) installs a
+//!   `DecisionRerank` over the decision chain those name (the same
+//!   `areev_llm::env_chain` MCP and the bindings read) and recalls with
+//!   `rerank: true`; the chain's `describe()`, `calibrated`, request/token
+//!   counts and failures print beside the table. `--rerank-oracle` (or
+//!   `AREEV_RERANK_ORACLE=1`) installs a POSITIVE CONTROL instead: a reranker
+//!   scoring the question's gold-evidence turns 1.0 and everything else 0.0.
+//!   It must lift hit@k to the pool's own recall — proof the rerank plumbing
+//!   reaches the metric before any real reranker's number is quoted.
+//!   `AREEV_BENCH_WORKERS` (default 1, max 16) evaluates conversations in
+//!   parallel (each on its own memory file; output merges in conversation
+//!   order, so it is identical at any worker count); `AREEV_QA_PER_CONV` caps
+//!   the questions per conversation for a pilot/cost projection.
+//!
 //! Usage (best config — raw turns, real embeddings, k=20):
 //!   AREEV_EMBED_CACHE=cache.json \
 //!   AREEV_LLM_CMD='python3 crates/areev-bench/scripts/openai_chat.py gpt-4o-mini' \
@@ -26,9 +41,34 @@
 
 use areev_core::error::Result;
 use areev_core::types::Event;
-use areev_store::{Areev, AreevOptions, EmbedBackend};
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use areev_store::{Areev, AreevOptions, DecisionRerank, DecisionRerankStats, EmbedBackend, RecallTuning, RerankBackend};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+
+// ---------- the rerank positive control ----------
+/// Scores a candidate 1.0 when it contains one of the CURRENT question's
+/// gold-evidence turns, else 0.0. The harness sets the gold set before each
+/// recall. Knows the answer by construction — it proves the plumbing, never
+/// a reranker's quality.
+struct OracleRerank {
+    gold: Arc<Mutex<Vec<String>>>,
+}
+impl RerankBackend for OracleRerank {
+    fn rerank(&self, _query: &str, docs: &[&str]) -> Result<Vec<f32>> {
+        let gold = self.gold.lock().unwrap();
+        Ok(docs.iter().map(|d| if gold.iter().any(|g| d.contains(g.as_str())) { 1.0 } else { 0.0 }).collect())
+    }
+    fn model(&self) -> &str {
+        "oracle-gold-evidence"
+    }
+}
+
+#[derive(Clone)]
+enum Rerank {
+    None,
+    Oracle,
+    Decision(Arc<dyn areev_core::decide::DecisionBackend>),
+}
 
 // ---------- precomputed-embedding backend (real semantic vectors — best) ----------
 // Loads a {text -> vector} cache (OpenAI text-embedding-3-small, produced by
@@ -245,14 +285,112 @@ fn run_llm(cmd: &str, prompt: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// What one conversation contributes to the tables.
+#[derive(Default)]
+struct ConvResult {
+    h1: usize,
+    h5: usize,
+    h10: usize,
+    h_topk: usize,
+    mrr: f64,
+    evaluated: usize,
+    by_cat: BTreeMap<i64, (usize, usize)>,
+    tasks: Vec<Task>,
+    stats: Option<Arc<DecisionRerankStats>>,
+    line: String,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_conv(
+    ci: usize,
+    conv: &Conv,
+    dir: &std::path::Path,
+    embed_cache: &Option<Arc<HashMap<String, Vec<f32>>>>,
+    embed_dim: usize,
+    topk: usize,
+    rerank: &Rerank,
+    qa_cap: usize,
+    collect_tasks: usize,
+) -> ConvResult {
+    let mut out = ConvResult::default();
+    let db = dir.join(format!("conv{ci}.db"));
+    // index_text=false: skip the FTS write tax; the vector leg carries recall.
+    let mut m = Areev::open_with(db.to_str().unwrap(), AreevOptions { index_text: false, ..Default::default() }).unwrap();
+    match embed_cache {
+        Some(map) => m.set_embedder(Box::new(CachedEmbed { map: map.clone(), dim: embed_dim })),
+        None => {
+            let corpus: Vec<String> = conv.turns.iter().map(|t| t.text.clone()).collect();
+            m.set_embedder(Box::new(TfidfEmbed::build(2048, &corpus)));
+        }
+    }
+    let gold_slot = Arc::new(Mutex::new(Vec::<String>::new()));
+    match rerank {
+        Rerank::None => {}
+        Rerank::Oracle => m.set_reranker(Box::new(OracleRerank { gold: gold_slot.clone() })),
+        Rerank::Decision(chain) => {
+            let r = DecisionRerank::new(chain.clone());
+            out.stats = Some(r.stats());
+            m.set_reranker(Box::new(r));
+        }
+    }
+    let tuning = RecallTuning { rerank: !matches!(rerank, Rerank::None), ..Default::default() };
+    let text_of: HashMap<&str, &str> = conv.turns.iter().map(|t| (t.dia_id.as_str(), t.text.as_str())).collect();
+    let ns = format!("conv{ci}");
+    for (ti, turn) in conv.turns.iter().enumerate() {
+        let mut ev = Event::new(&turn.text).session(turn.dia_id.clone());
+        ev.common.namespace = Some(ns.clone());
+        ev.common.created_at = Some(1_700_000_000_000 + (ci * 100_000 + ti) as i64);
+        m.add(&ev).unwrap();
+    }
+
+    for qa in conv.qa.iter().take(qa_cap) {
+        *gold_slot.lock().unwrap() =
+            qa.evidence.iter().filter_map(|d| text_of.get(d.as_str()).map(|t| t.to_string())).collect();
+        let hits = m.recall_hybrid_tuned(&ns, None, None, Some(qa.question.as_str()), topk, None, tuning).unwrap();
+        let got: Vec<String> = hits.iter().filter_map(|g| g.get_str("session_id").map(str::to_string)).collect();
+        let gold: HashSet<&String> = qa.evidence.iter().collect();
+        let rank = got.iter().position(|d| gold.contains(d)); // first hit rank (0-based)
+        out.evaluated += 1;
+        let e = out.by_cat.entry(qa.category).or_insert((0, 0));
+        e.1 += 1;
+        if let Some(r) = rank {
+            if r < 1 { out.h1 += 1 }
+            if r < 5 { out.h5 += 1 }
+            if r < 10 { out.h10 += 1; out.mrr += 1.0 / (r as f64 + 1.0); }
+            if r < topk { out.h_topk += 1; e.0 += 1; }
+        }
+
+        // ---- collect end-to-end task (LLM reader+judge run in parallel below) ----
+        if out.tasks.len() < collect_tasks {
+            let ctx: String = hits
+                .iter()
+                .take(topk)
+                .filter_map(|g| {
+                    let dia = g.get_str("session_id")?;
+                    let date = conv.dates.get(dia).map(String::as_str).unwrap_or("");
+                    Some(format!("- ({date}) {}", g.get_str("content")?))
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            out.tasks.push(Task { question: qa.question.clone(), gold: qa.answer.clone(), category: qa.category, context: ctx });
+        }
+    }
+    out.line = format!("  conv{ci}: ingested {} turns, evaluated {} QAs", conv.turns.len(), out.evaluated);
+    out
+}
+
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
+    let started = std::time::Instant::now();
+    let all_args: Vec<String> = std::env::args().collect();
+    let oracle = all_args.iter().any(|a| a == "--rerank-oracle")
+        || std::env::var("AREEV_RERANK_ORACLE").map(|v| v == "1").unwrap_or(false);
+    let args: Vec<String> = all_args.into_iter().filter(|a| a != "--rerank-oracle").collect();
     let path = args
         .get(1)
         .cloned()
         .or_else(|| std::env::var("AREEV_LOCOMO").ok())
         .unwrap_or_else(|| {
-            eprintln!("usage: accuracy <locomo10.json> [conv_limit]  (or set $AREEV_LOCOMO)");
+            eprintln!("usage: accuracy <locomo10.json> [conv_limit] [--rerank-oracle]  (or set $AREEV_LOCOMO)");
             std::process::exit(2);
         });
     let limit: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(10);
@@ -260,6 +398,21 @@ fn main() {
     let llm_cmd = std::env::var("AREEV_LLM_CMD").ok();
     let judge_cmd = std::env::var("AREEV_JUDGE_CMD").ok().or_else(|| llm_cmd.clone());
     let llm_sample: usize = std::env::var("AREEV_LLM_SAMPLE").ok().and_then(|s| s.parse().ok()).unwrap_or(50);
+    let workers: usize = std::env::var("AREEV_BENCH_WORKERS").ok().and_then(|s| s.parse().ok()).unwrap_or(1).clamp(1, 16);
+    let qa_cap: usize = std::env::var("AREEV_QA_PER_CONV").ok().and_then(|s| s.parse().ok()).unwrap_or(usize::MAX);
+    let decide = areev_llm::env_chain().unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(2);
+    });
+    let rerank = match (oracle, decide) {
+        (true, Some(_)) => {
+            eprintln!("--rerank-oracle and AREEV_DECIDE are exclusive: the oracle is the control, not a chain entry");
+            std::process::exit(2);
+        }
+        (true, None) => Rerank::Oracle,
+        (false, Some(chain)) => Rerank::Decision(chain),
+        (false, None) => Rerank::None,
+    };
     // Real embedder: a precomputed {text: vector} cache, loaded once and shared.
     // Absent ⇒ TF-IDF no-API fallback.
     let embed_cache: Option<Arc<HashMap<String, Vec<f32>>>> = std::env::var("AREEV_EMBED_CACHE")
@@ -279,76 +432,71 @@ fn main() {
     let json: serde_json::Value = serde_json::from_str(&raw).expect("valid JSON");
     let convs = parse_locomo(&json, limit);
     let total_turns: usize = convs.iter().map(|c| c.turns.len()).sum();
-    let total_qa: usize = convs.iter().map(|c| c.qa.len()).sum();
+    let total_qa: usize = convs.iter().map(|c| c.qa.len().min(qa_cap)).sum();
     let embedder_label = match &embed_cache {
         Some(_) => format!("recall_hybrid over precomputed embeddings ({embed_dim}-d)"),
         None => "recall_hybrid over a local TF-IDF+bigram embedder (no API — lexical FLOOR)".to_string(),
     };
+    let rerank_label = match &rerank {
+        Rerank::None => "none (fusion order)".to_string(),
+        Rerank::Oracle => "ORACLE positive control (gold-evidence turns = 1.0)".to_string(),
+        Rerank::Decision(c) => format!("DecisionRerank over `{}` (calibrated = {})", c.describe(), c.calibrated()),
+    };
     println!(
         "LoCoMo: {} conversation(s), {total_turns} turns, {total_qa} answerable QAs\n\
-         retrieval leg: {embedder_label}\n",
+         retrieval leg: {embedder_label}\n\
+         rerank: {rerank_label}\n",
         convs.len()
     );
 
     let dir = tempfile::TempDir::new().unwrap();
+    let collect_tasks = if llm_cmd.is_some() { llm_sample } else { 0 };
+    // Conversations are independent memories: evaluate them on `workers`
+    // threads, then merge IN CONVERSATION ORDER so the output (and the e2e
+    // task sample) is identical at any worker count.
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let slots: Vec<Mutex<Option<ConvResult>>> = convs.iter().map(|_| Mutex::new(None)).collect();
+    std::thread::scope(|sc| {
+        for _ in 0..workers.min(convs.len().max(1)) {
+            sc.spawn(|| loop {
+                let ci = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(conv) = convs.get(ci) else { break };
+                let r = eval_conv(ci, conv, dir.path(), &embed_cache, embed_dim, topk, &rerank, qa_cap, collect_tasks);
+                eprintln!("{}", r.line);
+                *slots[ci].lock().unwrap() = Some(r);
+            });
+        }
+    });
     // hit-rate accumulators
     let (mut h1, mut h5, mut h10, mut h_topk, mut mrr, mut evaluated) = (0usize, 0usize, 0usize, 0usize, 0.0f64, 0usize);
-    let mut by_cat: std::collections::BTreeMap<i64, (usize, usize)> = Default::default(); // cat -> (hit@topk, n)
+    let mut by_cat: BTreeMap<i64, (usize, usize)> = Default::default(); // cat -> (hit@topk, n)
     // end-to-end accumulators
     let (mut ans_correct, mut ans_total) = (0usize, 0usize);
     let mut tasks: Vec<Task> = Vec::new(); // e2e tasks collected in pass 1, run in parallel in pass 2
-
-    for (ci, conv) in convs.iter().enumerate() {
-        let db = dir.path().join(format!("conv{ci}.db"));
-        // index_text=false: skip the FTS write tax; the vector leg carries recall.
-        let mut m = Areev::open_with(db.to_str().unwrap(), AreevOptions { index_text: false, ..Default::default() }).unwrap();
-        match &embed_cache {
-            Some(map) => m.set_embedder(Box::new(CachedEmbed { map: map.clone(), dim: embed_dim })),
-            None => {
-                let corpus: Vec<String> = conv.turns.iter().map(|t| t.text.clone()).collect();
-                m.set_embedder(Box::new(TfidfEmbed::build(2048, &corpus)));
+    let mut stats: Vec<Arc<DecisionRerankStats>> = Vec::new();
+    for slot in slots {
+        let r = slot.into_inner().unwrap().expect("every conversation evaluated");
+        println!("{}", r.line);
+        h1 += r.h1;
+        h5 += r.h5;
+        h10 += r.h10;
+        h_topk += r.h_topk;
+        mrr += r.mrr;
+        evaluated += r.evaluated;
+        for (cat, (h, n)) in r.by_cat {
+            let e = by_cat.entry(cat).or_insert((0, 0));
+            e.0 += h;
+            e.1 += n;
+        }
+        for t in r.tasks {
+            if tasks.len() < collect_tasks {
+                tasks.push(t);
             }
         }
-        let ns = format!("conv{ci}");
-        for (ti, turn) in conv.turns.iter().enumerate() {
-            let mut ev = Event::new(&turn.text).session(turn.dia_id.clone());
-            ev.common.namespace = Some(ns.clone());
-            ev.common.created_at = Some(1_700_000_000_000 + (ci * 100_000 + ti) as i64);
-            m.add(&ev).unwrap();
-        }
-
-        for qa in &conv.qa {
-            let hits = m.recall_hybrid(&ns, None, None, Some(qa.question.as_str()), topk, None).unwrap();
-            let got: Vec<String> = hits.iter().filter_map(|g| g.get_str("session_id").map(str::to_string)).collect();
-            let gold: HashSet<&String> = qa.evidence.iter().collect();
-            let rank = got.iter().position(|d| gold.contains(d)); // first hit rank (0-based)
-            evaluated += 1;
-            let e = by_cat.entry(qa.category).or_insert((0, 0));
-            e.1 += 1;
-            if let Some(r) = rank {
-                if r < 1 { h1 += 1 }
-                if r < 5 { h5 += 1 }
-                if r < 10 { h10 += 1; mrr += 1.0 / (r as f64 + 1.0); }
-                if r < topk { h_topk += 1; e.0 += 1; }
-            }
-
-            // ---- collect end-to-end task (LLM reader+judge run in parallel below) ----
-            if llm_cmd.is_some() && tasks.len() < llm_sample {
-                let ctx: String = hits
-                    .iter()
-                    .take(topk)
-                    .filter_map(|g| {
-                        let dia = g.get_str("session_id")?;
-                        let date = conv.dates.get(dia).map(String::as_str).unwrap_or("");
-                        Some(format!("- ({date}) {}", g.get_str("content")?))
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                tasks.push(Task { question: qa.question.clone(), gold: qa.answer.clone(), category: qa.category, context: ctx });
-            }
-        }
-        println!("  conv{ci}: ingested {} turns, evaluated {} QAs", conv.turns.len(), conv.qa.len());
+        stats.extend(r.stats);
     }
+    // Rule 5: a score over a smaller denominator than the dataset is refused.
+    assert_eq!(evaluated, total_qa, "evaluated {evaluated} of {total_qa} QAs — refusing a partial denominator");
 
     // ---- pass 2: run the collected e2e tasks in parallel (reader + judge) ----
     if let Some(reader) = llm_cmd.clone() {
@@ -404,7 +552,7 @@ fn main() {
         Some(_) => format!("real embeddings {embed_dim}-d (text-embedding-3-small)"),
         None => "TF-IDF+bigram, lexical floor".to_string(),
     };
-    println!("\n## Retrieval hit-rate (recall_hybrid vector leg — {embed_short}, k={topk})\n");
+    println!("\n## Retrieval hit-rate (recall_hybrid vector leg — {embed_short}, k={topk}; rerank: {rerank_label})\n");
     println!("| metric | value |");
     println!("|---|---|");
     println!("| questions evaluated | {evaluated} |");
@@ -432,6 +580,36 @@ fn main() {
         println!("    cat {cat} ({name:<11}): {:.1}%  (n={n})", *hit as f64 / (*n).max(1) as f64 * 100.0);
     }
 
+    if let Rerank::Decision(chain) = &rerank {
+        let sum = |f: fn(&DecisionRerankStats) -> u64| stats.iter().map(|s| f(s)).sum::<u64>();
+        let served = stats.iter().find_map(|s| s.served());
+        println!("\n## Decision-backend reranking\n");
+        println!("| field | value |");
+        println!("|---|---|");
+        println!("| chain | `{}` |", chain.describe());
+        println!("| calibrated | {} |", chain.calibrated());
+        match served {
+            Some((provider, model, cal)) => println!("| served | provider `{provider}`, model `{model}`, calibrated {cal} |"),
+            None => println!("| served | (no answer received) |"),
+        }
+        println!("| decision requests | {} |", sum(DecisionRerankStats::requests));
+        let mut codes: BTreeMap<String, u64> = BTreeMap::new();
+        for s in &stats {
+            for (c, n) in s.failure_codes() {
+                *codes.entry(c).or_insert(0) += n;
+            }
+        }
+        let codes = codes.iter().map(|(c, n)| format!("{c} ×{n}")).collect::<Vec<_>>().join(", ");
+        println!("| failed requests (fell back to fusion) | {} {} |", sum(DecisionRerankStats::failures), if codes.is_empty() { String::new() } else { format!("({codes})") });
+        println!("| candidates sent / cache hits | {} / {} |", sum(DecisionRerankStats::candidates_sent), sum(DecisionRerankStats::cache_hits));
+        println!("| input / output tokens (provider-reported) | {} / {} |", sum(DecisionRerankStats::input_tokens), sum(DecisionRerankStats::output_tokens));
+        println!("| summed request latency | {:.1} s |", sum(DecisionRerankStats::latency_ms) as f64 / 1000.0);
+        let samples: Vec<String> = stats.iter().flat_map(|s| s.failure_samples()).take(3).collect();
+        for m in samples {
+            eprintln!("rerank failure sample: {}", m.chars().take(600).collect::<String>());
+        }
+    }
+
     println!("\n## End-to-end answer accuracy (LLM-judged)\n");
     match &llm_cmd {
         Some(_) if ans_total > 0 => {
@@ -447,4 +625,5 @@ fn main() {
             println!("      cargo run --release -p areev-bench --bin accuracy -- {path} {limit}");
         }
     }
+    println!("\ntotal wall time: {:.1} s", started.elapsed().as_secs_f64());
 }

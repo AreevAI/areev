@@ -16,13 +16,25 @@
 //! the hardest to learn from — backwards. Measured on a real agent trace (150
 //! tasks, 772 calls, 139 failures across 5 modes) the old denominator put
 //! every mode between 9% and 30% and the analyzer proposed nothing at all.
+//!
+//! **The failure cause** (proposal row E3). With a decision backend installed
+//! (`Engine::with_decider`), a cluster whose tool grains carry a cause — the
+//! closed `failure_cause` vocabulary, or free text (a `failure_cause` string
+//! outside it, else `failure_detail`) — names its majority cause
+//! (`tool_failure.cluster_cause`). A known value is used as recorded. Each
+//! distinct free-text string is classified once per run with a `choice` over
+//! the vocabulary; the argmax is used when the backend is CALIBRATED and its
+//! probability reaches `CAUSE_MIN_P` (the probabilities ride on the draft's
+//! `judged_by`), else the string counts as `unknown`. Without a backend — and
+//! for a cluster with no cause signal at all — the draft is exactly as before.
 
 use crate::analyzer::{AnalyzeCtx, Analyzer};
+use crate::decide::{CauseVerdict, JudgedBy, TOOL_CAUSES};
 use crate::analyzers::bound_evidence;
 use crate::cal;
 use crate::error::Result;
 use crate::manifest::*;
-use crate::model::{ActionKind, Severity};
+use crate::model::{ActionKind, GrainRecord, Severity};
 use crate::recommendation::{MetricSnapshot, Proposal, RecDraft, Summary};
 use std::collections::BTreeMap;
 
@@ -110,7 +122,7 @@ impl Analyzer for ToolFailureClustering {
         // evidence lives.
         let mut tool_totals: BTreeMap<String, usize> = BTreeMap::new();
         let mut tool_errors: BTreeMap<String, usize> = BTreeMap::new();
-        let mut clusters: BTreeMap<(String, String), Vec<(String, String)>> = BTreeMap::new();
+        let mut clusters: BTreeMap<(String, String), Vec<Member>> = BTreeMap::new();
         for e in &tools {
             let Some(tool) = e.tool_name() else {
                 continue;
@@ -122,12 +134,14 @@ impl Analyzer for ToolFailureClustering {
                 clusters
                     .entry((tool.to_string(), sig))
                     .or_default()
-                    .push((e.hash.clone(), e.namespace.clone()));
+                    .push((e.hash.clone(), e.namespace.clone(), cause_signal(e)));
             }
         }
 
-        let mut drafts = Vec::new();
-        for ((tool, signature), mut members) in clusters {
+        // First pass: which clusters fire (only their causes are worth a
+        // classification call).
+        let mut firing = Vec::new();
+        for ((tool, signature), members) in clusters {
             // An empty/whitespace-only error body normalizes to "" — a lesson
             // with object="" would trip the store's non-empty-object validation
             // (VAL-E001) at apply time, so it can never be applied. Drop the
@@ -150,8 +164,37 @@ impl Analyzer for ToolFailureClustering {
             if count < min_count || (rate < min_rate && count < min_abs) {
                 continue;
             }
+            firing.push((tool, signature, members, count, rate, opportunities));
+        }
+
+        // E3: classify the free-text causes of the firing clusters, once per
+        // distinct string (the decider caches for the run). No backend, or an
+        // uncalibrated one → every free-text cause stays `unknown`.
+        let texts: Vec<String> = {
+            let mut t: Vec<String> = firing
+                .iter()
+                .flat_map(|f| f.2.iter())
+                .filter_map(|(_, _, sig)| match sig {
+                    CauseSignal::Text(t) => Some(t.clone()),
+                    _ => None,
+                })
+                .collect();
+            t.sort();
+            t.dedup();
+            t
+        };
+        let classified = match (ctx.decider(), texts.is_empty()) {
+            (Some(d), false) => d.classify_causes(&texts),
+            _ => BTreeMap::new(),
+        };
+
+        let mut drafts = Vec::new();
+        for (tool, signature, mut members, count, rate, opportunities) in firing {
             members.sort_by(|a, b| a.0.cmp(&b.0));
-            let evidence = bound_evidence(members.iter().map(|(h, _)| h.clone()).collect());
+            // No backend → no cause on the draft: the no-decider path stays
+            // byte-for-byte what it was.
+            let cause = ctx.decider().and_then(|_| cluster_cause(&members, &classified));
+            let evidence = bound_evidence(members.iter().map(|(h, _, _)| h.clone()).collect());
             let rate_pct = (rate * 100.0).round() as i64;
 
             let mut args = Map::new();
@@ -159,6 +202,13 @@ impl Analyzer for ToolFailureClustering {
             args.insert("count".into(), json!(count));
             args.insert("rate".into(), json!(rate_pct));
             args.insert("signature".into(), json!(signature));
+            let template = match &cause {
+                Some((c, _)) => {
+                    args.insert("cause".into(), json!(c));
+                    "tool_failure.cluster_cause"
+                }
+                None => "tool_failure.cluster",
+            };
 
             // Proposed lesson: a fact recording the recurring failure. It
             // lands in the DOMINANT namespace of the evidence tool calls (an
@@ -167,7 +217,7 @@ impl Analyzer for ToolFailureClustering {
             // the `entity:lessons/…` target_ref stays a stable grouping
             // label, deliberately independent of where the grain lives.
             let mut ns_counts: BTreeMap<&str, usize> = BTreeMap::new();
-            for (_, ns) in &members {
+            for (_, ns, _) in &members {
                 if !ns.is_empty() {
                     *ns_counts.entry(ns.as_str()).or_default() += 1;
                 }
@@ -195,53 +245,111 @@ impl Analyzer for ToolFailureClustering {
                 Severity::Low
             };
 
-            drafts.push(
-                RecDraft::new(
-                    format!("entity:lessons/{tool}"),
-                    ActionKind::ClusterFailure,
-                    Summary::new("tool_failure.cluster", args),
-                    Proposal::Cal {
-                        cal: cal::add("fact", &lesson),
-                    },
-                )
-                .severity(severity)
-                .evidence(evidence)
-                .confidence(rate)
-                .metric(MetricSnapshot {
-                    // After the lesson is applied, does this exact tool failure
-                    // recur? Baseline 0 = we expect zero recurrences if the
-                    // lesson worked; any recurrence is a regression → revert.
-                    metric: "tool_error_recurrence".into(),
-                    baseline: 0.0,
-                    unit: "count".into(),
-                    // Sample size is the set the rate was computed over — this
-                    // signature's opportunities, not every call to the tool.
-                    n: opportunities as u64,
-                    window: format!("{}d", ctx.params().get_int("window_days")),
-                    subject: Some(tool.clone()),
-                    namespace: None,
-                    // The metric is scoped to THIS failure signature, not the
-                    // whole tool — `relation` carries it so measure_metric can
-                    // count only recurrences of the same signature. Without it a
-                    // later, unrelated failure of the same tool reads as a
-                    // regression and reverts a still-valid lesson.
-                    relation: Some(signature.clone()),
-                    query: format!(
-                        "RECALL tools WHERE tool_name = \"{tool}\" AND is_error AND signature = \"{signature}\" SINCE <applied_at> | COUNT"
-                    ),
-                    review_after_ms: 86_400_000,
-                    // Re-measure at 1 day, 1 week, 1 month — a late recurrence
-                    // (held at 1d, regressed at 30d) is caught by the schedule.
-                    horizons_ms: vec![86_400_000, 7 * 86_400_000, 30 * 86_400_000],
-                    checkpoints: Vec::new(),
-                    // A count of recurrences: fewer is better.
-                    higher_is_better: false,
-                }),
-            );
+            let draft = RecDraft::new(
+                format!("entity:lessons/{tool}"),
+                ActionKind::ClusterFailure,
+                Summary::new(template, args),
+                Proposal::Cal {
+                    cal: cal::add("fact", &lesson),
+                },
+            )
+            .severity(severity)
+            .evidence(evidence)
+            .confidence(rate)
+            .metric(MetricSnapshot {
+                // After the lesson is applied, does this exact tool failure
+                // recur? Baseline 0 = we expect zero recurrences if the
+                // lesson worked; any recurrence is a regression → revert.
+                metric: "tool_error_recurrence".into(),
+                baseline: 0.0,
+                unit: "count".into(),
+                // Sample size is the set the rate was computed over — this
+                // signature's opportunities, not every call to the tool.
+                n: opportunities as u64,
+                window: format!("{}d", ctx.params().get_int("window_days")),
+                subject: Some(tool.clone()),
+                namespace: None,
+                // The metric is scoped to THIS failure signature, not the
+                // whole tool — `relation` carries it so measure_metric can
+                // count only recurrences of the same signature. Without it a
+                // later, unrelated failure of the same tool reads as a
+                // regression and reverts a still-valid lesson.
+                relation: Some(signature.clone()),
+                query: format!(
+                    "RECALL tools WHERE tool_name = \"{tool}\" AND is_error AND signature = \"{signature}\" SINCE <applied_at> | COUNT"
+                ),
+                review_after_ms: 86_400_000,
+                // Re-measure at 1 day, 1 week, 1 month — a late recurrence
+                // (held at 1d, regressed at 30d) is caught by the schedule.
+                horizons_ms: vec![86_400_000, 7 * 86_400_000, 30 * 86_400_000],
+                checkpoints: Vec::new(),
+                // A count of recurrences: fewer is better.
+                higher_is_better: false,
+            });
+            drafts.push(match cause.and_then(|(_, j)| j) {
+                Some(j) => draft.judged_by(j),
+                None => draft,
+            });
         }
         drafts.sort_by(|a, b| a.target_ref.cmp(&b.target_ref));
         Ok(drafts)
     }
+}
+
+/// One error grain in a cluster: (hash, namespace, what it says about why).
+type Member = (String, String, CauseSignal);
+
+/// What one error tool grain says about why it failed.
+#[derive(Debug, Clone, PartialEq)]
+enum CauseSignal {
+    /// A value of the closed vocabulary, as recorded.
+    Known(String),
+    /// Free text: a `failure_cause` outside the vocabulary, else
+    /// `failure_detail`.
+    Text(String),
+    /// Nothing recorded.
+    None,
+}
+
+fn cause_signal(g: &GrainRecord) -> CauseSignal {
+    let known = |s: &str| TOOL_CAUSES.iter().any(|(k, _)| *k == s);
+    match g.str_field("failure_cause").map(str::trim).filter(|s| !s.is_empty()) {
+        Some(c) if known(c) => CauseSignal::Known(c.to_string()),
+        Some(c) => CauseSignal::Text(c.to_string()),
+        None => match g.str_field("failure_detail").map(str::trim).filter(|s| !s.is_empty()) {
+            Some(d) => CauseSignal::Text(d.to_string()),
+            None => CauseSignal::None,
+        },
+    }
+}
+
+/// The cluster's majority cause (ties → the lexicographically smallest), with
+/// the decision that classified it when the winner came from one. `None` when
+/// no member carries any cause signal — the draft then renders as before.
+fn cluster_cause(
+    members: &[Member],
+    classified: &BTreeMap<String, CauseVerdict>,
+) -> Option<(String, Option<JudgedBy>)> {
+    let mut votes: BTreeMap<String, usize> = BTreeMap::new();
+    let mut judged: BTreeMap<String, JudgedBy> = BTreeMap::new();
+    for (_, _, sig) in members {
+        let cause = match sig {
+            CauseSignal::Known(k) => k.clone(),
+            CauseSignal::Text(t) => match classified.get(t).cloned().flatten() {
+                Some((c, _, j)) => {
+                    judged.entry(c.clone()).or_insert(j);
+                    c
+                }
+                None => "unknown".to_string(),
+            },
+            CauseSignal::None => continue,
+        };
+        *votes.entry(cause).or_default() += 1;
+    }
+    let (winner, _) = votes
+        .iter()
+        .max_by(|a, b| a.1.cmp(b.1).then_with(|| b.0.cmp(a.0)))?;
+    Some((winner.clone(), judged.remove(winner)))
 }
 
 /// Normalize an error message into a stable signature: lowercase, first ~80

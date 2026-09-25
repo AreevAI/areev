@@ -102,6 +102,14 @@ fn base_tool(
         NodeExecutor::MemoryRead { op, .. } => {
             (String::new(), format!("mg:{op}"), ExecutorKind::Host)
         }
+        // A decision NODE (C3) journals under its own Definition's name and
+        // hash — an ordinary Tool execution grain, so `run-trace`,
+        // `step-actions` and the loop's `run_outcome` see it like any tool.
+        // The scheduler's own asks (C1/C2) carry no hash and the reserved
+        // `mg:decide` name.
+        NodeExecutor::Decide { tool_hash, tool_name } => {
+            (tool_hash.clone(), tool_name.clone(), ExecutorKind::Host)
+        }
     };
     let mut t = Tool::new(&tool_name)
         .tool_call_id(&key.tool_call_id())

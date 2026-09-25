@@ -24,7 +24,8 @@ CAL-E116: WITH hyde needs an external LLM and is not implemented in Areev — �
 
 So whether a user pastes the bare code or the whole message, we get the same
 handle. Each coded error type also exposes a `code()` method returning the bare
-code (`AreevError::code`, `CalError::code`, `SchemaSubsetError::code`) for
+code (`AreevError::code`, `CalError::code`, `SchemaSubsetError::code`,
+`DecideError::code`) for
 structured logging and interface envelopes.
 
 ## Domains
@@ -43,6 +44,7 @@ structured logging and interface envelopes.
 | `RUN` | The `areev run` scheduler and driver: plan validation, budgets, journal, leases | `RunError` — `crates/areev-run-core/src/error.rs` |
 | `TRG` | Triggers: declaration validity, schedules, claims, connectors | `TriggerError` — `crates/areev-trigger/src/error.rs` |
 | `PCK` | Agent packs: manifest shape, reference resolution, expected-hash agreement | `areev::pack::PackError` — `crates/areev-cli/src/pack.rs` |
+| `DEC` | Decision backends: typed, calibrated judgments (System One models), their adapters, the provider chain and its spec | `DecideError` — `areev-core/src/decide.rs` (adapters + chain: `crates/areev-llm/src/decide.rs`) |
 
 The MCP server, HTTP console, CLI, and Python binding do not mint their own
 codes — they surface the underlying `AreevError` / `CalError` (and thus its
@@ -56,6 +58,10 @@ agreement are the pack format's own rules, and a Rust host calling
 in the substrate's `CAL` domain; `LOP` covers engine semantics (lifecycle,
 gates, analyzers). Store and authorization errors raised while installing a
 pack pass through unchanged.
+The decision seam (`areev_core::decide`, adapters in `areev-llm`) owns
+`DEC` for the same reason: a decision backend is a provider concept no
+store or loop domain names, and a caller falling back through a provider chain has to branch on the cause (rate
+limited vs deadline vs invalid question) without parsing a message.
 
 ## Registry — non-CAL codes
 
@@ -110,6 +116,7 @@ pack pass through unchanged.
 | `LOP-E032` | `CapabilityMissing` | A required substrate capability (forks/telemetry/embeddings) is absent |
 | `LOP-E040` | `NotFound` | No recommendation at the given hash |
 | `LOP-E050` | `LlmBackend` | The optional LLM enrichment backend (`--llm-cmd`) is misconfigured or failed (never fatal — the contribution is dropped) |
+| `LOP-E051` | `DecideBackend` | The optional decision backend (`Engine::with_decider`) failed or returned a malformed answer (never fatal — that stage's decision contribution is dropped, today's rule applies, and the run's `decider` report counts it) |
 | `LOP-E099` | `Internal` | Unexpected internal fault (should not happen — file a bug) |
 
 `SchemaSubsetError` — portable tool-schema (bind-tool) validation
@@ -164,6 +171,7 @@ in source.
 | `RUN-E027` | `ConcurrencyLimit` | Starting this run would exceed a per-memory or per-principal concurrency cap (#296). RETRYABLE by nature: the cap is a backstop beneath the host's own dispatcher, not a verdict on the run. Nothing is written under the run id, so the same id starts once a slot frees, and a trigger firing refused here leaves its item unconsumed (the #129 rule) |
 | `RUN-E028` | `TransferLimitInvalid` | A Tool declares a brokered-transfer ceiling (`runtime_limits.max_response_bytes` or `max_request_bytes`) that is not a positive integer, is zero, or exceeds the 32 MiB (33554432-byte) hard maximum (#339). Refused at run start, before any upstream I/O, and never clamped; the write path refuses the same declaration as a `VAL` error. The broker raises it too, before dispatch, for a host that registered such limits directly |
 | `RUN-E029` | `NotPausable` | A pause was asked of a run that cannot be paused (#344): it already finished — completed, failed, stalled, canceled or out of budget — or a cancel is pending against it (cancel wins over pause; `cancel` on a paused run finalizes it). Pausing an already-paused or already-pause-requested run is NOT this error: it is idempotent and answers with the standing request |
+| `RUN-E030` | `NoDecider` | A plan binds a decision node (a Tool Definition whose `executor_uri` is `areev://decide`) and this host has no decision backend installed. Raised at run start, the V7 freeze, before the run exists and naming the node. `resume` and a forking `fork` raise it too, before the lease is taken, on a host without a backend. Install one (`--decide <chain>` / `--decide-cmd`, `$AREEV_DECIDE`, `Runner::with_decider`) or bind the node to an ordinary tool. The scheduler's OPTIONAL asks (the decision-guided fold and the tool-offer narrowing) never raise it: without a backend they are not asked |
 
 ### `TRG` — triggers (`areev-trigger/src/error.rs`)
 
@@ -181,6 +189,25 @@ in source.
 | `TRG-E010` | `Storage` | The store refused or failed underneath the evaluator |
 | `TRG-E011` | `BlobContract` | A connector's blob payload violated the contract (bad base64, dangling `"@N"` reference, or budget overrun); the poll was refused whole with the cursor unmoved |
 | `TRG-E012` | `ConnectorCode` | The trigger names its connector as a GRAIN (#185) and this host will not run it: no `--allow-executor` pin, an unreadable Definition or code blob, a Definition carrying no `executor_uri`, a declared runtime with no `--sandbox-cmd`, or a blob-reading module on an evaluator wired no memory locator |
+
+### `DEC` — decision backends (`areev-core/src/decide.rs`)
+
+Defined on `areev_core::decide::DecideError`, re-exported as
+`areev_llm::decide::DecideError` where the adapters raise it (design:
+`docs/decision-model-proposal.md` §3). A decision backend is optional and
+never default-on, so every one of these is recoverable: the caller falls back
+to the next chain entry and then to the deterministic rule.
+
+| Code | Variant | Meaning |
+|------|---------|---------|
+| `DEC-E001` | `NotConfigured` | No backend configured, or the `--decide` / `AREEV_DECIDE` spec did not parse: an unknown provider, an empty entry, `cmd:` written as an entry, a `systemone:` target that is not an http(s) URL, an `llm:` spec `resolve` refuses, or a provider key that is unset or empty — the message names the env var. Also an empty chain and an empty `--decide-cmd` |
+| `DEC-E002` | `Provider` | Provider transport or HTTP error. Carries the HTTP status (when there was one) and the body's own message (`error.message`, `detail`, Cloudflare's `errors[]`, …); `retryable` is true for 5xx and transport faults, false for 4xx. A Cloudflare envelope with `success: false`, a failed command spawn or non-zero exit, and an emulated LLM's own error land here too. A chain moves past it — except for HTTP 400/422, a refusal of the request itself, which stops the chain |
+| `DEC-E003` | `Malformed` | Malformed answer: a question id missing from `answers`, an answer whose `type` differs from the question's or is unknown, probabilities absent or summing more than `1e-2` from 1, a probability for an option or level that was not asked, or a response body that is not JSON |
+| `DEC-E004` | `Deadline` | The deadline elapsed before an answer arrived (HTTP end-to-end timeout, a command killed at its ceiling, an emulated LLM call abandoned), or a chain entry was not tried because the budget was already spent |
+| `DEC-E005` | `ChainExhausted` | Every chain entry failed. Carries each entry's `describe()` label and its error, in chain order |
+| `DEC-E006` | `InvalidQuestion` | An invalid question: empty instructions, a choice outside 2..=255 options, a score outside 2..=10 levels, an unknown question type, no questions at all, or a `state` that is not a string, object or array. Raised before anything is sent and never retried |
+| `DEC-E007` | `RateLimited` | The provider answered HTTP 429. Carries `Retry-After` seconds when the header was present in seconds form. The adapter never sleeps on it — a chain moves to the next entry |
+| `DEC-E008` | `EgressRefused` | Egress pseudonymization of the request's `state` failed (`PseudonymizingDecider`, e.g. the policy demands a detector the host has no backend for), so the request was **not sent**. Fail-closed like LLM egress: raw state is never sent as a fallback. **Stops a chain** — a later entry may be unwrapped, and moving on would send exactly the state the policy refused |
 
 ## Registry — PCK codes (agent packs)
 
@@ -232,6 +259,7 @@ and are the source of truth. Ranges:
 | `CAL-W016` | A pipeline stage was attached to a payload it cannot act on (e.g. `ORDER BY` on a multi-source `ASSEMBLE`) and was skipped |
 | `CAL-W017` | An `ASSEMBLE` token budget dropped grains its sources had already retrieved, naming the sources and the counts — including when the 4000-token default applied because no `BUDGET` clause was written |
 | `CAL-W018` | A `GROUP BY` key names a field no grain in the result carries, so every row fell into one group under the empty key — the ranking has one group because the key is absent, not because one value dominates |
+| `CAL-W019` | A calibrated decision backend judged grains off-topic for their `ASSEMBLE` source's `ABOUT` query and they were omitted before the budget applied — names the sources, the count, the provider and the relevance line (decision-backend phase 3) |
 
 `CAL-E116` is the "needs an external LLM, not implemented" error for
 `WITH hyde` / `WITH llm_rerank` — Areev takes no LLM dependency by policy.

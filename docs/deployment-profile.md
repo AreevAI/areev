@@ -444,6 +444,51 @@ Notes:
   (#324) give a host a set it can key by `(principal, authz_epoch)` instead of
   re-reading grants under the store mutex on every request.
 
+## Decision backends (optional)
+
+A decision (System One) backend scores and orders recall — typed questions
+in, calibrated probabilities out, no text generated. It is **off unless the
+host configures it**; with nothing configured every path is the deterministic
+rule and nothing leaves the process. The contract is
+[decision-model-proposal.md](decision-model-proposal.md); the egress and key
+handling are in [security-model.md](security-model.md#decision-backends-egress);
+the how-to is the cookbook's "Decision backends" section.
+
+The host passes an **ordered chain** — `--decide <entry>,<entry>,…` (env
+`AREEV_DECIDE`), optionally `--decide-cmd <cmd>` (env `AREEV_DECIDE_CMD`)
+appended as the last entry. Entries are tried in order under one deadline
+(`--decide-timeout-ms`, env `AREEV_DECIDE_TIMEOUT_MS`, default 2000); when
+all fail, the deterministic rule answers.
+
+| Spec entry | Endpoint | Key env | Notes |
+|---|---|---|---|
+| `typesafe:<model>` | `$TYPESAFE_BASE_URL` or `https://api.typesafe.ai` + `/v1/systemone` | `TYPESAFE_API_KEY` | US-hosted; ZDR enterprise only |
+| `openrouter:<model>` | `$OPENROUTER_BASE_URL` or `https://openrouter.ai/api` + `/v1/systemone` | `OPENROUTER_API_KEY` | model `jev-1.13` / `jev-latest`; no TypeSafe account |
+| `vercel:<model>` | `https://ai-gateway.vercel.sh/typesafe/v1/systemone` | `AI_GATEWAY_API_KEY` | model `typesafe-ai/jev`; BYOK/ZDR |
+| `openjev:<model>` | `https://api.openjev.sh/v1/systemone` | `OPENJEV_API_KEY` | model `openjev`; unaffiliated, token-funded proxy — **development only** |
+| `cloudflare:<model>` | `https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/ai/run/<model>` | `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` | model `typesafe/jev`; ZDR |
+| `systemone:<url>[#model]` | `<url>/v1/systemone` (or as given if it already ends in `/systemone`) | `AREEV_DECIDE_API_KEY` (optional) | self-hosted: LiteLLM `/typesafe`, von, kev, jev-rs, jev-sim, oido, chakuho; default model `jev-latest` |
+| `llm:<llm spec>` | Areev's existing LLM providers | as today | emulated; `calibrated = false` — may reorder, never omit |
+| `--decide-cmd <cmd>` | stdin wire request → stdout wire response | none | no shell; 300 s default; always last in the chain |
+
+**Region and residency.**
+
+| Situation | Chain to use |
+|---|---|
+| No residency requirement | any hosted entry; `openrouter:` needs no TypeSafe account |
+| EU / UK / CA residency | `cloudflare:` (ZDR) or `vercel:` with BYOK + ZDR, or self-hosted `systemone:` |
+| Air-gapped | self-hosted `systemone:` (von / kev / jev-rs / oido) or `--decide-cmd` |
+| No decision model reachable at all | `llm:<local or regional LLM>` (rank-only) then the deterministic floor |
+| Development | `openjev:openjev` (free) — never for customer memories |
+
+**Latency.** A hosted backend answers in 70–500 ms. It never sits in the 50 ms
+voice-loop gate (`voice_loop` example): a voice host either leaves the backend
+off or bounds recall with `--recall-deadline-ms` (env
+`AREEV_RECALL_DEADLINE_MS`); a backend that misses its deadline fails open to
+the RRF order. Only a
+local encoder clone (sub-25 ms) qualifies for that path, and it is still
+opt-in.
+
 ## SSO note (trusted-header mode)
 
 The proxy shared secret (`--sso-secret-env`) is an **impersonation-grade

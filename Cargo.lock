@@ -222,6 +222,7 @@ dependencies = [
  "areev",
  "areev-cal",
  "areev-core",
+ "areev-llm",
  "areev-run",
  "areev-store",
  "serde_json",
@@ -300,6 +301,7 @@ version = "1.9.5"
 dependencies = [
  "areev-cal",
  "areev-core",
+ "areev-llm",
  "areev-loop",
  "areev-loop-adapter",
  "areev-run",

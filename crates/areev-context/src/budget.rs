@@ -10,6 +10,13 @@
 //! - `allocate()` — pure priority-based allocation.
 //! - `allocate_with_diversity()` — reserves slots per grain type before
 //!   filling by priority, ensuring rare types are not crowded out.
+//!
+//! Both honour two per-entry inputs a decision backend can set (decision-
+//! backend phase 3, row A2; the assembler sets them only for a CALIBRATED
+//! backend): `force_omit` takes an entry out before any budget is spent —
+//! even with no budget — and `prefer_full` lets an entry take the Full
+//! render up to the ~95% line instead of stopping at ~70%. Neither can push
+//! the allocation past 95%: the budget rule stays final.
 
 use std::collections::{HashMap, HashSet};
 
@@ -36,6 +43,43 @@ pub struct ScoredEntry {
     pub original_index: usize,
     /// Grain type — used by `allocate_with_diversity()` for type-aware reservations.
     pub grain_type: GrainType,
+    /// Omit regardless of budget (a calibrated backend judged it off-topic).
+    pub force_omit: bool,
+    /// Full may use the budget up to the ~95% line, not only ~70% (a
+    /// calibrated backend judged a summary would lose what the query needs).
+    pub prefer_full: bool,
+}
+
+impl ScoredEntry {
+    /// An entry with neither decision input set — today's allocation.
+    pub fn new(
+        priority: f32,
+        full_tokens: usize,
+        summary_tokens: usize,
+        original_index: usize,
+        grain_type: GrainType,
+    ) -> Self {
+        Self {
+            priority,
+            full_tokens,
+            summary_tokens,
+            original_index,
+            grain_type,
+            force_omit: false,
+            prefer_full: false,
+        }
+    }
+}
+
+/// Everything Full except the `force_omit` entries — the no-budget answer.
+fn unbudgeted(entries: &[ScoredEntry]) -> Vec<Allocation> {
+    let mut out = vec![Allocation::Full; entries.len()];
+    for e in entries {
+        if e.force_omit {
+            out[e.original_index] = Allocation::Omit;
+        }
+    }
+    out
 }
 
 /// Allocate budget across grains using priority-based allocation.
@@ -57,8 +101,8 @@ pub fn allocate(entries: &mut [ScoredEntry], token_budget: Option<usize>) -> Vec
     }
 
     let Some(budget) = token_budget else {
-        // No budget: everything gets Full
-        return vec![Allocation::Full; n];
+        // No budget: everything gets Full (a forced omit still omits).
+        return unbudgeted(entries);
     };
 
     // Sort by priority descending (stable sort preserves original_index order for ties)
@@ -76,7 +120,11 @@ pub fn allocate(entries: &mut [ScoredEntry], token_budget: Option<usize>) -> Vec
     let mut used = 0usize;
 
     for entry in entries.iter() {
-        if used + entry.full_tokens <= full_threshold {
+        if entry.force_omit {
+            continue; // stays Omit
+        }
+        let full_ceiling = if entry.prefer_full { summary_threshold } else { full_threshold };
+        if used + entry.full_tokens <= full_ceiling {
             result_by_original[entry.original_index] = Allocation::Full;
             used += entry.full_tokens;
         } else if used + entry.summary_tokens <= summary_threshold {
@@ -116,12 +164,17 @@ pub fn allocate_with_diversity(
     }
 
     let Some(budget) = token_budget else {
-        return vec![Allocation::Full; n];
+        return unbudgeted(entries);
     };
 
-    // Phase 1: Group entry indices by grain type.
+    // Phase 1: Group entry indices by grain type. A forced omit is never
+    // reserved — a diversity floor must not resurrect what was judged
+    // off-topic.
     let mut groups: HashMap<GrainType, Vec<usize>> = HashMap::new();
     for (i, entry) in entries.iter().enumerate() {
+        if entry.force_omit {
+            continue;
+        }
         groups.entry(entry.grain_type).or_default().push(i);
     }
 
@@ -194,7 +247,9 @@ pub fn allocate_with_diversity(
     let summary_threshold = remaining_budget * 95 / 100;
 
     // Collect non-reserved indices, sorted by priority descending.
-    let mut non_reserved: Vec<usize> = (0..n).filter(|i| !reserved.contains(i)).collect();
+    let mut non_reserved: Vec<usize> = (0..n)
+        .filter(|i| !reserved.contains(i) && !entries[*i].force_omit)
+        .collect();
     non_reserved.sort_by(|&a, &b| {
         entries[b]
             .priority
@@ -204,7 +259,8 @@ pub fn allocate_with_diversity(
 
     let mut used = 0usize;
     for idx in non_reserved {
-        if used + entries[idx].full_tokens <= threshold {
+        let full_ceiling = if entries[idx].prefer_full { summary_threshold } else { threshold };
+        if used + entries[idx].full_tokens <= full_ceiling {
             result[entries[idx].original_index] = Allocation::Full;
             used += entries[idx].full_tokens;
         } else if used + entries[idx].summary_tokens <= summary_threshold {
@@ -222,13 +278,7 @@ mod tests {
 
     /// Helper to create a `ScoredEntry` with default grain type (Fact).
     fn entry(priority: f32, full_tokens: usize, summary_tokens: usize, idx: usize) -> ScoredEntry {
-        ScoredEntry {
-            priority,
-            full_tokens,
-            summary_tokens,
-            original_index: idx,
-            grain_type: GrainType::Fact,
-        }
+        ScoredEntry::new(priority, full_tokens, summary_tokens, idx, GrainType::Fact)
     }
 
     /// Helper to create a `ScoredEntry` with a specific grain type.
@@ -238,13 +288,7 @@ mod tests {
         grain_type: GrainType,
         idx: usize,
     ) -> ScoredEntry {
-        ScoredEntry {
-            priority,
-            full_tokens,
-            summary_tokens: full_tokens / 3,
-            original_index: idx,
-            grain_type,
-        }
+        ScoredEntry::new(priority, full_tokens, full_tokens / 3, idx, grain_type)
     }
 
     #[test]
@@ -380,5 +424,52 @@ mod tests {
         assert_eq!(allocs[0], Allocation::Full);
         assert_eq!(allocs[1], Allocation::Full);
         assert_eq!(allocs[2], Allocation::Full);
+    }
+
+    // -----------------------------------------------------------------------
+    // Decision inputs (phase 3, row A2)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn force_omit_omits_even_without_a_budget() {
+        let mut entries = vec![entry(0.9, 10, 3, 0), entry(0.9, 10, 3, 1)];
+        entries[1].force_omit = true;
+        assert_eq!(allocate(&mut entries, None), vec![Allocation::Full, Allocation::Omit]);
+        let cfg = GrainTypeDiversityConfig::default();
+        let mut entries = vec![entry(0.9, 10, 3, 0), entry(0.9, 10, 3, 1)];
+        entries[0].force_omit = true;
+        assert_eq!(
+            allocate_with_diversity(&mut entries, Some(1000), &cfg),
+            vec![Allocation::Omit, Allocation::Full]
+        );
+    }
+
+    #[test]
+    fn a_forced_omit_is_never_reserved_by_the_diversity_floor() {
+        // The only Goal is judged off-topic: the floor must not bring it back.
+        let mut entries = vec![
+            typed_entry(0.9, 100, GrainType::Fact, 0),
+            typed_entry(0.9, 100, GrainType::Goal, 1),
+        ];
+        entries[1].force_omit = true;
+        let cfg = GrainTypeDiversityConfig { min_per_type: 1, max_reservation_pct: 0.9 };
+        let allocs = allocate_with_diversity(&mut entries, Some(1000), &cfg);
+        assert_eq!(allocs[1], Allocation::Omit);
+    }
+
+    #[test]
+    fn prefer_full_uses_the_95_line_and_no_further() {
+        // Budget 1000: 70% = 700, 95% = 950. First entry takes 500 Full.
+        // The second (400) would be Summary under the 70% rule; preferring
+        // Full it fits under 950 (500+400 = 900).
+        let mut plain = vec![entry(0.9, 500, 100, 0), entry(0.5, 400, 100, 1)];
+        assert_eq!(allocate(&mut plain, Some(1000))[1], Allocation::Summary);
+        let mut pref = vec![entry(0.9, 500, 100, 0), entry(0.5, 400, 100, 1)];
+        pref[1].prefer_full = true;
+        assert_eq!(allocate(&mut pref, Some(1000))[1], Allocation::Full);
+        // 500 + 500 = 1000 > 950: the budget rule stays final → Summary.
+        let mut over = vec![entry(0.9, 500, 100, 0), entry(0.5, 500, 100, 1)];
+        over[1].prefer_full = true;
+        assert_eq!(allocate(&mut over, Some(1000))[1], Allocation::Summary);
     }
 }

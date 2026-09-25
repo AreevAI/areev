@@ -248,6 +248,23 @@ areev-store already depends on it with the same features.
   **Read-only mounts**: `mount(alias, store)`; `recall` routes
   `"alias.inner"` namespaces to the mount — writes only ever hit the session
   store, so mounts are read-only by construction.
+  **Recall scores + host recall config** (decision-backend phase 0): the
+  hybrid arms call the store's `recall_hybrid_scored*`, so `SearchHit.score`
+  is the normalized fused score (top = 1.0) or the normalized reranker score;
+  the unranked scans and any query-less recall carry the 1.0 sentinel (the
+  executor's `is_deterministic` contract). `min_score` on a `RECALL … ABOUT`
+  filters on it (no-ABOUT → `CAL-W014`); `recency_weight` stays RANK-based on
+  purpose (sentinel paths + compressed RRF would skew the blend).
+  `set_reranker(Box<dyn RerankBackend>)` installs on the primary store only
+  (mounts keep their own); `set_recall_deadline(Option<Duration>)` is threaded
+  into EVERY hybrid call — first pass, each `subject IN` leg, each
+  `multi_hop` leg. `AsyncFacade` reaches both through `with_mut`. E2E:
+  `tests/recall_score_tests.rs`.
+  **Decision backend** (phase 3): `set_decider(Arc<dyn DecisionBackend>)` /
+  `clear_decider()` / `decider()`, surfaced to the executor as the defaulted
+  trait method `CalStoreFacade::decider()` (default `None`; `PrincipalSession`
+  delegates — it is host config, not data). Only multi-source ASSEMBLE reads
+  it; RECALL is untouched (its ranking is the reranker's).
   **Namespace scope resolution** lives at the top of `recall`: the scope
   terms are `params.namespaces` (the `IN` set — every member queried, issue
   #19) else `params.namespace` else the session default; each term may be
@@ -267,6 +284,21 @@ areev-store already depends on it with the same features.
   count — reporting the trimmed one made a truncated assembly arithmetically
   indistinguishable from a complete one. If you add a path that discards grains
   here, it warns or it is the same bug again.
+  With a decider, a non-pinned source whose sub-query is `RECALL … ABOUT`
+  is judged (`judge::judge_candidates`); `budget_by_relevance` spends the
+  source's share highest-relevance first (same stop rule as `budget_prefix`,
+  survivors in recall order), and a CALIBRATED backend first drops
+  `relevance < judge::DEFAULT_DROP_BELOW` into `omitted` with `CAL-W019`.
+  Any backend failure → `budget_prefix`, unchanged. Pins/literals/no-ABOUT
+  sources are never judged. `select_tier` itself is unchanged — it sees the
+  post-drop grain count. E2E: `tests/assemble_decide_tests.rs`.
+- `judge.rs` — the decision-backend questions for context assembly (rows
+  A2/A3): `judge_candidates` (per candidate `rel_n` score over
+  `RELEVANCE_LEVELS` + `verbatim_n` noul, split under `MAX_STATE_TOKENS`,
+  all-or-nothing, one deadline for all requests), `judge_intent` (one choice:
+  timeline / current_state / general), `JudgeProvenance`. ONE home for the
+  wording — areev-context's allocator and ASSEMBLE both call it. It asks and
+  validates; callers decide what to omit, and only on a calibrated answer.
 - `render.rs` — THE per-grain renderer every surface shares: semantic
   `sml`, the documented `markdown` assertion line, `text`, registry-driven
   `toon`, the `json` envelope, per-type summaries, and the one `chars/4`

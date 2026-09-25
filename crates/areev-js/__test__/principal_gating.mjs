@@ -91,6 +91,10 @@ function calls(db, dir) {
     // LOWERING the floor is refused; raising it only strengthens protection
     // and needs no grant (#345).
     ['setAnonymizeEgressFloor', () => db.setAnonymizeEgressFloor(false)],
+    // A decision backend can be a subprocess and receives memory text as its
+    // state — host config, admin on "*" like the embedder.
+    ['setDecider', () => db.setDecider(null, 'cat')],
+    ['setRerankerCommand', () => db.setRerankerCommand('cat')],
   ]
 }
 

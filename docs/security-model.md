@@ -760,6 +760,79 @@ or it writes corrupt records — and it is deliberately narrow:
   value-derived tokens replay identically (`RUN-E023` refuses the rest at
   start).
 
+### Decision backends (egress)
+
+An optional decision (System One) backend scores and orders recall and other
+judgments ([`decision-model-proposal.md`](decision-model-proposal.md);
+ARCHITECTURE.md §10, "A decision model may score and order; only code omits,
+gates, approves or applies"). It is **never default-on**: with no `--decide`,
+`--decide-cmd` or `AREEV_DECIDE` / `AREEV_DECIDE_CMD` configured, nothing
+leaves the process and every path is the deterministic rule it was before.
+
+- **What leaves the process.** A request carries a `state` and named
+  questions. The `state` is built from what is being judged — for reranking,
+  the query and the recalled grains' rendered text — so it **can contain
+  grain text, and therefore personal data**. Sending it to a remote backend
+  is memory egress on the same footing as an LLM call.
+- **Same pseudonymization path as LLM egress.** Under an egress
+  anonymization policy the `state` goes through the decorator LLM calls use
+  (`PseudonymizingDecider`, beside the LLM wrapper in
+  `areev-llm/src/pseudonymize.rs`), with the same properties: it replaces
+  only what the detectors catch, and a transform error fails the call with
+  `DEC-E008` (and so falls to the deterministic floor) — raw content is never
+  sent as a fallback. Hosts wrap the **whole resolved chain**, never
+  individual entries; `DEC-E008` stops a chain, so a wrapped entry that
+  fails closed can never hand the raw `state` on to a later, unwrapped
+  entry. The answers are probabilities
+  keyed by question id and option name; nothing in them is rehydrated into
+  memory.
+- **Keys are host environment, never file content.** Each provider reads its
+  own variable: `TYPESAFE_API_KEY` (+ `TYPESAFE_BASE_URL`),
+  `OPENROUTER_API_KEY` (+ `OPENROUTER_BASE_URL`), `AI_GATEWAY_API_KEY`
+  (Vercel), `OPENJEV_API_KEY`, `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`,
+  and `AREEV_DECIDE_API_KEY` (optional bearer for a self-hosted
+  `systemone:<url>`). The chain spec and its keys are per-process host
+  config; no memory file can arm a backend.
+- **Residency is the provider's, and differs.** TypeSafe is US-hosted with no
+  EU/UK/CA residency, and zero-data-retention is enterprise-only. Cloudflare
+  Workers AI is ZDR. Vercel AI Gateway supports BYOK + ZDR. **OpenJev is an
+  unaffiliated, token-funded proxy — development only, never for customer
+  memories.** A self-hosted `systemone:` clone or a `--decide-cmd` keeps the
+  `state` inside your boundary; that is the air-gapped answer.
+  [`deployment-profile.md`](deployment-profile.md) has the provider and
+  residency tables.
+- **Reachability is configuration, not a build feature.** The third-party
+  router entries (`openrouter:`, `vercel:`, `openjev:`) are always compiled,
+  unlike `areev-llm`'s opt-in `openrouter` LLM feature. A Cargo feature can
+  only remove an endpoint a build could otherwise reach, and the generic
+  `systemone:<url>` adapter already reaches any endpoint speaking the wire
+  shape, so compiling a named router out would remove a spelling, not a
+  capability. A regulated build states its allowed decision endpoints in
+  its configuration (`--decide` / `AREEV_DECIDE`) and in review of that
+  configuration, not in Cargo features.
+- **Judgments are never persisted in the memory file.** The rerank cache is
+  in-process and keyed by content hash; attribution (`provider`, `model`,
+  `calibrated`, latency) travels with the answer into the recall
+  explanation, the telemetry sidecar and `GET /api/config`, not into grains.
+- **A backend cannot weaken anonymization.** In `anon` a backend may raise a
+  tier-0 detection's confidence or add a category; it may **never suppress**
+  one. This is the one path that fails safe rather than open: a backend
+  error leaves the tier-0 result standing.
+- **A backend cannot gate.** It may score and order; omission, the budget
+  rule, the loop's gates, the scheduler and authorization stay code. An
+  uncalibrated backend (`llm:<spec>`, `calibrated = false`) may reorder but
+  never cause an omission, so a prompt-injected self-report cannot drop a
+  grain from context.
+- **A command backend is a host command.** `--decide-cmd` / `--rerank-cmd`
+  are split on whitespace with no shell and run through the same
+  `areev_core::proc::run` path as the other [host command seams](#host-command-seams---tool-cmd-and-friends);
+  they receive the `state` and are trusted with it. A `--decide-cmd` entry
+  sits inside the chain, so the host's `PseudonymizingDecider` wrap covers
+  it like any other entry; `--rerank-cmd` (`CommandRerank`) is a store-level
+  reranker that receives raw candidate text exactly as `--embed-cmd`
+  receives raw text to embed — host-local by definition, outside the egress
+  boundary, and the operator's responsibility.
+
 ### What a run may read of its own memory
 
 A host command never receives a handle on the memory its run is holding —

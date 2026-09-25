@@ -73,7 +73,8 @@ COMMANDS:
                                       promotion then rides the loop:
                                       `loop run` proposes, `eval run --model`
                                       gates, `loop apply --gating-run` admits
-  search   --query TEXT [--subject S] [-k N]   hybrid recall (BM25 + structural, RRF)
+  search   --query TEXT [--subject S] [-k N]   hybrid recall (BM25 + structural, RRF);
+           each JSON row carries `score` (fusion, top = 1.0, or the reranker's)
   history  --subject S --relation R [--ns NS]
   provenance <source-hash>            grains distilled from a source (reverse)
   forks                               open forks (>1 head for a subject+relation)
@@ -542,7 +543,19 @@ COMMANDS:
                                       floor, and --anonymize-cmd 'CMD' to
                                       install a Tier-1 NER detector (JSON
                                       probe/detect over stdin/stdout).
-  memtool  '<COMMAND-JSON>'           Anthropic memory-tool ops on grains
+  decide   --state <TEXT|@FILE> (--questions <JSON|@FILE>
+           | --noul \"INSTRUCTIONS\"
+           | --choice \"INSTRUCTIONS\" --option KEY=DESC [--option ...]
+           | --score \"INSTRUCTIONS\" --level DESC [--level ...])
+                                      ask the decision chain (--decide /
+                                      --decide-cmd, below) typed questions
+                                      about a state; prints the wire response
+                                      plus provider, calibrated, latency_ms.
+                                      The shorthands ask one question, id
+                                      \"q\"; levels go lowest first. --state
+                                      is used as JSON when it parses. No --db:
+                                      it names no memory. A 429 with
+                                      Retry-After is retried once (<= 60s)
   auth     mint|list|revoke --auth FILE
                                       manage the credential map (no --db: it
                                       names no memory). mint --id NAME
@@ -693,6 +706,31 @@ Vector recall: add --embed-cmd 'CMD' [--embed-model NAME] to any command to
 install a command embedder — CMD gets the text on stdin and must print a JSON
 array of numbers. Turns on the vector leg for search/serve, and embeds grains
 written by add/remember/migrate.
+
+Decision backends (optional, off unless configured): add --decide <CHAIN>
+to any command — a comma-separated, ordered list of providers
+(typesafe:MODEL, openrouter:MODEL, vercel:MODEL, openjev:MODEL,
+cloudflare:MODEL, systemone:URL[#MODEL], llm:LLM-SPEC), tried in order;
+only the first colon splits, so URLs and nested LLM specs pass through.
+--decide-cmd 'CMD' appends a command backend as the LAST entry (wire request
+JSON on stdin, wire response JSON on stdout; no shell). --decide-timeout-ms N
+bounds the whole chain (default 2000); llm: entries generate text and usually
+need a larger value. Each falls back to $AREEV_DECIDE, $AREEV_DECIDE_CMD,
+$AREEV_DECIDE_TIMEOUT_MS. A bad spec or missing provider key fails at
+startup (DEC-E001). A decision backend may score and order, never omit;
+llm: entries are uncalibrated. docs/decision-model-proposal.md
+
+Reranking and recall deadline: with --decide set, the chain is installed as
+the recall reranker (each candidate scored for relevance, then reordered).
+--rerank-cmd 'CMD' [--rerank-model NAME] installs a command reranker instead
+(stdin {\"query\": \"...\", \"docs\": [...]}, stdout a JSON array of
+docs.len() numbers) — an explicit command wins over --decide. search and
+recall-hook rerank whenever one is installed; CAL does under WITH rerank.
+--recall-deadline-ms N bounds each hybrid recall (0 = none, the default;
+recall-hook defaults to 1500 when a reranker is installed); past it recall
+fails open to what it gathered. Env: $AREEV_RERANK_CMD,
+$AREEV_RECALL_DEADLINE_MS. Under an egress anonymization policy (or
+--anonymize-egress) what a decision backend receives is pseudonymized.
 
 Read-only: add --read-only to any command to open the memory refusing every
 write (add/supersede/forget/reindex/blob-put and so on fail with a coded
@@ -868,6 +906,204 @@ fn resolve_db(args: &HashMap<String, String>, require_explicit: bool) -> Result<
     }
     eprintln!("areev: using default memory {path} (override with -d/--db or $AREEV_DB)");
     Ok(path)
+}
+
+/// The process-level decision-backend chain (docs/decision-model-proposal.md
+/// §5): `--decide <chain>`, `--decide-cmd <cmd>` and `--decide-timeout-ms <n>`,
+/// each falling back to `$AREEV_DECIDE`, `$AREEV_DECIDE_CMD` and
+/// `$AREEV_DECIDE_TIMEOUT_MS` when the flag is absent. `Ok(None)` is the
+/// deterministic floor (nothing configured). Resolved once at startup so a
+/// bad spec or a missing provider key fails every verb loudly with its
+/// `DEC-Ennn` message, the way a broken `--embed-cmd` does — never silently
+/// at the first judgment.
+fn resolve_decider(
+    flags: &HashMap<String, String>,
+) -> Result<Option<std::sync::Arc<dyn areev_llm::DecisionBackend>>, String> {
+    let spec = run_stack::flag_or_env(flags, "decide", "AREEV_DECIDE");
+    let cmd = run_stack::flag_or_env(flags, "decide-cmd", "AREEV_DECIDE_CMD");
+    let deadline = match run_stack::flag_or_env(flags, "decide-timeout-ms", "AREEV_DECIDE_TIMEOUT_MS") {
+        None => areev_llm::decide::DEFAULT_DECIDE_TIMEOUT,
+        Some(ms) => match ms.parse::<u64>() {
+            Ok(n) if n > 0 => std::time::Duration::from_millis(n),
+            _ => {
+                return Err(areev_llm::DecideError::NotConfigured(format!(
+                    "--decide-timeout-ms (or $AREEV_DECIDE_TIMEOUT_MS) must be a positive whole \
+                     number of milliseconds, got {ms:?}"
+                ))
+                .to_string())
+            }
+        },
+    };
+    // A present-but-valueless flag (`--decide` with nothing after it) parses
+    // as "true"; name the mistake instead of resolving a provider "true".
+    for (key, v) in [("decide", &spec), ("decide-cmd", &cmd)] {
+        if flags.get(key).map(String::as_str) == Some("true") && v.is_some() {
+            return Err(areev_llm::DecideError::NotConfigured(format!("--{key} needs a value")).to_string());
+        }
+    }
+    areev_llm::resolve_chain(spec.as_deref(), cmd.as_deref(), Some(deadline)).map_err(|e| e.to_string())
+}
+
+/// Wrap the decision chain for egress: under an active egress
+/// anonymization policy (or the `--anonymize-egress` host floor) the `state`
+/// a remote backend receives is memory egress, and goes through the same
+/// pseudonymization as LLM egress (proposal §2, "Egress").
+fn decider_for_egress(
+    chain: std::sync::Arc<dyn areev_llm::DecisionBackend>,
+    egress: bool,
+) -> Result<std::sync::Arc<dyn areev_llm::DecisionBackend>, String> {
+    if !egress {
+        return Ok(chain);
+    }
+    // The same session-scoped policy `remember` wraps its LLM backend in.
+    // Fail-closed: a pseudonymization failure is DEC-E008, which stops the
+    // chain — the raw state never goes out instead.
+    let policy = areev_core::anon::AnonPolicy { scope: "session".into(), ..Default::default() };
+    Ok(std::sync::Arc::new(
+        areev_llm::PseudonymizingDecider::new(chain, policy).map_err(|e| e.to_string())?,
+    ))
+}
+
+/// Whether text leaving this handle for a decision backend is egress under
+/// an anonymization policy: the `--anonymize-egress` host floor, or any
+/// namespace declaring `egress` (a recall may span namespaces, so one
+/// declaring it is enough).
+fn store_egress_active(m: &Areev) -> bool {
+    m.anonymize_egress_floor() || m.anon_declared().iter().any(|(_, mode)| mode == "egress")
+}
+
+/// Every value of a flag that may repeat (`--option`, `--level`), in order.
+/// `parse_args` keeps only the last occurrence, so this rescans argv with the
+/// same rule: a value is the next token unless that token starts with `-`.
+fn flag_values(argv: &[String], name: &str) -> Vec<String> {
+    let long = format!("--{name}");
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < argv.len() {
+        if argv[i] == long {
+            if let Some(v) = argv.get(i + 1).filter(|v| !v.starts_with('-')) {
+                out.push(v.clone());
+                i += 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// A `--flag` value, or the contents of the file it names as `@path`.
+fn text_or_file(flag_name: &str, v: &str) -> Result<String, String> {
+    match v.strip_prefix('@') {
+        Some(path) => std::fs::read_to_string(path).map_err(|e| format!("--{flag_name} @{path}: {e}")),
+        None => Ok(v.to_string()),
+    }
+}
+
+/// The most a `Retry-After` is honoured by `areev decide`'s one retry. The
+/// header is the provider's to set; an interactive command should not hang
+/// for an hour because one said so.
+const DECIDE_RETRY_AFTER_CAP_SECS: u64 = 60;
+
+/// `areev decide` — ask the configured decision chain typed questions about a
+/// state and print `Decision::to_json()` (the wire response plus `provider`,
+/// `calibrated`, `latency_ms`). docs/decision-model-proposal.md §5.
+///
+/// `--state` is text or `@file`, parsed as JSON when it parses to a string,
+/// object or array, else used as-is. The questions come from exactly one of
+/// `--questions` (the wire `questions` object, or `@file`), or a shorthand
+/// that asks one question with id `q`: `--noul`, `--choice` with repeated
+/// `--option k=desc`, `--score` with repeated `--level desc` (lowest first).
+/// Interactive, so unlike the recall path it honours a `DEC-E007`
+/// `Retry-After` once (capped at [`DECIDE_RETRY_AFTER_CAP_SECS`]).
+fn run_decide(
+    decider: Option<std::sync::Arc<dyn areev_llm::DecisionBackend>>,
+    flags: &HashMap<String, String>,
+    argv: &[String],
+) -> Result<(), String> {
+    use areev_llm::decide::{questions_from_wire, Question};
+    use areev_llm::{DecideError, DecideRequest};
+    use std::collections::BTreeMap;
+
+    let decider = decider.ok_or_else(|| {
+        DecideError::NotConfigured(
+            "areev decide needs a backend — pass --decide <chain> and/or --decide-cmd <cmd> \
+             (or set $AREEV_DECIDE / $AREEV_DECIDE_CMD)"
+                .into(),
+        )
+        .to_string()
+    })?;
+    let decider = decider_for_egress(decider, flags.contains_key("anonymize-egress"))?;
+
+    let raw_state = text_or_file("state", &need(flags, "state")?)?;
+    let state = match serde_json::from_str::<serde_json::Value>(&raw_state) {
+        Ok(v) if v.is_string() || v.is_object() || v.is_array() => v,
+        _ => serde_json::Value::String(raw_state),
+    };
+
+    let forms: Vec<&str> = ["questions", "noul", "choice", "score"]
+        .into_iter()
+        .filter(|k| flags.contains_key(*k))
+        .collect();
+    if forms.len() != 1 {
+        return Err(format!(
+            "areev decide needs exactly one of --questions, --noul, --choice or --score (got {})",
+            if forms.is_empty() { "none".to_string() } else { forms.iter().map(|f| format!("--{f}")).collect::<Vec<_>>().join(", ") }
+        ));
+    }
+    let one = |q: Question| BTreeMap::from([("q".to_string(), q)]);
+    let questions: BTreeMap<String, Question> = match forms[0] {
+        "questions" => {
+            let raw = text_or_file("questions", &need(flags, "questions")?)?;
+            let v: serde_json::Value = serde_json::from_str(&raw)
+                .map_err(|e| DecideError::InvalidQuestion(format!("--questions is not JSON: {e}")).to_string())?;
+            questions_from_wire(&v).map_err(|e| e.to_string())?
+        }
+        "noul" => one(Question::noul(need(flags, "noul")?)),
+        "choice" => {
+            let mut options = Vec::new();
+            for o in flag_values(argv, "option") {
+                let (k, d) = o.split_once('=').ok_or_else(|| {
+                    format!("--option {o:?}: expected KEY=DESCRIPTION (e.g. --option billing=\"money owed\")")
+                })?;
+                let k = k.trim().to_string();
+                if options.iter().any(|(seen, _)| *seen == k) {
+                    return Err(DecideError::InvalidQuestion(format!("--option {k:?} is given twice")).to_string());
+                }
+                options.push((k, d.trim().to_string()));
+            }
+            one(Question::choice(need(flags, "choice")?, options))
+        }
+        "score" => one(Question::score(need(flags, "score")?, flag_values(argv, "level"))),
+        _ => unreachable!("forms holds only the four names above"),
+    };
+
+    let req = DecideRequest::new(state, questions);
+    let decision = match decider.decide(&req) {
+        Ok(d) => d,
+        Err(e) => {
+            // DEC-E007 directly, or a chain in which every entry failed and
+            // one was rate limited with a Retry-After: wait once, retry once.
+            let retry_after = match &e {
+                DecideError::ChainExhausted(errs) => errs.iter().filter_map(|(_, e)| e.retry_after_secs()).min(),
+                other => other.retry_after_secs(),
+            };
+            match retry_after {
+                Some(secs) => {
+                    let secs = secs.min(DECIDE_RETRY_AFTER_CAP_SECS);
+                    eprintln!("areev: {e} — retrying once in {secs}s");
+                    std::thread::sleep(std::time::Duration::from_secs(secs));
+                    decider.decide(&req).map_err(|e| e.to_string())?
+                }
+                None => return Err(e.to_string()),
+            }
+        }
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&decision.to_json()).map_err(|e| e.to_string())?
+    );
+    Ok(())
 }
 
 /// Bind the session principal from `--as` (validated against `--auth`'s
@@ -1695,6 +1931,18 @@ fn run() -> Result<(), String> {
         }
     }
 
+    // The decision-backend chain is host config (per-process, never in the
+    // file), resolved before any dispatch so a bad spec fails every verb.
+    let decider = resolve_decider(&flags)?;
+    // Same for the recall deadline: a malformed value fails every verb here,
+    // not only the ones that happen to recall.
+    run_stack::recall_deadline(&flags)?;
+    if cmd == "decide" {
+        // `decide` judges a state it is handed; it names no memory, so it
+        // dispatches before `resolve_db` like `auth` and `provision`.
+        return run_decide(decider, &flags, &argv[1..]);
+    }
+
     // `auth` manages the host-side credential map (`areev-auth.json`) and
     // never opens a memory. Dispatched BEFORE `resolve_db` on purpose: the
     // map holds no policy and names no file, so resolving a default memory
@@ -2128,6 +2376,33 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
         }
     }
 
+    // Optional reranker (host config, per-process). `--rerank-cmd 'CMD'`
+    // (or $AREEV_RERANK_CMD) installs a command reranker; otherwise a
+    // decision chain (--decide / --decide-cmd) is installed as one — scoring
+    // each candidate's relevance, reordering, never omitting. An explicit
+    // command wins over the chain. Either way it runs where a recall asks for
+    // rerank: `search` and `recall-hook` always do when one is installed,
+    // CAL on `WITH rerank`. A failure falls back to fusion order.
+    if let Some(cmd_line) = run_stack::flag_or_env(&flags, "rerank-cmd", "AREEV_RERANK_CMD") {
+        // Refused at startup when the program cannot be found (the MCP
+        // server's rule): a reranker that silently fails open on every
+        // recall would look like working software.
+        let program = cmd_line.split_whitespace().next().unwrap_or_default();
+        if !areev_mcp::program_resolves(program) {
+            return Err(format!(
+                "--rerank-cmd (or $AREEV_RERANK_CMD): '{program}' is not an executable file or a \
+                 command on PATH"
+            ));
+        }
+        let model = flag(&flags, "rerank-model");
+        let rr = areev_store::CommandRerank::new(&cmd_line, model.as_deref())
+            .map_err(|e| format!("--rerank-cmd: {e}"))?;
+        m.set_reranker(Box::new(rr));
+    } else if let Some(chain) = &decider {
+        let chain = decider_for_egress(chain.clone(), store_egress_active(&m))?;
+        m.set_reranker(Box::new(areev_store::DecisionRerank::new(chain)));
+    }
+
     // Grain attestation (docs/grain-attestation-plan.md). The author key is
     // named by variable like every other secret here; the trusted-authors
     // document is a host file. Both are handle-level host config, never
@@ -2322,13 +2597,26 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
             let q = need(&flags, "query")?;
             let subject = flag(&flags, "subject");
             let k: usize = flag(&flags, "k").and_then(|v| v.parse().ok()).unwrap_or(10);
-            let grains = m
-                .recall_hybrid(&ns, subject.as_deref(), None, Some(&q), k, None)
+            // Scored: `score` is the rank-normalized fusion score (top =
+            // 1.0), or the installed reranker's normalized score when one
+            // ran. The deadline fails open to what was gathered.
+            let tuning = areev_store::RecallTuning { rerank: m.has_reranker(), ..Default::default() };
+            let hits = m
+                .recall_hybrid_scored(
+                    &ns,
+                    subject.as_deref(),
+                    None,
+                    Some(&q),
+                    k,
+                    run_stack::recall_deadline(&flags)?,
+                    tuning,
+                )
                 .map_err(|e| e.to_string())?;
-            for g in grains {
+            for (g, score) in hits {
                 println!("{}", serde_json::json!({
                     "hash": g.hash.to_hex(),
                     "type": format!("{:?}", g.grain_type).to_lowercase(),
+                    "score": score,
                     "fields": g.fields,
                 }));
             }
@@ -2338,7 +2626,7 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
                 .first()
                 .ok_or_else(|| "usage: areev cal '<QUERY>' --db <file>".to_string())?
                 .clone();
-            let facade = AreevFacade::with_session(m, Some(ns), None);
+            let facade = run_stack::host_facade(m, Some(ns), &flags)?;
             report_meta_warnings(&facade);
             let facade = apply_principal(facade, &flags)?;
             let ex = CalExecutor::new(CalExecutorConfig {
@@ -2361,7 +2649,7 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
                     "usage: areev corpus --select '<READ CAL>' [--out FILE] [--recipient ID]"
                         .to_string()
                 })?;
-            let facade = AreevFacade::with_session(m, Some(ns), None);
+            let facade = run_stack::host_facade(m, Some(ns), &flags)?;
             report_meta_warnings(&facade);
             let facade = apply_principal(facade, &flags)?;
             let destination = flag(&flags, "out").unwrap_or_else(|| "stdout".to_string());
@@ -2376,7 +2664,7 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
             );
         }
         "tune" => {
-            let facade = AreevFacade::with_session(m, Some(ns), None);
+            let facade = run_stack::host_facade(m, Some(ns), &flags)?;
             report_meta_warnings(&facade);
             let facade = apply_principal(facade, &flags)?;
             return tune::run_tune(&facade, &flags);
@@ -2926,7 +3214,7 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
             if !flags.contains_key("mcp") {
                 return Err("only --mcp transport is available (areev serve --mcp)".to_string());
             }
-            let mut facade = areev_cal::AreevFacade::with_session(m, Some(ns), None);
+            let mut facade = run_stack::host_facade(m, Some(ns), &flags)?;
             report_meta_warnings(&facade);
             // Optional read-only mounts for cross-file ASSEMBLE:
             //   --mount alias=<path|DSN>[,alias=<path|DSN>...]
@@ -2951,7 +3239,10 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
                 facade.mount(&alias, store);
             }
             let facade = apply_principal(facade, &flags)?;
-            let mut server = areev_mcp::McpServer::new(facade, None)
+            // The recall deadline and reranker were installed above from
+            // the flags (each falling back to its variable), so the server
+            // must not re-read the environment over them.
+            let mut server = areev_mcp::McpServer::host_configured(facade, None)
                 .with_memory_path(&db)
                 .assembly_manifest_sample_rate(assembly_manifest_sample_rate(&flags)?);
             if flags.contains_key("no-destructive-ops") {
@@ -3161,24 +3452,47 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
             // queue (a compact, capped block) so the loop closes into the
             // agent's context instead of waiting to be polled.
             let with_loop = flag(&flags, "with-loop").is_some();
+            // A hook must stay snappy: with a reranker installed and no
+            // explicit deadline, recall is bounded at 1500 ms (fails open to
+            // fusion order past it).
+            let deadline = match run_stack::recall_deadline(&flags)? {
+                Some(d) => Some(d),
+                None if m.has_reranker() => Some(std::time::Duration::from_millis(1500)),
+                None => None,
+            };
+            let tuning = areev_store::RecallTuning { rerank: m.has_reranker(), ..Default::default() };
             let grains = m
-                .recall_hybrid(&ns, None, None, Some(&query), k, None)
+                .recall_hybrid_scored(&ns, None, None, Some(&query), k, deadline, tuning)
                 .map_err(|e| e.to_string())?;
             if grains.is_empty() && !with_loop {
                 return Ok(());
             }
             if !grains.is_empty() {
-                use areev_context::{ContextAssembler, FormatPolicy};
-                let mut policy = FormatPolicy::claude();
+                use areev_context::{ContextAssembler, DecidePolicy, FormatPolicy};
+                // The query is what the allocator's questions are about
+                // (proposal row A5): with a decision backend installed the
+                // assembler asks intent + per-grain disclosure under the same
+                // hook deadline, and falls open to the keyword/type-table
+                // rules on any failure. No decider → byte-identical to before.
+                let mut policy = FormatPolicy::claude().query_text(query.clone());
                 policy.token_budget =
                     Some(flag(&flags, "budget").and_then(|v| v.parse().ok()).unwrap_or(400));
+                let mut assembler = ContextAssembler::new();
+                if let Some(chain) = &decider {
+                    let chain = decider_for_egress(chain.clone(), store_egress_active(&m))?;
+                    let deadline_ms = deadline
+                        .or(Some(std::time::Duration::from_millis(1500)))
+                        .map(|d| d.as_millis() as u64);
+                    policy = policy.decide(DecidePolicy { deadline_ms, ..Default::default() });
+                    assembler = assembler.with_decider(chain);
+                }
                 let hits: Vec<areev_cal::store_types::SearchHit> = grains
                     .into_iter()
-                    .map(|grain| {
+                    .map(|(grain, score)| {
                         let hash = grain.hash;
                         areev_cal::store_types::SearchHit {
                             grain,
-                            score: 1.0,
+                            score: f64::from(score),
                             hash,
                             score_breakdown: None,
                             explanation: None,
@@ -3192,7 +3506,7 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
                         }
                     })
                     .collect();
-                let ctx = ContextAssembler::new().format(&hits, &policy);
+                let ctx = assembler.format(&hits, &policy);
                 if !ctx.text.trim().is_empty() {
                     println!("Relevant memory from Areev:\n{}", ctx.text);
                 }
@@ -3240,7 +3554,7 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
         }
         "repl" => {
             use std::io::{BufRead, Write as IoWrite};
-            let facade = areev_cal::AreevFacade::with_session(m, Some(ns.clone()), None);
+            let facade = run_stack::host_facade(m, Some(ns.clone()), &flags)?;
             report_meta_warnings(&facade);
             let facade = apply_principal(facade, &flags)?;
             let ex = CalExecutor::new(CalExecutorConfig {
@@ -3358,9 +3672,14 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
                 ));
             }
 
-            let facade = areev_cal::AreevFacade::with_session(m, Some(ns), None);
+            let facade = run_stack::host_facade(m, Some(ns), &flags)?;
             report_meta_warnings(&facade);
             let mut server = areev_server::UiServer::new(facade, db.clone());
+            // `GET /api/config` names the decision chain (label + calibrated
+            // only — the console never calls it).
+            if let Some(d) = &decider {
+                server = server.with_decider(d.describe(), d.calibrated());
+            }
             if let Some(path) = flag(&flags, "auth") {
                 let text = std::fs::read_to_string(&path)
                     .map_err(|e| format!("--auth {path}: {e}"))?;
@@ -4513,14 +4832,21 @@ fn run_run(
     let executor = run_stack::tool_executor(flags, egress.as_ref());
     let llm = run_stack::toolcall_llm(flags)?;
     let observer = run_stack::observer(flags)?;
+    // The decision chain is read before `m` moves into the facade: it needs
+    // the handle's egress declarations to decide whether to wrap.
+    let decider = run_stack::decider(flags, &m)?;
     let runner = Runner {
-        facade: Arc::new(AreevFacade::with_session(m, Some(ns.to_string()), None)),
+        facade: Arc::new(run_stack::host_facade(m, Some(ns.to_string()), flags)?),
         clock: Arc::new(SystemClock),
         executor,
         llm,
         observer,
         ns: ns.to_string(),
         principal: principal.clone(),
+    };
+    let runner = match decider {
+        Some(d) => runner.with_decider(d),
+        None => runner,
     };
     let opts = run_stack::run_options(flags);
 
@@ -5052,7 +5378,7 @@ fn run_eval(
     // `areev run` already makes: effect grains in the run's namespace,
     // evidence ABOUT the run in the harness.
     let case_ns = flag(flags, "case-ns").unwrap_or_else(|| EVAL_NS.to_string());
-    let facade = AreevFacade::with_session(m, Some(EVAL_NS.to_string()), None);
+    let facade = run_stack::host_facade(m, Some(EVAL_NS.to_string()), flags)?;
     let need = |key: &str, usage: &str| -> Result<String, String> {
         flag(flags, key).ok_or_else(|| format!("usage: {usage}"))
     };
@@ -6885,6 +7211,9 @@ fn run_loop(
     positional: &[String],
 ) -> Result<(), String> {
     let sub_cmd = positional.first().map(|s| s.as_str()).unwrap_or("status");
+    // Read before `m` moves into the substrate: whether text leaving this
+    // handle for a decision backend is egress under an anonymization policy.
+    let egress = store_egress_active(&m);
     let mut sub = AreevSubstrate::new(m, Some(ns.to_string()));
     // Host policy (--policy FILE or $AREEV_LOOP_POLICY) — the only place
     // auto-apply is granted. Absent → a closed default (nothing auto-applies).
@@ -6924,6 +7253,16 @@ fn run_loop(
         let g = areev_llm::resolve(&spec, base.as_deref(), key_env.as_deref())
             .map_err(|e| e.to_string())?;
         engine = engine.with_ground_llm(g);
+    }
+    // Optional decision backend (docs/decision-model-proposal.md rows E1–E3,
+    // docs/loop.md "Decision backend"): calibrated numbers for GROUND/VERIFY,
+    // the near-duplicate and contradiction sweeps, and tool-failure causes.
+    // Drafts only — the four gates are untouched and anything it judged never
+    // auto-applies. The same `--decide` chain every other verb uses, wrapped
+    // for egress under the same rule as the reranker.
+    if let Some(chain) = resolve_decider(flags)? {
+        let chain = decider_for_egress(chain, egress)?;
+        engine = engine.with_decider(Box::new(areev_loop_adapter::LoopDecider(chain)));
     }
     // Optional external analyzer: a subprocess that flags domain-specific issues
     // (trust class Command → advisory only, never auto-applies). Registered up

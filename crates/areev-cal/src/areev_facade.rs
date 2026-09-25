@@ -230,6 +230,15 @@ pub struct AreevFacade {
     /// ([`Self::bind_principal`]). Concurrent hosts bind once at open —
     /// rebinding under concurrent CAL execution would race sessions.
     authz: std::sync::RwLock<areev_core::authz::AuthzSet>,
+    /// Deadline threaded into every hybrid recall this facade makes (the
+    /// first pass, every `subject IN` leg and every `multi_hop` leg).
+    /// Host config — per-process, never persisted in the file. `None` = no
+    /// budget, the historical behaviour.
+    recall_deadline: Option<std::time::Duration>,
+    /// Decision backend for the context-assembly judgments (decision-backend
+    /// phase 3: ASSEMBLE's relevance-aware trim). Host config — per-process,
+    /// never persisted in the file. `None` = today's rules.
+    decider: Option<std::sync::Arc<dyn areev_core::decide::DecisionBackend>>,
 }
 
 impl AreevFacade {
@@ -249,6 +258,8 @@ impl AreevFacade {
             templates: Mutex::new(None),
             meta_warnings: Mutex::new(Vec::new()),
             authz: std::sync::RwLock::new(areev_core::authz::AuthzSet::owner("user:local")),
+            recall_deadline: None,
+            decider: None,
         }
     }
 
@@ -659,6 +670,49 @@ impl AreevFacade {
     /// is what makes single-statement ASSEMBLE span user + org files.
     pub fn mount(&mut self, alias: &str, store: Areev) {
         self.mounts.insert(alias.to_string(), Mutex::new(store));
+    }
+
+    /// Install a reranker on the primary store (Tier-2). It runs only when a
+    /// recall asks for it (`WITH rerank`), and when it answers, `SearchHit.score`
+    /// carries its scores min-max normalized into `[0, 1]` instead of the
+    /// fused score. Mounted memories keep their own (none by default). Host
+    /// config — never persisted in the file.
+    pub fn set_reranker(&mut self, r: Box<dyn areev_store::RerankBackend>) {
+        self.store.lock().unwrap_or_else(|p| p.into_inner()).set_reranker(r);
+    }
+
+    /// Deadline for every hybrid recall this facade makes — the first pass,
+    /// each `subject IN` leg and each `multi_hop` leg, each leg on its own
+    /// budget. Past it a leg fails open (partial results, never an error).
+    /// `None` restores the unbounded default.
+    pub fn set_recall_deadline(&mut self, d: Option<std::time::Duration>) {
+        self.recall_deadline = d;
+    }
+
+    /// The deadline installed by [`Self::set_recall_deadline`].
+    pub fn recall_deadline(&self) -> Option<std::time::Duration> {
+        self.recall_deadline
+    }
+
+    /// Install a decision backend (`docs/decision-model-proposal.md` §5
+    /// "Facade"). Multi-source `ASSEMBLE` then asks it, per source with a
+    /// query text (a `RECALL … ABOUT "…"`), how relevant each hit
+    /// is and trims lowest-relevance first; a calibrated backend may also
+    /// drop off-topic hits (announced as `CAL-W019`). Nothing else in the
+    /// facade calls it. Hosts wiring `areev-context` pass the same `Arc` to
+    /// `ContextAssembler::with_decider`. Host config — never persisted.
+    pub fn set_decider(&mut self, d: std::sync::Arc<dyn areev_core::decide::DecisionBackend>) {
+        self.decider = Some(d);
+    }
+
+    /// Remove the decision backend (back to today's rules).
+    pub fn clear_decider(&mut self) {
+        self.decider = None;
+    }
+
+    /// The backend installed by [`Self::set_decider`].
+    pub fn decider(&self) -> Option<std::sync::Arc<dyn areev_core::decide::DecisionBackend>> {
+        self.decider.clone()
     }
 
     pub fn into_inner(self) -> Areev {
@@ -1209,11 +1263,14 @@ impl AreevFacade {
         m.add_batch(&refs)
     }
 
-    fn hit(grain: DeserializedGrain) -> SearchHit {
+    /// `score` is the store's normalized relevance for a hybrid recall (top
+    /// fused hit = 1.0, or the normalized reranker score), and the structural
+    /// sentinel 1.0 for the unranked paths (recent / session / ordered scans).
+    fn hit((grain, score): (DeserializedGrain, f32)) -> SearchHit {
         let hash = grain.hash;
         SearchHit {
             grain,
-            score: 1.0,
+            score: score as f64,
             hash,
             score_breakdown: None,
             explanation: None,
@@ -1709,6 +1766,10 @@ impl CalStoreFacade for AreevFacade {
         let _ = self.with_store(|m| m.telemetry_note_budget(overflow));
     }
 
+    fn decider(&self) -> Option<std::sync::Arc<dyn areev_core::decide::DecisionBackend>> {
+        self.decider.clone()
+    }
+
     /// The egress payload flag (proposal §4.1): active when any namespace
     /// declares an egress policy or the host installed the floor. Carries
     /// mapping *ids* only — the mapping itself stays in process (D5).
@@ -2176,13 +2237,21 @@ impl CalStoreFacade for AreevFacade {
         // than a namespace page), and the post-filter finishes the job. Kept as
         // its own branch rather than nested inside the unanchored arm so the
         // recent-by-type match below stays exactly as it was.
+        //
+        // Every arm yields `(grain, score)`: the hybrid arms carry the store's
+        // normalized relevance (see `Areev::recall_hybrid_scored`), the
+        // unranked scans the structural sentinel 1.0 (`unscored`).
+        let unscored = |v: Vec<DeserializedGrain>| -> Vec<(DeserializedGrain, f32)> {
+            v.into_iter().map(|g| (g, 1.0)).collect()
+        };
+        let deadline = self.recall_deadline;
         let raw = if let Some(session) = params.session_id.as_deref().filter(|_| unanchored) {
             let n = k.saturating_mul(Self::RECALL_OVERFETCH);
-            if scoped {
+            unscored(if scoped {
                 m.recent_in_session_scoped(&ns_list, session, params.grain_type, n, !include_superseded)?
             } else {
                 m.recent_in_session(ns, session, params.grain_type, n, !include_superseded)?
-            }
+            })
         } else if let Some(order) = params.order_by.as_ref().and_then(|k| {
             // `created_at` is the one sort key the `grains` table carries as a
             // column, so it is the one ORDER BY that can be served from the
@@ -2202,13 +2271,13 @@ impl CalStoreFacade for AreevFacade {
             )
         }) {
             let n = k.min(1000);
-            if scoped {
+            unscored(if scoped {
                 m.recent_ordered_scoped(&ns_list, params.grain_type, n, !include_superseded, order)?
             } else {
                 m.recent_ordered(ns, params.grain_type, n, !include_superseded, order)?
-            }
+            })
         } else if unanchored {
-            match params.grain_type {
+            unscored(match params.grain_type {
                 // Heads only, unless `WITH superseded` asked otherwise. The
                 // anchored leg already serves heads; this one read the grains
                 // table straight through, so a superseded value came back
@@ -2244,7 +2313,7 @@ impl CalStoreFacade for AreevFacade {
                             .into(),
                     ))
                 }
-            }
+            })
         } else {
             // Translate the recall flags the executor set from `WITH` options
             // (diversity / rerank / query_expansion) into engine tuning. MMR is
@@ -2260,26 +2329,26 @@ impl CalStoreFacade for AreevFacade {
                 include_superseded,
             };
             let budget = k.saturating_mul(Self::RECALL_OVERFETCH);
-            match anchors.len() {
+            let hybrid = match anchors.len() {
                 // The common case, and the voice hot path: one anchored leg.
-                0 | 1 if !scoped => m.recall_hybrid_tuned(
+                0 | 1 if !scoped => m.recall_hybrid_scored(
                     ns,
                     anchors.first().map(String::as_str),
                     params.relation.as_deref(),
                     params.query.as_deref(),
                     budget,
-                    None,
+                    deadline,
                     tuning,
                 )?,
                 // Same leg over a resolved namespace set (`IN` / a prefix
                 // scope that expanded to more than one namespace).
-                0 | 1 => m.recall_hybrid_scoped(
+                0 | 1 => m.recall_hybrid_scoped_scored(
                     &ns_list,
                     anchors.first().map(String::as_str),
                     params.relation.as_deref(),
                     params.query.as_deref(),
                     budget,
-                    None,
+                    deadline,
                     tuning,
                 )?,
                 // `subject IN (a, b, …)`: one anchored leg per value, unioned.
@@ -2291,41 +2360,55 @@ impl CalStoreFacade for AreevFacade {
                     let mut seen: HashSet<Hash> = HashSet::new();
                     let mut union = Vec::new();
                     for anchor in &anchors {
+                        // Each leg's scores are normalized within that leg
+                        // (its own top = 1.0); the union is re-sorted by
+                        // recency below, so scores need not be monotone here.
                         let leg = if scoped {
-                            m.recall_hybrid_scoped(
+                            m.recall_hybrid_scoped_scored(
                                 &ns_list,
                                 Some(anchor.as_str()),
                                 params.relation.as_deref(),
                                 params.query.as_deref(),
                                 budget,
-                                None,
+                                deadline,
                                 tuning,
                             )?
                         } else {
-                            m.recall_hybrid_tuned(
+                            m.recall_hybrid_scored(
                                 ns,
                                 Some(anchor.as_str()),
                                 params.relation.as_deref(),
                                 params.query.as_deref(),
                                 budget,
-                                None,
+                                deadline,
                                 tuning,
                             )?
                         };
-                        for g in leg {
+                        for (g, score) in leg {
                             if seen.insert(g.hash) {
-                                union.push(g);
+                                union.push((g, score));
                             }
                         }
                     }
                     // Newest first, matching what a single anchored leg returns.
-                    union.sort_by(|a, b| {
+                    union.sort_by(|(a, _), (b, _)| {
                         b.get_i64("created_at")
                             .unwrap_or(0)
                             .cmp(&a.get_i64("created_at").unwrap_or(0))
                     });
                     union
                 }
+            };
+            // With no free-text query only the structural leg ran, and a
+            // single leg's normalized RRF is a function of position alone —
+            // it would dress "newest first" up as relevance. Those hits keep
+            // the structural sentinel 1.0, the contract the executor's
+            // `is_deterministic` (no ABOUT) rule is written against; a query
+            // leg makes the score a real relevance signal.
+            if params.query.is_none() {
+                unscored(hybrid.into_iter().map(|(g, _)| g).collect())
+            } else {
+                hybrid
             }
         };
 
@@ -2350,9 +2433,16 @@ impl CalStoreFacade for AreevFacade {
         //
         // Fail-open, like every other recall refinement: a hop that errors is
         // skipped rather than failing the query.
+        //
+        // Scores: an associative hit is capped at the weakest direct hit's
+        // score (`hop_ceiling`) — a forward hop contributes its own
+        // normalized score times the ceiling, a reverse (object-anchored,
+        // unranked) hit the ceiling itself — so a hop never reads as more
+        // relevant than the direct match it was reached from.
         let mut raw = raw;
         if let Some(hops) = params.multi_hop.filter(|h| *h > 0) {
-            let mut seen: HashSet<Hash> = raw.iter().map(|g| g.hash).collect();
+            let mut seen: HashSet<Hash> = raw.iter().map(|(g, _)| g.hash).collect();
+            let hop_ceiling = raw.iter().map(|(_, s)| *s).fold(1.0f32, f32::min);
             let mut visited: HashSet<String> = HashSet::new();
             let mut frontier: Vec<String> = Vec::new();
             let push_entities = |g: &DeserializedGrain,
@@ -2366,7 +2456,7 @@ impl CalStoreFacade for AreevFacade {
                     }
                 }
             };
-            for g in raw.iter().take(Self::MULTI_HOP_SEED) {
+            for (g, _) in raw.iter().take(Self::MULTI_HOP_SEED) {
                 push_entities(g, &mut visited, &mut frontier);
             }
 
@@ -2381,38 +2471,42 @@ impl CalStoreFacade for AreevFacade {
                     // not escape the namespaces the query (and its authz
                     // sweep) selected.
                     let forward = if scoped {
-                        m.recall_hybrid_scoped(
+                        m.recall_hybrid_scoped_scored(
                             &ns_list,
                             Some(&entity),
                             None,
                             params.query.as_deref(),
                             Self::MULTI_HOP_FANOUT,
-                            None,
+                            deadline,
                             areev_store::RecallTuning::default(),
                         )
                         .unwrap_or_default()
                     } else {
-                        m.recall_hybrid(
+                        m.recall_hybrid_scored(
                             ns,
                             Some(&entity),
                             None,
                             params.query.as_deref(),
                             Self::MULTI_HOP_FANOUT,
-                            None,
+                            deadline,
+                            areev_store::RecallTuning::default(),
                         )
                         .unwrap_or_default()
                     };
-                    let reverse: Vec<DeserializedGrain> = ns_list
+                    let reverse: Vec<(DeserializedGrain, f32)> = ns_list
                         .iter()
                         .flat_map(|hop_ns| {
                             m.grains_by_object(hop_ns, &entity, Self::MULTI_HOP_FANOUT)
                                 .unwrap_or_default()
                         })
+                        .map(|g| (g, 1.0))
                         .collect();
-                    for g in forward.into_iter().chain(reverse) {
+                    for (g, score) in forward.into_iter().chain(reverse) {
                         if seen.insert(g.hash) {
                             push_entities(&g, &mut visited, &mut next);
-                            raw.push(g);
+                            // Query-less hops keep the sentinel, as above.
+                            let s = if params.query.is_some() { score } else { 1.0 };
+                            raw.push((g, s * hop_ceiling));
                         }
                     }
                 }
@@ -2440,7 +2534,7 @@ impl CalStoreFacade for AreevFacade {
         let recency_weight = params.recency_weight.filter(|w| *w > 0.0);
         let mut hits: Vec<SearchHit> = raw
             .into_iter()
-            .filter(|g| {
+            .filter(|(g, _)| {
                 !scoped || ns_filter.contains(g.get_str("namespace").unwrap_or("shared"))
             })
             // `relation` reaches the anchored leg as a store-side predicate,
@@ -2448,14 +2542,14 @@ impl CalStoreFacade for AreevFacade {
             // filter was simply dropped and `RECALL facts WHERE relation = "x"`
             // answered with every grain of that type. Silently returning more
             // than was asked for is worse than returning nothing.
-            .filter(|g| {
+            .filter(|(g, _)| {
                 !unanchored
                     || match &params.relation {
                         Some(r) => g.get_str("relation") == Some(r.as_str()),
                         None => true,
                     }
             })
-            .filter(|g| match &params.object {
+            .filter(|(g, _)| match &params.object {
                 Some(o) => g.get_str("object") == Some(o.as_str()),
                 None => true,
             })
@@ -2465,22 +2559,22 @@ impl CalStoreFacade for AreevFacade {
             // tests. Before this, nothing in the engine read these three fields
             // at all: the executor set them and the query returned every row the
             // rest of the WHERE matched, with no error and no warning.
-            .filter(|g| set_contains(&params.subject_in, g.get_str("subject")))
-            .filter(|g| set_contains(&params.relation_in, g.get_str("relation")))
-            .filter(|g| set_contains(&params.object_in, g.get_str("object")))
+            .filter(|(g, _)| set_contains(&params.subject_in, g.get_str("subject")))
+            .filter(|(g, _)| set_contains(&params.relation_in, g.get_str("relation")))
+            .filter(|(g, _)| set_contains(&params.object_in, g.get_str("object")))
             // #318: the tag sets, applied here for exactly the reason the
             // three above are.
-            .filter(|g| tags_match(&params.tags, &params.exclude_tags, g))
-            .filter(|g| match params.grain_type {
+            .filter(|(g, _)| tags_match(&params.tags, &params.exclude_tags, g))
+            .filter(|(g, _)| match params.grain_type {
                 Some(gt) => g.grain_type == gt,
                 None => true,
             })
-            .filter(|g| {
+            .filter(|(g, _)| {
                 let ca = g.get_i64("created_at").unwrap_or(0);
                 params.time_start.is_none_or(|t| ca >= t)
                     && params.time_end.is_none_or(|t| ca <= t)
             })
-            .filter(|g| match params.confidence_threshold {
+            .filter(|(g, _)| match params.confidence_threshold {
                 Some(c) => g.get_f64("confidence").unwrap_or(0.0) >= c,
                 None => true,
             })
@@ -2503,9 +2597,14 @@ impl CalStoreFacade for AreevFacade {
         //     final = (1 - w) * relevance + w * freshness
         //     freshness = 1 / (1 + age_hours)
         //
-        // `relevance` comes from FUSION ORDER, not `hit.score`: every hit
-        // leaves `Self::hit` with score 1.0, so the ranking a recall carries is
-        // positional (RRF/structural order), not numeric. Rank i of n therefore
+        // `relevance` comes from RANK, not `hit.score`, and stays that way now
+        // that hybrid hits carry a real normalized score. Two reasons: the
+        // unranked paths (recent / session scans) still carry the 1.0
+        // sentinel, so a score-based blend would treat a whole recent page as
+        // equally relevant; and normalized RRF is compressed (adjacent ranks
+        // differ by ~1/60), so blending it against freshness would let
+        // freshness swamp relevance at a weight the saved queries in
+        // `queries.rs` were never tuned for. Rank i of n therefore
         // scores `1 - i/n` — order-preserving, and identical to the current
         // order when w = 0.
         //
@@ -3578,6 +3677,10 @@ impl crate::facade::CalStoreFacade for PrincipalSession<'_> {
     fn note_assembly_budget(&self, overflow: bool) {
         let _scope = self.enter();
         self.facade.note_assembly_budget(overflow)
+    }
+    fn decider(&self) -> Option<std::sync::Arc<dyn areev_core::decide::DecisionBackend>> {
+        // Host config, not data: the session judges with the facade's backend.
+        crate::facade::CalStoreFacade::decider(self.facade)
     }
     fn anon_egress_report(&self) -> Option<serde_json::Value> {
         let _scope = self.enter();

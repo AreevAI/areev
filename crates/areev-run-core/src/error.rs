@@ -140,6 +140,16 @@ pub enum RunError {
     /// Pausing an already-paused (or already-pause-requested) run is NOT this
     /// error; it is idempotent and answers with the standing request.
     NotPausable { run_id: String, why: String },
+    /// RUN-E030 — a plan binds a decision node (a Tool Definition whose
+    /// `executor_uri` is `areev://decide`) and this host has no decision
+    /// backend installed.
+    ///
+    /// Refused at run start (the V7 freeze) and on resume — before the lease
+    /// and before any grain is written — naming the node, so a run never
+    /// starts down a path whose branch point cannot be answered here. The
+    /// scheduler's OPTIONAL asks (the decision-guided fold, the tool-offer
+    /// narrowing) never raise this: without a backend they are not asked.
+    NoDecider { node: String },
 }
 
 /// The budget axes (§6.7). `Supersteps` is the global backstop too.
@@ -209,6 +219,7 @@ impl RunError {
             Self::ConcurrencyLimit { .. } => "RUN-E027",
             Self::TransferLimitInvalid { .. } => "RUN-E028",
             Self::NotPausable { .. } => "RUN-E029",
+            Self::NoDecider { .. } => "RUN-E030",
         }
     }
 }
@@ -362,6 +373,14 @@ impl fmt::Display for RunError {
                 "{code}: run '{run_id}' cannot be paused: {why}. A pause only \
                  applies to a run that can still advance"
             ),
+            Self::NoDecider { node } => write!(
+                f,
+                "{code}: node '{node}' is a decision node (executor_uri \
+                 \"areev://decide\") and this host has no decision backend — \
+                 configure one (`--decide <chain>` / `--decide-cmd`, \
+                 $AREEV_DECIDE, or `Runner::with_decider`), or bind the node to \
+                 an ordinary tool"
+            ),
         }
     }
 }
@@ -402,6 +421,7 @@ mod tests {
             RunError::ContextExceeded { node: "n".into(), tokens: 9, ceiling: Some(8) },
             RunError::TransferLimitInvalid { node: "n".into(), detail: "d".into() },
             RunError::NotPausable { run_id: "r".into(), why: "w".into() },
+            RunError::NoDecider { node: "n".into() },
         ]
     }
 
@@ -422,6 +442,6 @@ mod tests {
             );
             assert!(seen.insert(code), "duplicate code {code}");
         }
-        assert_eq!(seen.len(), 26);
+        assert_eq!(seen.len(), 27);
     }
 }

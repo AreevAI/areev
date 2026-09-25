@@ -220,7 +220,7 @@ pub fn extract_pipeline(
 /// adapters ask for `json_object`/schema decoding and rarely do, but unwrapping
 /// costs nothing and losing a whole extraction to three backticks is a bad
 /// trade.
-fn strip_fence(raw: &str) -> String {
+pub(crate) fn strip_fence(raw: &str) -> String {
     let t = raw.trim();
     let Some(rest) = t.strip_prefix("```") else {
         return t.to_string();

@@ -148,6 +148,7 @@ fn env<'a>(plan: &'a PlanGraph, execs: &'a [NodeExecutor], budgets: Budgets) -> 
         max_effects_per_attempt: areev_run_core::DEFAULT_MAX_EFFECTS_PER_ATTEMPT,
         llm_tool_result_chars: None,
         llm_context_tokens: None,
+        decide: None,
     }
 }
 
@@ -1166,4 +1167,566 @@ fn a_name_matching_neither_form_still_re_prompts_once_then_fails() {
     let text = correction.to_string();
     assert!(text.contains("receipt_prepare"), "the correction offers the model-facing name: {text}");
     assert!(!text.contains("receipt.prepare"), "a dotted choice is one the provider forbids: {text}");
+}
+
+// ---- decisions inside an abstract flow (C1, C2) ------------------------------
+//
+// The scheduler never calls a backend: it emits a `NodeExecutor::Decide`
+// effect and consumes the journaled answer like any other result. These
+// tests play the driver — scripted model turns, scripted decisions — and pin
+// what the scheduler does with each answer, and that every non-answer is the
+// deterministic path byte for byte.
+
+use std::cell::RefCell;
+use std::collections::VecDeque;
+
+fn llm_calls(calls: &[&str], tokens: u64) -> EffectOutcome {
+    EffectOutcome::Completed {
+        result: json!({
+            "text": Value::Null,
+            "tool_calls": calls
+                .iter()
+                .enumerate()
+                .map(|(k, name)| json!({"id": format!("c{tokens}_{k}"), "name": name, "arguments": {}}))
+                .collect::<Vec<_>>(),
+            "stop_reason": "tool_use",
+        }),
+        journal_bytes: 10,
+        input_tokens: tokens,
+        output_tokens: 5,
+        usd_micros: 0,
+    }
+}
+
+fn llm_text(text: &str, tokens: u64) -> EffectOutcome {
+    EffectOutcome::Completed {
+        result: json!({"text": text, "tool_calls": [], "stop_reason": "end_turn"}),
+        journal_bytes: 10,
+        input_tokens: tokens,
+        output_tokens: 5,
+        usd_micros: 0,
+    }
+}
+
+/// A decision as the driver journals it (`Decision::to_json()`).
+fn decision(answers: Value, calibrated: bool) -> EffectOutcome {
+    ok(json!({
+        "model": "jev-test",
+        "provider": "fake",
+        "calibrated": calibrated,
+        "latency_ms": 7,
+        "answers": answers,
+    }))
+}
+
+fn noul(p: f64) -> Value {
+    json!({"type": "noul", "noul": p})
+}
+
+/// Model turns in dispatch order; decisions by a caller closure; every tool
+/// result is 1000 characters of payload tagged with its effect_seq.
+fn scripted<'a>(
+    turns: Vec<EffectOutcome>,
+    decide: &'a dyn Fn(&Value) -> EffectOutcome,
+) -> impl Fn(&JournalKey, &Value) -> EffectOutcome + 'a {
+    let turns = RefCell::new(turns.into_iter().collect::<VecDeque<_>>());
+    move |key: &JournalKey, input: &Value| match key.kind {
+        EffectKind::Llm => turns.borrow_mut().pop_front().expect("model script exhausted"),
+        EffectKind::Tool if input.get("decide").is_some() => decide(&input["decide"]),
+        EffectKind::Tool => ok(json!({"seq": key.effect_seq, "blob": "x".repeat(1000)})),
+    }
+}
+
+fn no_decision(_: &Value) -> EffectOutcome {
+    panic!("no decision may be asked in this run")
+}
+
+fn decide_env<'a>(
+    plan: &'a PlanGraph,
+    execs: &'a [NodeExecutor],
+    descs: &'a BTreeMap<String, String>,
+    decide: Option<bool>,
+) -> StepEnv<'a> {
+    StepEnv {
+        llm_reserve_tokens: 100,
+        llm_context_tokens: Some(1_000),
+        decide: decide.map(|calibrated| DecideEnv {
+            calibrated,
+            plan_label: Some("triage inbound mail"),
+            tool_descriptions: descs,
+        }),
+        ..env(plan, execs, Budgets::default())
+    }
+}
+
+fn run_with(env: StepEnv<'_>, behavior: Behavior<'_>) -> SimResult {
+    Sim { env, behavior, seed: 1, clock: 1_000, respond: BTreeMap::new() }.run()
+}
+
+/// Every dispatch in command order: (key, executor, input).
+fn dispatches(cmds: &[Command]) -> Vec<(JournalKey, NodeExecutor, Value)> {
+    cmds.iter()
+        .filter_map(|c| match c {
+            Command::Dispatch { key, executor, input } => {
+                Some((key.clone(), executor.clone(), input.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn llm_input(cmds: &[Command], effect_seq: u32) -> Value {
+    dispatches(cmds)
+        .into_iter()
+        .find(|(k, _, _)| k.kind == EffectKind::Llm && k.effect_seq == effect_seq)
+        .map(|(_, _, i)| i)
+        .unwrap_or_else(|| panic!("no model turn at seq {effect_seq}"))
+}
+
+fn decide_dispatches(cmds: &[Command]) -> Vec<(JournalKey, Value)> {
+    dispatches(cmds)
+        .into_iter()
+        .filter(|(_, e, _)| matches!(e, NodeExecutor::Decide { .. }))
+        .map(|(k, e, i)| {
+            let NodeExecutor::Decide { tool_hash, tool_name } = e else { unreachable!() };
+            assert_eq!(tool_name, DECIDE_TOOL, "a scheduler ask journals as mg:decide");
+            assert!(tool_hash.is_empty(), "a scheduler ask binds no Definition");
+            (k, i)
+        })
+        .collect()
+}
+
+fn fold_records(r: &SimResult) -> Vec<FoldRecord> {
+    r.checkpoints.iter().flat_map(|c| c.folds.clone()).collect()
+}
+
+/// Five rounds of one `fetch` each; the fifth reports 950 prompt tokens, so
+/// the turn after it (seq 10) is due a fold (950 + 100 > 1000). The window
+/// is entries 1..7 — three rounds: (1,2), (3,4), (5,6).
+fn five_rounds_then(rest: Vec<EffectOutcome>) -> Vec<EffectOutcome> {
+    let mut turns = vec![
+        llm_calls(&["fetch"], 100),
+        llm_calls(&["fetch"], 200),
+        llm_calls(&["fetch"], 300),
+        llm_calls(&["fetch"], 400),
+        llm_calls(&["fetch"], 950),
+    ];
+    turns.extend(rest);
+    turns
+}
+
+fn one_agent() -> (PlanGraph, Vec<NodeExecutor>) {
+    let plan = PlanGraph::build(&wf(&["agent"])).unwrap();
+    (plan, abstract_exec(&["fetch"]))
+}
+
+#[test]
+fn a_calibrated_fold_decision_keeps_truncates_and_drops_and_journals_why() {
+    let (plan, execs) = one_agent();
+    let descs = BTreeMap::new();
+    let decide = |ask: &Value| {
+        assert_eq!(ask["purpose"], "fold");
+        assert_eq!((ask["from"].as_u64(), ask["to"].as_u64()), (Some(1), Some(7)));
+        // Every result is shown as a note, never its contents.
+        let shown = ask["state"]["transcript"].to_string();
+        assert!(!shown.contains("xxxx"), "tool results never reach the decision: {shown}");
+        assert!(shown.contains("ok, "), "{shown}");
+        let q = ask["questions"].as_object().unwrap();
+        let ids: Vec<&str> = q.keys().map(String::as_str).collect();
+        assert_eq!(
+            ids,
+            vec!["keep_call_2", "keep_call_4", "keep_call_6", "keep_result_2", "keep_result_4", "keep_result_6"]
+        );
+        decision(
+            json!({
+                "keep_call_2": noul(0.2), "keep_result_2": noul(0.9),   // verbatim
+                "keep_call_4": noul(0.8), "keep_result_4": noul(0.1),   // truncated
+                "keep_call_6": noul(0.1), "keep_result_6": noul(0.2),   // dropped
+            }),
+            true,
+        )
+    };
+    let behavior = scripted(five_rounds_then(vec![llm_text(r#"{"done": true}"#, 300)]), &decide);
+    let r = run_with(decide_env(&plan, &execs, &descs, Some(true)), &behavior);
+    assert_eq!(r.state.outcome(), Some(&RunOutcome::Completed));
+
+    // The decision was the only fold: no summarizer turn anywhere.
+    let asks = decide_dispatches(&r.commands);
+    assert_eq!(asks.len(), 1);
+    assert_eq!((asks[0].0.effect_seq, asks[0].0.kind), (10, EffectKind::Tool));
+    assert!(
+        dispatches(&r.commands).iter().all(|(_, _, i)| i.get("fold").is_none()),
+        "no summarizer fold ran"
+    );
+
+    // The turn after it saw the pruned transcript.
+    let next = llm_input(&r.commands, 11);
+    let msgs = next["messages"].as_array().unwrap();
+    assert_eq!(msgs.len(), 10, "11 entries, minus a dropped round of two, plus the note");
+    let note = msgs[1]["content"].as_str().unwrap();
+    assert!(note.starts_with("[Areev fold 1 (decision): of transcript entries 1..7"), "{note}");
+    assert!(note.contains("fake/jev-test") && note.contains("effect_seq 10"), "{note}");
+    // Entry 2 verbatim; entry 4 cut to 300 characters plus the note.
+    assert_eq!(msgs[3]["content"]["seq"], 1, "kept verbatim: {}", msgs[3]);
+    let cut = msgs[5]["content"].as_str().unwrap();
+    assert!(cut.contains("[truncated to 300 of"), "{cut}");
+    assert_eq!(cut.split('…').next().unwrap().chars().count(), 300);
+    // Round (5,6) is gone whole — its call AND its result.
+    let shown = next["messages"].to_string();
+    assert!(!shown.contains(r#""seq":5"#), "the dropped result left the prompt");
+    assert!(!shown.contains("c300_0"), "…and so did the call that issued it");
+    assert!(shown.contains("c400_0") && shown.contains(r#""seq":7"#), "the tail is untouched");
+
+    // The journaled record: indices, the version, and the provenance.
+    let recs = fold_records(&r);
+    assert_eq!(recs.len(), 1);
+    let rec = &recs[0];
+    assert_eq!((rec.kind.as_str(), rec.v, rec.seq, rec.from, rec.to), ("decide", 1, 10, 1, 7));
+    assert!(rec.applied && rec.reason.is_none());
+    assert_eq!((rec.kept.clone(), rec.truncated.clone(), rec.dropped.clone()), (vec![2], vec![4], vec![5, 6]));
+    assert_eq!(
+        rec.provenance,
+        Some(json!({"provider": "fake", "model": "jev-test", "calibrated": true, "latency_ms": 7}))
+    );
+    assert_eq!(r.state.folds, 1, "a decision fold is a fold in the run-outcome count");
+}
+
+#[test]
+fn a_dropped_result_never_leaves_its_round_behind() {
+    // Round 1 issues TWO calls. The decision drops one and keeps the other:
+    // the round cannot go whole, so the dropped result is truncated instead
+    // and its call stays. Round 2 is dropped whole: assistant entry included.
+    let (plan, execs) = one_agent();
+    let descs = BTreeMap::new();
+    let turns = vec![
+        llm_calls(&["fetch", "fetch"], 100), // seq0 → results at 1, 2 → entries 1 (a), 2, 3
+        llm_calls(&["fetch"], 200),          // seq3 → 4 (a), 5
+        llm_calls(&["fetch"], 300),          // seq5 → 6 (a), 7
+        llm_calls(&["fetch"], 400),          // seq7 → 8, 9
+        llm_calls(&["fetch"], 950),          // seq9 → 10, 11
+        llm_text(r#"{"done": true}"#, 300),
+    ];
+    let decide = |ask: &Value| {
+        // Window 1..8 (12 entries − 4): rounds (1;2,3), (4;5), (6;7).
+        assert_eq!((ask["from"].as_u64(), ask["to"].as_u64()), (Some(1), Some(8)));
+        decision(
+            json!({
+                "keep_call_2": noul(0.1), "keep_result_2": noul(0.1),  // drop …
+                "keep_call_3": noul(0.1), "keep_result_3": noul(0.9),  // … beside a keep
+                "keep_call_5": noul(0.1), "keep_result_5": noul(0.1),  // whole round
+                "keep_call_7": noul(0.1), "keep_result_7": noul(0.7),
+            }),
+            true,
+        )
+    };
+    let behavior = scripted(turns, &decide);
+    let r = run_with(decide_env(&plan, &execs, &descs, Some(true)), &behavior);
+    assert_eq!(r.state.outcome(), Some(&RunOutcome::Completed));
+    let rec = &fold_records(&r)[0];
+    assert_eq!(rec.truncated, vec![2], "downgraded from drop: its round survives");
+    assert_eq!(rec.kept, vec![3, 7]);
+    assert_eq!(rec.dropped, vec![4, 5], "a whole round, assistant entry included");
+
+    // No orphan in either direction: every call has its result, every result
+    // its call.
+    let seq = decide_dispatches(&r.commands)[0].0.effect_seq + 1;
+    let msgs = llm_input(&r.commands, seq)["messages"].as_array().unwrap().clone();
+    let mut open: Vec<String> = Vec::new();
+    for m in &msgs {
+        match m["role"].as_str().unwrap() {
+            "assistant" => {
+                assert!(open.is_empty(), "a call lost its result: {open:?}");
+                open = m["tool_calls"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|c| c["id"].as_str().unwrap().to_string())
+                    .collect();
+            }
+            "tool" => {
+                let id = m["tool_call_id"].as_str().unwrap();
+                let at = open.iter().position(|o| o == id).expect("a result with no call");
+                open.remove(at);
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn still_too_long_after_a_decision_falls_through_to_the_summarizer() {
+    let (plan, execs) = one_agent();
+    let descs = BTreeMap::new();
+    let asked = RefCell::new(0);
+    let decide = |_: &Value| {
+        *asked.borrow_mut() += 1;
+        decision(
+            json!({
+                "keep_call_2": noul(0.1), "keep_result_2": noul(0.1),
+                "keep_call_4": noul(0.9), "keep_result_4": noul(0.9),
+                "keep_call_6": noul(0.9), "keep_result_6": noul(0.9),
+            }),
+            true,
+        )
+    };
+    let behavior = scripted(
+        five_rounds_then(vec![
+            // seq 11: the pruned transcript is STILL over the ceiling.
+            llm_calls(&["fetch"], 980),
+            // seq 13: the summarizer — not a second decision.
+            llm_text("rounds 1-5 fetched", 500),
+            llm_text(r#"{"done": true}"#, 200),
+        ]),
+        &decide,
+    );
+    let r = run_with(decide_env(&plan, &execs, &descs, Some(true)), &behavior);
+    assert_eq!(r.state.outcome(), Some(&RunOutcome::Completed));
+    assert_eq!(*asked.borrow(), 1, "one decision per trigger; the next one is the summarizer's");
+    let fold = llm_input(&r.commands, 13);
+    assert!(fold.get("fold").is_some(), "the summarizer fold ran: {fold}");
+    assert_eq!(r.state.folds, 2, "the decision fold and the summarizer fold");
+}
+
+/// The summarizer-fold input the SAME script produces with no backend at all
+/// — the baseline every fail-open path must reproduce.
+fn baseline_fold_input() -> Value {
+    let (plan, execs) = one_agent();
+    let descs = BTreeMap::new();
+    let behavior = scripted(
+        five_rounds_then(vec![llm_text("summary", 500), llm_text(r#"{"done": true}"#, 200)]),
+        &no_decision,
+    );
+    let r = run_with(decide_env(&plan, &execs, &descs, None), &behavior);
+    assert_eq!(r.state.outcome(), Some(&RunOutcome::Completed));
+    llm_input(&r.commands, 10)
+}
+
+#[test]
+fn an_uncalibrated_answer_leaves_the_fold_unchanged() {
+    let (plan, execs) = one_agent();
+    let descs = BTreeMap::new();
+    let decide = |_: &Value| {
+        // Would drop everything — if only the backend were calibrated.
+        decision(
+            json!({
+                "keep_call_2": noul(0.0), "keep_result_2": noul(0.0),
+                "keep_call_4": noul(0.0), "keep_result_4": noul(0.0),
+                "keep_call_6": noul(0.0), "keep_result_6": noul(0.0),
+            }),
+            false,
+        )
+    };
+    let behavior = scripted(
+        five_rounds_then(vec![llm_text("summary", 500), llm_text(r#"{"done": true}"#, 200)]),
+        &decide,
+    );
+    let r = run_with(decide_env(&plan, &execs, &descs, Some(true)), &behavior);
+    assert_eq!(r.state.outcome(), Some(&RunOutcome::Completed));
+    let rec = &fold_records(&r)[0];
+    assert!(!rec.applied);
+    assert!(rec.reason.as_deref().unwrap().contains("uncalibrated"), "{rec:?}");
+    assert!(rec.dropped.is_empty() && rec.truncated.is_empty());
+    // The summarizer then folds EXACTLY what it would have with no backend.
+    let fold = llm_input(&r.commands, 11);
+    let base = baseline_fold_input();
+    assert_eq!(fold["messages"], base["messages"]);
+    assert_eq!((&fold["fold"]["from"], &fold["fold"]["to"]), (&base["fold"]["from"], &base["fold"]["to"]));
+}
+
+#[test]
+fn a_failed_decision_leaves_the_fold_unchanged() {
+    let (plan, execs) = one_agent();
+    let descs = BTreeMap::new();
+    let decide = |_: &Value| EffectOutcome::Failed {
+        cause: FailCause::Timeout,
+        detail: "DEC-E004: deadline".into(),
+        journal_bytes: 18,
+    };
+    let behavior = scripted(
+        five_rounds_then(vec![llm_text("summary", 500), llm_text(r#"{"done": true}"#, 200)]),
+        &decide,
+    );
+    let r = run_with(decide_env(&plan, &execs, &descs, Some(true)), &behavior);
+    assert_eq!(r.state.outcome(), Some(&RunOutcome::Completed), "a decision failure never fails the node");
+    let rec = &fold_records(&r)[0];
+    assert!(!rec.applied && rec.provenance.is_none());
+    assert!(rec.reason.as_deref().unwrap().contains("DEC-E004"), "{rec:?}");
+    let fold = llm_input(&r.commands, 11);
+    assert_eq!(fold["messages"], baseline_fold_input()["messages"]);
+}
+
+#[test]
+fn a_malformed_decision_leaves_the_fold_unchanged() {
+    let (plan, execs) = one_agent();
+    let descs = BTreeMap::new();
+    // Calibrated, but one question unanswered.
+    let decide =
+        |_: &Value| decision(json!({"keep_call_2": noul(0.0), "keep_result_2": noul(0.0)}), true);
+    let behavior = scripted(
+        five_rounds_then(vec![llm_text("summary", 500), llm_text(r#"{"done": true}"#, 200)]),
+        &decide,
+    );
+    let r = run_with(decide_env(&plan, &execs, &descs, Some(true)), &behavior);
+    let rec = &fold_records(&r)[0];
+    assert!(!rec.applied && rec.reason.as_deref().unwrap().contains("keep_call_4"), "{rec:?}");
+    assert_eq!(llm_input(&r.commands, 11)["messages"], baseline_fold_input()["messages"]);
+}
+
+/// Rule 2 at the source: with an uncalibrated backend pinned, nothing is
+/// asked at all — every command, every checkpoint byte, is the no-backend
+/// run's.
+#[test]
+fn an_uncalibrated_backend_is_never_asked_and_changes_nothing() {
+    let (plan, execs) = one_agent();
+    let descs = BTreeMap::new();
+    let script =
+        || five_rounds_then(vec![llm_text("summary", 500), llm_text(r#"{"done": true}"#, 200)]);
+    let with = scripted(script(), &no_decision);
+    let without = scripted(script(), &no_decision);
+    let a = run_with(decide_env(&plan, &execs, &descs, Some(false)), &with);
+    let b = run_with(decide_env(&plan, &execs, &descs, None), &without);
+    assert_eq!(
+        serde_json::to_string(&a.commands).unwrap(),
+        serde_json::to_string(&b.commands).unwrap()
+    );
+}
+
+// ---- C1: narrowing the offer ------------------------------------------------
+
+fn twelve_tools() -> Vec<String> {
+    (0..12).map(|i| format!("t{i:02}")).collect()
+}
+
+fn offer_probabilities() -> Value {
+    json!({
+        "t00": 0.30, "t01": 0.20, "t02": 0.10, "t03": 0.08, "t04": 0.07, "t05": 0.06,
+        "t06": 0.055, "t07": 0.052,
+        "t08": 0.051, // ninth — kept by the ≥ 0.05 rule, not the top 8
+        "t09": 0.01, "t10": 0.01, "t11": 0.002,
+    })
+}
+
+#[test]
+fn more_than_eight_tools_narrow_to_the_top_eight_plus_anything_at_five_percent() {
+    let names = twelve_tools();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let plan = PlanGraph::build(&wf(&["agent"])).unwrap();
+    let execs = abstract_exec(&refs);
+    let descs: BTreeMap<String, String> =
+        names.iter().map(|n| (n.clone(), format!("does {n}"))).collect();
+    let decide = |ask: &Value| {
+        assert_eq!(ask["purpose"], "offer");
+        assert_eq!(ask["state"]["plan"], "triage inbound mail");
+        assert_eq!(ask["state"]["input"], json!({"seed_input": true}));
+        assert_eq!(ask["questions"]["tool"]["criteria"]["t03"], "does t03");
+        ok(json!({
+            "model": "jev-test", "provider": "fake", "calibrated": true, "latency_ms": 3,
+            "answers": {"tool": {"type": "choice", "choice": "t00",
+                                 "probabilities": offer_probabilities(), "confidence": 0.2}},
+        }))
+    };
+    let behavior = scripted(
+        vec![
+            // The model calls a PINNED tool it was not offered: unknown to it.
+            llm_calls(&["t10"], 100),
+            llm_text(r#"{"done": true}"#, 100),
+        ],
+        &decide,
+    );
+    let r = run_with(decide_env(&plan, &execs, &descs, Some(true)), &behavior);
+    assert_eq!(r.state.outcome(), Some(&RunOutcome::Completed));
+
+    let asks = decide_dispatches(&r.commands);
+    assert_eq!(asks.len(), 1);
+    assert_eq!(asks[0].0.effect_seq, 0, "asked before the first turn");
+    let turn = llm_input(&r.commands, 1);
+    let offered: Vec<&str> =
+        turn["offer"]["tools"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+    assert_eq!(offered, vec!["t00", "t01", "t02", "t03", "t04", "t05", "t06", "t07", "t08"]);
+    assert_eq!(turn["offer"]["seq"], 0);
+    assert_eq!((&turn["offer"]["provider"], &turn["offer"]["calibrated"]), (&json!("fake"), &json!(true)));
+    // Narrowing only removes: t10 is pinned, but the model was never shown
+    // it, so calling it is the unknown-tool re-prompt — and the correction
+    // lists only what WAS offered.
+    assert!(dispatched_tools(&r.commands).is_empty(), "t10 never dispatched");
+    let reprompt = llm_input(&r.commands, 2)["messages"].to_string();
+    assert!(reprompt.contains("Unknown tool(s)") && !reprompt.contains("t11"), "{reprompt}");
+    assert_eq!(llm_input(&r.commands, 2)["offer"], turn["offer"], "every turn carries the offer");
+}
+
+#[test]
+fn eight_or_fewer_tools_are_never_narrowed() {
+    let names: Vec<String> = (0..8).map(|i| format!("t{i:02}")).collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let plan = PlanGraph::build(&wf(&["agent"])).unwrap();
+    let execs = abstract_exec(&refs);
+    let descs = BTreeMap::new();
+    let script = || vec![llm_text(r#"{"done": true}"#, 100)];
+    let with = scripted(script(), &no_decision);
+    let without = scripted(script(), &no_decision);
+    let a = run_with(decide_env(&plan, &execs, &descs, Some(true)), &with);
+    let b = run_with(decide_env(&plan, &execs, &descs, None), &without);
+    assert_eq!(
+        serde_json::to_string(&a.commands).unwrap(),
+        serde_json::to_string(&b.commands).unwrap(),
+        "no ask, and a byte-identical run"
+    );
+}
+
+#[test]
+fn an_uncalibrated_or_failed_narrowing_offers_everything() {
+    let names = twelve_tools();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let plan = PlanGraph::build(&wf(&["agent"])).unwrap();
+    let execs = abstract_exec(&refs);
+    let descs = BTreeMap::new();
+    let uncalibrated = |_: &Value| {
+        ok(json!({
+            "model": "m", "provider": "llm", "calibrated": false, "latency_ms": 1,
+            "answers": {"tool": {"type": "choice", "choice": "t00",
+                                 "probabilities": offer_probabilities(), "confidence": 0.2}},
+        }))
+    };
+    let failed = |_: &Value| EffectOutcome::Failed {
+        cause: FailCause::ExecutorError,
+        detail: "DEC-E005: chain exhausted".into(),
+        journal_bytes: 10,
+    };
+    let partial = |_: &Value| {
+        ok(json!({
+            "model": "m", "provider": "fake", "calibrated": true, "latency_ms": 1,
+            "answers": {"tool": {"type": "choice", "choice": "t00", "probabilities": {"t00": 1.0}}},
+        }))
+    };
+    for decide in [&uncalibrated as &dyn Fn(&Value) -> EffectOutcome, &failed, &partial] {
+        let behavior = scripted(vec![llm_text(r#"{"done": true}"#, 100)], decide);
+        let r = run_with(decide_env(&plan, &execs, &descs, Some(true)), &behavior);
+        assert_eq!(r.state.outcome(), Some(&RunOutcome::Completed));
+        assert_eq!(decide_dispatches(&r.commands).len(), 1);
+        let turn = llm_input(&r.commands, 1);
+        assert!(turn.get("offer").is_none(), "the full pinned set: {turn}");
+    }
+}
+
+/// A decision node (C3) dispatches like a Host tool — intent, then dispatch —
+/// and its answer lands in state, where an edge branches on it in the frozen
+/// grammar.
+#[test]
+fn a_decision_node_dispatches_like_a_host_tool_and_edges_branch_on_its_answer() {
+    let w = wf(&["triage", "escalate", "ignore"])
+        .cond_edge("triage", "escalate", r#"triage.answers.route.choice == "escalate""#)
+        .cond_edge("triage", "ignore", r#"triage.answers.route.choice == "ignore""#);
+    let plan = PlanGraph::build(&w).unwrap();
+    let mut execs = host_execs(&plan);
+    execs[0] = NodeExecutor::Decide { tool_hash: "def".into(), tool_name: "triage".into() };
+    let behavior = |key: &JournalKey, _: &Value| match key.node.as_str() {
+        "triage" => ok(json!({"triage": {"answers": {"route": {"type": "choice", "choice": "escalate"}}}})),
+        n => ok(json!({n: true})),
+    };
+    let r = run_with(env(&plan, &execs, Budgets::default()), &behavior);
+    assert_eq!(r.state.outcome(), Some(&RunOutcome::Completed));
+    assert_eq!(r.state.context["escalate"], json!(true));
+    assert!(r.state.context.get("ignore").is_none(), "the other branch never ran");
+    let first = &dispatches(&r.commands)[0];
+    assert!(matches!(first.1, NodeExecutor::Decide { .. }) && first.0.kind == EffectKind::Tool);
 }

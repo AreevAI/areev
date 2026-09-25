@@ -760,6 +760,170 @@ fn take_facade(slot: &FacadeSlot) -> napi::Result<std::sync::Arc<AreevFacade>> {
         })
 }
 
+/// `setDecider`'s resolution (docs/decision-model-proposal.md §5) — the same
+/// rule as Python's `set_decider`. With neither `spec` nor `cmd`, the
+/// environment names the chain (`AREEV_DECIDE`, `AREEV_DECIDE_CMD`,
+/// `AREEV_DECIDE_TIMEOUT_MS`); an explicit `timeoutMs` still wins over the env
+/// deadline. `Ok(None)` = nothing configured.
+fn resolve_decider(
+    spec: Option<&str>,
+    cmd: Option<&str>,
+    timeout_ms: Option<u64>,
+) -> Result<Option<std::sync::Arc<dyn areev_llm::DecisionBackend>>, areev_llm::DecideError> {
+    if spec.is_none() && cmd.is_none() {
+        return match timeout_ms {
+            None => areev_llm::env_chain(),
+            Some(ms) => {
+                let env = |k: &str| std::env::var(k).ok();
+                areev_llm::resolve_chain(
+                    env("AREEV_DECIDE").as_deref(),
+                    env("AREEV_DECIDE_CMD").as_deref(),
+                    Some(std::time::Duration::from_millis(ms)),
+                )
+            }
+        };
+    }
+    let deadline = timeout_ms
+        .map(std::time::Duration::from_millis)
+        .unwrap_or(areev_llm::decide::DEFAULT_DECIDE_TIMEOUT);
+    areev_llm::resolve_chain(spec, cmd, Some(deadline))
+}
+
+/// Whether `decide` must pseudonymize `state` before it leaves the process
+/// (docs/decision-model-proposal.md §2 "Egress"): the handle's namespace is
+/// under an egress policy (declared, or forced by the host floor), or any
+/// namespace in the file declares one — `state` can carry text read from
+/// any of them. Fails SAFE: a principal that may not read the policy, or a
+/// poisoned gate, counts as egress-on, never as off.
+fn decide_egress_active(facade: &AreevFacade, ns: &str) -> bool {
+    let active = facade.store_as(areev_core::authz::Verb::Read, ns, |m| {
+        if m.anon_declared().iter().any(|(_, mode)| mode == "egress") {
+            return Ok(true);
+        }
+        m.anon_active_mode(ns).map(|mode| mode.as_deref() == Some("egress"))
+    });
+    !matches!(active, Ok(Ok(false)))
+}
+
+/// The installed chain as `decide` must call it: wrapped in
+/// [`areev_llm::PseudonymizingDecider`] (session scope — the decorator is
+/// store-free, exactly as the CLI wraps its LLM backend for `remember`) when
+/// egress anonymization is active, else as installed. The wrap failing
+/// fails the call; raw state never goes out as a fallback.
+fn egress_decider(
+    facade: &AreevFacade,
+    ns: &str,
+    chain: std::sync::Arc<dyn areev_llm::DecisionBackend>,
+) -> Result<std::sync::Arc<dyn areev_llm::DecisionBackend>, AreevError> {
+    if !decide_egress_active(facade, ns) {
+        return Ok(chain);
+    }
+    let policy = areev_core::anon::AnonPolicy { scope: "session".into(), ..Default::default() };
+    Ok(std::sync::Arc::new(areev_llm::PseudonymizingDecider::new(chain, policy)?))
+}
+
+/// The decision-backend host config one handle carries (never persisted in
+/// the file): the chain `set_decider` installed, and which reranker the
+/// bindings put on the store. An explicit command reranker
+/// (`set_reranker_command`) always wins over the decision reranker.
+#[derive(Default)]
+struct HostDecide {
+    chain: Option<std::sync::Arc<dyn areev_llm::DecisionBackend>>,
+    /// `set_reranker_command` installed an explicit reranker.
+    command_rerank: bool,
+    /// A [`areev_store::DecisionRerank`] over `chain` is installed.
+    decision_rerank: bool,
+}
+
+/// Stand-in for "the decision chain was cleared": the store has no reranker
+/// uninstall, and a backend that always errs makes every reranked recall fail
+/// open to fusion order AND fusion scores — exactly the uninstalled result.
+struct NoRerank;
+
+impl areev_store::RerankBackend for NoRerank {
+    fn rerank(&self, _query: &str, _docs: &[&str]) -> areev_core::error::Result<Vec<f32>> {
+        Err(AreevError::Validation("no reranker installed".into()))
+    }
+    fn model(&self) -> &str {
+        "none"
+    }
+}
+
+/// Put the store's reranker in line with `st`: with a chain and no command
+/// reranker, a [`areev_store::DecisionRerank`] over the chain — wrapped in
+/// [`areev_llm::PseudonymizingDecider`] when egress anonymization is active,
+/// since the candidates' grain text is its `state`; with the chain cleared,
+/// [`NoRerank`] in place of a decision reranker installed earlier. Rebuilt
+/// (not patched) each time, so a policy change re-evaluates the wrap. Needs
+/// `admin` on `"*"`, like every reranker install.
+fn sync_decision_reranker(facade: &AreevFacade, ns: &str, st: &mut HostDecide) -> Result<(), AreevError> {
+    if st.command_rerank {
+        return Ok(());
+    }
+    match &st.chain {
+        Some(chain) => {
+            let backend = egress_decider(facade, ns, chain.clone())?;
+            facade.store_as(areev_core::authz::Verb::Admin, "*", |m| {
+                m.set_reranker(Box::new(areev_store::DecisionRerank::new(backend)))
+            })?;
+            st.decision_rerank = true;
+        }
+        None if st.decision_rerank => {
+            facade.store_as(areev_core::authz::Verb::Admin, "*", |m| m.set_reranker(Box::new(NoRerank)))?;
+            st.decision_rerank = false;
+        }
+        None => {}
+    }
+    Ok(())
+}
+
+/// Re-evaluate the decision reranker's egress wrap after an anonymization
+/// change (a policy set/cleared, the floor moved): the reranker sends grain
+/// text, so turning egress on must not leave an unwrapped backend installed.
+/// A no-op unless `setDecider` installed one.
+fn resync_decision_reranker(
+    facade: &AreevFacade,
+    ns: &str,
+    decide: &std::sync::Mutex<HostDecide>,
+) -> Result<(), AreevError> {
+    let mut st = decide.lock().unwrap_or_else(|p| p.into_inner());
+    if st.decision_rerank && st.chain.is_some() {
+        sync_decision_reranker(facade, ns, &mut st)?;
+    }
+    Ok(())
+}
+
+/// Milliseconds as a recall deadline: `None` or `0` is unbounded (the
+/// `AREEV_RECALL_DEADLINE_MS` rule).
+fn recall_deadline_from_ms(ms: Option<u64>) -> Option<std::time::Duration> {
+    ms.filter(|ms| *ms > 0).map(std::time::Duration::from_millis)
+}
+
+/// One scored hybrid-recall row — the MCP `areev_search` shape
+/// `{hash, type, fields, score}`.
+fn scored_row(g: &areev_core::format::deserialize::DeserializedGrain, score: f32) -> serde_json::Value {
+    json!({
+        "hash": g.hash.to_hex(),
+        "type": format!("{:?}", g.grain_type).to_lowercase(),
+        "fields": g.fields,
+        "score": score,
+    })
+}
+
+/// `decide`'s request: `state` is JSON when it parses to a string, object or
+/// array, else the text itself; `questions` is the wire `questions` object.
+fn decide_request(state: &str, questions: &str) -> Result<areev_llm::DecideRequest, areev_llm::DecideError> {
+    let state = match serde_json::from_str::<serde_json::Value>(state) {
+        Ok(v) if v.is_string() || v.is_object() || v.is_array() => v,
+        _ => serde_json::Value::String(state.to_string()),
+    };
+    let questions: serde_json::Value = serde_json::from_str(questions).map_err(|e| {
+        areev_llm::DecideError::InvalidQuestion(format!("`questions` is not JSON: {e}"))
+    })?;
+    let questions = areev_llm::decide::questions_from_wire(&questions)?;
+    Ok(areev_llm::DecideRequest::new(state, questions))
+}
+
 /// Verb check for the binding methods that reach the store directly instead
 /// of through a gated `cal_*` facade method. `authFile`/`principal` is
 /// documented to fail closed (CAL 1.3 §9), so a sandboxed handle must not be
@@ -836,6 +1000,11 @@ pub struct Areev {
     /// could never hit. Hoisting the executor onto the handle is what makes
     /// the plan cache reachable from JavaScript at all.
     executor: std::sync::Arc<CalExecutor>,
+    /// The decision backend chain `setDecider` installed, and which reranker
+    /// the binding put on the store — host config beside the embedder, never
+    /// persisted in the file. Shared (like the facade slot) so a queued
+    /// `decide` job can hold the chain independently of the JS object.
+    decide: std::sync::Arc<std::sync::Mutex<HostDecide>>,
 }
 
 #[napi]
@@ -1002,6 +1171,7 @@ impl Areev {
             ns,
             actor,
             executor: std::sync::Arc::new(CalExecutor::new(CalExecutorConfig::default())),
+            decide: std::sync::Arc::new(std::sync::Mutex::new(HostDecide::default())),
         })
     }
 
@@ -1065,6 +1235,133 @@ impl Areev {
                 .map_err(err)?;
             Ok(())
         })
+    }
+
+    /// Install a decision (System One) backend chain
+    /// (docs/decision-model-proposal.md) — the JS mirror of Python's
+    /// `set_decider`. `spec` is the ordered, comma-separated provider list
+    /// (`typesafe:jev-latest,llm:ollama:…`); `cmd` a command backend appended
+    /// last (stdin: wire request JSON, stdout: wire response JSON; no shell);
+    /// `timeoutMs` the per-call deadline (default 2000). With neither `spec`
+    /// nor `cmd`, the chain comes from `AREEV_DECIDE` / `AREEV_DECIDE_CMD` /
+    /// `AREEV_DECIDE_TIMEOUT_MS`; when nothing is configured anywhere (or
+    /// `spec` is `''`), the decider is cleared. A bad spec or a missing
+    /// provider key throws (`DEC-E001`). Synchronous: resolving a chain does
+    /// no I/O. Needs `admin` on `"*"` — a command backend is a subprocess.
+    /// Host config — never persisted in the file.
+    ///
+    /// Installing a chain also installs it as the recall reranker
+    /// (`DecisionRerank`: `search()` reorders by it and each row's `score` is
+    /// its answer) — unless `setRerankerCommand` installed a command
+    /// reranker, which always wins. Clearing the chain uninstalls the
+    /// decision reranker (recall falls back to fusion order). Under egress
+    /// anonymization the backend sees pseudonymized state, both here and in
+    /// `decide`.
+    #[napi]
+    pub fn set_decider(
+        &self,
+        spec: Option<String>,
+        cmd: Option<String>,
+        timeout_ms: Option<u32>,
+    ) -> napi::Result<()> {
+        let facade = take_facade(&self.facade)?;
+        check_verb(&facade, areev_core::authz::Verb::Admin, "*")?;
+        let chain = resolve_decider(spec.as_deref(), cmd.as_deref(), timeout_ms.map(u64::from))
+            .map_err(err)?;
+        let mut st = self.decide.lock().unwrap_or_else(|p| p.into_inner());
+        st.chain = chain;
+        sync_decision_reranker(&facade, &self.ns, &mut st).map_err(err)
+    }
+
+    /// Ask the installed decision backend typed questions about `state` —
+    /// the JS mirror of Python's `decide`. `state` is text, or a JSON
+    /// string/object/array document; `questions` is the wire `questions`
+    /// object as JSON. Resolves to the wire response plus provenance as JSON:
+    /// `{model, answers, usage?, provider, calibrated, latency_ms}`. No
+    /// decider → rejects with `DEC-E001`; every failure names its `DEC-Ennn`
+    /// code. A promise: a remote backend is a network round trip.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn decide(
+        &self,
+        state: String,
+        questions: String,
+    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        let decide = self.decide.clone();
+        let ns = self.ns.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let decider = decide.lock().unwrap_or_else(|p| p.into_inner()).chain.clone();
+            let decider = decider.ok_or_else(|| {
+                err(areev_llm::DecideError::NotConfigured(
+                    "no decision backend: call setDecider(...) or set AREEV_DECIDE / AREEV_DECIDE_CMD \
+                     and call setDecider()"
+                        .into(),
+                ))
+            })?;
+            let decider = egress_decider(&facade, &ns, decider).map_err(err)?;
+            let req = decide_request(&state, &questions).map_err(err)?;
+            let decision = decider.decide(&req).map_err(err)?;
+            Ok(decision.to_json().to_string())
+        })
+    }
+
+    /// Bound every hybrid recall this handle makes — `search()` and CAL's
+    /// free-text `RECALL` — to `ms` milliseconds (the JS mirror of Python's
+    /// `set_recall_deadline_ms`); past it a leg fails open (partial results,
+    /// never an error) and a reranker that has not started is skipped.
+    /// `null` or `0` restores the unbounded default. Host config, never
+    /// persisted. Set it while no call is in flight on this handle (a
+    /// running call shares the facade), else it throws.
+    #[napi]
+    pub fn set_recall_deadline_ms(&self, ms: Option<u32>) -> napi::Result<()> {
+        let mut slot = self.facade.lock().unwrap_or_else(|e| e.into_inner());
+        let arc = slot.as_mut().ok_or_else(|| {
+            err(AreevError::Validation(
+                "this handle is closed — open a new Areev for further calls".into(),
+            ))
+        })?;
+        let facade = std::sync::Arc::get_mut(arc).ok_or_else(|| {
+            err("setRecallDeadlineMs: this handle is shared with a call still in flight — \
+                 await it (or set the deadline before starting it)")
+        })?;
+        facade.set_recall_deadline(recall_deadline_from_ms(ms.map(u64::from)));
+        Ok(())
+    }
+
+    /// The recall deadline `setRecallDeadlineMs` installed, in ms (`null` =
+    /// unbounded).
+    #[napi]
+    pub fn recall_deadline_ms(&self) -> napi::Result<Option<u32>> {
+        let facade = take_facade(&self.facade)?;
+        Ok(facade
+            .recall_deadline()
+            .map(|d| u32::try_from(d.as_millis()).unwrap_or(u32::MAX)))
+    }
+
+    /// Install a command reranker — the JS mirror of Python's
+    /// `set_reranker_command` (same contract as the CLI's `--rerank-cmd` and
+    /// MCP's `AREEV_RERANK_CMD`): the command gets `{"query": "...", "docs":
+    /// ["...", ...]}` on stdin and prints a JSON array of `docs.length`
+    /// numbers, higher = more relevant. No shell; not probed (synchronous) —
+    /// a broken command fails open to fusion order at recall time.
+    /// `search()` then reorders by it, each row's `score` being its
+    /// min-max-normalized answer (top = 1.0); CAL uses it under `WITH
+    /// rerank`. `model` is the observability label. An explicit command
+    /// reranker wins over the decision reranker `setDecider` installs. Needs
+    /// `admin` on `"*"`.
+    #[napi]
+    pub fn set_reranker_command(&self, cmd: String, model: Option<String>) -> napi::Result<()> {
+        let facade = take_facade(&self.facade)?;
+        check_verb(&facade, areev_core::authz::Verb::Admin, "*")?;
+        let rr = areev_store::CommandRerank::new(&cmd, model.as_deref()).map_err(err)?;
+        let mut st = self.decide.lock().unwrap_or_else(|p| p.into_inner());
+        facade
+            .store_as(areev_core::authz::Verb::Admin, "*", |m| m.set_reranker(Box::new(rr)))
+            .map_err(err)?;
+        st.command_rerank = true;
+        st.decision_rerank = false;
+        Ok(())
     }
 
     /// Install an embedding callback: `embed(text: string): number[]` —
@@ -1140,7 +1437,11 @@ impl Areev {
     /// Free-text recall over the BM25 (and vector, when an embedder is
     /// installed) legs — the JS mirror of Python's `search`, the same path
     /// as `areev search` and CAL's `RECALL … ABOUT`. Returns a JSON list
-    /// string shaped like `recall()`. Errors loudly when the file has
+    /// string shaped like `recall()` plus each hit's `score` in `[0, 1]`
+    /// (the MCP `areev_search` row): rank-normalized fusion (top = 1.0), or
+    /// the installed reranker's normalized answer (`setRerankerCommand` /
+    /// `setDecider`), which search always uses when present.
+    /// `setRecallDeadlineMs` bounds it. Errors loudly when the file has
     /// neither leg, instead of a silent empty list.
     #[napi(ts_return_type = "Promise<string>")]
     pub fn search(
@@ -1166,21 +1467,29 @@ impl Areev {
                      was off, or call setEmbedder()/setEmbedderCommand()",
                 ));
             }
-            let grains = facade
+            // Scored, like MCP's `areev_search`: each row carries the store's
+            // normalized relevance (top hit = 1.0; the reranker's
+            // min-max-normalized answer when one is installed, which search
+            // then always uses). The handle's recall deadline applies.
+            let deadline = facade.recall_deadline();
+            let hits = facade
                 .store_read(&ns, |m| {
-                    m.recall_hybrid(&ns, subject.as_deref(), relation.as_deref(), Some(&query), k, None)
+                    let tuning = areev_store::RecallTuning {
+                        rerank: m.has_reranker(),
+                        ..Default::default()
+                    };
+                    m.recall_hybrid_scored(
+                        &ns,
+                        subject.as_deref(),
+                        relation.as_deref(),
+                        Some(&query),
+                        k,
+                        deadline,
+                        tuning,
+                    )
                 })
                 .map_err(err)?;
-            let out: Vec<serde_json::Value> = grains
-                .iter()
-                .map(|g| {
-                    json!({
-                        "hash": g.hash.to_hex(),
-                        "type": format!("{:?}", g.grain_type).to_lowercase(),
-                        "fields": g.fields,
-                    })
-                })
-                .collect();
+            let out: Vec<serde_json::Value> = hits.iter().map(|(g, score)| scored_row(g, *score)).collect();
             serde_json::to_string(&out).map_err(err)
         })
     }
@@ -2604,6 +2913,9 @@ impl Areev {
         key_env: Option<String>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
+        // Every field is named today; the struct update stays so a field added
+        // to `RunOptions` defaults here instead of breaking the build.
+        #[allow(clippy::needless_update)]
         let opts = RunOptions {
             min_new: min_new.map(|n| n as u64),
             min_new_errors: min_new_errors.map(|n| n as u64),
@@ -2991,13 +3303,15 @@ impl Areev {
         policy_json: String,
     ) -> napi::bindgen_prelude::AsyncTask<UnitJob> {
         let slot = self.facade.clone();
+        let (decide, own_ns) = (self.decide.clone(), self.ns.clone());
         UnitJob::spawn(move || {
             let facade = take_facade(&slot)?;
             facade
                 .store_checked(areev_core::authz::Verb::Admin, &ns, |m| {
                     m.set_anon_policy(&ns, &policy_json)
                 })
-                .map_err(err)
+                .map_err(err)?;
+            resync_decision_reranker(&facade, &own_ns, &decide).map_err(err)
         })
     }
 
@@ -3005,11 +3319,13 @@ impl Areev {
     #[napi(ts_return_type = "Promise<void>")]
     pub fn clear_anon_policy(&self, ns: String) -> napi::bindgen_prelude::AsyncTask<UnitJob> {
         let slot = self.facade.clone();
+        let (decide, own_ns) = (self.decide.clone(), self.ns.clone());
         UnitJob::spawn(move || {
             let facade = take_facade(&slot)?;
             facade
                 .store_checked(areev_core::authz::Verb::Admin, &ns, |m| m.clear_anon_policy(&ns))
-                .map_err(err)
+                .map_err(err)?;
+            resync_decision_reranker(&facade, &own_ns, &decide).map_err(err)
         })
     }
 
@@ -3059,10 +3375,11 @@ impl Areev {
         on: bool,
     ) -> napi::bindgen_prelude::AsyncTask<UnitJob> {
         let slot = self.facade.clone();
+        let (decide, ns) = (self.decide.clone(), self.ns.clone());
         UnitJob::spawn(move || {
             let facade = take_facade(&slot)?;
             facade.set_anonymize_egress_floor(on).map_err(err)?;
-            Ok(())
+            resync_decision_reranker(&facade, &ns, &decide).map_err(err)
         })
     }
 
@@ -4238,6 +4555,7 @@ fn js_egress_handle(
     }
 }
 
+#[allow(clippy::too_many_arguments)] // a flat FFI surface; each knob is a distinct scalar
 fn js_runner_pinned(
     facade: std::sync::Arc<AreevFacade>,
     ns: String,

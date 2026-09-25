@@ -331,6 +331,54 @@ impl TestSubstrate {
         self.analyze_with(analyzer, now_ms, &[])
     }
 
+    /// Run an analyzer with its manifest-default params and a decision
+    /// backend in the context (what a production pass hands it).
+    pub fn analyze_decided(
+        &self,
+        analyzer: &dyn Analyzer,
+        now_ms: i64,
+        decider: &crate::decide::Decider,
+    ) -> Vec<RecDraft> {
+        let params = analyzer
+            .manifest()
+            .resolve_params(&Map::new())
+            .expect("valid params");
+        let ctx = AnalyzeCtx::new(
+            &self.inner,
+            &params,
+            &self.namespaces,
+            None,
+            now_ms,
+            &self.outcomes,
+            &self.verdicts,
+        )
+        .with_decider(Some(decider));
+        analyzer.analyze(&ctx).expect("analyze ok")
+    }
+
+    /// An error tool call carrying extra fields (`failure_cause`,
+    /// `failure_detail`, …).
+    pub fn add_tool_error_with(&mut self, tool: &str, content: &str, extra: &[(&str, &str)]) -> String {
+        let created = self.tick();
+        let mut fields = Map::new();
+        fields.insert("tool_name".into(), json!(tool));
+        fields.insert("is_error".into(), json!(true));
+        fields.insert("content".into(), json!(content));
+        fields.insert("namespace".into(), json!("test"));
+        for (k, v) in extra {
+            fields.insert((*k).to_string(), json!(v));
+        }
+        self.inner.insert(GrainRecord {
+            hash: String::new(),
+            grain_type: "tool".into(),
+            namespace: "test".into(),
+            created_at_ms: created,
+            valid_to_ms: None,
+            superseded_by: None,
+            fields,
+        })
+    }
+
     /// Run an analyzer with parameter overrides.
     pub fn analyze_with(
         &self,
@@ -356,5 +404,76 @@ impl TestSubstrate {
             &self.verdicts,
         );
         analyzer.analyze(&ctx).expect("analyze ok")
+    }
+}
+
+/// A scripted, deterministic decision backend for tests. `answer` maps a
+/// question id plus the whole request to that question's wire answer
+/// (`{"type": "noul", "noul": p}` or a choice); `fail` makes every call
+/// return `LOP-E051`. Every request is logged so a test can count calls and
+/// inspect what was asked.
+pub struct FakeDecider {
+    pub calibrated: bool,
+    pub fail: bool,
+    #[allow(clippy::type_complexity)]
+    pub answer: Box<dyn Fn(&str, &Value) -> Value + Send + Sync>,
+    pub log: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+}
+
+impl FakeDecider {
+    /// Every question answered as a `noul` with `p`.
+    pub fn constant(p: f64) -> Self {
+        Self::by(move |_, _| json!({"type": "noul", "noul": p}))
+    }
+
+    pub fn by(f: impl Fn(&str, &Value) -> Value + Send + Sync + 'static) -> Self {
+        FakeDecider {
+            calibrated: true,
+            fail: false,
+            answer: Box::new(f),
+            log: Default::default(),
+        }
+    }
+
+    pub fn uncalibrated(mut self) -> Self {
+        self.calibrated = false;
+        self
+    }
+
+    pub fn failing(mut self) -> Self {
+        self.fail = true;
+        self
+    }
+
+    pub fn calls(&self) -> std::sync::Arc<std::sync::Mutex<Vec<Value>>> {
+        self.log.clone()
+    }
+}
+
+impl crate::decide::DecideBackend for FakeDecider {
+    fn decide(&self, request_json: &str) -> crate::error::Result<String> {
+        let req: Value = serde_json::from_str(request_json).expect("the engine sends JSON");
+        self.log.lock().unwrap().push(req.clone());
+        if self.fail {
+            return Err(crate::error::Error::DecideBackend("scripted failure".into()));
+        }
+        let mut answers = Map::new();
+        for id in req["questions"].as_object().expect("questions").keys() {
+            answers.insert(id.clone(), (self.answer)(id, &req));
+        }
+        Ok(json!({
+            "answers": answers,
+            "provider": "fake",
+            "model": "fake-1",
+            "calibrated": self.calibrated,
+            "latency_ms": 7,
+        })
+        .to_string())
+    }
+    fn calibrated(&self) -> bool {
+        self.calibrated
+    }
+    fn describe(&self) -> String {
+        "fake:fake-1".into()
     }
 }

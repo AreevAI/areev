@@ -3,16 +3,32 @@
 //! keeps the earliest member canonical and supersedes the rest — structural,
 //! non-destructive. (Exact duplicates are auto-apply *eligible*; near-dups fail
 //! the engine's exact-equality shape check and stay pending — §6.3.)
+//!
+//! **With a decision backend** (`Engine::with_decider`, proposal row E2):
+//! observation pairs the Jaccard rule cannot decide — similarity in
+//! `[JUDGED_JACCARD_FLOOR, jaccard)`, same namespace, neither already
+//! clustered — are asked "do these two state the same claim?" in batches, at
+//! most `pair_cap` pairs per run. A CALIBRATED `p ≥ DECIDE_MIN_P` proposes
+//! the same supersede draft the Jaccard path does, with the probability on
+//! its `judged_by` record; an uncalibrated backend proposes nothing (a rank
+//! means nothing here), and a failed request contributes nothing.
 
 use crate::analyzer::{AnalyzeCtx, Analyzer};
+use crate::decide::{Ask, DECIDE_MIN_P, QUESTIONS_PER_REQUEST};
 use crate::analyzers::bound_evidence;
 use crate::cal;
 use crate::error::Result;
 use crate::manifest::*;
 use crate::model::{normalize_ident, ActionKind, GrainRecord, Severity};
 use crate::recommendation::{Proposal, RecDraft, Summary};
-use serde_json::{json, Map};
+use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
+
+/// The lowest token-set Jaccard at which a pair is worth asking a decision
+/// backend about. Below it two observations share too little wording for a
+/// "same claim" to be the likely reading, and asking would spend the pair cap
+/// on noise.
+pub const JUDGED_JACCARD_FLOOR: f64 = 0.5;
 
 pub struct DuplicateSweep {
     manifest: AnalyzerManifest,
@@ -194,49 +210,132 @@ impl DuplicateSweep {
                 continue;
             }
             used[i] = true;
-            let canonical = &tokenized[cluster[0]].0;
-            let mut canonical_fields = Map::new();
-            canonical_fields.insert("body".into(), json!(obs_text(canonical).unwrap_or("")));
-            // Keep the cluster's namespace on the replacement (clusters never
-            // cross namespaces — see the filter above).
-            if !canonical.namespace.is_empty() {
-                canonical_fields.insert("namespace".into(), json!(canonical.namespace));
-            }
-
-            let mut statements = Vec::new();
-            for &k in &cluster[1..] {
-                statements.push(cal::supersede(
-                    &tokenized[k].0.hash,
-                    "observation",
-                    &canonical_fields,
-                ));
-            }
-            let evidence = bound_evidence(
-                cluster
-                    .iter()
-                    .map(|&k| tokenized[k].0.hash.clone())
-                    .collect(),
-            );
-
             let mut args = Map::new();
             args.insert("count".into(), json!(cluster.len()));
             args.insert("threshold".into(), json!(threshold));
-
-            drafts.push(
-                RecDraft::new(
-                    format!("grain:{}", canonical.hash),
-                    ActionKind::Consolidate,
-                    Summary::new("duplicate.near", args),
-                    Proposal::Cal {
-                        cal: cal::batch(&statements),
-                    },
-                )
-                .severity(Severity::Info)
-                .evidence(evidence),
-            );
+            drafts.push(consolidate_draft(&tokenized, &cluster, Summary::new("duplicate.near", args)));
         }
+        drafts.extend(judged_pairs(ctx, &tokenized, &mut used, threshold));
         Ok(drafts)
     }
+}
+
+/// The supersede-into-the-earliest draft over one cluster (indices into
+/// `tokenized`, earliest first) — shared by the Jaccard and judged paths so
+/// both propose exactly the same change.
+fn consolidate_draft(
+    tokenized: &[(GrainRecord, std::collections::BTreeSet<String>)],
+    cluster: &[usize],
+    summary: Summary,
+) -> RecDraft {
+    let canonical = &tokenized[cluster[0]].0;
+    let mut canonical_fields = Map::new();
+    canonical_fields.insert("body".into(), json!(obs_text(canonical).unwrap_or("")));
+    // Keep the cluster's namespace on the replacement (clusters never cross
+    // namespaces — both paths filter on it).
+    if !canonical.namespace.is_empty() {
+        canonical_fields.insert("namespace".into(), json!(canonical.namespace));
+    }
+    let mut statements = Vec::new();
+    for &k in &cluster[1..] {
+        statements.push(cal::supersede(&tokenized[k].0.hash, "observation", &canonical_fields));
+    }
+    let evidence = bound_evidence(cluster.iter().map(|&k| tokenized[k].0.hash.clone()).collect());
+    RecDraft::new(
+        format!("grain:{}", canonical.hash),
+        ActionKind::Consolidate,
+        summary,
+        Proposal::Cal {
+            cal: cal::batch(&statements),
+        },
+    )
+    .severity(Severity::Info)
+    .evidence(evidence)
+}
+
+/// E2: the pairs the Jaccard rule left undecided, asked of a CALIBRATED
+/// decision backend. Pairs are taken in (earlier, later) creation order, so
+/// the cap cuts deterministically. A judged pair whose members a previous
+/// judged pair already consumed is skipped (greedy, like the Jaccard path).
+fn judged_pairs(
+    ctx: &AnalyzeCtx,
+    tokenized: &[(GrainRecord, std::collections::BTreeSet<String>)],
+    used: &mut [bool],
+    threshold: f64,
+) -> Vec<RecDraft> {
+    let Some(d) = ctx.decider() else {
+        return Vec::new();
+    };
+    if !d.calibrated() {
+        return Vec::new();
+    }
+    let mut pairs: Vec<(usize, usize, f64)> = Vec::new();
+    'outer: for i in 0..tokenized.len() {
+        if used[i] {
+            continue;
+        }
+        for j in (i + 1)..tokenized.len() {
+            if used[j] || tokenized[i].0.namespace != tokenized[j].0.namespace {
+                continue;
+            }
+            let sim = jaccard(&tokenized[i].1, &tokenized[j].1);
+            if (JUDGED_JACCARD_FLOOR..threshold).contains(&sim) {
+                if pairs.len() >= d.pair_cap() {
+                    break 'outer;
+                }
+                pairs.push((i, j, sim));
+            }
+        }
+    }
+    let backend = d.describe();
+    let mut drafts = Vec::new();
+    for chunk in pairs.chunks(QUESTIONS_PER_REQUEST) {
+        let mut state = Map::new();
+        let mut asks = Vec::new();
+        for (n, &(i, j, _)) in chunk.iter().enumerate() {
+            let id = format!("p{n}");
+            state.insert(
+                id.clone(),
+                json!({"a": obs_text(&tokenized[i].0).unwrap_or(""), "b": obs_text(&tokenized[j].0).unwrap_or("")}),
+            );
+            asks.push(Ask::Noul {
+                instructions: format!(
+                    "Do texts \"a\" and \"b\" of pair \"{id}\" (in state.pairs) state the same claim?"
+                ),
+                id,
+            });
+        }
+        // Fail-soft: a failed or uncalibrated answer contributes nothing.
+        let Ok(a) = d.ask(json!({ "pairs": Value::Object(state) }), &asks) else {
+            continue;
+        };
+        if !a.calibrated {
+            continue;
+        }
+        for (n, &(i, j, sim)) in chunk.iter().enumerate() {
+            let id = format!("p{n}");
+            let Some(&p) = a.noul.get(&id) else { continue };
+            if p < DECIDE_MIN_P || used[i] || used[j] {
+                continue;
+            }
+            used[i] = true;
+            used[j] = true;
+            let mut args = Map::new();
+            args.insert("count".into(), json!(2));
+            args.insert("p".into(), json!(round3(p)));
+            args.insert("similarity".into(), json!(round3(sim)));
+            let judged = a.judged_by(&backend, "duplicate", BTreeMap::from([("same_claim".to_string(), p)]));
+            drafts.push(
+                consolidate_draft(tokenized, &[i, j], Summary::new("duplicate.judged", args))
+                    .judged_by(judged),
+            );
+        }
+    }
+    drafts
+}
+
+fn round3(x: f64) -> f64 {
+    (x * 1000.0).round() / 1000.0
 }
 
 fn obs_text(o: &GrainRecord) -> Option<&str> {

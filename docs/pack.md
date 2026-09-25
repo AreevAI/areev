@@ -251,6 +251,14 @@ The pin lives on the host, never in the pack, for the reason it never lives in
 a bundle: a permission arriving with the code it authorizes is not a
 permission. See `docs/run.md`, "Code-carrying tools".
 
+One `executor_uri` is neither code nor data: the reserved `areev://decide`
+marks a **decision node** (`docs/run.md`, "Decisions in a run"). The driver
+answers it through the host's decision backend (`--decide` /
+`$AREEV_DECIDE`), so a pack that carries one installs without a warning and
+without a pin — there is nothing to authorize — and a host with no backend
+refuses the plan at `run start` with `RUN-E030`, naming the node, rather than
+at install.
+
 ### Executor pins are checked, never written
 
 A host that installs packs per tenant already holds pins — the content address

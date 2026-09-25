@@ -26,6 +26,7 @@ pub mod analyzer;
 pub mod analyzers;
 pub mod cal;
 pub mod config;
+pub mod decide;
 pub mod engine;
 pub mod error;
 pub mod eval;
@@ -41,6 +42,8 @@ pub mod replay;
 pub mod substrate;
 
 #[cfg(test)]
+mod decide_tests;
+#[cfg(test)]
 mod integration;
 #[cfg(test)]
 mod testkit;
@@ -50,6 +53,7 @@ pub use engine::{
     Decision, Engine, Health, LlmMetrics, RunOptions, RunOutcome, RunResult, Scope, ScopeSet,
     SkipReason, LOOP_NS,
 };
+pub use decide::{CauseVerdict, DecideBackend, Decider, DeciderReport, JudgedBy};
 pub use config::{AnalyzerConfig, AnalyzerConfigUpdate, AnalyzerSetting};
 pub use error::{Error, Result};
 pub use external::CommandAnalyzer;

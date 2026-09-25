@@ -51,6 +51,7 @@ pub struct AnalyzeCtx<'a> {
     now_ms: i64,
     outcome_inputs: &'a [OutcomeInput],
     verdicts: &'a std::collections::BTreeMap<String, String>,
+    decider: Option<&'a crate::decide::Decider>,
 }
 
 impl<'a> AnalyzeCtx<'a> {
@@ -72,7 +73,23 @@ impl<'a> AnalyzeCtx<'a> {
             now_ms,
             outcome_inputs,
             verdicts,
+            decider: None,
         }
+    }
+
+    /// Hand the analyzer the engine's decision backend (or none). The engine
+    /// sets it on a production pass and never on a replay.
+    pub fn with_decider(mut self, decider: Option<&'a crate::decide::Decider>) -> Self {
+        self.decider = decider;
+        self
+    }
+
+    /// The installed decision backend, if any. An analyzer that uses one must
+    /// check [`crate::decide::Decider::calibrated`] before letting a
+    /// probability propose or drop anything, and must treat an `Err` as "no
+    /// contribution" (fail-soft), never as a failed analysis.
+    pub fn decider(&self) -> Option<&'a crate::decide::Decider> {
+        self.decider
     }
 
     /// The latest Verify-gate verdict for a grain an applied recommendation

@@ -242,6 +242,12 @@ pub struct UiServer {
     /// unauthenticated caller pulls to stall the console for everyone, not
     /// just themselves.
     auth_failures: std::sync::Mutex<std::collections::HashMap<std::net::IpAddr, (u32, std::time::Instant)>>,
+    /// The host's decision-backend chain, as `(describe(), calibrated())`,
+    /// reported by `GET /api/config` (decision-model proposal §2 rule 4:
+    /// every judgment that shaped output is attributable). A label, not the
+    /// backend: the console never calls it, and holding the trait object
+    /// would pull areev-llm into this crate for nothing.
+    decider: Option<(String, bool)>,
 }
 
 /// A login-flow error, rendered as text rather than JSON: the audience is a
@@ -395,7 +401,17 @@ impl UiServer {
             oidc: None,
             sso_approvals: false,
             auth_failures: std::sync::Mutex::new(std::collections::HashMap::new()),
+            decider: None,
         }
+    }
+
+    /// Report the host's decision-backend chain in `GET /api/config` as
+    /// `decide: {chain, calibrated}` (`null` when none is configured).
+    /// `chain` is the backend's `describe()` and `calibrated` its
+    /// `calibrated()`; both are host config, never read from the file.
+    pub fn with_decider(mut self, chain: impl Into<String>, calibrated: bool) -> Self {
+        self.decider = Some((chain.into(), calibrated));
+        self
     }
 
     /// Enable trusted-header SSO (v0). `header` names the identity header
@@ -1631,6 +1647,13 @@ impl UiServer {
                         // false with auth_required = writes only.
                         "auth_all": self.auth_all,
                     },
+                    // Decision backend (host config, per-process): which
+                    // chain may score and order, and whether its answers are
+                    // calibrated (an uncalibrated chain may reorder, never
+                    // omit). The label only — never a key or a URL's secret.
+                    "decide": self.decider.as_ref().map(|(chain, calibrated)| {
+                        json!({"chain": chain, "calibrated": calibrated})
+                    }),
                     "persistence": "per-process (host-supplied at open) — not stored in the .db",
                 }))
             }
@@ -4052,6 +4075,26 @@ mod dsn_redaction_tests {
 
     fn text(r: &(&str, &str, Vec<u8>)) -> String {
         String::from_utf8_lossy(&r.2).to_string()
+    }
+
+    /// Decision-model proposal §5: `GET /api/config` reports the decision
+    /// chain as `decide: {chain, calibrated}`, and `null` when there is none.
+    #[test]
+    fn config_reports_the_decision_chain_or_null() {
+        let cfg = |s: &UiServer| -> serde_json::Value {
+            serde_json::from_slice(&s.route("GET", "/api/config", b"", None, None).2).unwrap()
+        };
+        let none = cfg(&server());
+        assert!(none.get("decide").is_some_and(serde_json::Value::is_null), "{none}");
+
+        let with = cfg(&server().with_decider("systemone:jev-latest,llm:ollama:qwen3.5:4b", false));
+        assert_eq!(
+            with["decide"],
+            serde_json::json!({"chain": "systemone:jev-latest,llm:ollama:qwen3.5:4b", "calibrated": false}),
+            "{with}"
+        );
+        let calibrated = cfg(&server().with_decider("typesafe:jev-latest", true));
+        assert_eq!(calibrated["decide"]["calibrated"], serde_json::json!(true), "{calibrated}");
     }
 
     #[test]

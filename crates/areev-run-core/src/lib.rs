@@ -1,7 +1,7 @@
 //! # areev-run-core — the pure scheduler of `areev run`
 //!
 //! Sans-IO by construction (governed-agents proposal §4): this crate cannot
-//! observe the world. It exports [`step`] — a pure function from
+//! observe the world. It exports [`step()`] — a pure function from
 //! `(plan, env, state, events)` to `(commands, state)` — and the vocabulary
 //! around it. The driver crate (`areev-run`) owns the store, the clock, the
 //! executors, and the journal; it materializes journal lookups into
@@ -39,12 +39,14 @@ pub mod types;
 pub use error::{BudgetAxis, Result, RunError};
 pub use plan::{PlanEdge, PlanGraph};
 pub use state::{
-    EdgeRes, FoldInFlight, NodeState, PendingAsk, Phase, SchedulerState, Spent,
+    DecideInFlight, EdgeRes, FoldInFlight, NodeState, PendingAsk, Phase, SchedulerState, Spent,
 };
 pub use step::{
-    bound_tool_content, flow_key, step, StepEnv, StepOutcome, DEFAULT_MAX_EFFECTS_PER_ATTEMPT,
+    bound_tool_content, flow_key, step, DecideEnv, StepEnv, StepOutcome,
+    DEFAULT_MAX_EFFECTS_PER_ATTEMPT,
 };
 pub use types::{
     Ask, Budgets, Command, DecisionRecord, EdgeOutcome, EffectKind, EffectOutcome, EventIn,
-    FailCause, JournalKey, NodeExecutor, OfferedTool, RunOutcome, INBOX, PARKED_ASKS,
+    FailCause, FoldRecord, JournalKey, NodeExecutor, OfferedTool, RunOutcome, DECIDE_TOOL,
+    DECIDE_URI, INBOX, PARKED_ASKS,
 };

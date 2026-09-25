@@ -251,7 +251,30 @@ pub enum NodeExecutor {
     /// `op` is `entity_at` | `related` | `recall`; `spec` is the normalized
     /// declaration.
     MemoryRead { op: String, spec: Value },
+    /// A decision effect (`docs/decision-model-proposal.md` C1–C3): answered
+    /// by the HOST's decision backend, never by a tool and never by the pool.
+    ///
+    /// Two shapes share it. A decision NODE (C3) binds a Tool Definition whose
+    /// `executor_uri` is the reserved [`DECIDE_URI`]; the manifest freezes it
+    /// to this variant with that Definition's hash and name, so it journals as
+    /// an ordinary Tool execution grain. The scheduler's OWN asks inside an
+    /// abstract node — the decision-guided fold (C2) and the tool-offer
+    /// narrowing (C1) — carry an empty `tool_hash` and the reserved
+    /// [`DECIDE_TOOL`] name; their request rides the effect's input under
+    /// `decide`.
+    ///
+    /// Its own variant rather than a Host tool with a reserved name, for the
+    /// memory-read reason (#255): a missed interception must not fall through
+    /// to `--tool-cmd`, where a tool could forge the answer.
+    Decide { tool_hash: String, tool_name: String },
 }
+
+/// The reserved `executor_uri` a Tool Definition names to become a decision
+/// node (C3). Not a code address: the host's decision backend answers it.
+pub const DECIDE_URI: &str = "areev://decide";
+
+/// The journal name of the scheduler's own decision effects (C1/C2).
+pub const DECIDE_TOOL: &str = "mg:decide";
 
 /// Serde default for a field whose absence must mean the STRICTER reading.
 pub(crate) fn default_true() -> bool {
@@ -340,6 +363,53 @@ pub struct DecisionRecord {
     /// is why it is `Option` with `skip_serializing_if`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resumed_at: Option<u64>,
+    /// Decision-guided folds (C2) resolved this superstep — applied or not,
+    /// each with the decision's provenance. Empty on every run with no
+    /// decision backend pinned, and skipped when empty so those checkpoints
+    /// stay byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub folds: Vec<FoldRecord>,
+}
+
+/// One decision-guided fold (C2), journaled in the superstep's decision
+/// record — the `kind: "decide"` variant of a fold. (A summarizer fold's
+/// record is its own effect's `input.fold`.)
+///
+/// Indices are TRANSCRIPT positions as they stood when the decision was
+/// asked. `kept` / `truncated` name tool-result entries; `dropped` names
+/// every entry removed from the PROMPT — a tool result and, when its whole
+/// round went, the assistant entry that issued it. Nothing named here left
+/// the journal: every one is still an intent + result grain.
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+pub struct FoldRecord {
+    /// Always `"decide"`.
+    pub kind: String,
+    /// [`crate::step::FOLD_DECIDE_V`] — the questions' wording version.
+    pub v: u32,
+    pub node: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub task_path: String,
+    pub attempt: u32,
+    /// The decision effect's own `effect_seq` — where its request and
+    /// answer are journaled.
+    pub seq: u32,
+    /// The foldable window asked about (`from..to`).
+    pub from: usize,
+    pub to: usize,
+    pub kept: Vec<usize>,
+    pub truncated: Vec<usize>,
+    pub dropped: Vec<usize>,
+    /// Whether the transcript was edited. `false` = the fail-open path: the
+    /// summarizer fold runs next, exactly as it would have with no backend.
+    pub applied: bool,
+    /// Why it was not applied (uncalibrated, failed, malformed, nothing to
+    /// prune).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// `{provider, model, calibrated, latency_ms}` of the answering backend;
+    /// absent when the call failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

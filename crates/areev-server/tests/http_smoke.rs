@@ -76,6 +76,7 @@ fn console_api_round_trip() {
             && cfg.contains("\"auth_required\":true")
             && cfg.contains("\"auth_all\":true")
             && cfg.contains("\"file\"")
+            && cfg.contains("\"decide\":null")
             && cfg.contains("\"warnings\":[]"),
         "{cfg}"
     );

@@ -868,7 +868,12 @@ fn check_tool(e: &Entry, warnings: &mut Vec<String>) -> Result<(), String> {
             e.file
         ));
     }
-    if uri.is_some_and(|u| !u.starts_with("cas://sha256:")) {
+    // `areev://decide` is the reserved decision-node address (docs/run.md,
+    // "Decisions in a run"): the driver answers it through the host's
+    // decision backend, so it carries no code, needs no pin, and is refused
+    // at run start (RUN-E030) rather than at install when the host has no
+    // backend.
+    if uri.is_some_and(|u| !u.starts_with("cas://sha256:") && u != areev_run::DECIDE_URI) {
         warnings.push(format!(
             "{}: executor_uri is not a content address — this host can only dispatch \
              cas://sha256:<64 hex>",
@@ -1041,12 +1046,17 @@ fn check_expected_plan(
     })
 }
 
-/// Every code-carrying tool the pack installs, unpinned.
+/// Every code-carrying tool the pack installs, unpinned. A decision node
+/// (`areev://decide`) carries no code — the host's backend answers it — so
+/// it is not an executor to pin.
 fn executors_of(pack: &Pack) -> Vec<ExecutorRow> {
     pack.entries
         .iter()
         .filter_map(|e| {
             let uri = e.fields.get("executor_uri").and_then(Value::as_str)?;
+            if uri == areev_run::DECIDE_URI {
+                return None;
+            }
             Some(ExecutorRow {
                 tool: e
                     .fields
@@ -1294,6 +1304,9 @@ fn pins(pack: &Pack) -> Vec<String> {
         .entries
         .iter()
         .filter_map(|e| e.fields.get("executor_uri").and_then(Value::as_str))
+        // A decision node is answered by the host's backend, not dispatched
+        // as code: nothing to pin (see `executors_of`).
+        .filter(|u| *u != areev_run::DECIDE_URI)
         .map(|u| u.trim_start_matches("cas://sha256:").to_string())
         .collect();
     out.sort();

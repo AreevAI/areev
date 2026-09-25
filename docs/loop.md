@@ -498,6 +498,72 @@ stdout, one process per call, probed at construction. CLI-only, never persisted.
 Ready-to-run backends live in `examples/llm/` (`claude -p`, OpenAI, ollama, and
 a dependency-free mock) with the protocol documented.
 
+### Decision backend (optional)
+
+A **decision** model takes a `state` plus named, typed questions and returns
+probabilities — no text ([`decision-model-proposal.md`](decision-model-proposal.md)).
+A host installs one with `Engine::with_decider(Box::new(LoopDecider(chain)))`
+(`LoopDecider` is the `areev-loop-adapter` bridge over any
+`areev_core::decide::DecisionBackend`; the loop crate itself only sees the
+wire JSON through its own `DecideBackend` trait, so it keeps zero Areev
+dependencies). Nothing is default-on, and it touches four places:
+
+- **GROUND → VERIFY (E1)** — with an LLM attached and a **calibrated**
+  backend, the LLM GROUND call is replaced by one request per draft: a `noul`
+  per cited evidence grain (`ev_<bundle id>` — "does evidence item … contain
+  the premise the recommendation relies on?") plus a `sound` `noul` ("Given
+  only this evidence, is the recommendation sound?"), over `state =
+  {recommendation: {summary, guidance}, evidence: [{id, grain_type, text}]}`.
+  A draft is grounded when any cited grain reaches **0.75**. The LLM's
+  adversarial keep/kill still runs; the routing number at the 0.75 floor is
+  the decision's `p(sound)`, not the verifier's self-report. The
+  recommendation records both — `confidence` is the decision,
+  `llm_confidence` the self-report — so a reviewer sees them disagree.
+- **Duplicate sweep (E2)** — observation pairs in one namespace with token
+  Jaccard in `[0.5, jaccard)` that the ≥ `jaccard` rule left unclustered are
+  asked "do these two state the same claim?" (16 pairs per request, at most
+  **200 pairs per run**, `Engine::with_decider_pair_cap`). A calibrated
+  `p ≥ 0.75` proposes the same supersede-into-the-earliest draft the Jaccard
+  path does (`duplicate.judged`, the probability in the summary).
+- **Contradiction sweep (E2)** — for a (namespace, subject, relation) OUTSIDE
+  the functional set holding ≥ 2 distinct live values, each pair of values is
+  asked "can both be true at the same time?" (same batching and cap). A
+  calibrated `1 − p ≥ 0.75` proposes the same supersede-older draft as the
+  seeded path, under `contradiction.judged`, whose summary says the relation
+  was not seeded. It carries no recurrence metric: a relation nobody declared
+  single-valued may legitimately gain values later.
+- **Tool-failure cause (E3)** — with a backend installed, a `tool_failure`
+  cluster names its majority cause (`tool_failure.cluster_cause`): a
+  `failure_cause` in the closed vocabulary is used as recorded; free text (a
+  `failure_cause` outside it, else `failure_detail`) is classified once per
+  distinct string per run with a `choice` over `timeout`, `executor_error`,
+  `schema_validation_failed`, `user_aborted`, `context_overflow`, `unknown`,
+  and the argmax is used at **≥ 0.6**; otherwise `unknown`. Without a backend
+  the draft is exactly as before.
+
+**Uncalibrated never omits.** When the backend (or a given response) is not
+calibrated, no probability drops or proposes anything: GROUND/VERIFY run the
+LLM exactly as without a backend, the sweeps propose nothing new (they do not
+even ask), and free-text causes stay `unknown`.
+
+**Fail-soft, fail-open.** A backend error or malformed answer is `LOP-E051`:
+that stage's decision contribution is dropped for the run — GROUND falls back
+to the LLM GROUND call for every draft, a sweep batch proposes nothing, a
+cause stays `unknown` — and the run continues.
+
+**Provenance.** Every recommendation a decision shaped carries `judged_by:
+{backend, provider, model, calibrated, latency_ms, stage, answers}` (shown by
+`areev loop show`), and the run result carries `decider: {backend,
+calibrated, calls, failed_calls, last_error?}` beside `llm_funnel`. Both are
+absent when no backend is installed, so a run without one reads exactly as
+before. A replay never consults the backend.
+
+**The four gates are unchanged.** A decision model scores; it never approves,
+applies or rolls back. A recommendation carrying `judged_by` is **never
+auto-applied**, whatever the policy grants and whatever its payload's shape —
+it takes a human review with a BECAUSE plus an explicit apply, like any
+`origin = llm` draft.
+
 ## External analyzers (optional)
 
 Determinism you can extend without recompiling: `areev loop run --analyzer-cmd

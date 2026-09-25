@@ -261,6 +261,17 @@ fn mcp_round_trip() {
         search.as_array().unwrap().iter().any(|g| g["fields"]["object"] == "tea"),
         "expected the alice/tea fact in search results: {search_text}"
     );
+    // Every row carries its normalized relevance: in (0, 1], best first,
+    // the best exactly 1.0.
+    let scores: Vec<f64> = search
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| g["score"].as_f64().unwrap_or_else(|| panic!("row without a score: {g}")))
+        .collect();
+    assert_eq!(scores.first(), Some(&1.0), "{search_text}");
+    assert!(scores.iter().all(|s| *s > 0.0 && *s <= 1.0), "{search_text}");
+    assert!(scores.windows(2).all(|w| w[0] >= w[1]), "{search_text}");
 
     // areev_nearest fails loudly with no embedder installed, naming the
     // MCP-specific remedy (not Python's set_embedder(), which doesn't exist
@@ -1242,4 +1253,230 @@ fn mcp_as_principal_binds_every_tool_not_only_cal() {
         owner.iter().any(|(_, _, t)| t.contains("CLASSIFIED")),
         "owner control is vacuous — no tool returned the seeded grain"
     );
+}
+
+fn find_python() -> Option<&'static str> {
+    ["python3", "python"].into_iter().find(|c| {
+        Command::new(c).arg("--version").output().is_ok_and(|o| o.status.success())
+    })
+}
+
+/// Spawn `areev serve --mcp` with extra env, feed it `script`, return
+/// (exit success, parsed stdout lines, stderr).
+fn serve_with_env(db: &str, env: &[(&str, &str)], script: &[String]) -> (bool, Vec<serde_json::Value>, String) {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_areev"));
+    cmd.args(["serve", "--mcp", "--db", db, "--ns", "caller"])
+        .env_remove("AREEV_RERANK_CMD")
+        .env_remove("AREEV_RECALL_DEADLINE_MS")
+        .env_remove("AREEV_DECIDE")
+        .env_remove("AREEV_DECIDE_CMD")
+        .env_remove("AREEV_DECIDE_TIMEOUT_MS")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let mut child = cmd.spawn().unwrap();
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        for line in script {
+            // A server that refused to start has closed its stdin.
+            let _ = writeln!(stdin, "{line}");
+        }
+    }
+    let out = child.wait_with_output().unwrap();
+    let lines = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+    (out.status.success(), lines, String::from_utf8_lossy(&out.stderr).into_owned())
+}
+
+/// `$AREEV_RERANK_CMD` installs a command reranker that `areev_search`
+/// uses (its scores, min-max normalized, become the row scores);
+/// `$AREEV_RECALL_DEADLINE_MS` reaches the recall; a bad value of either
+/// refuses to start the server rather than being ignored.
+#[test]
+fn mcp_search_honours_rerank_cmd_and_recall_deadline() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("m.db");
+    let db = db.to_str().unwrap();
+    let init = rpc(1, "initialize", serde_json::json!({
+        "protocolVersion": "2025-06-18",
+        "capabilities": {}, "clientInfo": {"name": "test", "version": "0"}}));
+    let add = |id: u64, s: &str, o: &str| {
+        rpc(id, "tools/call", serde_json::json!({"name": "areev_add", "arguments": {
+            "fields": {"subject": s, "relation": "likes", "object": o}}}))
+    };
+    let search = rpc(9, "tools/call", serde_json::json!({"name": "areev_search", "arguments": {"query": "tea"}}));
+    let rows = |lines: &[serde_json::Value]| -> Vec<(String, f64)> {
+        let r = lines.iter().find(|v| v["id"] == 9).expect("search answered");
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        let v: serde_json::Value =
+            serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|g| (g["fields"]["object"].as_str().unwrap().to_string(), g["score"].as_f64().unwrap()))
+            .collect()
+    };
+
+    let (ok, lines, _) = serve_with_env(
+        db,
+        &[],
+        &[init.clone(), add(2, "alice", "green tea"), add(3, "bob", "tea and scones"), add(4, "carol", "tea"), search.clone()],
+    );
+    assert!(ok);
+    let plain = rows(&lines);
+    assert_eq!(plain.len(), 3);
+    assert_eq!(plain[0].1, 1.0);
+
+    // `0` is "no deadline" (not a spent one), so the result is unchanged. A
+    // non-zero deadline's effect is timing-dependent and is pinned in-process
+    // instead (areev-cal `facade_recall_deadline_is_threaded_into_hybrid_recall`).
+    let (ok, lines, _) = serve_with_env(db, &[("AREEV_RECALL_DEADLINE_MS", "0")], &[init.clone(), search.clone()]);
+    assert!(ok);
+    assert_eq!(rows(&lines).len(), 3, "0 means no deadline");
+
+    // Unparseable deadline: refuses to start, naming the variable.
+    let (ok, _, stderr) =
+        serve_with_env(db, &[("AREEV_RECALL_DEADLINE_MS", "soon")], &[init.clone(), search.clone()]);
+    assert!(!ok, "a bad deadline must not be ignored");
+    assert!(stderr.contains("AREEV_RECALL_DEADLINE_MS"), "{stderr}");
+
+    // A reranker whose program does not exist: refuses to start.
+    let (ok, _, stderr) = serve_with_env(
+        db,
+        &[("AREEV_RERANK_CMD", "definitely-not-a-real-binary-xyz --flag")],
+        &[init.clone(), search.clone()],
+    );
+    assert!(!ok, "a missing rerank command must not be ignored");
+    assert!(stderr.contains("AREEV_RERANK_CMD"), "{stderr}");
+
+    let Some(py) = find_python() else {
+        eprintln!("skipping the command-reranker leg: no python on PATH");
+        return;
+    };
+    // Scores "scones" 7, everything else 2 → normalized 1.0 / 0.0.
+    let script = dir.path().join("rerank.py");
+    std::fs::write(
+        &script,
+        "import sys, json\nreq = json.load(sys.stdin)\n\
+         print(json.dumps([7.0 if 'scones' in d else 2.0 for d in req['docs']]))\n",
+    )
+    .unwrap();
+    let cmd = format!("{py} {}", script.display());
+    let (ok, lines, stderr) = serve_with_env(db, &[("AREEV_RERANK_CMD", &cmd)], &[init, search]);
+    assert!(ok, "{stderr}");
+    let reranked = rows(&lines);
+    assert_eq!(reranked[0], ("tea and scones".to_string(), 1.0), "{reranked:?}");
+    assert!(reranked[1..].iter().all(|(_, s)| *s == 0.0), "{reranked:?}");
+}
+
+/// A one-thread fake `/v1/systemone` server: every `score` question whose
+/// candidate text mentions "scones" gets the top level, every other the
+/// bottom one. Reads each body to `Content-Length` (areev-testing rule 6).
+/// Returns the base URL and a counter of requests served.
+fn scones_decider() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use std::io::Read;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = std::sync::Arc::clone(&hits);
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut s) = stream else { continue };
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 8192];
+            let body = loop {
+                let n = s.read(&mut tmp).unwrap_or(0);
+                if n == 0 {
+                    break None;
+                }
+                buf.extend_from_slice(&tmp[..n]);
+                let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else { continue };
+                let head = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
+                let len = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:").map(|v| v.trim().parse().unwrap_or(0)))
+                    .unwrap_or(0usize);
+                if buf.len() >= end + 4 + len {
+                    break Some(buf[end + 4..end + 4 + len].to_vec());
+                }
+            };
+            let Some(body) = body else { continue };
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let req: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+            let cands = req["state"]["candidates"].as_array().cloned().unwrap_or_default();
+            let mut answers = serde_json::Map::new();
+            for (id, q) in req["questions"].as_object().cloned().unwrap_or_default() {
+                let i: usize = id.trim_start_matches('c').parse().unwrap_or(usize::MAX);
+                let text = cands.iter().find(|c| c["i"] == i).map(|c| c["text"].to_string()).unwrap_or_default();
+                let n = q["criteria"].as_array().map(Vec::len).unwrap_or(2);
+                let top = if text.contains("scones") { n - 1 } else { 0 };
+                let probs: serde_json::Map<String, serde_json::Value> = (0..n)
+                    .map(|l| (l.to_string(), serde_json::json!(if l == top { 1.0 } else { 0.0 })))
+                    .collect();
+                answers.insert(id, serde_json::json!({"type": "score", "score": top as f64, "probabilities": probs}));
+            }
+            let reply = serde_json::json!({"model": "jev-fake", "answers": answers}).to_string();
+            let _ = s.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                    reply.len()
+                )
+                .as_bytes(),
+            );
+        }
+    });
+    (url, hits)
+}
+
+/// `$AREEV_DECIDE` installs the decision chain as `areev_search`'s reranker
+/// (docs/decision-model-proposal.md §5); a bad spec refuses to start.
+#[test]
+fn mcp_search_reranks_with_the_decide_env_chain() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("m.db");
+    let db = db.to_str().unwrap();
+    let init = rpc(1, "initialize", serde_json::json!({
+        "protocolVersion": "2025-06-18",
+        "capabilities": {}, "clientInfo": {"name": "test", "version": "0"}}));
+    let add = |id: u64, s: &str, o: &str| {
+        rpc(id, "tools/call", serde_json::json!({"name": "areev_add", "arguments": {
+            "fields": {"subject": s, "relation": "likes", "object": o}}}))
+    };
+    let search = rpc(9, "tools/call", serde_json::json!({"name": "areev_search", "arguments": {"query": "tea"}}));
+    let objects = |lines: &[serde_json::Value]| -> Vec<(String, f64)> {
+        let r = lines.iter().find(|v| v["id"] == 9).expect("search answered");
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        let v: serde_json::Value =
+            serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|g| (g["fields"]["object"].as_str().unwrap().to_string(), g["score"].as_f64().unwrap()))
+            .collect()
+    };
+    let (ok, _, stderr) = serve_with_env(
+        db,
+        &[],
+        &[init.clone(), add(2, "alice", "green tea"), add(3, "bob", "tea and scones"), add(4, "carol", "tea")],
+    );
+    assert!(ok, "{stderr}");
+
+    let (url, hits) = scones_decider();
+    let (ok, lines, stderr) =
+        serve_with_env(db, &[("AREEV_DECIDE", &format!("systemone:{url}"))], &[init.clone(), search.clone()]);
+    assert!(ok, "{stderr}");
+    let ranked = objects(&lines);
+    assert_eq!(ranked.len(), 3, "reranking never omits: {ranked:?}");
+    assert_eq!(ranked[0], ("tea and scones".to_string(), 1.0), "{ranked:?}");
+    assert!(hits.load(std::sync::atomic::Ordering::SeqCst) > 0, "the chain was asked");
+
+    let (ok, _, stderr) =
+        serve_with_env(db, &[("AREEV_DECIDE", "nosuchprovider:x")], &[init, search]);
+    assert!(!ok, "a bad decide spec must not be ignored");
+    assert!(stderr.contains("DEC-E001"), "{stderr}");
 }

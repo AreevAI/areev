@@ -46,10 +46,12 @@
 
 use crate::error::{BudgetAxis, RunError};
 use crate::plan::PlanGraph;
-use crate::state::{EdgeRes, FoldInFlight, NodeState, PendingAsk, Phase, SchedulerState};
+use crate::state::{
+    DecideInFlight, EdgeRes, FoldInFlight, NodeState, PendingAsk, Phase, SchedulerState,
+};
 use crate::types::{
     Ask, Budgets, Command, DecisionRecord, EdgeOutcome, EffectKind, EffectOutcome, EventIn,
-    FailCause, JournalKey, NodeExecutor, OfferedTool, RunOutcome,
+    FailCause, FoldRecord, JournalKey, NodeExecutor, OfferedTool, RunOutcome, DECIDE_TOOL,
 };
 use areev_core::format::tool_schema::normalize_tool_name;
 use serde_json::Value;
@@ -87,6 +89,55 @@ Reply with the summary only.";
 /// The version of [`FOLD_PROMPT`], journaled beside it so a reader of an old
 /// run knows which wording produced its summaries.
 pub const FOLD_PROMPT_V: u32 = 1;
+
+/// Version of the decision-guided fold's questions (C2) and of the
+/// narrowing question (C1). Their wording rides the journal inside each
+/// decision effect's input, so a change to it bumps this — the
+/// [`FOLD_PROMPT_V`] convention. The summarizer fold's own prompt did not
+/// change when these arrived, so `FOLD_PROMPT_V` did not move.
+pub const FOLD_DECIDE_V: u32 = 1;
+
+/// The `keep_call_<n>` question of a decision-guided fold (C2).
+pub const KEEP_CALL_QUESTION: &str = "Does the fact that this tool call happened still \
+matter for finishing the task?";
+
+/// The `keep_result_<n>` question of a decision-guided fold (C2).
+pub const KEEP_RESULT_QUESTION: &str = "Are this tool result's contents still needed \
+verbatim to finish the task?";
+
+/// The narrowing question (C1).
+pub const OFFER_QUESTION: &str = "Which one of these tools is this step most likely to \
+need to call in order to finish its task?";
+
+/// A decision-guided fold keeps a truncated result's first this-many
+/// CHARACTERS (not tokens — the [`bound_tool_content`] honesty rule).
+pub const FOLD_TRUNCATE_CHARS: usize = 300;
+
+/// A narrowed offer (C1) keeps the top this-many tools by probability …
+pub const OFFER_TOP_K: usize = 8;
+
+/// … plus every tool at or above this probability. Narrowing is only ever
+/// asked when MORE than [`OFFER_TOP_K`] tools are pinned.
+pub const OFFER_KEEP_P: f64 = 0.05;
+
+/// What the scheduler may ask a decision backend, as FROZEN in the run
+/// manifest (`docs/decision-model-proposal.md` C1/C2). Pure data: the
+/// scheduler never calls a backend — it emits a decision EFFECT the driver
+/// answers and journals, the same shape every other effect has.
+pub struct DecideEnv<'a> {
+    /// The pinned backend's `calibrated()`. The scheduler's two uses of a
+    /// decision both OMIT something (tools from an offer, entries from a
+    /// prompt), and rule 2 of the proposal is that an uncalibrated backend may
+    /// reorder but never omit — so with `false` nothing is asked at all.
+    pub calibrated: bool,
+    /// The plan's human label (`name`, and its goal/description when it has
+    /// one) — narrowing context (C1).
+    pub plan_label: Option<&'a str>,
+    /// Pinned tool name → its one-line description — narrowing context (C1).
+    /// A pure function of the manifest's pinned Definitions (immutable by
+    /// hash), so live and verify build the same table.
+    pub tool_descriptions: &'a BTreeMap<String, String>,
+}
 
 /// The injected pure behavior. Everything here is REQUIRED to be pure —
 /// enforced by the journaled decision record + replay assertion, not trust.
@@ -132,6 +183,10 @@ pub struct StepEnv<'a> {
     /// summarizer turn and splices its result over the folded range; failing
     /// to find a foldable range is `RUN-E024`.
     pub llm_context_tokens: Option<u64>,
+    /// The decision backend the manifest pinned, if any (C1/C2). `None` —
+    /// every run before decisions existed, and every host without one —
+    /// asks nothing and builds exactly the commands it always did.
+    pub decide: Option<DecideEnv<'a>>,
 }
 
 /// One step's output.
@@ -297,6 +352,15 @@ fn resolve_effect(
                 return;
             }
             EffectKind::Tool
+                if st.abstract_flows[&flow]
+                    .deciding
+                    .as_ref()
+                    .is_some_and(|d| d.effect_seq() == key.effect_seq) =>
+            {
+                handle_flow_decide(env, st, node_idx, &key.task_path, outcome);
+                return;
+            }
+            EffectKind::Tool
                 if st.abstract_flows[&flow].pending_tools.contains_key(&key.effect_seq) =>
             {
                 handle_flow_tool_outcome(
@@ -410,8 +474,17 @@ fn start_flow(env: &StepEnv<'_>, st: &mut SchedulerState, i: usize, path: &str, 
             folding: None,
             fold_forced: false,
             folds: 0,
+            deciding: None,
+            decide_fold_tried: false,
+            offer: None,
         },
     );
+    // C1: with a calibrated backend and more than OFFER_TOP_K pinned tools,
+    // narrow the offer before the first turn. Anything that prevents asking
+    // falls through to the full offer.
+    if emit_offer_decide(env, st, i, path, out) {
+        return;
+    }
     dispatch_llm_turn(env, st, i, path, out);
 }
 
@@ -594,6 +667,11 @@ fn handle_llm_outcome(
         resolve_fold(env, st, i, path, f, outcome);
         return;
     }
+    // The offer the model actually saw: the narrowed set when C1 narrowed it,
+    // else every pinned tool. A pinned tool the model was NOT shown is
+    // unknown to it — narrowing may only remove, never re-admit.
+    let narrowed = narrowed_offer(st.abstract_flows.get(&flow_id), tools);
+    let tools: &[OfferedTool] = &narrowed;
     let offered: Vec<&str> = tools.iter().map(|t| t.tool_name.as_str()).collect();
     match outcome {
         EffectOutcome::Failed { cause, detail, .. } => match cause {
@@ -876,6 +954,9 @@ fn resolve_fold(
             });
             flow.messages.splice(f.from..f.to, [fold_msg]);
             flow.folds = n;
+            // The summarizer answered the trigger; a later one may try a
+            // decision first again.
+            flow.decide_fold_tried = false;
             // The spliced transcript has not been measured yet. Zero means "ask
             // the provider again", not "it is small" — the next real turn's
             // reported prompt tokens decide whether another fold is due.
@@ -1308,7 +1389,8 @@ fn dispatch_node(env: &StepEnv<'_>, st: &mut SchedulerState, i: usize, out: &mut
     match &executor {
         NodeExecutor::Host { .. }
         | NodeExecutor::Subgraph { .. }
-        | NodeExecutor::MemoryRead { .. } => {
+        | NodeExecutor::MemoryRead { .. }
+        | NodeExecutor::Decide { .. } => {
             st.node_state[i] = NodeState::Dispatched;
             out.push(Command::Dispatch { key, executor, input });
         }
@@ -1466,6 +1548,15 @@ fn dispatch_llm_turn(
         if idle && (forced || over_ceiling) {
             match st.abstract_flows.get(&flow_id).and_then(|f| fold_range(&f.messages)) {
                 Some((from, to)) => {
+                    // C2: a calibrated decision backend gets the first look at
+                    // the window — once per trigger. Anything that stops it
+                    // (none pinned, uncalibrated, already tried, nothing to
+                    // judge, the effect cap) is the summarizer fold,
+                    // unchanged.
+                    let tried = st.abstract_flows.get(&flow_id).is_some_and(|f| f.decide_fold_tried);
+                    if !tried && emit_fold_decide(env, st, i, path, from, to, out) {
+                        return;
+                    }
                     emit_fold_turn(env, st, i, path, from, to, out);
                     return;
                 }
@@ -1495,10 +1586,17 @@ fn dispatch_llm_turn(
         fail_abstract(env, st, i, path, "llm loop exceeded max_effects_per_attempt");
         return;
     }
+    // A decision-guided fold was tried and the transcript has since been
+    // MEASURED under its ceiling (the check above did not fire on a real
+    // count): a later trigger may ask a decision again.
+    if flow.decide_fold_tried && flow.last_prompt_tokens > 0 {
+        flow.decide_fold_tried = false;
+    }
     let effect_seq = flow.next_effect_seq;
     flow.next_effect_seq += 1;
     flow.need = None;
     let messages = flow.messages.clone();
+    let offer = flow.offer.clone();
     let key = JournalKey {
         run_id: st.run_id.clone(),
         task_path: path.to_string(),
@@ -1507,7 +1605,14 @@ fn dispatch_llm_turn(
         effect_seq,
         kind: EffectKind::Llm,
     };
-    let input = serde_json::json!({ "messages": messages });
+    let mut input = serde_json::json!({ "messages": messages });
+    // C1: the narrowed offer rides the turn's journaled input. The driver
+    // offers exactly these Definitions, keyed off the journal (as the fold's
+    // no-tools rule is), so verify makes the identical choice. Absent when
+    // nothing was narrowed, so such a turn is byte-identical to before.
+    if let Some(offer) = offer {
+        input["offer"] = offer;
+    }
     emit_effect(env, st, i, path, key, input, out);
 }
 
@@ -1635,6 +1740,559 @@ fn emit_effect(
         clock_ms: clock,
     });
     out.push(Command::Dispatch { key, executor, input });
+}
+
+// ---- decisions inside an abstract flow (C1, C2) ------------------------------
+//
+// Both are OPTIONAL looks a decision backend gets before the deterministic
+// rule runs. The scheduler never calls a backend: it emits a decision EFFECT
+// (`NodeExecutor::Decide`, `EffectKind::Tool`, the flow's next `effect_seq`)
+// whose input carries the request, the driver answers it through the host's
+// backend and journals it like any other effect, and the answer comes back as
+// an ordinary `EffectResolved`. So `verify` answers a decision from the
+// journal and never re-asks, a crash re-delivers it under the same key, and
+// the only new thing replay has to reproduce is what the scheduler did with
+// the answer — a pure function of it.
+//
+// The fail-open rule (proposal §2, rules 2 and 3) is structural here: every
+// path that does not produce a CALIBRATED, well-formed answer resolves to
+// exactly the deterministic behaviour the flow would have had with no backend
+// at all — the full offer, the summarizer fold.
+
+/// The offer the model sees: every pinned tool, or — once C1 narrowed it —
+/// only the names the flow's journaled `offer` lists. Manifest order either
+/// way; narrowing only ever removes.
+fn narrowed_offer(flow: Option<&crate::state::AbstractFlow>, tools: &[OfferedTool]) -> Vec<OfferedTool> {
+    let names: Option<Vec<&str>> = flow
+        .and_then(|f| f.offer.as_ref())
+        .and_then(|o| o.get("tools"))
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).collect());
+    match names {
+        Some(names) => tools.iter().filter(|t| names.contains(&t.tool_name.as_str())).cloned().collect(),
+        None => tools.to_vec(),
+    }
+}
+
+/// `{provider, model, calibrated, latency_ms}` off a decision effect's result
+/// (`Decision::to_json()`, as the driver journals it) — proposal rule 4.
+fn decide_provenance(result: &Value) -> Value {
+    serde_json::json!({
+        "provider": result.get("provider").cloned().unwrap_or(Value::Null),
+        "model": result.get("model").cloned().unwrap_or(Value::Null),
+        "calibrated": result.get("calibrated").cloned().unwrap_or(Value::Null),
+        "latency_ms": result.get("latency_ms").cloned().unwrap_or(Value::Null),
+    })
+}
+
+/// Emit one decision effect for node `i`'s flow and mark it in flight.
+///
+/// Returns `false`, emitting nothing, when the flow is gone, the run is
+/// draining, or the next `effect_seq` would pass the effect cap. A decision is
+/// optional: running out of effects for one must not fail the node — the
+/// deterministic path that runs instead meets the cap on its own terms.
+fn emit_decide_effect(
+    env: &StepEnv<'_>,
+    st: &mut SchedulerState,
+    i: usize,
+    path: &str,
+    request: Value,
+    in_flight: impl FnOnce(u32) -> DecideInFlight,
+    out: &mut Vec<Command>,
+) -> bool {
+    if st.exhausted.is_some() || st.cancel.is_some() {
+        return false;
+    }
+    let attempt = flow_attempt(st, i, path);
+    let Some(flow) = st.abstract_flows.get_mut(&flow_key(i, path)) else { return false };
+    if flow.next_effect_seq >= env.max_effects_per_attempt {
+        return false;
+    }
+    let effect_seq = flow.next_effect_seq;
+    flow.next_effect_seq += 1;
+    flow.need = None;
+    flow.deciding = Some(in_flight(effect_seq));
+    let key = JournalKey {
+        run_id: st.run_id.clone(),
+        task_path: path.to_string(),
+        node: env.plan.nodes[i].clone(),
+        attempt,
+        effect_seq,
+        kind: EffectKind::Tool,
+    };
+    let executor = NodeExecutor::Decide { tool_hash: String::new(), tool_name: DECIDE_TOOL.into() };
+    let input = serde_json::json!({ "decide": request });
+    let (clock, superstep) = (st.clock_ms, st.superstep);
+    if let Phase::Open { outstanding, record, .. } = &mut st.phase {
+        outstanding.insert(key.clone());
+        if effect_seq == 0 {
+            if path.is_empty() {
+                record.dispatched.push((i, attempt));
+            } else {
+                record.task_dispatched.push((path.to_string(), attempt));
+            }
+        }
+    }
+    out.push(Command::WriteIntent {
+        key: key.clone(),
+        executor: executor.clone(),
+        input: input.clone(),
+        superstep,
+        clock_ms: clock,
+    });
+    out.push(Command::Dispatch { key, executor, input });
+    true
+}
+
+/// C1: before an abstract flow's first turn, ask a calibrated backend which
+/// of the pinned tools this step needs — only when more than
+/// [`OFFER_TOP_K`] are pinned. `false` = not asked; the full offer stands.
+fn emit_offer_decide(
+    env: &StepEnv<'_>,
+    st: &mut SchedulerState,
+    i: usize,
+    path: &str,
+    out: &mut Vec<Command>,
+) -> bool {
+    let Some(d) = env.decide.as_ref().filter(|d| d.calibrated) else { return false };
+    let NodeExecutor::Abstract { tools } = &env.executors[i] else { return false };
+    // A choice carries 2..=255 options; past that the question cannot be
+    // asked, and the full offer is the honest answer.
+    if tools.len() <= OFFER_TOP_K || tools.len() > 255 {
+        return false;
+    }
+    let Some(flow) = st.abstract_flows.get(&flow_key(i, path)) else { return false };
+    let first = flow.messages.first().and_then(|m| m.get("content")).cloned().unwrap_or(Value::Null);
+    let describe = |t: &OfferedTool| {
+        d.tool_descriptions
+            .get(&t.tool_name)
+            .filter(|s| !s.trim().is_empty())
+            .cloned()
+            .unwrap_or_else(|| t.tool_name.clone())
+    };
+    let criteria: serde_json::Map<String, Value> =
+        tools.iter().map(|t| (t.tool_name.clone(), Value::String(describe(t)))).collect();
+    let listed: Vec<Value> = tools
+        .iter()
+        .map(|t| serde_json::json!({ "name": t.tool_name, "description": describe(t) }))
+        .collect();
+    let request = serde_json::json!({
+        "purpose": "offer",
+        "v": FOLD_DECIDE_V,
+        "state": {
+            "plan": d.plan_label,
+            "step": first.get("instruction").cloned().unwrap_or(Value::Null),
+            "input": first.get("state").cloned().unwrap_or(Value::Null),
+            "tools": listed,
+        },
+        "questions": {
+            "tool": { "type": "choice", "instructions": OFFER_QUESTION, "criteria": criteria },
+        },
+    });
+    emit_decide_effect(env, st, i, path, request, |effect_seq| DecideInFlight::Offer { effect_seq }, out)
+}
+
+/// The tool a `tool` transcript entry answers, by the model's call id, read
+/// off the nearest preceding assistant entry.
+fn tool_entry_name(messages: &[Value], n: usize) -> Value {
+    let id = messages[n].get("tool_call_id").and_then(Value::as_str).unwrap_or_default();
+    messages[..n]
+        .iter()
+        .rev()
+        .find(|m| m.get("role").and_then(Value::as_str) == Some("assistant"))
+        .and_then(|a| a.get("tool_calls").and_then(Value::as_array))
+        .and_then(|calls| {
+            calls.iter().find(|c| c.get("id").and_then(Value::as_str) == Some(id))
+        })
+        .and_then(|c| c.get("name").cloned())
+        .unwrap_or(Value::Null)
+}
+
+/// A transcript entry's content as the text a model would have been shown.
+fn content_text(m: &Value) -> String {
+    match m.get("content") {
+        Some(Value::String(s)) => s.clone(),
+        Some(other) => other.to_string(),
+        None => String::new(),
+    }
+}
+
+/// C2: before the summarizer fold, show a calibrated backend the foldable
+/// window — every tool result replaced by a short note — and ask two `noul`
+/// questions per result. `false` = not asked; the summarizer runs.
+fn emit_fold_decide(
+    env: &StepEnv<'_>,
+    st: &mut SchedulerState,
+    i: usize,
+    path: &str,
+    from: usize,
+    to: usize,
+    out: &mut Vec<Command>,
+) -> bool {
+    if !env.decide.as_ref().is_some_and(|d| d.calibrated) {
+        return false;
+    }
+    let Some(flow) = st.abstract_flows.get(&flow_key(i, path)) else { return false };
+    let messages = &flow.messages;
+    let mut transcript = Vec::with_capacity(to.saturating_sub(from));
+    let mut questions = serde_json::Map::new();
+    for (n, m) in messages.iter().enumerate().take(to).skip(from) {
+        match m.get("role").and_then(Value::as_str).unwrap_or_default() {
+            "tool" => {
+                let failed = m.get("is_error").and_then(Value::as_bool).unwrap_or(false);
+                transcript.push(serde_json::json!({
+                    "n": n,
+                    "role": "tool",
+                    "tool": tool_entry_name(messages, n),
+                    "result": format!(
+                        "{}, {} chars (omitted)",
+                        if failed { "error" } else { "ok" },
+                        content_text(m).chars().count()
+                    ),
+                }));
+                questions.insert(
+                    format!("keep_call_{n}"),
+                    serde_json::json!({ "type": "noul", "instructions": KEEP_CALL_QUESTION }),
+                );
+                questions.insert(
+                    format!("keep_result_{n}"),
+                    serde_json::json!({ "type": "noul", "instructions": KEEP_RESULT_QUESTION }),
+                );
+            }
+            "assistant" => transcript.push(serde_json::json!({
+                "n": n,
+                "role": "assistant",
+                "text": m.get("text").cloned().unwrap_or(Value::Null),
+                "tool_calls": m.get("tool_calls").cloned().unwrap_or(Value::Null),
+            })),
+            role => transcript.push(serde_json::json!({
+                "n": n,
+                "role": role,
+                "content": m.get("content").cloned().unwrap_or(Value::Null),
+            })),
+        }
+    }
+    // Nothing a decision could keep or drop: the summarizer's job.
+    if questions.is_empty() {
+        return false;
+    }
+    let task = messages
+        .first()
+        .and_then(|m| m.get("content"))
+        .map(|c| c.get("instruction").cloned().unwrap_or_else(|| c.clone()))
+        .unwrap_or(Value::Null);
+    let request = serde_json::json!({
+        "purpose": "fold",
+        "v": FOLD_DECIDE_V,
+        "from": from,
+        "to": to,
+        "state": { "task": task, "transcript": transcript },
+        "questions": questions,
+    });
+    emit_decide_effect(
+        env,
+        st,
+        i,
+        path,
+        request,
+        |effect_seq| DecideInFlight::Fold { from, to, effect_seq },
+        out,
+    )
+}
+
+/// A decision effect inside a flow resolved: route it to what it was asked
+/// for. Either way the loop continues with an ordinary next turn.
+fn handle_flow_decide(
+    env: &StepEnv<'_>,
+    st: &mut SchedulerState,
+    i: usize,
+    path: &str,
+    outcome: &EffectOutcome,
+) {
+    let Some(asked) = st.abstract_flows.get_mut(&flow_key(i, path)).and_then(|f| f.deciding.take())
+    else {
+        return;
+    };
+    match asked {
+        DecideInFlight::Offer { effect_seq } => {
+            resolve_offer_decide(env, st, i, path, effect_seq, outcome)
+        }
+        DecideInFlight::Fold { from, to, effect_seq } => {
+            resolve_fold_decide(env, st, i, path, from, to, effect_seq, outcome)
+        }
+    }
+}
+
+/// C1's keep rule over a validated probability table: the top
+/// [`OFFER_TOP_K`] by probability (ties by manifest order), plus every tool at
+/// or above [`OFFER_KEEP_P`], returned in MANIFEST order. `None` when the
+/// table does not cover every pinned tool with a finite probability — a
+/// malformed answer narrows nothing.
+fn narrow_offer(tools: &[OfferedTool], probs: &serde_json::Map<String, Value>) -> Option<Vec<String>> {
+    let mut ranked: Vec<(usize, f64)> = Vec::with_capacity(tools.len());
+    for (idx, t) in tools.iter().enumerate() {
+        let p = probs.get(&t.tool_name).and_then(Value::as_f64).filter(|p| p.is_finite())?;
+        ranked.push((idx, p));
+    }
+    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
+    let keep: std::collections::BTreeSet<usize> = ranked
+        .iter()
+        .enumerate()
+        .filter(|(rank, (_, p))| *rank < OFFER_TOP_K || *p >= OFFER_KEEP_P)
+        .map(|(_, (idx, _))| *idx)
+        .collect();
+    Some(keep.into_iter().map(|idx| tools[idx].tool_name.clone()).collect())
+}
+
+fn resolve_offer_decide(
+    env: &StepEnv<'_>,
+    st: &mut SchedulerState,
+    i: usize,
+    path: &str,
+    effect_seq: u32,
+    outcome: &EffectOutcome,
+) {
+    let NodeExecutor::Abstract { tools } = &env.executors[i] else { return };
+    // Rule 2: only a CALIBRATED answer may omit a tool. Anything else — an
+    // uncalibrated answer, a failure, a malformed table — keeps the full
+    // offer, which is what the flow would have had with no backend.
+    let narrowed = match outcome {
+        EffectOutcome::Completed { result, .. }
+            if result.get("calibrated") == Some(&Value::Bool(true)) =>
+        {
+            result
+                .pointer("/answers/tool/probabilities")
+                .and_then(Value::as_object)
+                .and_then(|probs| narrow_offer(tools, probs))
+                .filter(|keep| !keep.is_empty() && keep.len() < tools.len())
+                .map(|keep| {
+                    let mut record = decide_provenance(result);
+                    record["tools"] = serde_json::json!(keep);
+                    record["seq"] = serde_json::json!(effect_seq);
+                    record
+                })
+        }
+        _ => None,
+    };
+    let Some(flow) = st.abstract_flows.get_mut(&flow_key(i, path)) else { return };
+    flow.offer = narrowed;
+    flow.need = Some(crate::state::FlowNeed::NextTurn);
+}
+
+/// What a decision-guided fold will do to the window, per entry.
+struct Prune {
+    kept: Vec<usize>,
+    truncated: Vec<usize>,
+    dropped: Vec<usize>,
+}
+
+/// The decision → edit plan (C2). Pure; `Err` names why nothing is applied.
+///
+/// Per tool-result entry `n`: `keep_result ≥ 0.5` stays verbatim;
+/// `keep_call ≥ 0.5 > keep_result` keeps the call and truncates the result;
+/// both below drops it. Then the never-separate rule, at ROUND granularity: a
+/// round (an assistant entry and the results that answer it) leaves the prompt
+/// only WHOLE — every result dropped, and the assistant entry with them. A
+/// round with anything kept keeps every call, and its would-be-dropped
+/// results are truncated instead. Editing an assistant entry's `tool_calls`
+/// would desynchronize it from its `provider_content` (#284), which the
+/// adapter replays verbatim — and a call with no result, or a result with no
+/// call, is a request every provider refuses.
+fn plan_prune(messages: &[Value], from: usize, to: usize, result: &Value) -> Result<Prune, String> {
+    if result.get("calibrated") != Some(&Value::Bool(true)) {
+        return Err("the backend answered uncalibrated — an uncalibrated backend may reorder, \
+                    never omit"
+            .into());
+    }
+    let answers = result.get("answers").ok_or("the decision carries no answers")?;
+    let p = |id: &str| -> Result<f64, String> {
+        answers
+            .get(id)
+            .and_then(|a| a.get("noul"))
+            .and_then(Value::as_f64)
+            .filter(|x| x.is_finite() && (0.0..=1.0).contains(x))
+            .ok_or_else(|| format!("no valid answer for {id}"))
+    };
+    #[derive(Clone, Copy, PartialEq)]
+    enum Verdict {
+        Keep,
+        Truncate,
+        Drop,
+    }
+    // (owning assistant index, [(tool index, verdict)]) in transcript order.
+    type Round = (Option<usize>, Vec<(usize, Verdict)>);
+    let mut rounds: Vec<Round> = Vec::new();
+    let mut owner: Option<usize> = None;
+    for (n, m) in messages.iter().enumerate().take(to).skip(from) {
+        match m.get("role").and_then(Value::as_str).unwrap_or_default() {
+            "assistant" => {
+                owner = Some(n);
+                rounds.push((owner, Vec::new()));
+            }
+            "tool" => {
+                let (keep_call, keep_result) =
+                    (p(&format!("keep_call_{n}"))?, p(&format!("keep_result_{n}"))?);
+                let v = if keep_result >= 0.5 {
+                    Verdict::Keep
+                } else if keep_call >= 0.5 {
+                    Verdict::Truncate
+                } else {
+                    Verdict::Drop
+                };
+                match rounds.last_mut() {
+                    Some((o, members)) if *o == owner && owner.is_some() => members.push((n, v)),
+                    // A result with no assistant entry in the window: never
+                    // dropped, since its call could not go with it.
+                    _ => rounds.push((None, vec![(n, v)])),
+                }
+            }
+            // Anything else (a user note, a re-prompt) closes the round.
+            _ => owner = None,
+        }
+    }
+    let (mut kept, mut truncated, mut dropped) = (Vec::new(), Vec::new(), Vec::new());
+    for (own, members) in rounds {
+        if members.is_empty() {
+            continue;
+        }
+        let whole = own.is_some() && members.iter().all(|(_, v)| *v == Verdict::Drop);
+        if whole {
+            dropped.extend(own);
+            dropped.extend(members.iter().map(|(n, _)| *n));
+            continue;
+        }
+        for (n, v) in members {
+            // Truncating what is already short changes nothing but the note;
+            // it is reported as kept, because it was.
+            let short = content_text(&messages[n]).chars().count() <= FOLD_TRUNCATE_CHARS;
+            if v == Verdict::Keep || short {
+                kept.push(n);
+            } else {
+                truncated.push(n);
+            }
+        }
+    }
+    if truncated.is_empty() && dropped.is_empty() {
+        return Err("the decision kept every entry verbatim".into());
+    }
+    kept.sort_unstable();
+    truncated.sort_unstable();
+    dropped.sort_unstable();
+    Ok(Prune { kept, truncated, dropped })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_fold_decide(
+    env: &StepEnv<'_>,
+    st: &mut SchedulerState,
+    i: usize,
+    path: &str,
+    from: usize,
+    to: usize,
+    effect_seq: u32,
+    outcome: &EffectOutcome,
+) {
+    let flow_id = flow_key(i, path);
+    let attempt = flow_attempt(st, i, path);
+    let Some(flow) = st.abstract_flows.get(&flow_id) else { return };
+    let (plan, provenance) = match outcome {
+        EffectOutcome::Completed { result, .. } => {
+            let plan = if from < to && to <= flow.messages.len() {
+                plan_prune(&flow.messages, from, to, result)
+            } else {
+                Err("the window no longer fits the transcript".into())
+            };
+            (plan, Some(decide_provenance(result)))
+        }
+        EffectOutcome::Failed { cause, detail, .. } => {
+            (Err(format!("the decision failed ({cause:?}: {detail})")), None)
+        }
+    };
+    let mut record = FoldRecord {
+        kind: "decide".into(),
+        v: FOLD_DECIDE_V,
+        node: env.plan.nodes[i].clone(),
+        task_path: path.to_string(),
+        attempt,
+        seq: effect_seq,
+        from,
+        to,
+        provenance: provenance.clone(),
+        ..FoldRecord::default()
+    };
+    let Some(flow) = st.abstract_flows.get_mut(&flow_id) else { return };
+    // Either way this trigger has had its decision: the next one goes to the
+    // summarizer until the transcript is measured under the ceiling again.
+    flow.decide_fold_tried = true;
+    flow.need = Some(crate::state::FlowNeed::NextTurn);
+    match plan {
+        Err(reason) => {
+            // Fail open: nothing is edited, and the NextTurn above re-enters
+            // `dispatch_llm_turn`, whose trigger still holds — the summarizer
+            // fold runs exactly as it would have with no backend.
+            record.reason = Some(reason);
+        }
+        Ok(prune) => {
+            let n = flow.folds + 1;
+            let who = provenance
+                .as_ref()
+                .map(|p| {
+                    format!(
+                        "{}/{}",
+                        p.get("provider").and_then(Value::as_str).unwrap_or("?"),
+                        p.get("model").and_then(Value::as_str).unwrap_or("?")
+                    )
+                })
+                .unwrap_or_default();
+            let note = serde_json::json!({
+                "role": "user",
+                "content": format!(
+                    "[Areev fold {n} (decision): of transcript entries {from}..{to} of attempt \
+                     {attempt}, entries {:?} were dropped and {:?} truncated to \
+                     {FOLD_TRUNCATE_CHARS} characters by a decision model ({who}), journaled at \
+                     effect_seq {effect_seq}. The full record — every turn and every tool result \
+                     — is in this run's journal.]",
+                    prune.dropped, prune.truncated,
+                ),
+            });
+            let mut next = Vec::with_capacity(flow.messages.len() + 1);
+            for (idx, m) in flow.messages.iter().enumerate() {
+                if idx == from {
+                    next.push(note.clone());
+                }
+                if prune.dropped.contains(&idx) {
+                    continue;
+                }
+                if prune.truncated.contains(&idx) {
+                    let text = content_text(m);
+                    let total = text.chars().count();
+                    let head: String = text.chars().take(FOLD_TRUNCATE_CHARS).collect();
+                    let mut cut = m.clone();
+                    cut["content"] = Value::String(format!(
+                        "{head}… [truncated to {FOLD_TRUNCATE_CHARS} of {total} characters by a \
+                         decision model; the full result is in this run's journal]"
+                    ));
+                    next.push(cut);
+                } else {
+                    next.push(m.clone());
+                }
+            }
+            flow.messages = next;
+            flow.folds = n;
+            // The pruned transcript is unmeasured: zero means "ask the
+            // provider", and a refusal that provoked this has been answered.
+            flow.last_prompt_tokens = 0;
+            flow.fold_forced = false;
+            st.folds = st.folds.saturating_add(1);
+            record.applied = true;
+            record.kept = prune.kept;
+            record.truncated = prune.truncated;
+            record.dropped = prune.dropped;
+        }
+    }
+    if let Phase::Open { record: rec, .. } = &mut st.phase {
+        rec.folds.push(record);
+    }
 }
 
 /// Fail an abstract node (loop bound, terminal model failure): fail-fast
@@ -1888,12 +2546,14 @@ fn apply_spawns(
                 NodeExecutor::Host { .. }
                     | NodeExecutor::Abstract { .. }
                     | NodeExecutor::MemoryRead { .. }
+                    | NodeExecutor::Decide { .. }
             ) {
                 fail(
                     st,
                     spawner,
                     format!(
-                        "$send target '{target_name}' is not a Host tool, abstract node or memory read"
+                        "$send target '{target_name}' is not a Host tool, abstract node, memory \
+                         read or decision node"
                     ),
                 );
                 return;

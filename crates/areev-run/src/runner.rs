@@ -171,6 +171,21 @@ fn executor_kind_of(executor: &areev_run_core::NodeExecutor) -> &'static str {
         Abstract { .. } => "abstract",
         Subgraph { .. } => "subgraph",
         MemoryRead { .. } => "memory",
+        Decide { .. } => "decide",
+    }
+}
+
+/// A decision backend's failure as the effect's `FailCause` (C1–C3). The
+/// §6.3 table then decides retry: transport, malformed-answer, deadline and
+/// rate-limit faults are retryable under a decision node's `retries`; an
+/// unaskable question is the plan's defect, and a refused egress or a
+/// missing backend is not something a retry changes.
+fn decide_fail_cause(e: &areev_core::decide::DecideError) -> FailCause {
+    match e.code() {
+        "DEC-E004" => FailCause::Timeout,
+        "DEC-E006" => FailCause::SchemaValidationFailed,
+        "DEC-E001" | "DEC-E008" => FailCause::Unknown,
+        _ => FailCause::ExecutorError,
     }
 }
 
@@ -706,7 +721,10 @@ impl Runner {
         let manifest = manifest
             .with_llm_pin(self.llm_pin())
             .with_engine_pin()
-            .with_attribution(opts);
+            .with_attribution(opts)
+            // C3's V7 half: a decision node on a host with no backend is
+            // RUN-E030 here, before anything is written.
+            .with_decider_pin(self.decider_pin())?;
         // #294: a plan that pins a CONFIRMATION Definition refuses at start
         // unless the host opted in, naming the node and the flag.
         //
@@ -847,6 +865,155 @@ impl Runner {
         })
     }
 
+    /// Install a decision backend (`docs/decision-model-proposal.md` C1–C3)
+    /// — the one call a host makes.
+    ///
+    /// Wraps [`Runner::executor`] in a [`crate::DecidingExecutor`], so it
+    /// composes with whatever executor stack the host already built. Pass the
+    /// host's pseudonymizing chain (`areev_llm::PseudonymizingDecider` over
+    /// `areev_llm::decide::resolve_chain`): the driver additionally routes a
+    /// decision's `state` through the SAME namespace egress boundary an
+    /// abstract node's prompt takes, but a remote backend under no namespace
+    /// policy still sees what the host's wrapper lets out.
+    pub fn with_decider(mut self, decider: Arc<dyn areev_core::decide::DecisionBackend>) -> Self {
+        self.executor = Arc::new(crate::executor::DecidingExecutor::new(
+            Arc::clone(&self.executor),
+            decider,
+        ));
+        self
+    }
+
+    /// This host's decision-backend pin, or `None` when none is installed.
+    pub(crate) fn decider_pin(&self) -> Option<crate::manifest::DeciderPin> {
+        self.executor.decider().map(|d| crate::manifest::DeciderPin {
+            describe: d.describe(),
+            calibrated: d.calibrated(),
+        })
+    }
+
+    /// Refuse a resume of a run with a decision node on a host that cannot
+    /// answer it (`RUN-E030`), before the lease — the resume twin of the
+    /// start-time refusal. The scheduler's optional asks need no such check:
+    /// without a backend they fail open at dispatch.
+    fn check_decider(&self, manifest: &RunManifest) -> Result<(), RunError> {
+        if self.executor.decider().is_some() {
+            return Ok(());
+        }
+        match manifest.pinned.iter().find(|p| p.executor == crate::manifest::DECIDE_EXECUTOR) {
+            Some(p) => Err(RunError::NoDecider { node: p.node.clone() }),
+            None => Ok(()),
+        }
+    }
+
+    /// Answer one decision effect (C1–C3) through the host's backend.
+    ///
+    /// - A **decision node** (C3) builds `{state, questions}` from the node's
+    ///   input and its frozen `decide` pin: the pinned questions win over an
+    ///   input `questions` key; `state` is the input's `state` key, else the
+    ///   whole input. A strict Definition's `input_schema` is checked against
+    ///   that `{state, questions}` exactly as a model's call to a strict host
+    ///   tool is. The result lands under the pin's `into` key.
+    /// - A **scheduler ask** (C1/C2, `mg:decide`) carries its request in
+    ///   `input.decide`; the answer is returned bare.
+    ///
+    /// `state` crosses the namespace egress boundary first
+    /// (`pseudonymize_for_model`, the one an abstract node's prompt takes);
+    /// a refusal there sends nothing. Every failure is a FAILED effect — for
+    /// the scheduler's asks that is the fail-open path, for a decision node
+    /// the node's ordinary retry table.
+    fn run_decide(
+        &self,
+        key: &JournalKey,
+        executor: &NodeExecutor,
+        input: &Value,
+        manifest: &RunManifest,
+        schemas: &BTreeMap<String, Value>,
+    ) -> EffectOutcome {
+        use areev_core::decide::{questions_from_wire, DecideRequest};
+        let fail = |cause: FailCause, detail: String| EffectOutcome::Failed {
+            journal_bytes: detail.len() as u64,
+            cause,
+            detail,
+        };
+        let NodeExecutor::Decide { tool_name, .. } = executor else {
+            return fail(FailCause::Unknown, "not a decision effect".into());
+        };
+        let ask = input.get("decide").filter(|_| tool_name == areev_run_core::DECIDE_TOOL);
+        let (state, questions, into) = match ask {
+            Some(ask) => (
+                ask.get("state").cloned().unwrap_or(Value::Null),
+                ask.get("questions").cloned().unwrap_or(Value::Null),
+                None,
+            ),
+            None => {
+                let decl = manifest
+                    .pinned
+                    .iter()
+                    .find(|p| p.node == key.node && p.executor == crate::manifest::DECIDE_EXECUTOR)
+                    .and_then(|p| p.decide.clone())
+                    .unwrap_or_else(|| json!({}));
+                let questions = decl
+                    .get("questions")
+                    .cloned()
+                    .or_else(|| input.get("questions").cloned())
+                    .unwrap_or(Value::Null);
+                let state = input.get("state").cloned().unwrap_or_else(|| input.clone());
+                if let Some(schema) = schemas.get(tool_name) {
+                    let args = json!({ "state": state, "questions": questions });
+                    if let Err(k) = areev_core::types::validate_instance(&args, schema) {
+                        return fail(
+                            FailCause::SchemaValidationFailed,
+                            format!("decision input fails the tool's schema: {}", k.as_str()),
+                        );
+                    }
+                }
+                let into = decl
+                    .get("into")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| key.node.clone());
+                (state, questions, Some(into))
+            }
+        };
+        let questions = match questions_from_wire(&questions) {
+            Ok(q) => q,
+            Err(e) => return fail(FailCause::SchemaValidationFailed, e.to_string()),
+        };
+        let Some(decider) = self.executor.decider() else {
+            return fail(
+                FailCause::Unknown,
+                RunError::NoDecider { node: key.node.clone() }.to_string(),
+            );
+        };
+        let state = match self.pseudonymize_for_model(&state) {
+            Ok(v) => v,
+            Err(e) => {
+                return fail(
+                    FailCause::Unknown,
+                    format!("egress pseudonymization of the decision state failed, nothing was sent: {e}"),
+                )
+            }
+        };
+        match decider.decide(&DecideRequest::new(state, questions)) {
+            Ok(d) => {
+                let body = d.to_json();
+                let result = match into {
+                    Some(k) => json!({ k: body }),
+                    None => body,
+                };
+                let journal_bytes = result.to_string().len() as u64;
+                EffectOutcome::Completed {
+                    result,
+                    journal_bytes,
+                    input_tokens: d.input_tokens.unwrap_or(0),
+                    output_tokens: d.output_tokens.unwrap_or(0),
+                    usd_micros: 0,
+                }
+            }
+            Err(e) => fail(decide_fail_cause(&e), e.to_string()),
+        }
+    }
+
     /// Refuse a resume whose model configuration differs from the one the run
     /// started under (#287).
     ///
@@ -914,6 +1081,7 @@ impl Runner {
         self.check_engine_pin(&manifest)?;
         if check_llm {
             self.check_llm_pin(&manifest)?;
+            self.check_decider(&manifest)?;
         }
         let plan_hash = Hash::from_hex(&manifest.plan_hash)
             .map_err(|_| RunError::ManifestMismatch { why: "bad plan hash".into() })?;
@@ -1201,7 +1369,8 @@ impl Runner {
                 let manifest = manifest
                     .with_llm_pin(self.llm_pin())
                     .with_engine_pin()
-                    .with_attribution(opts);
+                    .with_attribution(opts)
+                    .with_decider_pin(self.decider_pin())?;
                 self.check_read_grants(&manifest)?;
                 let mut fresh = SchedulerState::new(new_run_id, &plan);
                 // The Start bootstrap, applied here so the seed checkpoint
@@ -1236,10 +1405,17 @@ impl Runner {
                     // is actually running under, not what the base ran under.
                     llm: self.llm_pin(),
                     engine: Some(crate::manifest::EnginePin::current()),
+                    // Likewise the decision backend (C1–C3): the fork decides
+                    // under what it is running with.
+                    decider: self.decider_pin(),
                     ..base_manifest
                 }
             }
         };
+        // RUN-E030 for a fork of a plan with a decision node, on a host that
+        // cannot answer it — before the fork is written.
+        let pin = manifest.decider.clone();
+        manifest = manifest.with_decider_pin(pin)?;
         manifest.fork_of = Some(fork_base.clone());
         self.facade
             .with_store(|m| manifest.persist_in_namespace(m, &self.ns))
@@ -1745,6 +1921,7 @@ impl Runner {
         let arg_schemas = self.load_arg_schemas(manifest)?;
         let validate_args = make_validate_args(&arg_schemas);
         let reduce = crate::reducers::make_reduce(&manifest.reducers);
+        let decide_ctx = crate::shadow::decide_context_for(&self.facade, manifest)?;
         let env = StepEnv {
             plan,
             executors: &executors,
@@ -1757,6 +1934,7 @@ impl Runner {
             max_effects_per_attempt: manifest.max_effects_per_attempt(),
             llm_tool_result_chars: manifest.llm_tool_result_chars,
             llm_context_tokens: manifest.llm_context_tokens,
+            decide: decide_ctx.env(manifest),
         };
         let run_id = st.run_id.clone();
 
@@ -2073,7 +2251,8 @@ impl Runner {
                             agent_name: in_agent.then(|| key.node.clone()),
                             tool_name: match &executor {
                                 areev_run_core::NodeExecutor::Host { tool_name, .. }
-                                | areev_run_core::NodeExecutor::Client { tool_name, .. } => {
+                                | areev_run_core::NodeExecutor::Client { tool_name, .. }
+                                | areev_run_core::NodeExecutor::Decide { tool_name, .. } => {
                                     Some(tool_name.clone())
                                 }
                                 _ => None,
@@ -2133,6 +2312,14 @@ impl Runner {
                                     crate::memread::execute(&self.facade, &self.ns, spec, &input);
                                 Some((read.outcome, read.record))
                             }
+                            // A decision (C1–C3) is the host's backend
+                            // answering, on this thread — never the pool,
+                            // never `--tool-cmd`. Its result grain is the
+                            // replay answer, so verify never re-asks.
+                            areev_run_core::NodeExecutor::Decide { .. } => Some((
+                                self.run_decide(&key, &executor, &input, manifest, &arg_schemas),
+                                None,
+                            )),
                             _ => None,
                         };
                         if let Some((outcome, record)) = inline {
@@ -2200,8 +2387,29 @@ impl Runner {
                             if folding {
                                 fold_keys.insert(key.clone());
                             }
-                            let offered: &[areev_run_core::OfferedTool] =
-                                if folding { &[] } else { tools };
+                            // C1: a narrowed offer rides the turn's own
+                            // journaled input as `offer.tools` — the same
+                            // journal-keyed rule, so verify offers the same
+                            // set. Narrowing only removes from the pinned
+                            // universe.
+                            let narrowed: Option<Vec<areev_run_core::OfferedTool>> = input
+                                .get("offer")
+                                .and_then(|o| o.get("tools"))
+                                .and_then(Value::as_array)
+                                .map(|names| {
+                                    tools
+                                        .iter()
+                                        .filter(|t| {
+                                            names.iter().any(|n| n.as_str() == Some(&t.tool_name))
+                                        })
+                                        .cloned()
+                                        .collect()
+                                });
+                            let offered: &[areev_run_core::OfferedTool] = if folding {
+                                &[]
+                            } else {
+                                narrowed.as_deref().unwrap_or(tools)
+                            };
                             let mut defs = Vec::with_capacity(offered.len());
                             for t in offered {
                                 let h = Hash::from_hex(&t.tool_hash).map_err(err_run)?;
@@ -3131,6 +3339,10 @@ impl Runner {
         let arg_schemas = self.load_arg_schemas(&manifest)?;
         let validate_args = make_validate_args(&arg_schemas);
         let reduce = crate::reducers::make_reduce(&manifest.reducers);
+        // From the MANIFEST's pin, never from this host: verify must ask what
+        // the run asked, whoever is verifying — and it answers every ask from
+        // the journal, so no backend is ever called here.
+        let decide_ctx = crate::shadow::decide_context_for(&self.facade, &manifest)?;
         let env = StepEnv {
             plan: &plan,
             executors: &executors,
@@ -3143,6 +3355,7 @@ impl Runner {
             max_effects_per_attempt: manifest.max_effects_per_attempt(),
             llm_tool_result_chars: manifest.llm_tool_result_chars,
             llm_context_tokens: manifest.llm_context_tokens,
+            decide: decide_ctx.env(&manifest),
         };
 
         let mut report = VerifyReport::default();

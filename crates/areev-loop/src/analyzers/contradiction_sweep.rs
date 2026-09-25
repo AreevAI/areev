@@ -3,15 +3,29 @@
 //! a seeded functional-relation list so it fires on day one; the from-file
 //! learner (single-valued for ≥80% of subjects) is deferred. Resolving a
 //! contradiction is a judgment call, so it never auto-applies.
+//!
+//! **With a decision backend** (`Engine::with_decider`, proposal row E2): for
+//! every (namespace, subject, relation) OUTSIDE the functional set holding
+//! two or more distinct live objects, each pair of distinct values is asked
+//! "can both of these be true at the same time?" — batched, at most
+//! `pair_cap` pairs per run. When a CALIBRATED `1 − p ≥ DECIDE_MIN_P` for any
+//! pair, the same supersede-older draft is proposed over the values in the
+//! conflicting pairs (the newest of them wins), under the
+//! `contradiction.judged` summary that says the relation was not seeded and
+//! with the probabilities on `judged_by`. It carries no recurrence metric: a
+//! relation nobody declared single-valued may legitimately gain values later,
+//! and counting them would read as a regression. Uncalibrated → no proposals;
+//! a failed request → none from that batch.
 
 use crate::analyzer::{AnalyzeCtx, Analyzer};
+use crate::decide::{Ask, DECIDE_MIN_P, QUESTIONS_PER_REQUEST};
 use crate::analyzers::bound_evidence;
 use crate::cal;
 use crate::error::Result;
 use crate::manifest::*;
 use crate::model::{normalize_ident, ActionKind, GrainRecord, Severity};
 use crate::recommendation::{MetricSnapshot, Proposal, RecDraft, Summary};
-use serde_json::{json, Map};
+use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 
 /// Relations that are single-valued by convention (a subset of the built-in
@@ -85,19 +99,22 @@ impl Analyzer for ContradictionSweep {
 
         let facts = ctx.facts()?;
         // (ns, subject, relation) → live facts, only for functional relations.
+        // The rest are kept aside for the decision backend (E2), if any.
         let mut groups: BTreeMap<(String, String, String), Vec<GrainRecord>> = BTreeMap::new();
+        let mut other: BTreeMap<(String, String, String), Vec<GrainRecord>> = BTreeMap::new();
         for f in facts {
             let (Some(s), Some(r)) = (f.fact_subject(), f.fact_relation()) else {
                 continue;
             };
-            if !functional.contains(&normalize_ident(r)) {
-                continue;
-            }
             let key = (
                 normalize_ident(&f.namespace),
                 normalize_ident(s),
                 normalize_ident(r),
             );
+            if !functional.contains(&key.2) {
+                other.entry(key).or_default().push(f);
+                continue;
+            }
             groups.entry(key).or_default().push(f);
         }
 
@@ -179,9 +196,163 @@ impl Analyzer for ContradictionSweep {
                 }),
             );
         }
+        drafts.extend(judged(ctx, other));
         drafts.sort_by(|a, b| a.target_ref.cmp(&b.target_ref));
         Ok(drafts)
     }
+}
+
+/// The supersede-older CAL: every member but `latest` is superseded with
+/// `latest`'s value (namespace carried, or the winner would migrate to the
+/// store default namespace).
+fn supersede_older(members: &[GrainRecord], latest: &GrainRecord) -> String {
+    let mut latest_fields = Map::new();
+    latest_fields.insert("subject".into(), json!(latest.fact_subject().unwrap_or("")));
+    latest_fields.insert("relation".into(), json!(latest.fact_relation().unwrap_or("")));
+    latest_fields.insert("object".into(), json!(latest.fact_object().unwrap_or("")));
+    if !latest.namespace.is_empty() {
+        latest_fields.insert("namespace".into(), json!(latest.namespace));
+    }
+    let statements: Vec<String> = members
+        .iter()
+        .filter(|m| m.hash != latest.hash)
+        .map(|older| cal::supersede(&older.hash, "fact", &latest_fields))
+        .collect();
+    cal::batch(&statements)
+}
+
+fn fact_text(f: &GrainRecord) -> String {
+    format!(
+        "{} {} {}",
+        f.fact_subject().unwrap_or(""),
+        f.fact_relation().unwrap_or(""),
+        f.fact_object().unwrap_or("")
+    )
+}
+
+fn oldest_first(a: &GrainRecord, b: &GrainRecord) -> std::cmp::Ordering {
+    a.created_at_ms.cmp(&b.created_at_ms).then(a.hash.cmp(&b.hash))
+}
+
+/// E2: pairs of distinct values under relations nobody declared functional,
+/// asked of a CALIBRATED decision backend.
+fn judged(
+    ctx: &AnalyzeCtx,
+    other: BTreeMap<(String, String, String), Vec<GrainRecord>>,
+) -> Vec<RecDraft> {
+    let Some(d) = ctx.decider() else {
+        return Vec::new();
+    };
+    if !d.calibrated() {
+        return Vec::new();
+    }
+    // One representative grain per distinct normalized object (the newest),
+    // then every unordered pair of them, in deterministic order.
+    struct Pair {
+        group: usize,
+        a: GrainRecord,
+        b: GrainRecord,
+    }
+    let groups: Vec<((String, String, String), Vec<GrainRecord>)> = other.into_iter().collect();
+    let mut pairs: Vec<Pair> = Vec::new();
+    'groups: for (g, (_, members)) in groups.iter().enumerate() {
+        let mut by_object: BTreeMap<String, GrainRecord> = BTreeMap::new();
+        for m in members {
+            let Some(o) = m.fact_object() else { continue };
+            let slot = by_object.entry(normalize_ident(o)).or_insert_with(|| m.clone());
+            if oldest_first(slot, m).is_lt() {
+                *slot = m.clone();
+            }
+        }
+        if by_object.len() < 2 {
+            continue;
+        }
+        let reps: Vec<&GrainRecord> = by_object.values().collect();
+        for i in 0..reps.len() {
+            for j in (i + 1)..reps.len() {
+                if pairs.len() >= d.pair_cap() {
+                    break 'groups;
+                }
+                pairs.push(Pair { group: g, a: reps[i].clone(), b: reps[j].clone() });
+            }
+        }
+    }
+    // group → (conflicting grains by hash, p(cannot both be true) per pair,
+    // the provenance of the first answer that found one).
+    let backend = d.describe();
+    type Conflict = (BTreeMap<String, GrainRecord>, BTreeMap<String, f64>, crate::decide::Answered);
+    let mut conflicts: BTreeMap<usize, Conflict> = BTreeMap::new();
+    for chunk in pairs.chunks(QUESTIONS_PER_REQUEST) {
+        let mut state = Map::new();
+        let mut asks = Vec::new();
+        for (n, p) in chunk.iter().enumerate() {
+            let id = format!("p{n}");
+            state.insert(id.clone(), json!({"a": fact_text(&p.a), "b": fact_text(&p.b)}));
+            asks.push(Ask::Noul {
+                instructions: format!(
+                    "Can statements \"a\" and \"b\" of pair \"{id}\" (in state.pairs) both be true at the same time?"
+                ),
+                id,
+            });
+        }
+        // Fail-soft: a failed or uncalibrated answer contributes nothing.
+        let Ok(a) = d.ask(json!({ "pairs": Value::Object(state) }), &asks) else {
+            continue;
+        };
+        if !a.calibrated {
+            continue;
+        }
+        for (n, p) in chunk.iter().enumerate() {
+            let Some(&both) = a.noul.get(&format!("p{n}")) else { continue };
+            let p_no = 1.0 - both;
+            if p_no < DECIDE_MIN_P {
+                continue;
+            }
+            let entry = conflicts
+                .entry(p.group)
+                .or_insert_with(|| (BTreeMap::new(), BTreeMap::new(), a.clone()));
+            entry.0.insert(p.a.hash.clone(), p.a.clone());
+            entry.0.insert(p.b.hash.clone(), p.b.clone());
+            // Keyed by the pair itself: "not_both:<a>|<b>" → p(cannot both be true).
+            entry.1.insert(
+                format!(
+                    "not_both:{}|{}",
+                    p.a.fact_object().unwrap_or(""),
+                    p.b.fact_object().unwrap_or("")
+                ),
+                p_no,
+            );
+        }
+    }
+
+    let mut drafts = Vec::new();
+    for (g, (involved, ps, answered)) in conflicts {
+        let ((ns, subject, relation), _) = &groups[g];
+        let mut members: Vec<GrainRecord> = involved.into_values().collect();
+        members.sort_by(oldest_first);
+        let latest = members.last().expect("a conflicting pair has two members").clone();
+        let evidence = bound_evidence(members.iter().map(|m| m.hash.clone()).collect());
+        let p_max = ps.values().copied().fold(0.0_f64, f64::max);
+        let mut args = Map::new();
+        args.insert("subject".into(), json!(subject));
+        args.insert("relation".into(), json!(relation));
+        args.insert("count".into(), json!(members.len()));
+        args.insert("p".into(), json!((p_max * 1000.0).round() / 1000.0));
+        drafts.push(
+            RecDraft::new(
+                format!("entity:{ns}/{subject}"),
+                ActionKind::FlagContradiction,
+                Summary::new("contradiction.judged", args),
+                Proposal::Cal {
+                    cal: supersede_older(&members, &latest),
+                },
+            )
+            .severity(Severity::Medium)
+            .evidence(evidence)
+            .judged_by(answered.judged_by(&backend, "contradiction", ps)),
+        );
+    }
+    drafts
 }
 
 #[cfg(test)]

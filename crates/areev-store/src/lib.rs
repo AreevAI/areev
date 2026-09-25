@@ -653,6 +653,464 @@ pub trait RerankBackend: Send + Sync {
     }
 }
 
+/// Min-max normalize raw reranker scores into `[0, 1]` (best = 1.0, worst =
+/// 0.0). An all-equal pool scores every hit 1.0; a non-finite raw score is
+/// treated as the pool minimum, so a NaN/∞ from a misbehaving backend can
+/// never outrank a real score or leak out of the range.
+fn normalize_rerank_scores(raw: impl Iterator<Item = f32> + Clone) -> Vec<f32> {
+    let finite = raw.clone().filter(|s| s.is_finite());
+    let lo = finite.clone().fold(f32::INFINITY, f32::min);
+    let hi = finite.fold(f32::NEG_INFINITY, f32::max);
+    let span = hi - lo;
+    raw.map(|s| {
+        if !lo.is_finite() || span <= 0.0 || !span.is_finite() {
+            // No finite scores, or every finite score equal.
+            if s.is_finite() || !lo.is_finite() { 1.0 } else { 0.0 }
+        } else if !s.is_finite() {
+            0.0
+        } else {
+            ((s - lo) / span).clamp(0.0, 1.0)
+        }
+    })
+    .collect()
+}
+
+/// [`RerankBackend`] that shells out to a host-supplied command per call —
+/// the reranking twin of [`CommandEmbed`] (CLI `--rerank-cmd`, MCP
+/// `AREEV_RERANK_CMD`, bindings). The child reads one JSON object on stdin,
+/// `{"query": "...", "docs": ["...", ...]}`, and must print a JSON array of
+/// exactly `docs.len()` numbers (higher = more relevant) on stdout. No shell:
+/// `cmd` is split on whitespace. One process spawn per rerank — turn-level,
+/// never the voice frame path. No setup probe: a reranker has no dimension to
+/// learn, and a broken command fails open to fusion order at recall time.
+pub struct CommandRerank {
+    argv: Vec<String>,
+    model: String,
+}
+
+impl CommandRerank {
+    /// `cmd` is split on whitespace (no shell interpretation); an empty
+    /// command is a `Validation` error.
+    pub fn new(cmd: &str, model: Option<&str>) -> Result<Self> {
+        let argv: Vec<String> = cmd.split_whitespace().map(str::to_string).collect();
+        if argv.is_empty() {
+            return Err(AreevError::Validation("rerank command is empty".into()));
+        }
+        Ok(CommandRerank {
+            argv,
+            model: model.unwrap_or("command").to_string(),
+        })
+    }
+}
+
+impl RerankBackend for CommandRerank {
+    fn rerank(&self, query: &str, docs: &[&str]) -> Result<Vec<f32>> {
+        use areev_core::proc::{self, SpawnPolicy, StderrMode};
+        let mut cmd = std::process::Command::new(&self.argv[0]);
+        cmd.args(&self.argv[1..]);
+        let policy = SpawnPolicy::default().stderr(StderrMode::Inherit);
+        let input = serde_json::to_vec(&serde_json::json!({ "query": query, "docs": docs }))
+            .map_err(|e| AreevError::Validation(format!("rerank request: {e}")))?;
+        let out = proc::run(cmd, Some(&input), &[], &policy)
+            .map_err(|e| AreevError::Storage(format!("rerank command '{}': {e}", self.argv[0])))?;
+        if let Some(why) = out.failure(&format!("rerank command '{}'", self.argv[0])) {
+            return Err(AreevError::Storage(why));
+        }
+        let scores = serde_json::from_slice::<Vec<f32>>(&out.stdout).map_err(|e| {
+            AreevError::Validation(format!(
+                "rerank command output must be a JSON array of numbers: {e}"
+            ))
+        })?;
+        if scores.len() != docs.len() {
+            return Err(AreevError::Validation(format!(
+                "rerank command returned {} scores, expected {}",
+                scores.len(),
+                docs.len()
+            )));
+        }
+        Ok(scores)
+    }
+    fn model(&self) -> &str {
+        &self.model
+    }
+}
+
+/// Default candidates per decision request — sized to the refine pool (64) so one
+/// reranked recall is ONE request whenever the pool's text fits the state
+/// budget (`areev_search` reranks on every call; each extra request is a
+/// round trip on the recall path).
+pub const DECISION_RERANK_BATCH: usize = REFINE_POOL;
+/// Default in-process cache size (entries) for [`DecisionRerank`].
+pub const DECISION_RERANK_CACHE_ENTRIES: usize = 4096;
+/// The estimated-token ceiling for one request's `state` (chars / 4). A
+/// batch that would exceed it is split; a single candidate longer than the
+/// whole budget is sent alone, truncated to fit.
+pub const DECISION_RERANK_STATE_TOKENS: usize = 28_000;
+/// Version tag folded into the cache key with the levels, so a change to the
+/// question wording can never be answered from a stale entry.
+const DECISION_RERANK_QUESTION_VERSION: &str = "areev.decision-rerank.v1";
+
+/// Counters a [`DecisionRerank`] keeps, shared through
+/// [`DecisionRerank::stats`] so a host that hands the reranker to the store
+/// (`set_reranker` takes ownership) can still read them — the bench quotes
+/// requests and tokens next to its retrieval table.
+#[derive(Debug, Default)]
+pub struct DecisionRerankStats {
+    requests: std::sync::atomic::AtomicU64,
+    failures: std::sync::atomic::AtomicU64,
+    candidates_sent: std::sync::atomic::AtomicU64,
+    cache_hits: std::sync::atomic::AtomicU64,
+    input_tokens: std::sync::atomic::AtomicU64,
+    output_tokens: std::sync::atomic::AtomicU64,
+    latency_ms: std::sync::atomic::AtomicU64,
+    served: std::sync::Mutex<Option<(String, String, bool)>>,
+    failure_codes: std::sync::Mutex<std::collections::BTreeMap<String, u64>>,
+    failure_samples: std::sync::Mutex<Vec<String>>,
+}
+
+impl DecisionRerankStats {
+    fn get(a: &std::sync::atomic::AtomicU64) -> u64 {
+        a.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    fn add(a: &std::sync::atomic::AtomicU64, n: u64) {
+        a.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+    }
+    /// Decision requests sent (successful or not).
+    pub fn requests(&self) -> u64 {
+        Self::get(&self.requests)
+    }
+    /// Requests that returned an error (the recall fell back to fusion).
+    pub fn failures(&self) -> u64 {
+        Self::get(&self.failures)
+    }
+    /// Candidates sent to the backend (cache misses).
+    pub fn candidates_sent(&self) -> u64 {
+        Self::get(&self.candidates_sent)
+    }
+    /// Candidates answered from the in-process cache.
+    pub fn cache_hits(&self) -> u64 {
+        Self::get(&self.cache_hits)
+    }
+    /// Sum of provider-reported input tokens (0 when a provider reports none).
+    pub fn input_tokens(&self) -> u64 {
+        Self::get(&self.input_tokens)
+    }
+    /// Sum of provider-reported output tokens.
+    pub fn output_tokens(&self) -> u64 {
+        Self::get(&self.output_tokens)
+    }
+    /// Sum of per-request latency, ms.
+    pub fn latency_ms(&self) -> u64 {
+        Self::get(&self.latency_ms)
+    }
+    /// `(provider, model as served, calibrated)` of the last answer.
+    pub fn served(&self) -> Option<(String, String, bool)> {
+        self.served.lock().map(|s| s.clone()).unwrap_or(None)
+    }
+    /// Failed requests by cause: the backend's `DEC-Ennn` code, a chain's
+    /// `DEC-E005` expanded to its entries' codes (`DEC-E005>DEC-E004`, …),
+    /// or `shape` for an answer that was not a score. The recall fell back to
+    /// fusion each time; this is what says why.
+    pub fn failure_codes(&self) -> std::collections::BTreeMap<String, u64> {
+        self.failure_codes.lock().map(|m| m.clone()).unwrap_or_default()
+    }
+    /// The first few failure messages (at most 8), verbatim — enough to say
+    /// WHY a backend failed without keeping every one.
+    pub fn failure_samples(&self) -> Vec<String> {
+        self.failure_samples.lock().map(|v| v.clone()).unwrap_or_default()
+    }
+    fn record_failure(&self, code: String, message: String) {
+        Self::add(&self.failures, 1);
+        if let Ok(mut m) = self.failure_codes.lock() {
+            *m.entry(code).or_insert(0) += 1;
+        }
+        if let Ok(mut v) = self.failure_samples.lock() {
+            if v.len() < 8 {
+                v.push(message);
+            }
+        }
+    }
+}
+
+type RerankKey = ([u8; 32], [u8; 32], [u8; 32]);
+
+/// A small LRU: recency by a monotonic tick, eviction in bulk (down to 90%
+/// of capacity) so a full cache pays one O(n) pass per ~10% of inserts.
+struct RerankCache {
+    cap: usize,
+    tick: u64,
+    map: HashMap<RerankKey, (f32, u64)>,
+}
+
+impl RerankCache {
+    fn get(&mut self, k: &RerankKey) -> Option<f32> {
+        self.tick += 1;
+        let t = self.tick;
+        self.map.get_mut(k).map(|e| {
+            e.1 = t;
+            e.0
+        })
+    }
+    fn put(&mut self, k: RerankKey, v: f32) {
+        if self.cap == 0 {
+            return;
+        }
+        if self.map.len() >= self.cap && !self.map.contains_key(&k) {
+            let keep = self.cap * 9 / 10;
+            let mut ticks: Vec<u64> = self.map.values().map(|e| e.1).collect();
+            ticks.sort_unstable();
+            let cutoff = ticks[self.map.len() - keep - 1];
+            self.map.retain(|_, e| e.1 > cutoff);
+        }
+        self.tick += 1;
+        self.map.insert(k, (v, self.tick));
+    }
+}
+
+fn sha256_of(s: &str) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(s.as_bytes()).into()
+}
+
+/// [`RerankBackend`] over a decision (System One) backend
+/// (`docs/decision-model-proposal.md` §4 A1): each candidate is one `score`
+/// question over ordered relevance levels, asked in batches with the query
+/// and the candidates' text as `state`:
+///
+/// ```json
+/// {"query": "...", "candidates": [{"i": 0, "text": "..."}, ...]}
+/// ```
+///
+/// with question `c<i>` = "How relevant is `candidates[i]` to `query` for
+/// answering it?". A candidate's score is the answer's probability-weighted
+/// level index divided by `levels - 1`, so it lies in `[0, 1]`.
+///
+/// - **Batching.** Up to [`with_batch`](Self::with_batch) candidates per
+///   request (default [`DECISION_RERANK_BATCH`] = the refine pool, so a
+///   whole recall is one request when its text fits), split further so the
+///   estimated state stays under [`DECISION_RERANK_STATE_TOKENS`] (chars/4).
+/// - **Cache.** An in-process LRU keyed by `(levels + question version,
+///   sha256(query), sha256(doc))`; a cached candidate is never re-sent.
+///   Nothing is persisted (host config is per-process by invariant).
+/// - **Fail-open, whole.** A backend error for ANY batch is an `Err` for the
+///   whole call — never a partial vector — and the store falls back to
+///   fusion order and fusion scores. Batches already answered stay cached.
+/// - **Deadline.** [`RerankBackend::rerank`] carries none, so each request
+///   uses the backend's default (`DecideRequest.deadline = None`; 2000 ms
+///   for a resolved chain).
+/// - **Provenance.** [`RerankBackend::model`] is the backend's
+///   `describe()`; [`calibrated`](Self::calibrated) forwards. Reranking only
+///   ORDERS, so an uncalibrated backend is acceptable here (proposal §2
+///   rule 2).
+pub struct DecisionRerank {
+    backend: std::sync::Arc<dyn areev_core::decide::DecisionBackend>,
+    describe: String,
+    batch: usize,
+    levels: Vec<String>,
+    levels_key: [u8; 32],
+    cache: std::sync::Mutex<RerankCache>,
+    stats: std::sync::Arc<DecisionRerankStats>,
+}
+
+impl DecisionRerank {
+    pub fn new(backend: std::sync::Arc<dyn areev_core::decide::DecisionBackend>) -> Self {
+        let describe = backend.describe();
+        let levels: Vec<String> = ["off-topic", "tangential", "relevant", "directly answers"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        DecisionRerank {
+            backend,
+            describe,
+            levels_key: Self::levels_key(&levels),
+            levels,
+            batch: DECISION_RERANK_BATCH,
+            cache: std::sync::Mutex::new(RerankCache {
+                cap: DECISION_RERANK_CACHE_ENTRIES,
+                tick: 0,
+                map: HashMap::new(),
+            }),
+            stats: std::sync::Arc::new(DecisionRerankStats::default()),
+        }
+    }
+
+    fn levels_key(levels: &[String]) -> [u8; 32] {
+        let mut s = String::from(DECISION_RERANK_QUESTION_VERSION);
+        for l in levels {
+            s.push('\u{1f}');
+            s.push_str(l);
+        }
+        sha256_of(&s)
+    }
+
+    /// Candidates per request (minimum 1).
+    pub fn with_batch(mut self, n: usize) -> Self {
+        self.batch = n.max(1);
+        self
+    }
+
+    /// Cache capacity in entries; 0 disables the cache.
+    pub fn with_cache_entries(self, n: usize) -> Self {
+        if let Ok(mut c) = self.cache.lock() {
+            c.cap = n;
+            c.map.clear();
+        }
+        self
+    }
+
+    /// Relevance levels, lowest first (default `off-topic`, `tangential`,
+    /// `relevant`, `directly answers`). Outside 2..=10 levels every request
+    /// is refused as `DEC-E006`, i.e. recall keeps fusion order.
+    pub fn with_levels(mut self, levels: Vec<String>) -> Self {
+        self.levels_key = Self::levels_key(&levels);
+        self.levels = levels;
+        self
+    }
+
+    /// Whether the backend's probabilities are calibrated.
+    pub fn calibrated(&self) -> bool {
+        self.backend.calibrated()
+    }
+
+    /// The shared counters (requests, tokens, cache hits, last served model).
+    pub fn stats(&self) -> std::sync::Arc<DecisionRerankStats> {
+        std::sync::Arc::clone(&self.stats)
+    }
+
+    /// Split `todo` (indices into `docs`) into batches under the count and
+    /// state-size limits. Returns each batch as `(doc index, text to send)`.
+    fn batches<'a>(&self, query: &str, docs: &[&'a str], todo: &[usize]) -> Vec<Vec<(usize, &'a str)>> {
+        let budget = DECISION_RERANK_STATE_TOKENS * 4;
+        // Envelope + the query, JSON-escaped roughly.
+        let base = query.len() + 48;
+        let per_doc_max = budget.saturating_sub(base).max(256);
+        let mut out: Vec<Vec<(usize, &str)>> = Vec::new();
+        let mut cur: Vec<(usize, &str)> = Vec::new();
+        let mut size = base;
+        for &i in todo {
+            let mut text = docs[i];
+            if text.len() > per_doc_max {
+                let mut cut = per_doc_max;
+                while !text.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                text = &text[..cut];
+            }
+            let cost = text.len() + 24;
+            if !cur.is_empty() && (cur.len() >= self.batch || size + cost > budget) {
+                out.push(std::mem::take(&mut cur));
+                size = base;
+            }
+            size += cost;
+            cur.push((i, text));
+        }
+        if !cur.is_empty() {
+            out.push(cur);
+        }
+        out
+    }
+}
+
+impl RerankBackend for DecisionRerank {
+    fn rerank(&self, query: &str, docs: &[&str]) -> Result<Vec<f32>> {
+        use areev_core::decide::{Answer, DecideRequest, Question};
+        let fail = |m: String| AreevError::Storage(format!("decision rerank via {}: {m}", self.describe));
+        let qh = sha256_of(query);
+        let keys: Vec<RerankKey> = docs.iter().map(|d| (self.levels_key, qh, sha256_of(d))).collect();
+        let mut scores: Vec<Option<f32>> = vec![None; docs.len()];
+        // Cache lookups; identical docs within one call are sent once.
+        let mut first_of: HashMap<RerankKey, usize> = HashMap::new();
+        let mut todo: Vec<usize> = Vec::new();
+        {
+            let mut cache = self.cache.lock().map_err(|_| fail("cache poisoned".into()))?;
+            for (i, k) in keys.iter().enumerate() {
+                if let Some(s) = cache.get(k) {
+                    scores[i] = Some(s);
+                    DecisionRerankStats::add(&self.stats.cache_hits, 1);
+                } else if !first_of.contains_key(k) {
+                    first_of.insert(*k, i);
+                    todo.push(i);
+                }
+            }
+        }
+        let top = (self.levels.len().max(2) - 1) as f32;
+        for batch in self.batches(query, docs, &todo) {
+            let candidates: Vec<serde_json::Value> = batch
+                .iter()
+                .enumerate()
+                .map(|(n, (_, t))| serde_json::json!({"i": n, "text": t}))
+                .collect();
+            let questions = (0..batch.len())
+                .map(|n| {
+                    (
+                        format!("c{n}"),
+                        Question::Score {
+                            instructions: format!(
+                                "How relevant is candidates[{n}] to `query` for answering it?"
+                            ),
+                            levels: self.levels.clone(),
+                        },
+                    )
+                })
+                .collect();
+            let req = DecideRequest::new(
+                serde_json::json!({"query": query, "candidates": candidates}),
+                questions,
+            );
+            DecisionRerankStats::add(&self.stats.requests, 1);
+            DecisionRerankStats::add(&self.stats.candidates_sent, batch.len() as u64);
+            let d = match self.backend.decide(&req) {
+                Ok(d) => d,
+                Err(e) => {
+                    let code = match &e {
+                        areev_core::decide::DecideError::ChainExhausted(errs) => {
+                            let inner: Vec<&str> = errs.iter().map(|(_, e)| e.code()).collect();
+                            format!("{}>{}", e.code(), inner.join(","))
+                        }
+                        other => other.code().to_string(),
+                    };
+                    self.stats.record_failure(code, e.to_string());
+                    return Err(fail(e.to_string()));
+                }
+            };
+            DecisionRerankStats::add(&self.stats.input_tokens, d.input_tokens.unwrap_or(0));
+            DecisionRerankStats::add(&self.stats.output_tokens, d.output_tokens.unwrap_or(0));
+            DecisionRerankStats::add(&self.stats.latency_ms, d.latency_ms);
+            if let Ok(mut s) = self.stats.served.lock() {
+                *s = Some((d.provider.clone(), d.model.clone(), d.calibrated));
+            }
+            let mut answered = Vec::with_capacity(batch.len());
+            for (n, (i, _)) in batch.iter().enumerate() {
+                match d.answers.get(&format!("c{n}")) {
+                    Some(Answer::Score { score, .. }) if score.is_finite() => {
+                        answered.push((*i, (score / top).clamp(0.0, 1.0)))
+                    }
+                    other => {
+                        let m = format!("c{n}: expected a score answer, got {other:?}");
+                        self.stats.record_failure("shape".into(), m.clone());
+                        return Err(fail(m));
+                    }
+                }
+            }
+            let mut cache = self.cache.lock().map_err(|_| fail("cache poisoned".into()))?;
+            for (i, s) in answered {
+                cache.put(keys[i], s);
+                scores[i] = Some(s);
+            }
+        }
+        // Duplicates within the call take their first occurrence's score.
+        let mut out = Vec::with_capacity(docs.len());
+        for (i, k) in keys.iter().enumerate() {
+            let s = scores[i].or_else(|| first_of.get(k).and_then(|&j| scores[j]));
+            out.push(s.ok_or_else(|| fail(format!("candidate {i} was never scored")))?);
+        }
+        Ok(out)
+    }
+    fn model(&self) -> &str {
+        &self.describe
+    }
+}
+
 /// Pluggable rule-based query expander (Tier-1 retrieval). No LLM, no network.
 /// Given a query it returns additional query *variants*; the caller runs one
 /// extra BM25 leg per variant and fuses them via RRF, bridging vocabulary gaps
@@ -8816,6 +9274,47 @@ impl Areev {
         // per-grain resolution. An exact namespace keeps the one-policy hint.
         let hint = (!NsScope::is_pattern(ns)).then_some(ns);
         self.recall_hybrid_ids(ns, &ns_ids, hint, subject, relation, query, k, deadline, tuning)
+            .map(|(grains, _)| grains)
+    }
+
+    /// [`recall_hybrid_tuned`](Self::recall_hybrid_tuned) with each hit's
+    /// relevance score. Same legs, fusion, refinements, deadline behaviour
+    /// and — exactly — the same ORDER; the unscored call is a thin wrapper
+    /// over the same body, so the two cannot drift.
+    ///
+    /// **Score semantics** (`f32` in `[0, 1]`, higher = more relevant):
+    ///
+    /// - **Fusion (default).** The hit's RRF score (`Σ 1/(RRF_K0 + rank)`
+    ///   over the legs that found it) divided by the fused pool's maximum,
+    ///   so the best-fused hit scores exactly `1.0`. Rank-normalized: it
+    ///   orders and compares hits *within one call*; it is not a calibrated
+    ///   probability and not comparable across queries.
+    /// - **Rerank.** When `tuning.rerank` is set and the installed
+    ///   [`RerankBackend`] answered, the reranker's scores min-max normalized
+    ///   over the reranked pool (the top reranked hit is `1.0`, the pool's
+    ///   worst `0.0`; an all-equal pool scores every hit `1.0`; a non-finite
+    ///   raw score is treated as the pool minimum). A reranker that failed
+    ///   or returned the wrong length falls back to fusion order AND fusion
+    ///   scores.
+    /// - **Diversity (MMR).** MMR only reorders; each hit keeps its fusion
+    ///   score, so under `diversity_lambda` scores need not be monotone and
+    ///   the first hit need not be `1.0`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn recall_hybrid_scored(
+        &mut self,
+        ns: &str,
+        subject: Option<&str>,
+        relation: Option<&str>,
+        query: Option<&str>,
+        k: usize,
+        deadline: Option<std::time::Duration>,
+        tuning: RecallTuning,
+    ) -> Result<Vec<(DeserializedGrain, f32)>> {
+        let ns_ids = self.ns_param_ids(ns)?;
+        let hint = (!NsScope::is_pattern(ns)).then_some(ns);
+        let (grains, scores) =
+            self.recall_hybrid_ids(ns, &ns_ids, hint, subject, relation, query, k, deadline, tuning)?;
+        Ok(grains.into_iter().zip(scores).collect())
     }
 
     /// Hybrid recall over an already-resolved namespace LIST — the CAL
@@ -8835,6 +9334,24 @@ impl Areev {
         deadline: Option<std::time::Duration>,
         tuning: RecallTuning,
     ) -> Result<Vec<DeserializedGrain>> {
+        self.recall_hybrid_scoped_scored(ns_list, subject, relation, query, k, deadline, tuning)
+            .map(|hits| hits.into_iter().map(|(g, _)| g).collect())
+    }
+
+    /// [`recall_hybrid_scoped`](Self::recall_hybrid_scoped) with each hit's
+    /// relevance score — same order, same score semantics as
+    /// [`recall_hybrid_scored`](Self::recall_hybrid_scored).
+    #[allow(clippy::too_many_arguments)]
+    pub fn recall_hybrid_scoped_scored(
+        &mut self,
+        ns_list: &[String],
+        subject: Option<&str>,
+        relation: Option<&str>,
+        query: Option<&str>,
+        k: usize,
+        deadline: Option<std::time::Duration>,
+        tuning: RecallTuning,
+    ) -> Result<Vec<(DeserializedGrain, f32)>> {
         let mut ns_ids = Vec::with_capacity(ns_list.len());
         for ns in ns_list {
             require_exact_ns("a resolved recall scope element", ns)?;
@@ -8844,13 +9361,19 @@ impl Areev {
         }
         let label = ns_list.join(",");
         let hint = (ns_list.len() == 1).then(|| ns_list[0].as_str());
-        self.recall_hybrid_ids(&label, &ns_ids, hint, subject, relation, query, k, deadline, tuning)
+        let (grains, scores) =
+            self.recall_hybrid_ids(&label, &ns_ids, hint, subject, relation, query, k, deadline, tuning)?;
+        Ok(grains.into_iter().zip(scores).collect())
     }
 
     /// The one hybrid-recall body. `label` is what telemetry records (the
     /// pattern or list as the caller spelled it); `egress_hint` is `Some(ns)`
     /// only when the whole result set shares one namespace's anonymization
-    /// policy, else each grain resolves its own.
+    /// policy, else each grain resolves its own. Returns the grains and,
+    /// positionally aligned, their normalized scores (see
+    /// [`recall_hybrid_scored`](Self::recall_hybrid_scored)) — two vectors
+    /// rather than pairs so the egress pass keeps operating on a grain slice
+    /// and the unscored wrappers drop the scores without re-collecting.
     #[allow(clippy::too_many_arguments)]
     fn recall_hybrid_ids(
         &mut self,
@@ -8863,7 +9386,7 @@ impl Areev {
         k: usize,
         deadline: Option<std::time::Duration>,
         tuning: RecallTuning,
-    ) -> Result<Vec<DeserializedGrain>> {
+    ) -> Result<(Vec<DeserializedGrain>, Vec<f32>)> {
         let start = std::time::Instant::now();
         let over = |start: &std::time::Instant| match deadline {
             Some(d) => start.elapsed() >= d,
@@ -8930,7 +9453,7 @@ impl Areev {
             // Record the miss too: an empty-result query is the coverage-gap
             // signal, not a no-op.
             self.record_recall_event(label, subject, relation, query, &[], start);
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         }
 
         // RRF fusion (k0 = 60, the standard constant) across every leg.
@@ -8953,22 +9476,38 @@ impl Areev {
                 .then(b.0.cmp(&a.0))
         });
 
+        // Rank-normalized fusion score: divide by the pool maximum (the
+        // first entry after the sort), so the best-fused hit is exactly 1.0.
+        let top = ranked.first().map(|(_, s)| *s).filter(|s| *s > 0.0).unwrap_or(1.0);
+        let fused = |s: f64| (s / top) as f32;
+
         // Refinement stage: rerank wins over diversity when both are asked for.
-        let ordered: Vec<i64> = if let Some(q) =
+        let ordered: Vec<(i64, f32)> = if let Some(q) =
             query.filter(|_| tuning.rerank && self.reranker.is_some() && !over(&start))
         {
-            self.rerank_pool(q, &ranked, k)?
+            match self.rerank_pool(q, &ranked, k)? {
+                Some(reranked) => reranked,
+                // Reranker failed or returned the wrong shape: fusion order
+                // and fusion scores.
+                None => ranked.iter().take(k).map(|(s, f)| (*s, fused(*f))).collect(),
+            }
         } else if let (Some(lambda), Some(q)) = (tuning.diversity_lambda, query) {
             if self.embedder.is_some() && !over(&start) {
+                // MMR reorders; each hit keeps its fusion score.
+                let by_seq: HashMap<i64, f64> = ranked.iter().copied().collect();
                 self.mmr_pool(q, &ranked, lambda, k)?
+                    .into_iter()
+                    .map(|s| (s, fused(by_seq.get(&s).copied().unwrap_or(0.0))))
+                    .collect()
             } else {
-                ranked.iter().take(k).map(|(s, _)| *s).collect()
+                ranked.iter().take(k).map(|(s, f)| (*s, fused(*f))).collect()
             }
         } else {
-            ranked.iter().take(k).map(|(s, _)| *s).collect()
+            ranked.iter().take(k).map(|(s, f)| (*s, fused(*f))).collect()
         };
 
         let mut out = Vec::new();
+        let mut out_scores: Vec<f32> = Vec::new();
         if self.db.prefers_batched_reads() && !ordered.is_empty() && !over(&start) {
             // Networked backend: batched blob pulls in CHUNKS with a
             // deadline check between them, so the deadline bounds the fetch
@@ -8979,23 +9518,26 @@ impl Areev {
                 if over(&start) {
                     break;
                 }
-                let blobs = self.blobs_by_seqs(chunk)?;
-                for seq in chunk {
+                let seqs: Vec<i64> = chunk.iter().map(|(s, _)| *s).collect();
+                let blobs = self.blobs_by_seqs(&seqs)?;
+                for (seq, score) in chunk {
                     if over(&start) {
                         break;
                     }
                     if let Some(b) = blobs.get(seq) {
                         out.push(deserialize_blob(b)?);
+                        out_scores.push(*score);
                     }
                 }
             }
         } else {
-            for seq in ordered {
+            for (seq, score) in ordered {
                 if over(&start) {
                     break; // fail-open: partial results beat a blown budget
                 }
                 if let Some(b) = self.blob_by_seq(seq)? {
                     out.push(deserialize_blob(&b)?);
+                    out_scores.push(score);
                 }
             }
         }
@@ -9007,7 +9549,7 @@ impl Areev {
         // which the transform preserves.
         self.record_recall_event(label, subject, relation, query, &out, start);
         self.egress_exit(egress_hint, &mut out)?;
-        Ok(out)
+        Ok((out, out_scores))
     }
 
     /// Buffer one recall into the telemetry sidecar. **Non-blocking**: no
@@ -9065,13 +9607,20 @@ impl Areev {
 
     /// Tier-2: cross-encoder rerank a widened candidate pool. Fetches the
     /// top-N fused candidates' text, scores each `(query, doc)` pair via the
-    /// installed reranker, and returns the top-`k` seqs by score. Fail-open —
-    /// a backend error or a length mismatch falls back to fusion order.
-    fn rerank_pool(&mut self, query: &str, ranked: &[(i64, f64)], k: usize) -> Result<Vec<i64>> {
+    /// installed reranker, and returns the top-`k` seqs by score, each with
+    /// the reranker's score min-max normalized into `[0, 1]` over the pool.
+    /// Fail-open — a backend error or a length mismatch returns `None` and
+    /// the caller keeps fusion order.
+    fn rerank_pool(
+        &mut self,
+        query: &str,
+        ranked: &[(i64, f64)],
+        k: usize,
+    ) -> Result<Option<Vec<(i64, f32)>>> {
         let pool_n = ranked.len().min(k.max(REFINE_POOL));
         let pool: Vec<i64> = ranked.iter().take(pool_n).map(|(s, _)| *s).collect();
         if pool.is_empty() {
-            return Ok(pool);
+            return Ok(Some(Vec::new()));
         }
         let mut docs: Vec<String> = Vec::with_capacity(pool.len());
         for &seq in &pool {
@@ -9088,10 +9637,13 @@ impl Areev {
                         .unwrap_or(std::cmp::Ordering::Equal)
                         .then(a.0.cmp(&b.0))
                 });
-                Ok(scored.into_iter().take(k).map(|(s, _)| s).collect())
+                let norm = normalize_rerank_scores(scored.iter().map(|(_, s)| *s));
+                Ok(Some(
+                    scored.into_iter().zip(norm).take(k).map(|((s, _), n)| (s, n)).collect(),
+                ))
             }
             // Backend failed or returned the wrong shape: keep fusion order.
-            _ => Ok(pool.into_iter().take(k).collect()),
+            _ => Ok(None),
         }
     }
 
