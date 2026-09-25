@@ -398,11 +398,18 @@ Two properties are the security-relevant ones:
 enabling it changes no existing deployment. The TLS-terminating local proxy
 (Cloud SQL Auth Proxy, PgBouncer with a TLS upstream) remains supported and
 is still right when it is also pooling or doing IAM auth — point the DSN at
-it with `sslmode=disable`. A pooler must run in **session mode**: the store pins
-`search_path` per session, and transaction pooling can answer a query from
-another tenant's schema. Neon's `-pooler` endpoint is transaction-mode
-PgBouncer; its direct endpoint is not
-([deployment-profile.md](deployment-profile.md)).
+it with `sslmode=disable`. A pooler may run in **transaction mode** (#181):
+every table reference the store issues is schema-qualified and every
+per-transaction setting is `SET LOCAL`, so no statement depends on the
+session it lands on and a backend switch between transactions cannot answer
+a query from another tenant's schema — proven by the conformance suite run
+with `RESET ALL` before every statement and through a real transaction-mode
+PgBouncer. The one condition is prepared statements: the driver names every
+parameterized statement, so a transaction-mode pooler must track them
+(PgBouncer 1.21+ with `max_prepared_statements > 0`) or run in session mode;
+the store detects the untracked case mid-transaction and names the fix
+([deployment-profile.md](deployment-profile.md), "A pooler may run in
+transaction mode").
 
 Verification is pinned by a real handshake against a throwaway CA
 (`pgtls::handshake_tests` in `areev-store`): that `require` completes against

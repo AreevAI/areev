@@ -1556,7 +1556,7 @@ pub type AnonMappingRow = (String, String, std::collections::BTreeMap<String, St
 /// declaration cannot hold.
 ///
 /// Serialized as the JSON value of a `trg:<trigger-hash>` meta row. Never
-/// replicates (see [`TRG_PREFIX`]).
+/// replicates (see `TRG_PREFIX`).
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct TriggerState {
@@ -7251,7 +7251,7 @@ impl Areev {
     /// Erase every grain older than `cutoff_ms` (`created_at < cutoff`),
     /// optionally scoped to one namespace and/or grain type — the
     /// retention-sweep primitive (nightly age-based deletion). Same erasure
-    /// semantics as [`forget_subject`] minus the identity-dictionary sweep.
+    /// semantics as [`Areev::forget_subject`] minus the identity-dictionary sweep.
     pub fn forget_older_than(
         &mut self,
         ns: Option<&str>,

@@ -88,7 +88,7 @@ pub struct RunOptions {
     /// than by value in the manifest (#301).
     pub input_in_run_namespace: bool,
     /// Run-lease TTL in milliseconds (#299). `None` keeps
-    /// [`lease::DEFAULT_RUN_LEASE_MS`]. A fixed ten minutes meant a crashed
+    /// [`lease::DEFAULT_RUN_LEASE_MS`](crate::lease::DEFAULT_RUN_LEASE_MS). A fixed ten minutes meant a crashed
     /// driver stalled its run for ten minutes; shortening it is only safe
     /// together with the mid-superstep renewal this release adds.
     pub lease_ms: Option<i64>,

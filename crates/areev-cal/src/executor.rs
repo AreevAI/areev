@@ -7542,7 +7542,7 @@ pub fn grain_matches_condition(
 /// by conditions after pipeline stages like SELECT have been applied.
 ///
 /// **Totality is preserved and UNKNOWN never escapes**: internally the walk
-/// is three-valued ([`grain_condition_truth`]), but a leaf whose field the
+/// is three-valued (`grain_condition_truth`), but a leaf whose field the
 /// grain does not carry resolves to UNKNOWN and UNKNOWN does not match. See
 /// that function for why the negations need it.
 pub fn grain_matches_condition_tree(grain: &CalGrainResult, condition: &Condition) -> bool {

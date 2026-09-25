@@ -223,7 +223,7 @@ pub enum CredentialSource {
         ttl: std::time::Duration,
         /// Variables passed through to the resolver, and ONLY to it — the
         /// resolver's own auth (`VAULT_TOKEN`, `AWS_PROFILE`, …). See
-        /// [`CredentialSource::spawn_policy`] for why this list exists at all.
+        /// `CredentialSource::spawn_policy` for why this list exists at all.
         pass_env: Vec<String>,
     },
     /// Read from HashiCorp Vault or OpenBao's KV API over its HTTP interface.
@@ -1150,6 +1150,20 @@ impl Drop for Broker {
         // exits at the next loop check, so the port is released promptly
         // without anyone waiting for it.
         self.stop.store(true, Ordering::Relaxed);
+        // The store lent by `bind_artifact_store` is given back HERE, not
+        // whenever the detached thread gets around to exiting (its accept
+        // loop polls the stop flag every 5 ms). An embedded memory's file
+        // lock is process-wide and lives as long as any handle does, so a
+        // host that closed its handle and immediately handed the file to
+        // another process — the Node binding's `close()` followed by a CLI
+        // run against the same file — found it still locked by the clone
+        // this thread was holding. `serve_one` clones the store out of the
+        // slot for the length of one upload, so an in-flight artifact keeps
+        // its own reference until it lands; taking the slot never blocks on
+        // it and never cuts it short.
+        if let Ok(mut slot) = self.artifact_store.lock() {
+            slot.take();
+        }
         drop(self.handle.take());
     }
 }
@@ -3010,6 +3024,29 @@ mod tests {
         let store = Arc::new(AreevFacade::new(areev_store::Areev::open(
             dir.path().join("m.db").to_str().unwrap()).unwrap()));
         (dir, store)
+    }
+
+    /// Dropping the broker gives back the store it was lent the moment
+    /// `drop` returns — not when its detached accept thread next polls the
+    /// stop flag. An embedded memory's file lock is process-wide and lives
+    /// as long as any handle does, so the few milliseconds the thread used to
+    /// keep its clone alive were exactly long enough for a host that closed
+    /// its handle and immediately handed the file to another process (the
+    /// Node binding's egress parity test, `close()` then a CLI run) to find
+    /// it still locked. No sleep and no join here: the count must be back to
+    /// one synchronously.
+    #[test]
+    fn dropping_the_broker_releases_the_bound_store_synchronously() {
+        let (_dir, store) = kept_store();
+        let broker = Broker::start(policy(&["http://127.0.0.1:1"]), BTreeMap::new(), grants(&[]), "RUN-E022").unwrap();
+        broker.bind_artifact_store(Arc::clone(&store));
+        assert_eq!(Arc::strong_count(&store), 2, "the broker holds the store while it serves");
+        drop(broker);
+        assert_eq!(
+            Arc::strong_count(&store),
+            1,
+            "the store must be released by drop itself, not by the detached thread's exit"
+        );
     }
 
     /// An upstream that reads one request (headers + Content-Length body),

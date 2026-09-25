@@ -400,8 +400,18 @@ fn decide_cmd_answers_every_shorthand_and_is_the_last_chain_entry() {
     let script = dir.path().join("decider.py");
     std::fs::write(&script, DECIDER_PY).unwrap();
     let cmd = format!("{py} {}", script.display());
+    // What this test measures is the ANSWERS, not the interpreter's start-up
+    // time: under the default 2 s decision deadline a cold Python on a shared
+    // Windows runner was killed before it printed anything (DEC-E004), and
+    // the failure read as a backend bug. The default's tightness is pinned by
+    // the deadline tests above; here the budget is generous on purpose.
+    const SLOW_RUNNER_MS: &str = "30000";
 
-    let (ok, out, err) = areev(&home, &["decide", "--decide-cmd", &cmd, "--state", "x", "--noul", "is it?"], &[]);
+    let (ok, out, err) = areev(
+        &home,
+        &["decide", "--decide-cmd", &cmd, "--decide-timeout-ms", SLOW_RUNNER_MS, "--state", "x", "--noul", "is it?"],
+        &[],
+    );
     assert!(ok, "{err}");
     assert_provenance(&out, "cmd", true);
     assert_eq!(out["model"], "toy-decider");
@@ -409,7 +419,7 @@ fn decide_cmd_answers_every_shorthand_and_is_the_last_chain_entry() {
 
     let (ok, out, err) = areev(
         &home,
-        &["decide", "--decide-cmd", &cmd, "--state", "x", "--choice", "pick", "--option", "a=first", "--option", "b=second"],
+        &["decide", "--decide-cmd", &cmd, "--decide-timeout-ms", SLOW_RUNNER_MS, "--state", "x", "--choice", "pick", "--option", "a=first", "--option", "b=second"],
         &[],
     );
     assert!(ok, "{err}");
@@ -417,7 +427,7 @@ fn decide_cmd_answers_every_shorthand_and_is_the_last_chain_entry() {
 
     let (ok, out, err) = areev(
         &home,
-        &["decide", "--decide-cmd", &cmd, "--state", "x", "--score", "how much", "--level", "low", "--level", "high"],
+        &["decide", "--decide-cmd", &cmd, "--decide-timeout-ms", SLOW_RUNNER_MS, "--state", "x", "--score", "how much", "--level", "low", "--level", "high"],
         &[],
     );
     assert!(ok, "{err}");
@@ -428,7 +438,7 @@ fn decide_cmd_answers_every_shorthand_and_is_the_last_chain_entry() {
     let (ok, out, err) = areev(
         &home,
         &["decide", "--decide", &spec(&down), "--state", "x", "--noul", "is it?"],
-        &[("AREEV_DECIDE_CMD", &cmd)],
+        &[("AREEV_DECIDE_CMD", &cmd), ("AREEV_DECIDE_TIMEOUT_MS", SLOW_RUNNER_MS)],
     );
     assert!(ok, "{err}");
     assert_eq!(down.requests().len(), 1);

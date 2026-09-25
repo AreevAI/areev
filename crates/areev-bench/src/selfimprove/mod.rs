@@ -66,8 +66,10 @@
 //! Lessons enter the prompt as a system-prompt section assembled from LIVE
 //! memory by `memory::lessons_markdown` — never from a harness flag:
 //!
-//!   ## LESSONS (from prior experience)
-//!   - <rendered lesson>
+//! ```text
+//! ## LESSONS (from prior experience)
+//! - <rendered lesson>
+//! ```
 //!
 //! The mock agent keys its "learned" behaviors on the error codes appearing
 //! anywhere in that section, which is exactly how a rendered tool-failure

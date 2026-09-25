@@ -331,6 +331,13 @@ const m = new Areev('postgres://user:pass@host/db?schema=memory_luis')
 dropPostgresSchema(url, 'memory_luis')            // memory-level erasure
 ```
 
+A deployment whose database contract wants the engine's bookkeeping
+(`meta`, `counters`, `ns_reg`, the telemetry tables) physically apart from
+the grains adds `&meta_schema=memory_luis_metadata` to the same DSN — the
+**paired layout**, opt-in and fixed at provisioning; every surface above
+takes it unchanged. Classification, grants and the migration recipe:
+[deployment-profile.md](deployment-profile.md), "Paired layout".
+
 ```rust
 let mut m = Areev::open_postgres("postgres://user:pass@host/db", "memory_luis")?;
 ```
