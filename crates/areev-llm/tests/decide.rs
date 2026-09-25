@@ -238,6 +238,10 @@ fn typesafe_via_openrouter_live_fixture() {
     assert_eq!(d.model, "typesafe/jev-1.13-20260917");
     assert_eq!(d.provider, "openrouter", "the spec name, not the body's `provider`");
     assert_eq!((d.input_tokens, d.output_tokens), (Some(375), Some(35)));
+    // `usage.cost` is USD; kept as micro-dollars rounded UP (15.75 → 16) so
+    // summed sub-micro calls never under-charge a budget.
+    assert_eq!(d.usd_micros, Some(16));
+    assert_eq!(d.to_json()["usage"]["usd_micros"], 16);
     let Answer::Score { score, confidence, probabilities, legend } = &d.answers["rel"] else { panic!() };
     assert_eq!(*score, 2.95, "the provider's own score is kept");
     assert_eq!(*confidence, 0.95, "the provider's own confidence is kept");
@@ -416,6 +420,7 @@ impl DecisionBackend for Scripted {
             calibrated: self.calibrated,
             input_tokens: None,
             output_tokens: None,
+            usd_micros: None,
             latency_ms: 0,
         })
     }

@@ -10,6 +10,7 @@
 use areev_core::types::{Fact, Grain};
 use areev_store::{AddableDyn, Areev};
 
+pub mod locomo;
 pub mod selfimprove;
 
 /// Human/reference verdict for one surfaced finding. Abstention is represented

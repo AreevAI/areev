@@ -47,7 +47,7 @@ fn identical_tool_calls_are_distinct_occurrences() {
                     r#"{"error":"rate_limited"}"#,
                     true,
                     None,
-                    None, None, None, None, None, None, None, None
+                    None, None, None, None, None, None, None, None, None
                 )
                 .unwrap()
                 .to_hex(),
@@ -55,7 +55,7 @@ fn identical_tool_calls_are_distinct_occurrences() {
     }
     for _ in 0..2 {
         facade
-            .record_tool_call("caller", "stripe_refund", None, r#"{"ok":true}"#, false, None, None, None, None, None, None, None, None, None)
+            .record_tool_call("caller", "stripe_refund", None, r#"{"ok":true}"#, false, None, None, None, None, None, None, None, None, None, None)
             .unwrap();
     }
 
@@ -111,11 +111,11 @@ fn a_supplied_call_id_is_stored_and_queryable() {
             "boom",
             true,
             None,
-            Some("call_a1"), None, None, None, None, None, None, None
+            Some("call_a1"), None, None, None, None, None, None, None, None
         )
         .unwrap();
     facade
-        .record_tool_call("caller", "stripe_refund", None, "boom", true, None, Some("call_a2"), None, None, None, None, None, None, None)
+        .record_tool_call("caller", "stripe_refund", None, "boom", true, None, Some("call_a2"), None, None, None, None, None, None, None, None)
         .unwrap();
 
     let ex = areev_cal::CalExecutor::new(areev_cal::CalExecutorConfig::default());
@@ -151,13 +151,13 @@ fn the_documented_proof_block_yields_a_recommendation() {
                 r#"{"error":"rate_limited"}"#,
                 true,
                 None,
-                None, None, None, None, None, None, None, None
+                None, None, None, None, None, None, None, None, None
             )
             .unwrap();
     }
     for _ in 0..2 {
         facade
-            .record_tool_call("caller", "stripe_refund", None, r#"{"ok":true}"#, false, None, None, None, None, None, None, None, None, None)
+            .record_tool_call("caller", "stripe_refund", None, r#"{"ok":true}"#, false, None, None, None, None, None, None, None, None, None, None)
             .unwrap();
     }
 

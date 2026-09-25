@@ -60,6 +60,7 @@ fn mcp_round_trip() {
             "tool_name": "stripe_refund", "input": {"amount": 42}, "result": "rate limited",
             "is_error": true, "thread": "call-1", "call_id": "toolu_mcp",
             "run_id": "run-a", "status": "failed", "failure_cause": "timeout",
+            "failure_detail": "gateway 504 after 30s",
             "executor_kind": "host", "correlation_id": "corr-mcp"}})),
         rpc(13, "tools/call", serde_json::json!({"name": "areev_cal", "arguments": {
             "query": "RECALL tools WHERE tool_call_id = \"toolu_mcp\""}})),
@@ -233,6 +234,9 @@ fn mcp_round_trip() {
     // The lifecycle vocabulary landed typed, not as extras.
     assert_eq!(tool["grains"][0]["fields"]["status"], "failed");
     assert_eq!(tool["grains"][0]["fields"]["failure_cause"], "timeout");
+    // The free-text half of the pair reaches the grain too — without it the
+    // loop's tool-cause classifier had nothing to read from MCP (#354).
+    assert_eq!(tool["grains"][0]["fields"]["failure_detail"], "gateway 504 after 30s");
 
     // After the tool call joined run-a, its trace holds turn + tool grain.
     let trace2_text = by_id(15)["result"]["content"][0]["text"].as_str().unwrap();

@@ -1125,6 +1125,7 @@ impl McpServer {
                         args.get("node_id").and_then(Value::as_str),
                         args.get("status").and_then(Value::as_str),
                         args.get("failure_cause").and_then(Value::as_str),
+                        args.get("failure_detail").and_then(Value::as_str),
                         args.get("executor_kind").and_then(Value::as_str),
                         args.get("correlation_id").and_then(Value::as_str),
                     )
@@ -1559,6 +1560,7 @@ fn all_tool_defs() -> Vec<Value> {
                 "node_id": s("optional workflow node id; requires workflow_hash"),
                 "status": s("optional execution status: pending | completed | failed"),
                 "failure_cause": s("optional failure classifier: timeout | executor_error | schema_validation_failed | user_aborted | unknown"),
+                "failure_detail": s("optional free-text failure description (e.g. the upstream error); the loop classifies a tool's failure cause from it when failure_cause is absent"),
                 "executor_kind": s("optional executor: host | client"),
                 "correlation_id": s("optional async correlation id"),
                 "namespace": s("optional namespace")

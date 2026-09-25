@@ -762,6 +762,7 @@ pub struct DecisionRerankStats {
     cache_hits: std::sync::atomic::AtomicU64,
     input_tokens: std::sync::atomic::AtomicU64,
     output_tokens: std::sync::atomic::AtomicU64,
+    usd_micros: std::sync::atomic::AtomicU64,
     latency_ms: std::sync::atomic::AtomicU64,
     served: std::sync::Mutex<Option<(String, String, bool)>>,
     failure_codes: std::sync::Mutex<std::collections::BTreeMap<String, u64>>,
@@ -798,6 +799,11 @@ impl DecisionRerankStats {
     /// Sum of provider-reported output tokens.
     pub fn output_tokens(&self) -> u64 {
         Self::get(&self.output_tokens)
+    }
+    /// Sum of provider-reported cost, micro-dollars (0 when a provider
+    /// reports none — never estimated from tokens).
+    pub fn usd_micros(&self) -> u64 {
+        Self::get(&self.usd_micros)
     }
     /// Sum of per-request latency, ms.
     pub fn latency_ms(&self) -> u64 {
@@ -1075,6 +1081,7 @@ impl RerankBackend for DecisionRerank {
             };
             DecisionRerankStats::add(&self.stats.input_tokens, d.input_tokens.unwrap_or(0));
             DecisionRerankStats::add(&self.stats.output_tokens, d.output_tokens.unwrap_or(0));
+            DecisionRerankStats::add(&self.stats.usd_micros, d.usd_micros.unwrap_or(0));
             DecisionRerankStats::add(&self.stats.latency_ms, d.latency_ms);
             if let Ok(mut s) = self.stats.served.lock() {
                 *s = Some((d.provider.clone(), d.model.clone(), d.calibrated));

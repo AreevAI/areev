@@ -171,6 +171,13 @@ test('recordToolCall records occurrences, not values', async () => {
   const scoped = JSON.parse(await m.cal('RECALL tools WHERE namespace = "caller.*" | COUNT'))
   assert.equal(scoped.count, 5, 'the prefix scope sees base and child alike')
 
+  // `failureDetail` (last, so positional callers keep their meaning) is the
+  // free text the loop's tool-cause classifier reads.
+  await m.recordToolCall('stripe_refund', 'boom', true, null, 'call_fd', null,
+    null, null, null, 'failed', null, null, null, null, 'gateway 504 after 30s')
+  const fd = JSON.parse(await m.cal('RECALL tools WHERE tool_call_id = "call_fd"'))
+  assert.equal(fd.grains[0].fields.failure_detail, 'gateway 504 after 30s')
+
   const manifest = JSON.parse(await m.recordRunManifest(
     'run-js', '{"model":{"base":"test"},"sampling":{"seed":7}}'))
   assert.equal(manifest.config_hash.length, 64)

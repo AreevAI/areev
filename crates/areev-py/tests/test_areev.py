@@ -166,6 +166,15 @@ def test_record_tool_call_records_occurrences(tmp_path):
     assert len(by_id["grains"]) == 1
     assert by_id["grains"][0]["fields"]["input"]["amount"] == 42
 
+    # The free-text half of the failure pair — what the loop's tool-cause
+    # classifier reads when no typed `failure_cause` is given.
+    m.record_tool_call(
+        "stripe_refund", "boom", True, call_id="call_fd", status="failed",
+        failure_detail="gateway 504 after 30s",
+    )
+    fd = json.loads(m.cal('RECALL tools WHERE tool_call_id = "call_fd"'))
+    assert fd["grains"][0]["fields"]["failure_detail"] == "gateway 504 after 30s"
+
     manifest = json.loads(m.record_run_manifest(
         "run-py", '{"model":{"base":"test"},"sampling":{"seed":7}}'))
     assert len(manifest["config_hash"]) == 64

@@ -1778,7 +1778,10 @@ Edges branch on the answer in the frozen condition grammar:
 - **The result** is `Decision::to_json()` — `{answers, model, provider,
   calibrated, latency_ms, usage?}` — under the node's own id. `decide.into`
   names a different key. The decision's usage counts against the run's token
-  budget.
+  budget, and a provider-reported cost (`usage.cost`, USD — OpenRouter-style
+  gateways send it) counts against its USD budget as `usage.usd_micros`,
+  rounded up. A provider that reports no cost charges nothing; it is never
+  estimated from tokens.
 - **No backend, no run.** A plan that binds a decision node on a host without
   a backend is refused with `RUN-E030` at start, naming the node, before the
   run exists. `resume` checks the same before it takes the lease. A malformed

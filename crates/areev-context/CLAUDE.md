@@ -59,6 +59,13 @@ census (80/20 budget split, keyed on `RecallSource::Census`) >
 relevance-highlight (>10 grains) > default. **JSON output bypasses all
 modes** — it is a plain structured dump.
 
+Every mode selects through ONE function, `ContextAssembler::select`
+(withheld filter, overrides, RF-2, the budget), and renders exactly what it
+admitted. Timeline once ran its own selection and rendered retracted grains;
+census once rendered a count-sized prefix of its hits, so its text and counts
+disagreed. Both are pinned by tests in `assembly.rs`. A new mode calls
+`select`; it never re-derives the selection.
+
 ## Decision backends (decision-backend phase 3, rows A2/A3)
 
 `ContextAssembler::with_decider(Arc<dyn areev_core::decide::DecisionBackend>)`

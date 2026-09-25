@@ -1061,7 +1061,8 @@ impl AreevFacade {
     // grouping fields would make those scalar-in APIs diverge.
     //
     // The Wave-0 extension (governed-agents proposal §8): the async lifecycle
-    // vocabulary (`status`/`failure_cause`/`executor_kind`/`correlation_id`),
+    // vocabulary (`status`/`failure_cause`/`executor_kind`/`correlation_id`,
+    // plus the free-text `failure_detail` since #354's follow-ups),
     // the run↔plan join (`workflow_hash` + `node_id` → an `mg:step_action`
     // link), and the run-correlation key (`run_id`) were typed Tool fields
     // unreachable from every non-Rust surface — the execution-record READ
@@ -1083,6 +1084,7 @@ impl AreevFacade {
         node_id: Option<&str>,
         status: Option<&str>,
         failure_cause: Option<&str>,
+        failure_detail: Option<&str>,
         executor_kind: Option<&str>,
         correlation_id: Option<&str>,
     ) -> Result<Hash> {
@@ -1099,6 +1101,7 @@ impl AreevFacade {
             node_id,
             status,
             failure_cause,
+            failure_detail,
             executor_kind,
             correlation_id,
         )?;
@@ -1315,6 +1318,7 @@ fn build_tool_call_fields(
     node_id: Option<&str>,
     status: Option<&str>,
     failure_cause: Option<&str>,
+    failure_detail: Option<&str>,
     executor_kind: Option<&str>,
     correlation_id: Option<&str>,
 ) -> Result<serde_json::Map<String, serde_json::Value>> {
@@ -1369,6 +1373,11 @@ fn build_tool_call_fields(
     }
     if let Some(fc) = failure_cause {
         fields.insert("failure_cause".into(), serde_json::json!(fc));
+    }
+    // The free-text half of the failure pair: what the loop's tool-cause
+    // classifier reads when no typed `failure_cause` is given.
+    if let Some(fd) = failure_detail {
+        fields.insert("failure_detail".into(), serde_json::json!(fd));
     }
     if let Some(ek) = executor_kind {
         fields.insert("executor_kind".into(), serde_json::json!(ek));
@@ -1571,6 +1580,7 @@ impl PrincipalSession<'_> {
         node_id: Option<&str>,
         status: Option<&str>,
         failure_cause: Option<&str>,
+        failure_detail: Option<&str>,
         executor_kind: Option<&str>,
         correlation_id: Option<&str>,
     ) -> Result<Hash> {
@@ -1587,6 +1597,7 @@ impl PrincipalSession<'_> {
             node_id,
             status,
             failure_cause,
+            failure_detail,
             executor_kind,
             correlation_id,
         )?;

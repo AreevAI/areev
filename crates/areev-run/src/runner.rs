@@ -1007,7 +1007,9 @@ impl Runner {
                     journal_bytes,
                     input_tokens: d.input_tokens.unwrap_or(0),
                     output_tokens: d.output_tokens.unwrap_or(0),
-                    usd_micros: 0,
+                    // The provider-reported price, charged to the run's
+                    // USD budget like a model call's; 0 when unreported.
+                    usd_micros: d.usd_micros.unwrap_or(0),
                 }
             }
             Err(e) => fail(decide_fail_cause(&e), e.to_string()),

@@ -535,7 +535,9 @@ dependencies). Nothing is default-on, and it touches four places:
 - **Tool-failure cause (E3)** — with a backend installed, a `tool_failure`
   cluster names its majority cause (`tool_failure.cluster_cause`): a
   `failure_cause` in the closed vocabulary is used as recorded; free text (a
-  `failure_cause` outside it, else `failure_detail`) is classified once per
+  `failure_cause` outside it, else `failure_detail` — settable from every
+  surface: MCP `areev_record_tool_call`, CLI `record-tool-call
+  --failure-detail`, Python `failure_detail=`, Node `failureDetail`) is classified once per
   distinct string per run with a `choice` over `timeout`, `executor_error`,
   `schema_validation_failed`, `user_aborted`, `context_overflow`, `unknown`,
   and the argmax is used at **≥ 0.6**; otherwise `unknown`. Without a backend

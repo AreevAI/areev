@@ -105,6 +105,7 @@ fn record_tool_call_cli_keeps_json_arguments() {
         "--result", "rate limited",
         "--is-error",
         "--call-id", "toolu_cli",
+        "--failure-detail", "stripe 429: rate limited",
     ]);
     assert!(ok, "record-tool-call failed: {err}");
     assert_eq!(hash.trim().len(), 64);
@@ -119,6 +120,7 @@ fn record_tool_call_cli_keeps_json_arguments() {
     let payload: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(payload["grains"][0]["fields"]["input"]["amount"], 42);
     assert_eq!(payload["grains"][0]["fields"]["is_error"], true);
+    assert_eq!(payload["grains"][0]["fields"]["failure_detail"], "stripe 429: rate limited");
 
     let (ok, out, err) = areev(&[
         "run-manifest",
@@ -1407,6 +1409,33 @@ fn anonymize_scan_is_pure_text_and_fails_closed_on_bad_policy() {
     ]);
     assert!(!ok, "bad policy must refuse");
     assert!(err.contains("VAL-E001"), "want VAL-E001 in: {err}");
+}
+
+/// `anonymize scan|test` name no memory, so they must dispatch before
+/// `resolve_db`: no `~/.areev/` created, no "using default memory" line. A
+/// duplicated `resolve_db` block once ran ahead of that dispatch (#354).
+#[test]
+fn anonymize_scan_and_test_never_resolve_a_default_memory() {
+    let home = TempDir::new().unwrap();
+    let run = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_areev"))
+            .args(args)
+            .env("HOME", home.path())
+            .env("USERPROFILE", home.path())
+            .env_remove("AREEV_DB")
+            .output()
+            .expect("spawn areev");
+        (out.status.success(), String::from_utf8_lossy(&out.stderr).to_string())
+    };
+    let (ok, err) = run(&["anonymize", "scan", "--text", "reach me at a@b.co"]);
+    assert!(ok, "anonymize scan failed: {err}");
+    assert!(!err.contains("using default memory"), "scan resolved a memory: {err}");
+    // `test` without fixtures fails on its own argument, not on a memory.
+    let (ok, err) = run(&["anonymize", "test"]);
+    assert!(!ok);
+    assert!(err.contains("--fixtures"), "want the fixtures refusal in: {err}");
+    assert!(!err.contains("using default memory"), "test resolved a memory: {err}");
+    assert!(!home.path().join(".areev").exists(), "a default memory dir was created");
 }
 
 #[test]

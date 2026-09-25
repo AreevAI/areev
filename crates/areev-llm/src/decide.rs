@@ -565,6 +565,7 @@ impl DecisionBackend for LlmEmulated {
             calibrated: false,
             input_tokens: None,
             output_tokens: None,
+            usd_micros: None,
             latency_ms: elapsed_ms(started),
         })
     }

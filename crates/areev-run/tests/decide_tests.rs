@@ -57,6 +57,7 @@ impl DecisionBackend for FakeDecider {
             calibrated: self.calibrated,
             input_tokens: Some(40),
             output_tokens: Some(2),
+            usd_micros: Some(16),
             latency_ms: 12,
         })
     }
@@ -303,8 +304,11 @@ fn a_decision_node_answers_through_the_host_backend_and_edges_branch_on_it() {
     let grain = rig.facade.with_store(|m| m.get(&result_hash)).unwrap();
     assert_eq!(grain.get_str("tool_name"), Some("triage"));
     assert_eq!(grain.get_str("status"), Some("completed"));
-    let EffectOutcome::Completed { input_tokens, output_tokens, .. } = outcome else { panic!() };
+    let EffectOutcome::Completed { input_tokens, output_tokens, usd_micros, .. } = outcome else { panic!() };
     assert_eq!((input_tokens, output_tokens), (40, 2), "the decision's usage is accounted");
+    // The provider-reported cost is charged to the run's USD budget (it was
+    // hard-coded 0, so a decision node was free to any max_usd).
+    assert_eq!(usd_micros, 16, "the decision's cost is accounted");
     let manifest = rig.facade.with_store(|m| RunManifest::load(m, "c3-1")).unwrap();
     assert_eq!(
         manifest.decider,

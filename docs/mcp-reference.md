@@ -551,6 +551,14 @@ separate from the result and preserving failures and provider call ids.
 | `is_error` | boolean | no | Whether the invocation failed (default `false`) |
 | `thread` | string | no | Session/thread id |
 | `call_id` | string | no | Provider call id; synthesized when absent |
+| `run_id` | string | no | Run correlation id (read back by `areev_run_trace`) |
+| `workflow_hash` | string | no | Workflow grain this call executed a node of; requires `node_id` |
+| `node_id` | string | no | Workflow node id; requires `workflow_hash` (writes the `mg:step_action` link) |
+| `status` | string | no | `pending` \| `completed` \| `failed` |
+| `failure_cause` | string | no | Typed classifier: `timeout` \| `executor_error` \| `schema_validation_failed` \| `user_aborted` \| `unknown` |
+| `failure_detail` | string | no | Free-text failure description (the upstream error, say). The loop's tool-cause classifier reads it when `failure_cause` is absent |
+| `executor_kind` | string | no | `host` \| `client` |
+| `correlation_id` | string | no | Async correlation id |
 | `namespace` | string | no | Defaults to the session namespace |
 
 ### `areev_run_manifest`
