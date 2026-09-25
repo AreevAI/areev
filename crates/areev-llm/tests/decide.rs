@@ -364,7 +364,24 @@ fn an_unreachable_provider_is_a_retryable_e002() {
     let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let b = SystemOneHttp::new("systemone", format!("http://127.0.0.1:{port}"), "m", None, vec![]);
     let e = b.decide(&req()).unwrap_err();
+    // Unix refuses a closed loopback port at once, so the backend reports the
+    // transport error the chain retries past — the classification this test
+    // pins. Windows has been observed (GitHub's runner, intermittently) to
+    // stall the connect instead of refusing it; the request then meets its
+    // deadline, and the same physical condition — no listener — arrives as
+    // "no answer" rather than "no connection". Both are the backend declining
+    // to hang, so on Windows either shape is accepted; the immediate-refusal
+    // classification is asserted only where the OS guarantees the refusal.
+    #[cfg(not(windows))]
     assert!(matches!(e, DecideError::Provider { status: None, retryable: true, .. }), "{e:?}");
+    #[cfg(windows)]
+    assert!(
+        matches!(
+            e,
+            DecideError::Provider { status: None, retryable: true, .. } | DecideError::Deadline(_)
+        ),
+        "{e:?}"
+    );
 }
 
 // ---- chain ---------------------------------------------------------------------------
