@@ -1,17 +1,17 @@
 {
-  "version": "1.9.5",
+  "version": "1.10.0",
   "crates": 17,
   "rust": {
     "files": 351,
-    "physical_lines": 249515,
-    "source_code": 115204,
-    "test_code": 73175,
-    "unit_test_code": 29931,
-    "integration_test_code": 43244,
+    "physical_lines": 249585,
+    "source_code": 115207,
+    "test_code": 73202,
+    "unit_test_code": 29944,
+    "integration_test_code": 43258,
     "example_code": 669,
-    "test_functions": 3335,
+    "test_functions": 3336,
     "test_ratio": 0.64,
-    "test_share": 38.8
+    "test_share": 38.9
   },
   "per_crate": [
     {
@@ -33,17 +33,17 @@
     {
       "name": "areev-run",
       "files": 31,
-      "physical": 27686,
-      "source_code": 9550,
-      "test_code": 11172,
-      "tests": 316
+      "physical": 27723,
+      "source_code": 9553,
+      "test_code": 11185,
+      "tests": 317
     },
     {
       "name": "areev-cli",
       "files": 25,
-      "physical": 23191,
+      "physical": 23201,
       "source_code": 9179,
-      "test_code": 9165,
+      "test_code": 9170,
       "tests": 253
     },
     {
@@ -65,7 +65,7 @@
     {
       "name": "areev-bench",
       "files": 21,
-      "physical": 12780,
+      "physical": 12782,
       "source_code": 6973,
       "test_code": 2869,
       "tests": 115
@@ -81,9 +81,9 @@
     {
       "name": "areev-llm",
       "files": 11,
-      "physical": 6717,
+      "physical": 6734,
       "source_code": 2941,
-      "test_code": 2221,
+      "test_code": 2230,
       "tests": 107
     },
     {
@@ -121,7 +121,7 @@
     {
       "name": "areev-js",
       "files": 2,
-      "physical": 4720,
+      "physical": 4722,
       "source_code": 3457,
       "test_code": 0,
       "tests": 0
@@ -129,7 +129,7 @@
     {
       "name": "areev-py",
       "files": 2,
-      "physical": 4190,
+      "physical": 4192,
       "source_code": 2949,
       "test_code": 0,
       "tests": 0
@@ -153,7 +153,7 @@
   ],
   "docs": {
     "files": 66,
-    "lines": 36426
+    "lines": 36458
   },
   "error_codes": 127,
   "bindings": {

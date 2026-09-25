@@ -41,9 +41,9 @@ tls = ["areev-server/tls"]
 oidc = ["areev-server/oidc"]
 
 [dependencies]
-areev-core = { path = "../areev-core", version = "1.9.1" }
-areev-store = { path = "../areev-store", version = "1.9.1" }
-areev-cal = { path = "../areev-cal", version = "1.9.1" }
+areev-core = { path = "../areev-core", version = "1.10.0" }
+areev-store = { path = "../areev-store", version = "1.10.0" }
+areev-cal = { path = "../areev-cal", version = "1.10.0" }
 # Already in the tree via every other crate; adds no new package.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -57,15 +57,15 @@ getrandom = "0.4"
 # ISO-8601 transcript timestamps so capture-stop can pin created_at.
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 
-areev-mcp = { path = "../areev-mcp", version = "1.9.1" }
-areev-context = { path = "../areev-context", version = "1.9.1" }
-areev-server = { path = "../areev-server", version = "1.9.1" }
-areev-loop = { path = "../areev-loop", version = "1.9.1" }
-areev-loop-adapter = { path = "../areev-loop-adapter", version = "1.9.1" }
-areev-llm = { path = "../areev-llm", version = "1.9.1" }
-areev-run = { path = "../areev-run", version = "1.9.1" }
-areev-trigger = { path = "../areev-trigger", version = "1.9.1", features = ["tz"] }
-areev-run-core = { path = "../areev-run-core", version = "1.9.1" }
+areev-mcp = { path = "../areev-mcp", version = "1.10.0" }
+areev-context = { path = "../areev-context", version = "1.10.0" }
+areev-server = { path = "../areev-server", version = "1.10.0" }
+areev-loop = { path = "../areev-loop", version = "1.10.0" }
+areev-loop-adapter = { path = "../areev-loop-adapter", version = "1.10.0" }
+areev-llm = { path = "../areev-llm", version = "1.10.0" }
+areev-run = { path = "../areev-run", version = "1.10.0" }
+areev-trigger = { path = "../areev-trigger", version = "1.10.0", features = ["tz"] }
+areev-run-core = { path = "../areev-run-core", version = "1.10.0" }
 
 [dev-dependencies]
 tempfile = "3"

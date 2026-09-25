@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.10.0] — 2026-09-25
+
 ### Added
 
 - **Decision backends: typed, calibrated judgments as an optional seam**
@@ -4595,7 +4597,8 @@ ecosystem adapters, and the enterprise plane.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.9.5...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.10.0...HEAD
+[1.10.0]: https://github.com/AreevAI/areev/compare/v1.9.5...v1.10.0
 [1.9.5]: https://github.com/AreevAI/areev/compare/v1.9.4...v1.9.5
 [1.9.4]: https://github.com/AreevAI/areev/compare/v1.9.3...v1.9.4
 [1.9.3]: https://github.com/AreevAI/areev/compare/v1.9.2...v1.9.3
