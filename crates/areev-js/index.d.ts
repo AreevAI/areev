@@ -463,9 +463,12 @@ export declare class Areev {
    * Wave-0 extension mirrored from Python: `runId` correlates to a run,
    * `workflowHash` + `nodeId` (both or neither) write the `mg:step_action`
    * link, and `status`/`failureCause`/`executorKind`/`correlationId` carry
-   * the async lifecycle with strict enum validation.
+   * the async lifecycle with strict enum validation. `failureDetail` is the
+   * free-text half of the failure pair, which the loop's tool-cause
+   * classifier reads when `failureCause` is absent — last, so existing
+   * positional callers keep their meaning (lockstep with Python).
    */
-  recordToolCall(name: string, result: string, isError?: boolean | undefined | null, thread?: string | undefined | null, callId?: string | undefined | null, input?: string | undefined | null, runId?: string | undefined | null, workflowHash?: string | undefined | null, nodeId?: string | undefined | null, status?: string | undefined | null, failureCause?: string | undefined | null, executorKind?: string | undefined | null, correlationId?: string | undefined | null, ns?: string | undefined | null): Promise<string>
+  recordToolCall(name: string, result: string, isError?: boolean | undefined | null, thread?: string | undefined | null, callId?: string | undefined | null, input?: string | undefined | null, runId?: string | undefined | null, workflowHash?: string | undefined | null, nodeId?: string | undefined | null, status?: string | undefined | null, failureCause?: string | undefined | null, executorKind?: string | undefined | null, correlationId?: string | undefined | null, ns?: string | undefined | null, failureDetail?: string | undefined | null): Promise<string>
   /** Persist a content-addressed harness config and the run -> config link. */
   recordRunManifest(runId: string, config: string): Promise<string>
   /**

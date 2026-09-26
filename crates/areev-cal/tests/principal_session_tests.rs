@@ -172,6 +172,7 @@ fn session_record_tool_call_journals_with_link_and_lifecycle() {
             Some("fetch"),
             Some("pending"),
             None,
+            Some("upstream 504 after 30s"),
             Some("host"),
             Some("corr-9"),
         )
@@ -180,6 +181,7 @@ fn session_record_tool_call_journals_with_link_and_lifecycle() {
     // Typed state, indexed both ways.
     let g = facade.with_store(|m| m.get(&h)).unwrap();
     assert_eq!(g.get_str("author_did"), Some("user:amy"));
+    assert_eq!(g.get_str("failure_detail"), Some("upstream 504 after 30s"));
     let journal = facade.with_store(|m| m.run_grains("ops", "run-77", 0, 10)).unwrap();
     assert_eq!(journal.len(), 1, "run_id must reach run_idx from this path");
     let records = facade
@@ -191,7 +193,7 @@ fn session_record_tool_call_journals_with_link_and_lifecycle() {
     let err = amy
         .record_tool_call(
             "ops", "t", None, "r", false, None, None, None,
-            Some(&wf_hash.to_hex()), None, None, None, None, None,
+            Some(&wf_hash.to_hex()), None, None, None, None, None, None,
         )
         .unwrap_err();
     assert!(err.to_string().contains("both or neither"), "{err}");
@@ -201,7 +203,7 @@ fn session_record_tool_call_journals_with_link_and_lifecycle() {
     let err = amy
         .record_tool_call(
             "ops", "t", None, "r", false, None, None, None, None, None,
-            Some("done"), None, None, None,
+            Some("done"), None, None, None, None,
         )
         .unwrap_err();
     assert!(err.to_string().contains("pending, completed, failed"), "{err}");
@@ -217,7 +219,7 @@ fn malformed_run_ids_are_refused() {
         let err = amy
             .record_tool_call(
                 "ops", "t", None, "r", false, None, None, Some(&bad),
-                None, None, None, None, None, None,
+                None, None, None, None, None, None, None,
             )
             .unwrap_err();
         assert!(err.to_string().contains("run_id"), "{bad:?}: {err}");

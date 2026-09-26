@@ -731,12 +731,18 @@ pub struct Decision {
     pub calibrated: bool,
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
+    /// The provider-reported price of this decision (`usage.cost`, USD, as
+    /// OpenRouter-style gateways report it) in micro-dollars, rounded UP so
+    /// a sum of sub-micro calls never under-charges a budget. `None` when
+    /// the provider reported no cost — never estimated from tokens.
+    pub usd_micros: Option<u64>,
     pub latency_ms: u64,
 }
 
 impl Decision {
     /// The wire response plus provenance: `{model, answers, usage?, provider,
     /// calibrated, latency_ms}` — what `areev decide` and the bindings print.
+    /// `usage` carries `usd_micros` when the provider reported a cost.
     pub fn to_json(&self) -> Value {
         let mut o = json!({
             "model": self.model,
@@ -745,8 +751,11 @@ impl Decision {
             "calibrated": self.calibrated,
             "latency_ms": self.latency_ms,
         });
-        if self.input_tokens.is_some() || self.output_tokens.is_some() {
+        if self.input_tokens.is_some() || self.output_tokens.is_some() || self.usd_micros.is_some() {
             o["usage"] = json!({"input_tokens": self.input_tokens, "output_tokens": self.output_tokens});
+            if let Some(n) = self.usd_micros {
+                o["usage"]["usd_micros"] = json!(n);
+            }
         }
         o
     }
@@ -781,9 +790,21 @@ impl Decision {
             calibrated,
             input_tokens: tokens("input_tokens"),
             output_tokens: tokens("output_tokens"),
+            usd_micros: body
+                .get("usage")
+                .and_then(|u| u.get("cost"))
+                .and_then(Value::as_f64)
+                .and_then(usd_to_micros),
             latency_ms: elapsed_ms(started),
         })
     }
+}
+
+/// A provider's USD `cost` as whole micro-dollars, rounded up. A negative,
+/// non-finite or absurd value is not a price — `None`, never a guess.
+fn usd_to_micros(usd: f64) -> Option<u64> {
+    let micros = (usd * 1_000_000.0).ceil();
+    (usd.is_finite() && usd >= 0.0 && micros < u64::MAX as f64).then_some(micros as u64)
 }
 
 fn elapsed_ms(started: Instant) -> u64 {
@@ -807,6 +828,21 @@ mod tests {
 
     fn qs(pairs: Vec<(&str, Question)>) -> BTreeMap<String, Question> {
         pairs.into_iter().map(|(k, q)| (k.to_string(), q)).collect()
+    }
+
+    #[test]
+    fn provider_cost_is_micro_dollars_rounded_up_and_never_guessed() {
+        assert_eq!(usd_to_micros(0.00001575), Some(16));
+        assert_eq!(usd_to_micros(0.0), Some(0));
+        assert_eq!(usd_to_micros(1.5), Some(1_500_000));
+        assert_eq!(usd_to_micros(-0.01), None);
+        assert_eq!(usd_to_micros(f64::NAN), None);
+        assert_eq!(usd_to_micros(f64::INFINITY), None);
+        let req = DecideRequest::new("s", qs(vec![("ok", Question::noul("ok?"))]));
+        let body = json!({"answers": {"ok": {"type": "noul", "noul": 0.9}}, "usage": {"input_tokens": 3}});
+        let d = Decision::from_wire(&req, &body, "p", "m", true, Instant::now()).unwrap();
+        assert_eq!(d.usd_micros, None, "no reported cost is no cost, not an estimate");
+        assert!(d.to_json()["usage"].get("usd_micros").is_none());
     }
 
     #[test]

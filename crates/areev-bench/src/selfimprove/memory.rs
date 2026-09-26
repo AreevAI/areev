@@ -506,6 +506,7 @@ impl Memory {
                     None,
                     None,
                     None,
+                    None,
                 )
                 .map_err(|e| format!("record_tool_call {} ({}): {e}", c.tool, c.call_id))?;
         }

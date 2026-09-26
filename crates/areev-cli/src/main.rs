@@ -54,6 +54,7 @@ COMMANDS:
            [--idempotent]   no-op if this exact value is already the head
   record-tool-call --name NAME [--input JSON] --result TEXT [--is-error]
            [--thread ID] [--call-id ID] [--ns NS]   append one tool invocation
+           [--failure-cause CAUSE] [--failure-detail TEXT]   why it failed
   run-manifest --run-id ID --config JSON   persist a reproducible harness
            configuration and its run link in agent:harness
   recall   <subject> | --subject S   [--relation R] [--ns NS] [-k N]
@@ -1979,62 +1980,6 @@ fn run() -> Result<(), String> {
         return pack::run_pack(None, "shared", &flags, &positional);
     }
 
-    // Long-lived / exposed surfaces must name their memory explicitly rather
-    // than silently defaulting to the personal file.
-    let db = resolve_db(&flags, matches!(cmd.as_str(), "serve" | "ui"))?;
-    let ns = flag(&flags, "ns").unwrap_or_else(|| "shared".to_string());
-
-    // print-only verbs never open the store (paths may be untilde-expanded)
-    if cmd == "hook" {
-        let target = positional.first().map(String::as_str).unwrap_or("claude-code");
-        if target != "claude-code" {
-            return Err(format!("unknown hook target '{target}'"));
-        }
-        let exe = std::env::current_exe()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| "areev".into());
-        println!(
-            r#"Add to ~/.claude/settings.json (hooks section) to close the learning
-loop automatically — inject relevant memory before each prompt, and capture
-each exchange (with tool outcomes) when a turn ends:
-
-{{
-  "hooks": {{
-    "UserPromptSubmit": [{{ "hooks": [{{
-      "type": "command",
-      "command": "{exe} recall-hook --db {db} --ns {ns} --with-loop"
-    }}] }}],
-    "Stop": [{{ "hooks": [{{
-      "type": "command",
-      "command": "{exe} capture-stop --db {db} --ns {ns}"
-    }}] }}],
-    "PreCompact": [{{ "hooks": [{{
-      "type": "command",
-      "command": "{exe} capture-stop --db {db} --ns {ns}"
-    }}] }}]
-  }}
-}}
-
-PreCompact is the same verb on the event that says the conversation is about
-to be dropped: it captures whatever the last Stop did not, so a compaction
-costs the model its context and costs the memory nothing. No matcher, so it
-fires for manual /compact and automatic compaction alike, and it exits
-silently when the host gives it no transcript — a hook must never be why a
-compaction stalls. The summary a compaction produces is stored with
-`compact_summary: true`, so a reader can tell a machine's recap from what the
-person actually typed.
-
-recall-hook reads the prompt and prints matching memories to stdout, which
-Claude Code injects as context — so retrieval no longer depends on the model
-choosing to call a tool. For on-demand reads/writes by the model itself, also
-register the MCP server:
-  claude mcp add areev -- {exe} serve --mcp --db {db} --ns {ns}
-
-Nothing was written — apply the snippet yourself (or rerun with your own paths)."#
-        );
-        return Ok(());
-    }
-
     // `anonymize scan` and `anonymize test` are pure text processing: they
     // never open the store, so they dispatch BEFORE `resolve_db` for the same
     // reason `auth` does — resolving a default memory here is wasted work, and
@@ -2484,7 +2429,7 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
         "record-tool-call" => {
             let name = flag(&flags, "name")
                 .or_else(|| positional.first().cloned())
-                .ok_or_else(|| "usage: areev record-tool-call --name NAME --result TEXT [--input JSON] [--is-error] [--thread ID] [--call-id ID] [--run-id ID] [--workflow HASH --node ID] [--status pending|completed|failed] [--failure-cause CAUSE] [--executor-kind host|client] [--correlation-id ID]".to_string())?;
+                .ok_or_else(|| "usage: areev record-tool-call --name NAME --result TEXT [--input JSON] [--is-error] [--thread ID] [--call-id ID] [--run-id ID] [--workflow HASH --node ID] [--status pending|completed|failed] [--failure-cause CAUSE] [--failure-detail TEXT] [--executor-kind host|client] [--correlation-id ID]".to_string())?;
             let result = flag(&flags, "result")
                 .or_else(|| positional.get(1).cloned())
                 .ok_or_else(|| "record-tool-call requires --result TEXT".to_string())?;
@@ -2508,6 +2453,7 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
                     flag(&flags, "node").as_deref(),
                     flag(&flags, "status").as_deref(),
                     flag(&flags, "failure-cause").as_deref(),
+                    flag(&flags, "failure-detail").as_deref(),
                     flag(&flags, "executor-kind").as_deref(),
                     flag(&flags, "correlation-id").as_deref(),
                 )
@@ -5584,6 +5530,7 @@ fn run_eval(
                         None,
                         None,
                         Some(if ok { "completed" } else { "failed" }),
+                        None,
                         None,
                         Some("host"),
                         None,

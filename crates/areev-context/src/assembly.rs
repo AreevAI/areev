@@ -152,6 +152,15 @@ impl Shaping {
 // Knowledge Update chain types and helpers (RQ-5)
 // ---------------------------------------------------------------------------
 
+/// What `ContextAssembler::select` admits: the Knowledge Update chains
+/// (rendered as their own section) and the remaining entries with their
+/// disclosure, in allocation order.
+struct Selection {
+    chains: Vec<SupersessionChain>,
+    included: Vec<(usize, Allocation)>,
+    omitted_count: usize,
+}
+
 /// A supersession chain linking an outdated grain to its current replacement.
 struct SupersessionChain {
     /// Index of the superseded (old) grain in the hits array.
@@ -669,86 +678,9 @@ impl ContextAssembler {
             };
         }
 
-        let withheld: HashSet<usize> = if policy.include_retracted {
-            HashSet::new()
-        } else {
-            (0..hits.len())
-                .filter(|&i| {
-                    !Trust::from_field(hits[i].grain.get_str("verification_status")).is_actionable()
-                })
-                .collect()
-        };
-
-        // Step 0: Extract Knowledge Update chains (RQ-5).
-        // Detect supersession pairs and render them as a dedicated section.
-        // A chain touching a withheld grain is dropped whole: rendering the
-        // surviving half as an update would state the retracted value as the
-        // thing that changed.
-        let chains: Vec<_> = extract_supersession_chains(hits)
-            .into_iter()
-            .filter(|c| !withheld.contains(&c.old_index) && !withheld.contains(&c.new_index))
-            .collect();
+        let Selection { chains, included, omitted_count } = self.select(hits, policy, shaping, true);
         let recency = shaping.recency(policy.query_text.as_deref());
         let ku_section = self.render_knowledge_updates(&chains, &policy.format, recency);
-
-        // Collect indices consumed by KU chains — these are removed from
-        // the main context to avoid duplication.
-        let ku_consumed: HashSet<usize> = chains
-            .iter()
-            .flat_map(|c| {
-                if recency {
-                    // Recency mode: suppress the outdated grain entirely,
-                    // and also remove the current grain (it's shown in KU).
-                    vec![c.old_index, c.new_index]
-                } else {
-                    // Non-recency: both old and new shown in KU section.
-                    vec![c.old_index, c.new_index]
-                }
-            })
-            .collect();
-
-        // Step 1: Apply grain-type overrides (include/exclude + max_count)
-        let filtered: Vec<usize> = self
-            .apply_overrides(hits, policy)
-            .into_iter()
-            .filter(|idx| !ku_consumed.contains(idx))
-            .collect();
-
-        // RF-2: Exclude superseded grains whose superseder is in the result set,
-        // unless metadata is Full (keep both, annotated with [OUTDATED]).
-        let filtered = if policy.metadata != super::policy::MetadataLevel::Full {
-            self.exclude_superseded_pairs(hits, &filtered)
-        } else {
-            filtered
-        };
-
-        let filtered: Vec<usize> =
-            filtered.into_iter().filter(|i| !withheld.contains(i)).collect();
-
-        // Step 2: Score + measure each hit
-        let mut scored = self.score_entries(hits, &filtered, policy, shaping);
-
-        // Step 3: Allocate budget (diversity-aware when configured).
-        let mut allocations = match policy.grain_type_diversity {
-            Some(ref diversity) => {
-                budget::allocate_with_diversity(&mut scored, policy.token_budget, diversity)
-            }
-            None => budget::allocate(&mut scored, policy.token_budget),
-        };
-        strip_summaries_for_structured_formats(&mut allocations, policy);
-
-        // Step 4: Collect included entries with their allocation
-        let included: Vec<(usize, Allocation)> = allocations
-            .iter()
-            .enumerate()
-            .filter(|(_, alloc)| **alloc != Allocation::Omit)
-            .map(|(i, alloc)| (filtered[i], *alloc))
-            .collect();
-
-        let omitted_count = allocations
-            .iter()
-            .filter(|a| **a == Allocation::Omit)
-            .count();
 
         // Step 5: Split primary and expansion hits.
         let has_expansion = included.iter().any(|(idx, _)| {
@@ -850,6 +782,91 @@ impl ContextAssembler {
         }
     }
 
+    /// Which hits an assembly renders, and at what disclosure — the ONE
+    /// selection every mode shares (single pass, census, timeline), so a
+    /// mode's counts are the grains its text shows and a withheld
+    /// (retracted) grain is dropped everywhere, not only where one mode
+    /// remembered to. `chains` extracts Knowledge Update pairs (both halves
+    /// leave `included`, the caller renders them as a section); without it
+    /// a pair stays as ordinary entries and RF-2 drops the outdated half.
+    fn select(
+        &self,
+        hits: &[SearchHit],
+        policy: &FormatPolicy,
+        shaping: &Shaping,
+        chains: bool,
+    ) -> Selection {
+        let withheld: HashSet<usize> = if policy.include_retracted {
+            HashSet::new()
+        } else {
+            (0..hits.len())
+                .filter(|&i| {
+                    !Trust::from_field(hits[i].grain.get_str("verification_status")).is_actionable()
+                })
+                .collect()
+        };
+
+        // Step 0: Extract Knowledge Update chains (RQ-5).
+        // A chain touching a withheld grain is dropped whole: rendering the
+        // surviving half as an update would state the retracted value as the
+        // thing that changed.
+        let chains: Vec<SupersessionChain> = if chains {
+            extract_supersession_chains(hits)
+                .into_iter()
+                .filter(|c| !withheld.contains(&c.old_index) && !withheld.contains(&c.new_index))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        // Both halves of a chain are shown in the KU section, so they leave
+        // the main context to avoid duplication.
+        let ku_consumed: HashSet<usize> =
+            chains.iter().flat_map(|c| [c.old_index, c.new_index]).collect();
+
+        // Step 1: Apply grain-type overrides (include/exclude + max_count)
+        let filtered: Vec<usize> = self
+            .apply_overrides(hits, policy)
+            .into_iter()
+            .filter(|idx| !ku_consumed.contains(idx))
+            .collect();
+
+        // RF-2: Exclude superseded grains whose superseder is in the result set,
+        // unless metadata is Full (keep both, annotated with [OUTDATED]).
+        let filtered = if policy.metadata != super::policy::MetadataLevel::Full {
+            self.exclude_superseded_pairs(hits, &filtered)
+        } else {
+            filtered
+        };
+
+        let filtered: Vec<usize> =
+            filtered.into_iter().filter(|i| !withheld.contains(i)).collect();
+
+        // Step 2: Score + measure each hit
+        let mut scored = self.score_entries(hits, &filtered, policy, shaping);
+
+        // Step 3: Allocate budget (diversity-aware when configured).
+        let mut allocations = match policy.grain_type_diversity {
+            Some(ref diversity) => {
+                budget::allocate_with_diversity(&mut scored, policy.token_budget, diversity)
+            }
+            None => budget::allocate(&mut scored, policy.token_budget),
+        };
+        strip_summaries_for_structured_formats(&mut allocations, policy);
+
+        // Step 4: Collect included entries with their allocation
+        let included: Vec<(usize, Allocation)> = allocations
+            .iter()
+            .enumerate()
+            .filter(|(_, alloc)| **alloc != Allocation::Omit)
+            .map(|(i, alloc)| (filtered[i], *alloc))
+            .collect();
+        let omitted_count = allocations
+            .iter()
+            .filter(|a| **a == Allocation::Omit)
+            .count();
+        Selection { chains, included, omitted_count }
+    }
+
     /// RF-4 Mode 2: Format hits as a chronological timeline with deltas.
     ///
     /// Runs the standard budget-allocation pipeline, then sorts included
@@ -860,34 +877,10 @@ impl ContextAssembler {
         policy: &FormatPolicy,
         shaping: &Shaping,
     ) -> FormattedContext {
-        // Reuse the standard pipeline for filtering + budget allocation.
-        let filtered = self.apply_overrides(hits, policy);
-        let filtered = if policy.metadata != super::policy::MetadataLevel::Full {
-            self.exclude_superseded_pairs(hits, &filtered)
-        } else {
-            filtered
-        };
-
-        let mut scored = self.score_entries(hits, &filtered, policy, shaping);
-
-        let mut allocations = match policy.grain_type_diversity {
-            Some(ref diversity) => {
-                budget::allocate_with_diversity(&mut scored, policy.token_budget, diversity)
-            }
-            None => budget::allocate(&mut scored, policy.token_budget),
-        };
-        strip_summaries_for_structured_formats(&mut allocations, policy);
-        let mut included: Vec<(usize, Allocation)> = allocations
-            .iter()
-            .enumerate()
-            .filter(|(_, alloc)| **alloc != Allocation::Omit)
-            .map(|(i, alloc)| (filtered[i], *alloc))
-            .collect();
-
-        let omitted_count = allocations
-            .iter()
-            .filter(|a| **a == Allocation::Omit)
-            .count();
+        // The shared selection: overrides, RF-2, withheld (retracted)
+        // grains and the budget. No KU section in a timeline — a pair stays
+        // two dated entries, and RF-2 decides whether the old one shows.
+        let Selection { mut included, omitted_count, .. } = self.select(hits, policy, shaping, false);
 
         // Sort chronologically for timeline rendering.
         included.sort_by_key(|(idx, _)| hits[*idx].grain.header.created_at_sec);
@@ -912,31 +905,39 @@ impl ContextAssembler {
         policy: &FormatPolicy,
         shaping: &Shaping,
     ) -> FormattedContext {
-        // Format the census hits using the standard pipeline.
-        let inner = self.format_single_pass(census_hits, policy, shaping);
-        if inner.text.is_empty() {
-            return inner;
+        // The shared selection (withheld grains, RF-2, overrides, the census
+        // sub-budget), so the section shows exactly the grains its counts
+        // report, at the disclosure the allocator chose. Census hits are
+        // cross-session evidence, not an update narrative: no KU section.
+        let Selection { mut included, omitted_count, .. } =
+            self.select(census_hits, policy, shaping, false);
+        if included.is_empty() {
+            return FormattedContext {
+                text: String::new(),
+                estimated_tokens: 0,
+                included_count: 0,
+                omitted_count,
+                truncated: omitted_count > 0,
+                decision: None,
+            };
         }
-
-        // Honor the census sub-budget: render only the hits `inner` actually
-        // included (its default allocator is priority-prefix). Otherwise the
-        // section renders EVERY census hit regardless of budget, and the
-        // included/omitted counts returned below (taken from `inner`) disagree
-        // with the text a caller sees.
-        let shown = &census_hits[..inner.included_count.min(census_hits.len())];
+        included.sort_by_key(|&(idx, _)| idx);
+        let shown: Vec<(&SearchHit, Allocation)> =
+            included.iter().map(|&(idx, alloc)| (&census_hits[idx], alloc)).collect();
+        let render = |hit: &SearchHit, alloc: Allocation| match self.registry.get(hit.grain.grain_type) {
+            Some(r) if alloc == Allocation::Summary => r.render_summary(&hit.grain, policy),
+            Some(r) => r.render(&hit.grain, policy),
+            None => format!("[{}]", hit.grain.grain_type.as_str()),
+        };
 
         // Wrap in a census section header.
         let text = match policy.format {
             OutputFormat::Sml => {
                 let mut rendered_grains = Vec::new();
-                for hit in shown {
+                for &(hit, alloc) in &shown {
                     let session = hit.source_namespace.as_deref().unwrap_or("unknown");
                     let gt = hit.grain.grain_type;
-                    let renderer = self.registry.get(gt);
-                    let content = match renderer {
-                        Some(r) => r.render(&hit.grain, policy),
-                        None => format!("[{}]", gt.as_str()),
-                    };
+                    let content = render(hit, alloc);
                     let tag = gt.as_str();
                     if content.starts_with(&format!("<{}>", tag)) {
                         rendered_grains.push(content.replacen(
@@ -955,28 +956,18 @@ impl ContextAssembler {
             }
             OutputFormat::Markdown => {
                 let mut lines = vec!["## Additional Sessions (census)".to_string()];
-                for hit in shown {
+                for &(hit, alloc) in &shown {
                     let session = hit.source_namespace.as_deref().unwrap_or("unknown");
-                    let gt = hit.grain.grain_type;
-                    let renderer = self.registry.get(gt);
-                    let content = match renderer {
-                        Some(r) => r.render(&hit.grain, policy),
-                        None => format!("[{}]", gt.as_str()),
-                    };
+                    let content = render(hit, alloc);
                     lines.push(format!("{} (from {})", content, session));
                 }
                 lines.join("\n")
             }
             OutputFormat::PlainText => {
                 let mut lines = vec!["=== Additional Sessions (census) ===".to_string()];
-                for hit in shown {
+                for &(hit, alloc) in &shown {
                     let session = hit.source_namespace.as_deref().unwrap_or("unknown");
-                    let gt = hit.grain.grain_type;
-                    let renderer = self.registry.get(gt);
-                    let content = match renderer {
-                        Some(r) => r.render(&hit.grain, policy),
-                        None => format!("[{}]", gt.as_str()),
-                    };
+                    let content = render(hit, alloc);
                     lines.push(format!("{} [session: {}]", content, session));
                 }
                 lines.join("\n")
@@ -985,13 +976,8 @@ impl ContextAssembler {
                 // JSON: census grains are in the main array but with recall_source.
                 // Re-render each grain as JSON with the recall_source field injected.
                 let mut parts = Vec::new();
-                for hit in shown {
-                    let gt = hit.grain.grain_type;
-                    let renderer = self.registry.get(gt);
-                    let rendered = match renderer {
-                        Some(r) => r.render(&hit.grain, policy),
-                        None => format!("[{}]", gt.as_str()),
-                    };
+                for &(hit, alloc) in &shown {
+                    let rendered = render(hit, alloc);
                     if let Ok(mut obj) = serde_json::from_str::<serde_json::Value>(&rendered) {
                         if let Some(map) = obj.as_object_mut() {
                             map.insert(
@@ -1021,7 +1007,7 @@ impl ContextAssembler {
                 let mut sections = Vec::new();
                 let mut groups: HashMap<GrainType, Vec<&SearchHit>> = HashMap::new();
                 let mut type_order: Vec<GrainType> = Vec::new();
-                for hit in shown {
+                for &(hit, _) in &shown {
                     let gt = hit.grain.grain_type;
                     if !groups.contains_key(&gt) {
                         type_order.push(gt);
@@ -1059,11 +1045,11 @@ impl ContextAssembler {
         };
 
         FormattedContext {
+            estimated_tokens: text.len() / 4,
             text,
-            estimated_tokens: inner.estimated_tokens,
-            included_count: inner.included_count,
-            omitted_count: inner.omitted_count,
-            truncated: inner.truncated,
+            included_count: shown.len(),
+            omitted_count,
+            truncated: omitted_count > 0,
             decision: None,
         }
     }
@@ -3927,4 +3913,62 @@ mod tests {
         );
     }
 
+    /// Timeline mode used to run its own selection and skip the withheld
+    /// filter, so a retracted grain was rendered as a dated event (#354).
+    #[test]
+    fn retracted_is_withheld_from_timeline_mode() {
+        let hints = RenderingHints {
+            entity_count: None,
+            entities: None,
+            has_temporal_expr: true,
+            has_time_range: false,
+            query_text: Some("in what order did events happen?".to_string()),
+        };
+        let hits = vec![
+            make_dated_hit(GrainType::Event, vec![("content", "Joined volleyball league")], 0.9, 1_673_740_800),
+            make_dated_hit(
+                GrainType::Event,
+                vec![("content", "Moved to Lisbon"), ("verification_status", "retracted")],
+                0.8,
+                1_682_294_400,
+            ),
+            make_dated_hit(GrainType::Event, vec![("content", "Started yoga classes")], 0.7, 1_694_304_000),
+        ];
+        let policy = FormatPolicy::new(OutputFormat::PlainText).metadata(MetadataLevel::None);
+        let ctx = ContextAssembler::new().format_with_hints(&hits, &policy, &hints);
+        assert!(ctx.text.contains("Timeline"), "expected timeline mode: {}", ctx.text);
+        assert!(!ctx.text.contains("Lisbon"), "retracted grain in the timeline: {}", ctx.text);
+        assert_eq!(ctx.included_count, 2);
+
+        let ctx = ContextAssembler::new()
+            .format_with_hints(&hits, &policy.clone().include_retracted(true), &hints);
+        assert!(ctx.text.contains("Lisbon"), "include_retracted must admit it: {}", ctx.text);
+        assert_eq!(ctx.included_count, 3);
+    }
+
+    /// The census section rendered a PREFIX of its hits sized by the inner
+    /// pass's included count, so any grain the pass dropped (withheld,
+    /// superseded, overridden) shifted the window: the dropped grain was
+    /// shown and a kept one vanished, and the count described neither (#354).
+    #[test]
+    fn census_section_shows_exactly_what_it_counts() {
+        let hits = vec![
+            make_hit(GrainType::Fact, vec![("subject", "john"), ("relation", "likes"), ("object", "coffee")], 0.9),
+            make_census_hit(
+                GrainType::Fact,
+                vec![("subject", "ann"), ("relation", "likes"), ("object", "gin"), ("verification_status", "retracted")],
+                0.5,
+                "session-1",
+            ),
+            make_census_hit(GrainType::Fact, vec![("subject", "bob"), ("relation", "likes"), ("object", "tea")], 0.4, "session-2"),
+            make_census_hit(GrainType::Fact, vec![("subject", "cy"), ("relation", "likes"), ("object", "rum")], 0.3, "session-3"),
+        ];
+        let policy = FormatPolicy::new(OutputFormat::PlainText).metadata(MetadataLevel::None);
+        let ctx = ContextAssembler::new().format(&hits, &policy);
+        assert!(!ctx.text.contains("gin"), "retracted census grain rendered: {}", ctx.text);
+        assert!(ctx.text.contains("tea") && ctx.text.contains("rum"), "kept census grains lost: {}", ctx.text);
+        let census_lines = ctx.text.matches("[session: ").count();
+        assert_eq!(census_lines, 2, "{}", ctx.text);
+        assert_eq!(ctx.included_count, 1 + census_lines);
+    }
 }

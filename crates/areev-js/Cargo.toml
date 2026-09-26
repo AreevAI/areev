@@ -44,3 +44,12 @@ napi-derive = "3"
 
 [build-dependencies]
 napi-build = "2"
+
+# The addon is a dylib, and Cargo's default release strip
+# (`strip = "debuginfo"`) runs rustc's bundled `rust-objcopy` over it. Linked
+# by Xcode 27's ld (ld-27037), that output is refused by macOS 27's dyld —
+# `mis-aligned LINKEDIT string pool` — so `require()` fails. Apple's own
+# `strip` output of the same dylib loads. Not stripping costs ~1.4 MB of std
+# debuginfo (the root workspace does the same for areev-py).
+[profile.release]
+strip = false

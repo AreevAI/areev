@@ -2768,7 +2768,10 @@ impl Areev {
     /// Wave-0 extension mirrored from Python: `runId` correlates to a run,
     /// `workflowHash` + `nodeId` (both or neither) write the `mg:step_action`
     /// link, and `status`/`failureCause`/`executorKind`/`correlationId` carry
-    /// the async lifecycle with strict enum validation.
+    /// the async lifecycle with strict enum validation. `failureDetail` is the
+    /// free-text half of the failure pair, which the loop's tool-cause
+    /// classifier reads when `failureCause` is absent — last, so existing
+    /// positional callers keep their meaning (lockstep with Python).
     #[napi(ts_return_type = "Promise<string>")]
     #[allow(clippy::too_many_arguments)]
     pub fn record_tool_call(
@@ -2787,6 +2790,7 @@ impl Areev {
         executor_kind: Option<String>,
         correlation_id: Option<String>,
         ns: Option<String>,
+        failure_detail: Option<String>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
         // `ns` targets a namespace other than the session's, exactly as
@@ -2808,6 +2812,7 @@ impl Areev {
                     node_id.as_deref(),
                     status.as_deref(),
                     failure_cause.as_deref(),
+                    failure_detail.as_deref(),
                     executor_kind.as_deref(),
                     correlation_id.as_deref(),
                 )

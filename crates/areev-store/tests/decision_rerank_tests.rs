@@ -82,6 +82,7 @@ impl DecisionBackend for Fake {
             calibrated: !self.uncalibrated,
             input_tokens: Some(10),
             output_tokens: Some(2),
+            usd_micros: Some(16),
             latency_ms: 1,
         })
     }
@@ -117,6 +118,7 @@ fn scores_follow_the_answer_and_map_into_unit_range() {
     assert!(r.calibrated());
     let st = r.stats();
     assert_eq!((st.requests(), st.candidates_sent(), st.input_tokens(), st.output_tokens()), (1, 4, 10, 2));
+    assert_eq!(st.usd_micros(), 16, "provider-reported cost is summed");
     assert_eq!(st.served(), Some(("fake".into(), "fake-1".into(), true)));
 }
 

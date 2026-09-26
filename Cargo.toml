@@ -23,3 +23,12 @@ rust-version = "1.90.0"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# The Python extension is a cdylib, and Cargo's default release strip
+# (`strip = "debuginfo"`) runs rustc's bundled `rust-objcopy` over it. Linked
+# by Xcode 27's ld (ld-27037), that output is refused by macOS 27's dyld —
+# `mis-aligned LINKEDIT string pool` — so the wheel will not import. Apple's
+# own `strip` output of the same dylib loads, and executables are unaffected.
+# Not stripping costs ~1.4 MB of std debuginfo; a wheel that loads is worth it.
+[profile.release.package.areev-py]
+strip = false

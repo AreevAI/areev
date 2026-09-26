@@ -6,6 +6,65 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+The follow-ups #354 left open.
+
+### Changed
+
+- **The builtin saved ASSEMBLE queries no longer set `min_score`.** Recall
+  scores are relative: rank-normalized RRF, where a hit only one of L legs
+  found scores ≤ 1/L, or a reranker's scores min-max normalized over its
+  pool. A fixed floor is therefore a rank cut whose depth depends on how many
+  legs fired. Measured on LoCoMo (`areev-bench --bin min_score_sweep`,
+  1,982 QAs, `RESULTS.md` §10), the 0.4–0.55 floors on `agent_context`,
+  Account 360, Meeting Cross Query, Support CoPilot, Sales Playbook, Policy
+  Library and RFP Questionnaire removed nothing keyless. With a vector leg,
+  0.5+ cost 4–7 points of gold-evidence recall. `min_score` itself is
+  unchanged; `cal-reference.md` now says what it cuts.
+- **`Decision` carries the provider-reported cost.** `usage.cost` (USD, as
+  OpenRouter-style gateways report it) becomes `Decision::usd_micros`,
+  rounded up, and `to_json()` prints it as `usage.usd_micros`. A decision
+  node now charges it to the run's USD budget; it was hard-coded 0, so a
+  decision node was free under any `max_usd`. `DecisionRerankStats` sums it,
+  and the `accuracy` / `decide_calibrate` benches print it. It is never
+  estimated from tokens. Rust callers building a `Decision` literal add
+  `usd_micros: None`.
+
+### Added
+
+- **`failure_detail` on `record_tool_call`**, on every surface: MCP
+  `areev_record_tool_call` (tool count unchanged), CLI `record-tool-call
+  --failure-detail`, Python `failure_detail=`, Node `failureDetail`. It is
+  the free text the loop's tool-cause classifier reads when `failure_cause`
+  is absent; before this, only Rust could set it, so the classifier rarely
+  fired from MCP. The bindings take it LAST so existing positional callers
+  keep their meaning; the Rust facade takes it after `failure_cause`.
+- `areev-bench --bin min_score_sweep`, plus the LoCoMo parser and TF-IDF
+  embedder shared with `accuracy` as `areev_bench::locomo`.
+
+### Fixed
+
+- **Timeline mode rendered retracted grains.** It ran its own selection and
+  skipped the withheld filter, so a `verification_status: retracted` grain
+  appeared as a dated event. Every mode (single pass, census, timeline) now
+  shares one selection.
+- **Census counts disagreed with the census text.** The section rendered a
+  prefix of its hits sized by the inner pass's count. Any grain that pass
+  dropped (withheld, superseded, overridden) shifted the window: a dropped
+  grain was shown, a kept one vanished, and the count described neither. The
+  section now renders exactly what the selection admitted, at the disclosure
+  the allocator chose.
+- **`anonymize scan|test` resolved a default memory.** A duplicated
+  `resolve_db` block ran ahead of their dispatch, creating `~/.areev/` and
+  printing a "using default memory" line for commands that open nothing.
+- **Release dylibs would not load on macOS 27 with Xcode 27.** Cargo's
+  default release strip runs rustc's bundled `rust-objcopy`. Over a dylib
+  linked by ld-27037, its output is refused by dyld (`mis-aligned LINKEDIT
+  string pool`), so a locally built Node addon failed `require()` and a
+  locally built Python wheel failed `import`. `areev-js` and `areev-py`
+  now build with `strip = false` (~1.4 MB of std debuginfo). The 1.10.0
+  artifacts CI published load fine, but CI would hit this once its runners
+  move to Xcode 27. Executables are unaffected.
+
 ## [1.10.0] — 2026-09-25
 
 ### Added

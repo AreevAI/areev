@@ -71,6 +71,7 @@ impl DecisionBackend for Fake {
             calibrated: self.calibrated,
             input_tokens: None,
             output_tokens: None,
+            usd_micros: None,
             latency_ms: 1,
         })
     }

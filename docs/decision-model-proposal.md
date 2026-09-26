@@ -132,6 +132,10 @@ it):
   "usage": { "input_tokens": 318, "output_tokens": 34 } }
 ```
 
+`usage.cost` (USD), when a gateway reports it, is kept on the `Decision` as
+`usd_micros` (rounded up) and charged to a run's USD budget; `to_json()`
+prints it as `usage.usd_micros`. It is never estimated from tokens.
+
 `confidence` for Choice/Score is `(n·p_max − 1)/(n − 1)` with `n` the option
 or level count (TypeSafe's formula; emulation computes the same so the
 field means one thing across providers). Noul has no confidence field.

@@ -2709,7 +2709,10 @@ impl Areev {
     /// (both or neither) write the `mg:step_action` execution-record link to
     /// the plan; `status`/`failure_cause`/`executor_kind`/`correlation_id`
     /// carry the async lifecycle. Enum strings validate strictly — an unknown
-    /// value raises naming the accepted set.
+    /// value raises naming the accepted set. `failure_detail` is the free-text
+    /// half of the failure pair (the upstream error, say) — what the loop's
+    /// tool-cause classifier reads when `failure_cause` is absent. It is last
+    /// so existing positional callers keep their meaning.
     #[allow(clippy::too_many_arguments)]
     ///
     /// `ns` targets a namespace other than the session's, exactly as `add()`
@@ -2720,7 +2723,7 @@ impl Areev {
     #[pyo3(signature = (name, result, is_error = false, thread = None, call_id = None, input = None,
                         run_id = None, workflow_hash = None, node_id = None, status = None,
                         failure_cause = None, executor_kind = None, correlation_id = None,
-                        ns = None))]
+                        ns = None, failure_detail = None))]
     fn record_tool_call(
         &self,
         py: Python<'_>,
@@ -2738,6 +2741,7 @@ impl Areev {
         executor_kind: Option<String>,
         correlation_id: Option<String>,
         ns: Option<String>,
+        failure_detail: Option<String>,
     ) -> PyResult<String> {
         let ns = ns.unwrap_or_else(|| self.ns.clone());
         py.detach(|| {
@@ -2755,6 +2759,7 @@ impl Areev {
                     node_id.as_deref(),
                     status.as_deref(),
                     failure_cause.as_deref(),
+                    failure_detail.as_deref(),
                     executor_kind.as_deref(),
                     correlation_id.as_deref(),
                 )

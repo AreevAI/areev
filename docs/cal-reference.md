@@ -1097,6 +1097,17 @@ Every grain in a `RECALL` result carries a `score` in `[0, 1]`:
 that fused at least half as well as the best one), and `WHERE score >= …`
 reads it like any other field.
 
+Because the score is relative, a floor is a **rank cut, not a relevance
+bar**, and its depth depends on how many legs fired: a grain only one of L
+legs found scores at most `1/L`, so the same `min_score(0.5)` removes nothing
+on a keyless (BM25-only) memory and drops every single-leg hit once an
+embedder adds a vector leg. Under a reranker the pool's worst candidate
+scores `0.0` however relevant it is. Measured on LoCoMo, floors of 0.5+ cost
+4–7 points of gold-evidence recall with a vector leg and nothing without one
+(`crates/areev-bench/RESULTS.md` §10), which is why the builtin saved queries
+set none. For a floor with an absolute meaning, use a calibrated decision
+backend's `drop_below`.
+
 Options requiring an unavailable backend (e.g. a reranker feature that is not
 compiled in) return an honest error rather than silently degrading. An option
 that parses but cannot change the result on the statement it is attached to

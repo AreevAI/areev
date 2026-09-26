@@ -680,6 +680,47 @@ Brier per provider and question type, plus a noul F1 threshold and the 5%
 two-band suggestion); `crates/areev-bench/data/decide_calibrate_sample.jsonl`
 is a 12-row synthetic smoke set — it proves the plumbing, not calibration.
 
+## 10. `min_score` floors against real recall scores — LoCoMo sweep
+
+`cargo run --release -p areev-bench --bin min_score_sweep -- locomo10.json 10`
+(`AREEV_TOPK`, default 20; `AREEV_EMBED_CACHE` swaps in real embeddings)
+
+Since #354 a recall score is real, but it is **relative**: rank-normalized
+RRF (each leg adds `1/(60 + rank)`, the pool is divided by its best hit) or,
+under `WITH rerank`, the reranker's scores min-max normalized over its pool.
+A hit only one of L legs found scores at most 1/L, so a fixed `min_score`
+floor is a rank cut whose depth depends on how many legs fired. This sweep
+measures that on full LoCoMo (10 conversations, 1,982 answerable QAs): every
+turn is an Event, each question recalls the top-k, and each floor reports
+whether a gold-evidence turn survives. No LLM, no key. Measured 2026-09-26.
+
+| floor | lexical (BM25, one leg) k=20 | hybrid (BM25 + TF-IDF vector) k=20 | hybrid k=8 | hybrid hits kept / question, k=20 |
+|---|---|---|---|---|
+| none (0.0) | 65.4% | 62.9% | 52.5% | 20.0 |
+| 0.40 | 65.4% | 62.9% | 52.5% | 20.0 |
+| 0.45 | 65.4% | 62.0% | 52.5% | 18.3 |
+| 0.50 | 65.4% | 57.8% | 48.8% | 12.6 |
+| 0.55 | 65.4% | 55.4% | 45.6% | 11.1 |
+| 0.75 | 65.4% | 53.6% | 45.3% | 8.6 |
+
+The 0.0 row is the positive control: the path reaches the metric, so a drop
+below it is the floor's doing. **Keyless, every floor from 0.2 to 0.75 is a
+no-op** — one leg's rank-normalized scores stay above 0.75 through rank 20.
+**With a second leg the same floors cut 4–7 points of gold-evidence recall
+at 0.5+**, because they drop exactly the hits only one leg found, which is
+what a second leg is for. The floor raises the gold share of what is kept
+(3.4% → 5.3% at 0.55, k=20) by keeping fewer hits, not better ones. Under a
+reranker the pool's worst candidate scores 0.0 however relevant it is, so a
+floor there is relative too.
+
+**Consequence:** the seven builtin ASSEMBLE queries (`agent_context`,
+Account 360, Meeting Cross Query, Support CoPilot, Sales Playbook, Policy
+Library, RFP Questionnaire) carried floors of 0.4–0.55 chosen when every
+score was 1.0; they no longer set one. `min_score` stays available as a rank
+cut. The relevance floor with an absolute meaning is the calibrated decision
+judgment (`drop_below`, CAL-W019 when it drops), which only a calibrated
+backend may apply.
+
 ## Governed self-improvement on real, public data
 
 Two harnesses measure the same claim as the A/B/A/B bench below, on

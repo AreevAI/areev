@@ -566,7 +566,7 @@ impl QueryRegistry {
              \x20 user_facts: (RECALL facts   ABOUT $query RECENT 8)\n\
              BUDGET 4000 tokens\n\
              FORMAT sml\n\
-             WITH dedup, conflict_resolution, rerank, provenance, session_affinity(0.9), recency_weight(0.7), min_score(0.55)",
+             WITH dedup, conflict_resolution, rerank, provenance, session_affinity(0.9), recency_weight(0.7)",
             "Default harness runtime context: harness definition (goal/workflow/tools), recent conversation Events, and rerank-filtered user facts scoped to the active query.",
             &[
                 QueryParam { name: "user".to_string(), default: None },
@@ -577,6 +577,17 @@ impl QueryRegistry {
         );
 
         // ── Enterprise harness template queries (12–18) ─────────────────────
+        //
+        // None of these builtins sets `min_score` (the Agent Context above
+        // neither). Recall scores are RELATIVE — rank-normalized RRF (top = 1.0,
+        // a hit only one of L legs found scores ≤ 1/L) or a reranker's scores
+        // min-max normalized over its pool — so a fixed floor is a rank cut
+        // whose depth depends on how many legs fired, not a relevance bar.
+        // Measured on LoCoMo (`areev-bench --bin min_score_sweep`, 1,982 QAs):
+        // the 0.4–0.55 floors these carried were no-ops keyless (one leg) and,
+        // with a vector leg, 0.5+ cut 4–7 points of gold-evidence recall. The
+        // relevance floor that means something is the calibrated decision
+        // judgment (`drop_below`), which only a calibrated backend may apply.
 
         // ── 12. Account 360 Context ──
         // Harness: Account 360 — latest account state, contacts, interactions,
@@ -592,7 +603,7 @@ impl QueryRegistry {
              \x20                WHERE tags CONTAINS \"thread\" AND subject = $account_id RECENT 10)\n\
              BUDGET 5000 tokens\n\
              FORMAT markdown\n\
-             WITH dedup, recency_weight(0.8), provenance, rerank, min_score(0.4)",
+             WITH dedup, recency_weight(0.8), provenance, rerank",
             "Account 360 context: latest account state, contacts, interactions, and open threads for a named account",
             &[
                 QueryParam { name: "account_id".to_string(), default: None },
@@ -640,7 +651,7 @@ impl QueryRegistry {
              \x20 meetings:     (RECALL events ABOUT $query RECENT 10)\n\
              BUDGET 4000 tokens\n\
              FORMAT markdown\n\
-             WITH dedup, contradiction_detection, provenance, rerank, min_score(0.5)",
+             WITH dedup, contradiction_detection, provenance, rerank",
             "Cross-meeting search: decisions, active goals, and meeting events matching a query",
             &[
                 QueryParam {
@@ -667,7 +678,7 @@ impl QueryRegistry {
              \x20 runbooks:       (RECALL workflows ABOUT $query RECENT 5)\n\
              BUDGET 5000 tokens\n\
              FORMAT markdown\n\
-             WITH dedup, recency_weight(0.6), provenance, rerank, score_breakdown, min_score(0.45)",
+             WITH dedup, recency_weight(0.6), provenance, rerank, score_breakdown",
             "Support co-pilot context: KB articles, resolved tickets, and runbooks for a support query",
             &[
                 QueryParam { name: "query".to_string(), default: None },
@@ -689,7 +700,7 @@ impl QueryRegistry {
              \x20                WHERE tags CONTAINS \"pricing\" RECENT 5)\n\
              BUDGET 5000 tokens\n\
              FORMAT markdown\n\
-             WITH dedup, provenance, rerank, diversity(0.5), min_score(0.4)",
+             WITH dedup, provenance, rerank, diversity(0.5)",
             "Sales playbook context: competitor profiles, objection counters, case studies, and pricing for battlecard generation",
             &[
                 QueryParam { name: "competitor".to_string(), default: None },
@@ -709,7 +720,7 @@ impl QueryRegistry {
              \x20 exceptions:  (RECALL consents WHERE subject = $user RECENT 10)\n\
              BUDGET 4000 tokens\n\
              FORMAT markdown\n\
-             WITH dedup, provenance, rerank, include_sources, min_score(0.5)",
+             WITH dedup, provenance, rerank, include_sources",
             "Policy library context: active policies and user-scoped exceptions for policy questions",
             &[
                 QueryParam { name: "user".to_string(), default: None },
@@ -729,7 +740,7 @@ impl QueryRegistry {
              \x20              WHERE tags CONTAINS \"control\" RECENT 10)\n\
              BUDGET 4000 tokens\n\
              FORMAT markdown\n\
-             WITH dedup, provenance, rerank, score_breakdown, recency_weight(0.6), min_score(0.45)",
+             WITH dedup, provenance, rerank, score_breakdown, recency_weight(0.6)",
             "RFP questionnaire context: existing QA pairs and compliance controls for questionnaire answering",
             &[
                 QueryParam { name: "query".to_string(), default: None },

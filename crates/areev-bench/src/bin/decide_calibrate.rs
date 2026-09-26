@@ -195,7 +195,7 @@ fn main() {
     // provider -> (model, calibrated, rows)
     let mut by_provider: BTreeMap<String, (String, bool, Vec<Scored>)> = BTreeMap::new();
     let (mut total, mut failed) = (0usize, 0usize);
-    let (mut tok_in, mut tok_out) = (0u64, 0u64);
+    let (mut tok_in, mut tok_out, mut usd_micros) = (0u64, 0u64, 0u64);
     for (ln, line) in raw.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
         total += 1;
         let fail = |m: String| {
@@ -228,6 +228,7 @@ fn main() {
         };
         tok_in += d.input_tokens.unwrap_or(0);
         tok_out += d.output_tokens.unwrap_or(0);
+        usd_micros += d.usd_micros.unwrap_or(0);
         match score_row(&q, &d.answers["q"], &row["label"]) {
             Ok(s) => by_provider
                 .entry(d.provider.clone())
@@ -286,7 +287,7 @@ fn main() {
             println!("  NOTE: uncalibrated backend — these bands may REORDER but never OMIT (proposal §2 rule 2)");
         }
     }
-    println!("\nprovider-reported tokens: {tok_in} in / {tok_out} out");
+    println!("\nprovider-reported tokens: {tok_in} in / {tok_out} out, cost ${:.4}", usd_micros as f64 / 1e6);
     println!("total latency: {:.2} s", started.elapsed().as_secs_f64());
     if failed > 0 {
         println!("\nREFUSED: {failed} of {total} rows failed — a calibration over a partial denominator is not reported");

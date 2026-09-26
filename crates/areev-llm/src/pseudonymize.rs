@@ -248,6 +248,7 @@ mod decider_tests {
                 calibrated: true,
                 input_tokens: Some(7),
                 output_tokens: Some(1),
+                usd_micros: None,
                 latency_ms: 0,
             })
         }
