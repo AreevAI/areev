@@ -684,7 +684,7 @@ fn reply(path: &str) -> i32 {
                         NS, "extract_rows", None,
                         &format!("corr:{field}:{}", s(&state, "client")),
                         true, Some(&s(&item, "thread")), None, Some(&run_id),
-                        None, None, None, None, None, None,
+                        None, None, None, None, None, None, None,
                     )
                     .expect("record correction");
             }
