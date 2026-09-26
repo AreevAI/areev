@@ -230,6 +230,26 @@ impl SpawnOutput {
     }
 }
 
+/// `spawn()`, retrying the transient `ETXTBSY` a just-written executable can hit.
+///
+/// A content-addressed executor is written to its cache and exec'd at once. If
+/// another thread forks between our write and our exec, the child inherits the
+/// still-open write fd until it execs, and the kernel refuses to exec a file
+/// held open for writing. The window closes on its own in microseconds, so a
+/// short bounded retry is the whole fix; anything else surfaces immediately.
+fn spawn_past_busy_exec(cmd: &mut Command) -> io::Result<Child> {
+    let mut attempt = 0u32;
+    loop {
+        match cmd.spawn() {
+            Err(e) if e.kind() == io::ErrorKind::ExecutableFileBusy && attempt < 20 => {
+                attempt += 1;
+                std::thread::sleep(Duration::from_millis(5 * u64::from(attempt)));
+            }
+            other => return other,
+        }
+    }
+}
+
 /// Run `cmd` to completion under `policy`, writing `stdin` to it.
 ///
 /// The caller supplies a `Command` with its program and arguments already set —
@@ -274,7 +294,7 @@ pub fn run(
             StderrMode::Inherit => Stdio::inherit(),
         });
 
-    let mut child = cmd.spawn()?;
+    let mut child = spawn_past_busy_exec(&mut cmd)?;
 
     // stdin on its own thread: writing the whole payload before reading a byte
     // of output deadlocks as soon as the child's output fills the pipe buffer
@@ -492,6 +512,35 @@ mod tests {
         deny_env_var("   ");
         deny_env_var("");
         assert!(!secret_env_vars().iter().any(|v| v.trim().is_empty()));
+    }
+
+    // Linux only: macOS lets a file open for writing be exec'd, so the
+    // condition (and the control below) cannot be produced there.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn an_executable_still_open_for_writing_is_retried_not_failed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("areev-etxtbsy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("busy.sh");
+        let mut held = std::fs::File::create(&path).unwrap();
+        held.write_all(b"#!/bin/sh\nprintf ok\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        // The control: with the write fd still held, a bare spawn IS refused.
+        // Without this the test could pass on a platform that never reproduces
+        // the condition, and would prove nothing about the retry.
+        let bare = Command::new(&path).spawn().map(|mut c| c.wait());
+        assert_eq!(bare.err().map(|e| e.kind()), Some(io::ErrorKind::ExecutableFileBusy));
+
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(40));
+            drop(held);
+        });
+        let out = run(Command::new(&path), None, &[], &SpawnPolicy::default()).unwrap();
+        release.join().unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(out.stdout, b"ok");
     }
 
     #[test]
