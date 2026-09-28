@@ -2137,7 +2137,7 @@ TOOL_CMD = "printf '{\"handled\":true}'"
 
 
 def _ran_nodes(m, run_id):
-    return [g["fields"]["tool_name"] for g in json.loads(m.run_trace(run_id))["trace"]]
+    return [g["fields"].get("tool_name") for g in json.loads(m.run_trace(run_id))["trace"]]
 
 
 def test_a_decision_node_runs_with_the_installed_chain_and_branches(tmp_path, fake_decider):
