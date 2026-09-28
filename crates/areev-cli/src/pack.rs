@@ -1095,7 +1095,12 @@ fn check_pins(
         let matched: Vec<usize> = pack
             .entries
             .iter()
-            .filter(|e| e.fields.get("executor_uri").and_then(Value::as_str).is_some())
+            .filter(|e| {
+                e.fields
+                    .get("executor_uri")
+                    .and_then(Value::as_str)
+                    .is_some_and(|u| u != areev_run::DECIDE_URI)
+            })
             .enumerate()
             .filter(|(_, e)| {
                 let uri = e.fields.get("executor_uri").and_then(Value::as_str);
