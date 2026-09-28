@@ -2110,3 +2110,53 @@ def test_decision_reranker_sees_pseudonymized_text_under_egress(tmp_path, fake_d
     sent = log.read_text()
     assert sent.strip(), "the reranker was called"
     assert "jane.doe@example.com" not in sent, sent
+
+
+def _decision_plan(m):
+    triage = m.add("tool", json.dumps({
+        "tool_name": "triage", "kind": "definition", "tool_description": "routes the ticket",
+        "created_at": 500, "executor_uri": "areev://decide",
+        "input_schema": {"type": "object", "properties": {"state": {}, "questions": {"type": "object"}},
+                         "required": ["state", "questions"]},
+        "decide": {"questions": {"route": {"type": "choice", "instructions": "Route this ticket",
+                                            "criteria": {"billing": "money owed", "support": "the product misbehaves"}}}},
+    }), "ops")
+    bill = m.add("tool", json.dumps({"tool_name": "bill", "kind": "definition", "tool_description": "bills", "created_at": 501}), "ops")
+    help_ = m.add("tool", json.dumps({"tool_name": "help", "kind": "definition", "tool_description": "helps", "created_at": 502}), "ops")
+    return m.add("workflow", json.dumps({
+        "nodes": ["triage", "bill", "help"],
+        "edges": [
+            {"src": "triage", "dst": "bill", "cond": 'triage.answers.route.choice == "billing"'},
+            {"src": "triage", "dst": "help", "cond": 'triage.answers.route.choice == "support"'},
+        ],
+        "bindings": {"triage": triage, "bill": bill, "help": help_}, "created_at": 503,
+    }), "ops")
+
+
+TOOL_CMD = "printf '{\"handled\":true}'"
+
+
+def _ran_nodes(m, run_id):
+    return [g["fields"]["tool_name"] for g in json.loads(m.run_trace(run_id))["trace"]]
+
+
+def test_a_decision_node_runs_with_the_installed_chain_and_branches(tmp_path, fake_decider):
+    m = make_db(tmp_path, ns="ops")
+    wf = _decision_plan(m)
+    with pytest.raises(ValueError, match="RUN-E030"):
+        m.run_start(wf, "py-decide-none", '{"state":"window seat"}', TOOL_CMD)
+
+    m.set_decider(cmd=fake_decider, timeout_ms=30000)
+    session = json.loads(m.run_start(wf, "py-decide-installed", '{"state":"window seat"}', TOOL_CMD))
+    assert session["finished"] == "Completed"
+    nodes = _ran_nodes(m, "py-decide-installed")
+    assert "triage" in nodes and "bill" in nodes and "help" not in nodes, nodes
+
+
+def test_a_run_takes_the_environments_chain_when_none_is_installed(tmp_path, fake_decider, monkeypatch):
+    m = make_db(tmp_path, ns="ops")
+    wf = _decision_plan(m)
+    monkeypatch.setenv("AREEV_DECIDE_CMD", fake_decider)
+    session = json.loads(m.run_start(wf, "py-decide-env", '{"state":"window seat"}', TOOL_CMD))
+    assert session["finished"] == "Completed"
+    assert "bill" in _ran_nodes(m, "py-decide-env")

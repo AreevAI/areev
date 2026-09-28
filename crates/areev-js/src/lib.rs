@@ -258,6 +258,7 @@ fn js_evaluator(
     pin: JsExecutorPin,
     egress: JsEgressPin,
     opts: areev_run::RunOptions,
+    decider: Option<std::sync::Arc<dyn areev_llm::DecisionBackend>>,
 ) -> napi::Result<areev_trigger::Evaluator> {
     // A connector IS a tool — JSON in, JSON out, one process per invocation —
     // so there is one subprocess contract to learn and connectors inherit its
@@ -304,6 +305,7 @@ fn js_evaluator(
                 pin,
                 handle,
                 None,
+                decider,
             ),
             opts,
         }) as std::sync::Arc<dyn areev_trigger::RunStarter>
@@ -820,6 +822,29 @@ fn egress_decider(
     }
     let policy = areev_core::anon::AnonPolicy { scope: "session".into(), ..Default::default() };
     Ok(std::sync::Arc::new(areev_llm::PseudonymizingDecider::new(chain, policy)?))
+}
+
+/// The chain a run is driven with: the one `setDecider` installed, else the
+/// environment's (`AREEV_DECIDE` / `AREEV_DECIDE_CMD`), wrapped for egress
+/// pseudonymization exactly as `decide()` wraps it. `None` builds the runner
+/// with no backend, and a plan binding a decision node then refuses at start
+/// (RUN-E030) — the host was told nothing to answer with.
+fn run_decider(
+    installed: Option<std::sync::Arc<dyn areev_llm::DecisionBackend>>,
+    facade: &AreevFacade,
+    ns: &str,
+) -> napi::Result<Option<std::sync::Arc<dyn areev_llm::DecisionBackend>>> {
+    let chain = match installed {
+        Some(chain) => Some(chain),
+        None => areev_llm::env_chain().map_err(err)?,
+    };
+    chain.map(|chain| egress_decider(facade, ns, chain)).transpose().map_err(err)
+}
+
+fn installed_chain(
+    decide: &std::sync::Mutex<HostDecide>,
+) -> Option<std::sync::Arc<dyn areev_llm::DecisionBackend>> {
+    decide.lock().unwrap_or_else(|p| p.into_inner()).chain.clone()
 }
 
 /// The decision-backend host config one handle carries (never persisted in
@@ -3552,6 +3577,7 @@ impl Areev {
         let path = self.path.clone();
         let ns = self.ns.clone();
         let actor = self.actor.clone();
+        let installed = installed_chain(&self.decide);
         Ok(StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
             let egress = js_egress_handle(&path, &JsEgressPin {
@@ -3566,6 +3592,7 @@ impl Areev {
             // Resolved before the run starts, so a bad model spec or a missing
             // key fails without journaling a run that cannot advance.
             let llm = resolve_toolcall_llm(model, base_url, key_env)?;
+            let decider = run_decider(installed, &facade, &ns)?;
             let runner = js_runner_pinned(
                 facade,
                 ns,
@@ -3575,6 +3602,7 @@ impl Areev {
                 JsExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs, tool_env },
                 egress,
                 observer,
+                decider,
             );
             let opts = js_run_options_full(
                 max_tokens,
@@ -3628,12 +3656,14 @@ impl Areev {
         let path = self.path.clone();
         let ns = self.ns.clone();
         let actor = self.actor.clone();
+        let installed = installed_chain(&self.decide);
         Ok(StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
             let egress = js_egress_handle(&path, &JsEgressPin {
                 credentials, allow_hosts, tool_egress, credential_ttl_secs, resolver_env,
             })?;
             let llm = resolve_toolcall_llm(model, base_url, key_env)?;
+            let decider = run_decider(installed, &facade, &ns)?;
             let runner = js_runner_pinned(
                 facade,
                 ns,
@@ -3643,6 +3673,7 @@ impl Areev {
                 JsExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs, tool_env },
                 egress,
                 observer,
+                decider,
             );
             // No `maxEffectsPerAttempt` here on purpose: it was frozen into the
             // manifest at start and is read back from there, so a resume cannot
@@ -3795,7 +3826,7 @@ impl Areev {
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
             let (opts, pin) = js_shadow_options(options_json)?;
-            let runner = js_runner_pinned(facade, ns, actor, None, None, pin, None, None);
+            let runner = js_runner_pinned(facade, ns, actor, None, None, pin, None, None, None);
             // With `plan` (a Workflow hash) or `planBody` (an unstored draft,
             // a JSON object string) this is the plan-change rehearsal: the
             // runs re-driven under the candidate, effects answered from the
@@ -4167,9 +4198,11 @@ impl Areev {
         let ns = self.ns.clone();
         let db = self.path.clone();
         let actor = self.actor.clone();
+        let installed = installed_chain(&self.decide);
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
             let llm = resolve_toolcall_llm(model, base_url, key_env)?;
+            let decider = run_decider(installed, &facade, &ns)?;
             let ev = js_evaluator(
                 facade,
                 &path,
@@ -4189,6 +4222,7 @@ impl Areev {
                     llm_tool_result_chars,
                     llm_context_tokens,
                 })?,
+                decider,
             )?;
             let mut opts = areev_trigger::EvalOptions {
                 dry_run: dry_run.unwrap_or(false),
@@ -4250,11 +4284,13 @@ impl Areev {
         let ns = self.ns.clone();
         let db = self.path.clone();
         let actor = self.actor.clone();
+        let installed = installed_chain(&self.decide);
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
             let payload: serde_json::Value = serde_json::from_str(&payload_json)
                 .map_err(|e| err(format!("payloadJson is not JSON: {e}")))?;
             let llm = resolve_toolcall_llm(model, base_url, key_env)?;
+            let decider = run_decider(installed, &facade, &ns)?;
             let ev = js_evaluator(
                 facade,
                 &path,
@@ -4274,6 +4310,7 @@ impl Areev {
                     llm_tool_result_chars,
                     llm_context_tokens,
                 })?,
+                decider,
             )?;
             let report = ev.deliver(&trigger, payload).map_err(err)?;
             serde_json::to_string(&report).map_err(err)
@@ -4424,7 +4461,7 @@ fn js_runner_with_llm(
     tool_cmd: Option<String>,
     llm: Option<std::sync::Arc<dyn areev_llm::ToolCallLlm>>,
 ) -> areev_run::Runner {
-    js_runner_pinned(facade, ns, principal, tool_cmd, llm, JsExecutorPin::default(), None, None)
+    js_runner_pinned(facade, ns, principal, tool_cmd, llm, JsExecutorPin::default(), None, None, None)
 }
 
 /// The host's authorization to execute code-carrying tools, carried as one
@@ -4572,6 +4609,7 @@ fn js_runner_pinned(
     pin: JsExecutorPin,
     egress: Option<areev_run::EgressHandle>,
     observer: Option<std::sync::Arc<dyn areev_run::RunObserver>>,
+    decider: Option<std::sync::Arc<dyn areev_llm::DecisionBackend>>,
 ) -> areev_run::Runner {
     let timeout = pin.executor_timeout_secs.map(|secs| {
         if secs <= 0 { None } else { Some(std::time::Duration::from_secs(secs as u64)) }
@@ -4635,7 +4673,7 @@ fn js_runner_pinned(
             std::sync::Arc::new(ce)
         }
     };
-    areev_run::Runner {
+    let runner = areev_run::Runner {
         facade,
         clock: std::sync::Arc::new(areev_run::SystemClock),
         executor,
@@ -4643,6 +4681,10 @@ fn js_runner_pinned(
         observer,
         ns,
         principal,
+    };
+    match decider {
+        Some(decider) => runner.with_decider(decider),
+        None => runner,
     }
 }
 

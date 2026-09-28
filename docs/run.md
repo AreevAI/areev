@@ -1735,7 +1735,9 @@ a decision model may score and order, but only code omits or branches.
 The host installs a backend with one call, `Runner::with_decider(backend)`,
 which wraps whatever executor stack it already built. Hosts install their
 configured chain (`--decide <chain>` / `--decide-cmd`, `$AREEV_DECIDE`)
-through it. The run pins what it started under in its manifest
+through it; the bindings do the same for `runStart`, `runResume` and a
+trigger's firing, with the chain `setDecider` installed or, failing that, the
+environment's. The run pins what it started under in its manifest
 (`decider: {describe, calibrated}`), so `resume` and `verify` ask exactly what
 the run asked, whatever host they run on. A run on a host with no backend pins
 nothing, asks nothing, and writes the same bytes it always did.

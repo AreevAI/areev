@@ -284,7 +284,11 @@ wire response + provenance as JSON), `set_recall_deadline_ms(ms: int | None)`,
 
 **Node (`areev-js`):** `setDecider(spec?, cmd?, timeoutMs?)`, `decide(state, questions)`,
 `setRecallDeadlineMs(ms)`, `setRerankerCommand(cmd, model?)`; regenerate
-`index.d.ts`.
+`index.d.ts`. In both bindings a run — `runStart`, `runResume`, a trigger's
+firing or delivery — is driven with the installed chain, else the environment's,
+wrapped for egress as `decide()` is; nothing installed anywhere leaves the
+runner without a backend, and a decision node then refuses at start
+(`RUN-E030`).
 
 **Facade (`areev-cal`):** `set_reranker(Box<dyn RerankBackend>)` and
 `set_recall_deadline(Option<Duration>)` (phase 0). The hosts (CLI, MCP,

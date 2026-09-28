@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A run started through the bindings never received the decision chain.**
+  `setDecider` / `set_decider` installed it for recall and for `decide()`, but
+  the runner `runStart`, `runResume`, `triggerRun` and `triggerDeliver` (and
+  their Python mirrors) built was never given it, so a plan binding a decision
+  node refused at start with `RUN-E030` under both bindings while the same plan
+  ran under the CLI. Both bindings now drive a run with the installed chain,
+  else the environment's (`AREEV_DECIDE` / `AREEV_DECIDE_CMD` /
+  `AREEV_DECIDE_TIMEOUT_MS`), wrapped for egress pseudonymization exactly as
+  `decide()` is. Read-only and non-advancing verbs (respond, cancel, inspect,
+  shadow) are unchanged: they ask nothing.
+
 ## [1.10.1] — 2026-09-26
 
 The follow-ups #354 left open.

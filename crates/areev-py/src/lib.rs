@@ -381,6 +381,29 @@ fn decide_egress_active(facade: &AreevFacade, ns: &str) -> bool {
     !matches!(active, Ok(Ok(false)))
 }
 
+/// The chain a run is driven with: the one `set_decider` installed, else the
+/// environment's (`AREEV_DECIDE` / `AREEV_DECIDE_CMD`), wrapped for egress
+/// pseudonymization exactly as `decide` wraps it. `None` builds the runner
+/// with no backend, and a plan binding a decision node then refuses at start
+/// (RUN-E030) — the host was told nothing to answer with.
+fn run_decider(
+    installed: Option<std::sync::Arc<dyn areev_llm::DecisionBackend>>,
+    facade: &AreevFacade,
+    ns: &str,
+) -> PyResult<Option<std::sync::Arc<dyn areev_llm::DecisionBackend>>> {
+    let chain = match installed {
+        Some(chain) => Some(chain),
+        None => areev_llm::env_chain().map_err(err)?,
+    };
+    chain.map(|chain| egress_decider(facade, ns, chain)).transpose().map_err(err)
+}
+
+fn installed_chain(
+    decide: &std::sync::Mutex<HostDecide>,
+) -> Option<std::sync::Arc<dyn areev_llm::DecisionBackend>> {
+    decide.lock().unwrap_or_else(|p| p.into_inner()).chain.clone()
+}
+
 /// The installed chain as `decide` must call it: wrapped in
 /// [`areev_llm::PseudonymizingDecider`] (session scope — the decorator is
 /// store-free, exactly as the CLI wraps its LLM backend for `remember`) when
@@ -2250,12 +2273,14 @@ impl Areev {
         let egress = self.egress_handle(&EgressPin {
             credentials, allow_hosts, tool_egress, credential_ttl_secs, resolver_env,
         })?;
+        let decider = run_decider(installed_chain(&self.decide), &self.facade, &self.ns)?;
         let runner = self.runner_pinned(
             tool_cmd,
             llm,
             ExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs, tool_env },
             egress,
             py_observer(on_event),
+            decider,
         );
         let opts = run_options(
             max_tokens,
@@ -2314,12 +2339,14 @@ impl Areev {
         let egress = self.egress_handle(&EgressPin {
             credentials, allow_hosts, tool_egress, credential_ttl_secs, resolver_env,
         })?;
+        let decider = run_decider(installed_chain(&self.decide), &self.facade, &self.ns)?;
         let runner = self.runner_pinned(
             tool_cmd,
             llm,
             ExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs, tool_env },
             egress,
             py_observer(on_event),
+            decider,
         );
         // No `max_effects_per_attempt` here on purpose: it was frozen into the
         // manifest at start and is read back from there, so a resume cannot
@@ -2426,7 +2453,7 @@ impl Areev {
         options: Option<String>,
     ) -> PyResult<String> {
         let (opts, pin) = shadow_options(options)?;
-        let runner = self.runner_pinned(None, None, pin, None, None);
+        let runner = self.runner_pinned(None, None, pin, None, None, None);
         let candidate = plan_candidate(plan, plan_body)?;
         match candidate {
             Some(c) => {
@@ -3770,13 +3797,14 @@ impl Areev {
         // The runs a firing starts get the broker `run_start` would build
         // (#201) — distinct from the connector-poll credentials below.
         let handle = if can_execute { self.egress_handle(&egress)? } else { None };
+        let decider = run_decider(installed_chain(&self.decide), &self.facade, &self.ns)?;
         let starter: Option<std::sync::Arc<dyn areev_trigger::RunStarter>> = can_execute.then(
             || {
                 std::sync::Arc::new(RunnerStarter {
                     // The trigger surface takes no `on_event` (#182): a
                     // firing starts a real run, so this is a knowable
                     // asymmetry with `run_start`, not an oversight.
-                    runner: self.runner_pinned(tool_cmd, llm, pin, handle, None),
+                    runner: self.runner_pinned(tool_cmd, llm, pin, handle, None, decider),
                     opts,
                 }) as std::sync::Arc<dyn areev_trigger::RunStarter>
             },
@@ -3872,7 +3900,7 @@ impl Areev {
         tool_cmd: Option<String>,
         llm: Option<std::sync::Arc<dyn areev_llm::ToolCallLlm>>,
     ) -> areev_run::Runner {
-        self.runner_pinned(tool_cmd, llm, ExecutorPin::default(), None, None)
+        self.runner_pinned(tool_cmd, llm, ExecutorPin::default(), None, None, None)
     }
 
     /// The broker `egress` describes — serving this memory's blobs on the
@@ -3903,6 +3931,7 @@ impl Areev {
         pin: ExecutorPin,
         egress: Option<areev_run::EgressHandle>,
         observer: Option<std::sync::Arc<dyn areev_run::RunObserver>>,
+        decider: Option<std::sync::Arc<dyn areev_llm::DecisionBackend>>,
     ) -> areev_run::Runner {
         let timeout = pin
             .executor_timeout_secs
@@ -3968,7 +3997,7 @@ impl Areev {
                 std::sync::Arc::new(ce)
             }
         };
-        areev_run::Runner {
+        let runner = areev_run::Runner {
             facade: std::sync::Arc::clone(&self.facade),
             clock: std::sync::Arc::new(areev_run::SystemClock),
             executor,
@@ -3976,6 +4005,10 @@ impl Areev {
             observer,
             ns: self.ns.clone(),
             principal: self.actor.clone(),
+        };
+        match decider {
+            Some(decider) => runner.with_decider(decider),
+            None => runner,
         }
     }
 }
