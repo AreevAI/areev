@@ -1,15 +1,15 @@
 {
-  "version": "1.10.1",
+  "version": "1.10.2",
   "crates": 17,
   "rust": {
     "files": 353,
-    "physical_lines": 249939,
-    "source_code": 115340,
-    "test_code": 73326,
+    "physical_lines": 250047,
+    "source_code": 115406,
+    "test_code": 73353,
     "unit_test_code": 30030,
-    "integration_test_code": 43296,
+    "integration_test_code": 43323,
     "example_code": 669,
-    "test_functions": 3341,
+    "test_functions": 3342,
     "test_ratio": 0.64,
     "test_share": 38.9
   },
@@ -41,10 +41,10 @@
     {
       "name": "areev-cli",
       "files": 25,
-      "physical": 23181,
-      "source_code": 9135,
-      "test_code": 9196,
-      "tests": 254
+      "physical": 23214,
+      "source_code": 9140,
+      "test_code": 9223,
+      "tests": 255
     },
     {
       "name": "areev-loop",
@@ -121,16 +121,16 @@
     {
       "name": "areev-js",
       "files": 2,
-      "physical": 4727,
-      "source_code": 3459,
+      "physical": 4769,
+      "source_code": 3494,
       "test_code": 0,
       "tests": 0
     },
     {
       "name": "areev-py",
       "files": 2,
-      "physical": 4197,
-      "source_code": 2951,
+      "physical": 4230,
+      "source_code": 2977,
       "test_code": 0,
       "tests": 0
     },
@@ -153,7 +153,7 @@
   ],
   "docs": {
     "files": 66,
-    "lines": 36548
+    "lines": 36402
   },
   "error_codes": 127,
   "bindings": {

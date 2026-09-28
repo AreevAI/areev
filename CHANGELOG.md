@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.10.2] — 2026-09-28
+
+The bindings follow-ups (#364).
+
 ### Fixed
 
 - **A run started through the bindings never received the decision chain.**
@@ -4678,7 +4682,8 @@ ecosystem adapters, and the enterprise plane.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.10.1...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.10.2...HEAD
+[1.10.2]: https://github.com/AreevAI/areev/compare/v1.10.1...v1.10.2
 [1.10.1]: https://github.com/AreevAI/areev/compare/v1.10.0...v1.10.1
 [1.10.0]: https://github.com/AreevAI/areev/compare/v1.9.5...v1.10.0
 [1.9.5]: https://github.com/AreevAI/areev/compare/v1.9.4...v1.9.5
