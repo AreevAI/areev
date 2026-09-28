@@ -2554,3 +2554,61 @@ test('the decision reranker sees pseudonymized text under egress', async () => {
   assert.ok(!sent.includes('jane.doe@example.com'), sent)
   m.close()
 })
+
+// A plan that binds a decision node (`executor_uri: "areev://decide"`,
+// docs/run.md "Decisions in a run"): the chain `setDecider` installed drives
+// the run and its answer branches the plan; with none installed the
+// environment's chain does; with neither the start refuses (RUN-E030).
+async function decisionPlan(m) {
+  const triage = await m.add('tool', JSON.stringify({
+    tool_name: 'triage', kind: 'definition', tool_description: 'routes the ticket', created_at: 500,
+    executor_uri: 'areev://decide',
+    input_schema: { type: 'object', properties: { state: {}, questions: { type: 'object' } }, required: ['state', 'questions'] },
+    decide: { questions: { route: { type: 'choice', instructions: 'Route this ticket', criteria: { billing: 'money owed', support: 'the product misbehaves' } } } },
+  }), 'ops')
+  const bill = await m.add('tool', JSON.stringify({ tool_name: 'bill', kind: 'definition', tool_description: 'bills', created_at: 501 }), 'ops')
+  const help = await m.add('tool', JSON.stringify({ tool_name: 'help', kind: 'definition', tool_description: 'helps', created_at: 502 }), 'ops')
+  return m.add('workflow', JSON.stringify({
+    nodes: ['triage', 'bill', 'help'],
+    edges: [
+      { src: 'triage', dst: 'bill', cond: 'triage.answers.route.choice == "billing"' },
+      { src: 'triage', dst: 'help', cond: 'triage.answers.route.choice == "support"' },
+    ],
+    bindings: { triage, bill, help }, created_at: 503,
+  }), 'ops')
+}
+
+const TOOL_CMD = `printf '{"handled":true}'`
+
+async function ranNodes(m, runId) {
+  const trace = JSON.parse(await m.runTrace(runId)).trace
+  return trace.map((g) => g.fields.tool_name)
+}
+
+test('a decision node runs through runStart with the installed chain and branches on its answer', async () => {
+  const m = makeDb('ops')
+  const wf = await decisionPlan(m)
+  await assert.rejects(() => m.runStart(wf, 'js-decide-none', '{"state":"window seat"}', TOOL_CMD), /RUN-E030/)
+
+  m.setDecider(null, fakeDecider(), 30000)
+  const session = JSON.parse(await m.runStart(wf, 'js-decide-installed', '{"state":"window seat"}', TOOL_CMD))
+  assert.equal(session.finished, 'Completed')
+  const nodes = await ranNodes(m, 'js-decide-installed')
+  assert.ok(nodes.includes('triage') && nodes.includes('bill'), `${nodes}`)
+  assert.ok(!nodes.includes('help'), `${nodes}`)
+  m.close()
+})
+
+test('a run takes the environment\'s chain when the handle installed none', async () => {
+  const m = makeDb('ops')
+  const wf = await decisionPlan(m)
+  process.env.AREEV_DECIDE_CMD = fakeDecider()
+  try {
+    const session = JSON.parse(await m.runStart(wf, 'js-decide-env', '{"state":"window seat"}', TOOL_CMD))
+    assert.equal(session.finished, 'Completed')
+    assert.ok((await ranNodes(m, 'js-decide-env')).includes('bill'))
+  } finally {
+    delete process.env.AREEV_DECIDE_CMD
+  }
+  m.close()
+})

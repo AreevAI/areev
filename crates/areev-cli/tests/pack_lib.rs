@@ -375,6 +375,34 @@ fn a_matching_pin_installs_marks_the_tool_and_writes_nothing_extra() {
 }
 
 #[test]
+fn a_pin_is_checked_against_its_own_tool_when_a_decision_node_precedes_it() {
+    let dir = TempDir::new().unwrap();
+    let root = code_pack(&dir);
+    write(
+        &root,
+        "grains/005-decide.json",
+        r#"{"type": "tool", "id": "route", "kind": "definition", "tool_name": "route",
+            "tool_description": "is this urgent", "created_at": 400,
+            "executor_uri": "areev://decide",
+            "decide": {"questions": {"urgent": {"type": "noul", "instructions": "Is it urgent?"}}}}"#,
+    );
+    write(
+        &root,
+        "pack.json",
+        r#"{"pack": "queue", "version": "1.0.0", "namespace": "ap",
+            "blobs": {"poll": "blobs/poll.wasm"},
+            "grains": ["grains/005-decide.json", "grains/010-tool.json", "grains/020-workflow.json"]}"#,
+    );
+    let addr = validate_pack(&root).unwrap().blobs[0].address.clone();
+    let facade = owner(&dir);
+    let opts = InstallOptions { executor_pins: pins("poll", &addr), ..Default::default() };
+    let r = install_pack(&facade, &root, &opts).expect("the pin names poll, and poll carries that code");
+    assert_eq!(r.executors.len(), 1, "{:?}", r.executors);
+    assert_eq!(r.executors[0].tool, "poll");
+    assert!(r.executors[0].pinned);
+}
+
+#[test]
 fn a_mismatched_pin_refuses_the_whole_install_with_pck_e005() {
     let dir = TempDir::new().unwrap();
     let root = code_pack(&dir);
