@@ -1266,31 +1266,13 @@ fn report_meta_warnings(facade: &areev_cal::AreevFacade) {
     }
 }
 
-/// Would this mount point at the SAME memory as the primary?
-///
-/// The embedded backend refuses that by construction — a second handle on one
-/// file fails at open with `STO-E002`, because two handles drift on their
-/// cached allocators. Postgres has no such guard (it is genuinely
-/// multi-writer), so the asymmetry would be silent: the mount would open, and
-/// `alias.ns` would answer from the very store `ns` already reaches, doubling
-/// every row an ASSEMBLE drew from both sources. Refuse it here instead.
-#[cfg(feature = "postgres")]
+/// Would this mount point at the SAME memory as the primary? The embedded
+/// backend refuses that by itself (`STO-E002`); postgres is genuinely
+/// multi-writer, so the mount would open and `alias.ns` would read the rows
+/// `ns` already reaches. One rule for every surface:
+/// `areev_store::same_postgres_memory`.
 fn mount_is_the_primary(primary: &str, mount: &str) -> bool {
-    if !(is_pg_dsn(primary) && is_pg_dsn(mount)) {
-        return false;
-    }
-    let norm = |d: &str| {
-        areev_store::pg::split_schema_url(&areev_store::pg::strip_provision(d)).ok()
-    };
-    match (norm(primary), norm(mount)) {
-        (Some(a), Some(b)) => a == b,
-        _ => false,
-    }
-}
-
-#[cfg(not(feature = "postgres"))]
-fn mount_is_the_primary(_primary: &str, _mount: &str) -> bool {
-    false
+    areev_store::same_postgres_memory(primary, mount)
 }
 
 /// Redact a DSN's password for display. One implementation, shared with the
@@ -1362,9 +1344,9 @@ fn parse_mounts(spec: Option<&str>) -> Result<Vec<(String, String)>, String> {
 /// Open one `--mount` target: a memory FILE, or a postgres DSN
 /// (`postgres://…?schema=<name>`) — the mount tier is not file-only.
 ///
-/// Always **read-only**, on either backend. Mounts were already read-only by
-/// construction (CAL routes writes to the session store and never to a mount),
-/// so this makes the guarantee real rather than incidental, and it buys two
+/// Always **read-only**, on either backend — and a write addressed to a
+/// mounted namespace is refused by the facade (`STO-E004`, #369) rather than
+/// landing in the primary under the mount's name. The read-only open buys two
 /// things that construction could not: a least-privilege postgres role with no
 /// DDL grant can back a mount, and a file path that does not exist is refused
 /// (`STO-E005`) instead of quietly becoming a new, empty memory that then
@@ -1375,23 +1357,9 @@ fn parse_mounts(spec: Option<&str>) -> Result<Vec<(String, String)>, String> {
 /// read-only handle refuses one anyway — passing the host default would only
 /// print a "telemetry disabled" warning per mount.
 fn open_mount(target: &str) -> Result<Areev, String> {
-    if is_pg_dsn(target) {
-        return open_postgres_store(target, areev_store::TelemetryMode::Off, None, None, true);
-    }
-    let opts = areev_store::AreevOptions { read_only: true, ..Default::default() };
-    Areev::open_with(target, opts).map_err(|e| {
-        let mut msg = e.to_string();
-        if e.code() == "STO-E004" {
-            // The read-only reconciliation refuses a declaration disagreement,
-            // and a mount has no flag to spell the file's declaration with.
-            msg.push_str(
-                " — a mount is opened read-only, and a read-only open cannot re-stamp a \
-                 declaration. Open this memory read-write once with the settings it should \
-                 declare, then mount it",
-            );
-        }
-        msg
-    })
+    // The one read-only mount open every surface shares (#369): the
+    // bindings' `mount()` reaches the same function.
+    Areev::open_mount(target).map_err(|e| e.to_string())
 }
 
 fn addr_is_loopback(addr: &str) -> bool {

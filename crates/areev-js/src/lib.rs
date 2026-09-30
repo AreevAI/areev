@@ -1214,6 +1214,66 @@ impl Areev {
         *self.facade.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
+    /// Mount another memory **read-only** under `alias` (#369), so `cal()`
+    /// can read it as `"<alias>.<namespace>"` — above all from one `ASSEMBLE`
+    /// that draws on this memory and the mounted one together.
+    ///
+    /// `target` is a memory file path or a postgres DSN
+    /// (`postgres://…?schema=<name>`); it is always opened read-only, so a
+    /// missing file is refused (`STO-E005`) and a SELECT-only role is enough.
+    /// A write addressed to a mounted namespace is refused with `STO-E004`.
+    /// `ABOUT` inside a mount is BM25-only: the mount has no embedder, and
+    /// one installed on this handle does not reach it.
+    ///
+    /// Call it right after open: it needs this handle to itself, so it is
+    /// refused while another call on the handle is in flight.
+    #[napi]
+    pub fn mount(&self, alias: String, target: String) -> napi::Result<()> {
+        let mut slot = self.facade.lock().unwrap_or_else(|e| e.into_inner());
+        let arc = slot.as_mut().ok_or_else(|| {
+            err(AreevError::Validation(
+                "this handle is closed — open a new Areev for further calls".into(),
+            ))
+        })?;
+        let facade = std::sync::Arc::get_mut(arc).ok_or_else(|| {
+            err(AreevError::Validation(
+                "mount() needs this handle to itself — another call on it is still in \
+                 flight; mount right after opening"
+                    .into(),
+            ))
+        })?;
+        facade.mount_read_only(&alias, &target, Some(&self.path)).map_err(err)
+    }
+
+    /// Raise (or lower) the widest window a `cal()` statement scans — a
+    /// post-retrieval `ORDER BY`, `COUNT`, `GROUP BY`, `SUM`/`MIN`/`MAX`/
+    /// `AVG` (#368). The default is 1,000. A value above it is accepted only
+    /// on a handle opened `readOnly` (VAL-E001 otherwise), up to 100,000.
+    /// `CAL-W015` names the limit that applied when a scan still fills.
+    #[napi]
+    pub fn set_max_limit(&mut self, max_limit: u32) -> napi::Result<()> {
+        let n = u64::from(max_limit);
+        let facade = take_facade(&self.facade)?;
+        if n == 0 || n > areev_cal::HARD_MAX_LIMIT {
+            return Err(err(AreevError::Validation(format!(
+                "maxLimit must be between 1 and {}",
+                areev_cal::HARD_MAX_LIMIT
+            ))));
+        }
+        if n > areev_cal::DEFAULT_MAX_LIMIT && !CalStoreFacade::is_read_only(&*facade) {
+            return Err(err(AreevError::Validation(format!(
+                "maxLimit above {} needs a handle opened readOnly: a scan that wide is an \
+                 analysis read, and only a handle that can never write is declared for it",
+                areev_cal::DEFAULT_MAX_LIMIT
+            ))));
+        }
+        self.executor = std::sync::Arc::new(CalExecutor::new(CalExecutorConfig {
+            max_limit: n,
+            ..CalExecutorConfig::default()
+        }));
+        Ok(())
+    }
+
     /// Reconciliation warnings from open (file-vs-host declaration changes,
     /// embedding-model mismatches). JSON list string.
     #[napi(ts_return_type = "Promise<string>")]

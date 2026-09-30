@@ -2463,6 +2463,27 @@ pub fn is_pg_dsn(locator: &str) -> bool {
     locator.starts_with("postgres://") || locator.starts_with("postgresql://")
 }
 
+/// Do two locators name the same postgres memory (same server, database and
+/// schema, ignoring `provision=`)? `false` for anything that is not two
+/// parseable DSNs — the embedded backend refuses a second handle on one file
+/// by itself (`STO-E002`), so only postgres needs asking. Used to refuse a
+/// mount of the primary (#369), which would read every row twice.
+pub fn same_postgres_memory(a: &str, b: &str) -> bool {
+    #[cfg(feature = "postgres")]
+    {
+        if !(is_pg_dsn(a) && is_pg_dsn(b)) {
+            return false;
+        }
+        let norm = |d: &str| pg::split_schema_url(&pg::strip_provision(d)).ok();
+        matches!((norm(a), norm(b)), (Some(x), Some(y)) if x == y)
+    }
+    #[cfg(not(feature = "postgres"))]
+    {
+        let _ = (a, b);
+        false
+    }
+}
+
 /// The postgres half of [`read_blob_offline`]: its own short-lived connection,
 /// one schema-qualified `SELECT`, closed on return.
 ///
@@ -2648,6 +2669,53 @@ impl Areev {
     /// so the same memory behaves identically on any host.
     pub fn open(path: &str) -> Result<Self> {
         Self::open_internal(path, None, TelemetryMode::Off)
+    }
+
+    /// Open a memory as a **read-only mount** (#369): a memory FILE, or a
+    /// postgres DSN (`postgres://…?schema=<name>`, with the `postgres`
+    /// feature). The one open every surface uses for `--mount` / `mount()`,
+    /// so a mount means the same thing from the CLI, the MCP server and both
+    /// bindings.
+    ///
+    /// Always `read_only: true`, on either backend: a missing file is
+    /// refused (`STO-E005`) instead of becoming an empty memory that answers
+    /// every cross-memory question with silence, and a SELECT-only postgres
+    /// role is enough. Telemetry is off — a sidecar per mount would be a
+    /// second connection and bootstrap for a store nothing writes to.
+    pub fn open_mount(target: &str) -> Result<Self> {
+        let opts = AreevOptions {
+            read_only: true,
+            telemetry: TelemetryMode::Off,
+            ..Default::default()
+        };
+        let opened = if is_pg_dsn(target) {
+            #[cfg(feature = "postgres")]
+            {
+                let (url, schema) = pg::split_schema_url(target)?;
+                Self::open_postgres_with(&url, &schema, opts)
+            }
+            #[cfg(not(feature = "postgres"))]
+            {
+                Err(AreevError::Validation(
+                    "this build lacks the postgres backend, so a postgres DSN cannot be \
+                     mounted — rebuild with the `postgres-tls` feature (`cargo install areev \
+                     --features postgres-tls`), or use a `-postgres` release asset"
+                        .into(),
+                ))
+            }
+        } else {
+            Self::open_with(target, opts)
+        };
+        opened.map_err(|e| match e {
+            // The read-only reconciliation refuses a declaration
+            // disagreement, and a mount has no way to spell the declaration.
+            AreevError::ReadOnly(m) => AreevError::ReadOnly(format!(
+                "{m} — a mount is opened read-only, and a read-only open cannot re-stamp a \
+                 declaration. Open this memory read-write once with the settings it should \
+                 declare, then mount it"
+            )),
+            other => other,
+        })
     }
 
     /// Open with explicit options. Explicit options are deliberate: they
@@ -3305,6 +3373,14 @@ impl Areev {
         }
 
         Ok(store)
+    }
+
+    /// Was this handle opened with `read_only: true`? Hosts consult it to
+    /// allow what is safe only on a handle that can never write — the CAL
+    /// executor honours a `max_limit` above its default ceiling only here
+    /// (#368).
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
     }
 
     /// Refuse a write on a handle opened with `read_only: true`

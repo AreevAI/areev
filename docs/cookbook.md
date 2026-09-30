@@ -1733,11 +1733,13 @@ ASSEMBLE "prompt"
 
 Three things worth knowing:
 
-- **Mounts are opened read-only, on both backends.** Writes were already
-  impossible (CAL routes every write to the session memory), but the open
-  itself now says so: a Postgres mount works from a `SELECT`-only role, and a
-  file path that does not exist is refused (`STO-E005`) instead of quietly
-  becoming a new empty memory that answers every question with silence.
+- **Mounts are opened read-only, on both backends, and never written
+  through.** A write addressed to a mounted namespace (`org.<ns>`) is refused
+  with `STO-E004` — it used to land in the session memory under the mount's
+  name, where no read of that namespace would see it. The open itself is
+  read-only too: a Postgres mount works from a `SELECT`-only role, and a file
+  path that does not exist is refused (`STO-E005`) instead of quietly becoming
+  a new empty memory that answers every question with silence.
 - **Commas separate mounts only before another `alias=`**, so a libpq
   multi-host DSN (`postgres://h1:5432,h2:5432/db`) survives being written on
   the command line.
@@ -1746,6 +1748,27 @@ Three things worth knowing:
   against a mounted namespace have no model on the other side. Structural and
   BM25 legs cross fine. See
   [`cal-reference.md`](cal-reference.md#mounts-and-the-vector-leg).
+
+**From a host process (Node / Python, #369).** The bindings take the same
+mount on the handle, right after open — so a practice keeping one memory per
+client can answer across two of them without merging results by hand:
+
+```python
+m = areev.Areev("practice.db", ns="notes")
+m.mount("client_b", "/srv/clients/b.db")          # or a postgres DSN
+m.cal('ASSEMBLE "review" FROM '
+      'ledger: (RECALL facts WHERE namespace = "client_b.ledger"), '
+      'notes:  (RECALL facts WHERE namespace = "notes")')
+```
+
+Node: `db.mount('client_b', '/srv/clients/b.db')`, then `await db.cal(…)`.
+
+**Totals over a year of rows.** An aggregate (`| SUM object.amount_minor`,
+[`cal-reference.md` §4](cal-reference.md#aggregates-sum-min-max-avg)) scans
+at most 1,000 grains unless the handle is **read-only**, where the window may be
+raised to 100,000: open with `read_only=True` / `readOnly`, then
+`set_max_limit(50_000)` / `setMaxLimit(50000)`. `CAL-W015` names the window
+if the scan still filled it.
 
 ---
 

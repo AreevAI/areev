@@ -1026,6 +1026,58 @@ impl Areev {
         Ok(())
     }
 
+    /// Mount another memory **read-only** under `alias` (#369), so `cal()`
+    /// can read it as `"<alias>.<namespace>"` — above all from one `ASSEMBLE`
+    /// that draws on this memory and the mounted one together.
+    ///
+    /// `target` is a memory file path or a postgres DSN
+    /// (`postgres://…?schema=<name>`); it is always opened read-only, so a
+    /// missing file is refused (`STO-E005`) and a SELECT-only role is enough.
+    /// A write addressed to a mounted namespace is refused with `STO-E004`.
+    /// `ABOUT` inside a mount is BM25-only: the mount has no embedder, and
+    /// one installed on this handle does not reach it. Mount right after
+    /// open — it needs the handle to itself.
+    #[pyo3(signature = (alias, target))]
+    fn mount(&mut self, py: Python<'_>, alias: String, target: String) -> PyResult<()> {
+        let primary = self.path.clone();
+        let facade = std::sync::Arc::get_mut(&mut self.facade).ok_or_else(|| {
+            err("mount: this handle is shared with a call still in flight (a run or trigger \
+                 evaluator) — mount right after opening")
+        })?;
+        py.detach(|| facade.mount_read_only(&alias, &target, Some(&primary)))
+            .map_err(err)
+    }
+
+    /// Raise (or lower) the widest window a `cal()` statement scans — a
+    /// post-retrieval `ORDER BY`, `COUNT`, `GROUP BY`, `SUM`/`MIN`/`MAX`/
+    /// `AVG` (#368). The default is 1,000. A value above it is accepted only
+    /// on a handle opened `read_only=True` (VAL-E001 otherwise), up to
+    /// 100,000. `CAL-W015` names the limit that applied when a scan still
+    /// fills.
+    #[pyo3(signature = (max_limit))]
+    fn set_max_limit(&mut self, max_limit: u64) -> PyResult<()> {
+        if max_limit == 0 || max_limit > areev_cal::HARD_MAX_LIMIT {
+            return Err(err(AreevError::Validation(format!(
+                "max_limit must be between 1 and {}",
+                areev_cal::HARD_MAX_LIMIT
+            ))));
+        }
+        if max_limit > areev_cal::DEFAULT_MAX_LIMIT
+            && !CalStoreFacade::is_read_only(&*self.facade)
+        {
+            return Err(err(AreevError::Validation(format!(
+                "max_limit above {} needs a handle opened read_only=True: a scan that wide is \
+                 an analysis read, and only a handle that can never write is declared for it",
+                areev_cal::DEFAULT_MAX_LIMIT
+            ))));
+        }
+        self.executor = std::sync::Arc::new(CalExecutor::new(CalExecutorConfig {
+            max_limit,
+            ..CalExecutorConfig::default()
+        }));
+        Ok(())
+    }
+
     /// The recall deadline `set_recall_deadline_ms` installed, in ms (`None`
     /// = unbounded).
     fn recall_deadline_ms(&self) -> Option<u64> {

@@ -571,6 +571,71 @@ def test_read_only_refuses_an_explicit_index_text(tmp_path):
         areev.Areev(path, ns="caller", index_text=True, read_only=True)
 
 
+def _two_memories(tmp_path):
+    """Business B's ledger (to mount) and the practice's own memory A."""
+    b_path = str(tmp_path / "b.db")
+    b = areev.Areev(b_path, ns="ledger")
+    b.add_fact("acme", "paid", "1200")
+    b.add_fact("globex", "paid", "800")
+    del b
+    a = areev.Areev(str(tmp_path / "a.db"), ns="notes")
+    a.add_fact("acme", "risk", "late payer")
+    return a, b_path
+
+
+def test_mount_lets_assemble_read_across_memories(tmp_path):
+    a, b_path = _two_memories(tmp_path)
+    a.mount("clients_b", b_path)
+    rows = json.loads(a.cal('RECALL facts WHERE namespace = "clients_b.ledger"'))
+    assert {g["fields"]["subject"] for g in rows["grains"]} == {"acme", "globex"}
+    out = a.cal(
+        'ASSEMBLE "review" FROM '
+        'ledger: (RECALL facts WHERE namespace = "clients_b.ledger"), '
+        'notes: (RECALL facts WHERE namespace = "notes")'
+    )
+    assert "late payer" in out and "1200" in out, out
+
+
+def test_a_write_through_a_mount_is_refused(tmp_path):
+    a, b_path = _two_memories(tmp_path)
+    a.mount("clients_b", b_path)
+    out = a.cal(
+        'ADD fact SET namespace = "clients_b.ledger" SET subject = "acme" '
+        'SET relation = "paid" SET object = "0" REASON "t"'
+    )
+    assert "STO-E004" in out, out
+    # The mounted memory is untouched when opened on its own afterwards.
+    del a
+    b = areev.Areev(b_path, ns="ledger", read_only=True)
+    assert len(json.loads(b.recall("acme"))) == 1
+
+
+def test_mount_refuses_a_missing_file_and_a_bad_alias(tmp_path):
+    a, b_path = _two_memories(tmp_path)
+    with pytest.raises(ValueError, match="STO-E005"):
+        a.mount("gone", str(tmp_path / "missing.db"))
+    with pytest.raises(ValueError, match="VAL-E001"):
+        a.mount("a.b", b_path)
+
+
+def test_sum_over_a_dotted_path_and_max_limit_on_a_read_only_handle(tmp_path):
+    path = str(tmp_path / "ledger.db")
+    m = areev.Areev(path, ns="ledger")
+    for i, amt in enumerate((1200, 300, 4500)):
+        m.add_fact(f"txn-{i}", "posted", json.dumps({"amount_minor": amt, "counterparty": "ACME"}))
+    res = json.loads(m.cal('RECALL facts WHERE namespace = "ledger" | SUM object.amount_minor'))
+    assert res["value"] == 6000 and res["counted"] == 3, res
+    # A window above 1,000 needs a read-only handle.
+    with pytest.raises(ValueError, match="read_only"):
+        m.set_max_limit(5000)
+    m.set_max_limit(500)
+    del m
+    ro = areev.Areev(path, ns="ledger", read_only=True)
+    ro.set_max_limit(5000)
+    with pytest.raises(ValueError):
+        ro.set_max_limit(0)
+
+
 def test_tool_env_clears_a_host_tool_environment(tmp_path, monkeypatch):
     # Without tool_env a host tool inherits this process's environment, so a
     # variable the host holds for its own use is visible to it. With one, the

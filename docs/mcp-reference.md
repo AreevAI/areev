@@ -38,9 +38,10 @@ ASSEMBLE "prompt" FROM
 
 Three rules govern mounts:
 
-- **Read-only, on both backends.** Writes always land on the primary `--db`
-  (CAL routes them there by construction), and the mount's *open* is read-only
-  too: a Postgres mount works from a `SELECT`-only role, and a file path that
+- **Read-only, on both backends.** Writes land on the primary `--db`, and a
+  write addressed to a mounted namespace (`org.<inner>`) is refused with
+  `STO-E004` rather than written to the primary under the mount's name (#369).
+  The mount's *open* is read-only too: a Postgres mount works from a `SELECT`-only role, and a file path that
   does not exist is refused with `STO-E005` rather than created as an empty
   memory that then answers every cross-memory question with silence.
 - **Commas separate mounts only before another `alias=`.** A libpq multi-host

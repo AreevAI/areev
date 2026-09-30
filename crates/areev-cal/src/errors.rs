@@ -1646,6 +1646,24 @@ pub enum CalWarning {
         /// The relevance line, in `[0, 1]`.
         drop_below: f32,
     },
+
+    /// CAL-W020 — A `SUM`/`MIN`/`MAX`/`AVG` stage (#368) left grains out:
+    /// their value at the path was not a number, or they carried none.
+    ///
+    /// Skipping is the right arithmetic — a string cannot be summed — but
+    /// silently skipping is the wrong answer: a total over a result that
+    /// mixed transactions with other Facts is a well-formed number that is
+    /// not the total the caller meant, and nothing else would say so.
+    AggregateSkipped {
+        /// The stage, e.g. `"SUM object.amount_minor"`.
+        stage: String,
+        /// Grains whose value was present but not a number.
+        skipped: usize,
+        /// Grains with no value at the path (absent or null).
+        missing: usize,
+        /// Grains the stage ran over.
+        grains: usize,
+    },
 }
 
 impl CalWarning {
@@ -1670,6 +1688,7 @@ impl CalWarning {
             Self::AssembleBudgetDropped { .. } => "CAL-W017",
             Self::GroupKeyAbsent { .. } => "CAL-W018",
             Self::AssembleDecisionDropped { .. } => "CAL-W019",
+            Self::AggregateSkipped { .. } => "CAL-W020",
         }
     }
 
@@ -1693,7 +1712,8 @@ impl CalWarning {
             | Self::PipelineStageInert { .. }
             | Self::AssembleBudgetDropped { .. }
             | Self::GroupKeyAbsent { .. }
-            | Self::AssembleDecisionDropped { .. } => None,
+            | Self::AssembleDecisionDropped { .. }
+            | Self::AggregateSkipped { .. } => None,
         }
     }
 }
@@ -1789,7 +1809,7 @@ impl std::fmt::Display for CalWarning {
             Self::ScanBounded { stage, scanned } => {
                 write!(
                     f,
-                    "CAL-W015: {stage} ran over the first {scanned} matching grains (the executor's max_limit) and that scan came back full — grains past it were never considered, so this is a bounded answer, not the true one. Narrow the query with WHERE/ABOUT/SINCE, or raise max_limit."
+                    "CAL-W015: {stage} ran over the first {scanned} matching grains (the effective max_limit, {scanned}) and that scan came back full — grains past it were never considered, so this is a bounded answer, not the true one. Narrow the query with WHERE/ABOUT/SINCE, or raise max_limit (above 1000 only on a read-only handle)."
                 )
             }
             Self::PipelineStageInert {
@@ -1841,6 +1861,18 @@ impl std::fmt::Display for CalWarning {
                     f,
                     "CAL-W019: decision backend {provider} judged {dropped} grain(s) from source(s) [{}] off-topic for the source's query (relevance below {drop_below}) and they were omitted before the budget applied. Remove the decider to see them.",
                     labels.join(", ")
+                )
+            }
+            Self::AggregateSkipped {
+                stage,
+                skipped,
+                missing,
+                grains,
+            } => {
+                write!(
+                    f,
+                    "CAL-W020: {stage} left out {} of {grains} grains — {skipped} carried a value that is not a number and {missing} carried none — so it is an aggregate over the rest, not over every row. Narrow the query with WHERE to the grains that carry the value.",
+                    skipped + missing
                 )
             }
         }

@@ -173,6 +173,7 @@ in source.
 | `RUN-E028` | `TransferLimitInvalid` | A Tool declares a brokered-transfer ceiling (`runtime_limits.max_response_bytes` or `max_request_bytes`) that is not a positive integer, is zero, or exceeds the 32 MiB (33554432-byte) hard maximum (#339). Refused at run start, before any upstream I/O, and never clamped; the write path refuses the same declaration as a `VAL` error. The broker raises it too, before dispatch, for a host that registered such limits directly |
 | `RUN-E029` | `NotPausable` | A pause was asked of a run that cannot be paused (#344): it already finished — completed, failed, stalled, canceled or out of budget — or a cancel is pending against it (cancel wins over pause; `cancel` on a paused run finalizes it). Pausing an already-paused or already-pause-requested run is NOT this error: it is idempotent and answers with the standing request |
 | `RUN-E030` | `NoDecider` | A plan binds a decision node (a Tool Definition whose `executor_uri` is `areev://decide`) and this host has no decision backend installed. Raised at run start, the V7 freeze, before the run exists and naming the node. `resume` and a forking `fork` raise it too, before the lease is taken, on a host without a backend. Install one (`--decide <chain>` / `--decide-cmd`, `$AREEV_DECIDE`, `Runner::with_decider`) or bind the node to an ordinary tool. The scheduler's OPTIONAL asks (the decision-guided fold and the tool-offer narrowing) never raise it: without a backend they are not asked |
+| `RUN-E031` | `SavedQueryUnavailable` | A plan's `op: query` read (#370) cannot be served. At run start (the V7 freeze, before the run exists, naming the node): no saved query has the name, the declaration supplies a parameter the query does not declare, or it leaves a required parameter unsupplied. At dispatch (the node fails, not retried): the body pinned into the manifest at start is missing, or no longer matches the SHA-256 recorded beside it. The run reads the PINNED body, never the live `qry:` row, so a query redefined or dropped mid-run is not this error — it cannot reach a running run at all |
 
 ### `TRG` — triggers (`areev-trigger/src/error.rs`)
 
@@ -256,11 +257,12 @@ and are the source of truth. Ranges:
 | `CAL-W001`–`W012` | Warnings (unknown relation, deprecated operator, `{{#each}}` cap, bounded `CONTRADICTIONS` scan, …) |
 | `CAL-W013` | `WITH auto_relate` accepted but not implemented — no relations are inferred |
 | `CAL-W014` | A `WITH` option parsed and ran but cannot change the result on this statement (e.g. `score_breakdown` on `RECALL`) |
-| `CAL-W015` | A post-retrieval stage (`ORDER BY`, a type-specific `WHERE` filter, `COUNT`) widened its scan to `max_limit` and still filled it — the answer is the top-k of a window, not of the memory |
+| `CAL-W015` | A post-retrieval stage (`ORDER BY`, a type-specific `WHERE` filter, `COUNT`, `SUM`/`MIN`/`MAX`/`AVG`) widened its scan to `max_limit` and still filled it — the answer is the top-k (or the total) of a window, not of the memory. Names the effective limit, which is above 1000 only on a read-only handle (#368) |
 | `CAL-W016` | A pipeline stage was attached to a payload it cannot act on (e.g. `ORDER BY` on a multi-source `ASSEMBLE`) and was skipped |
 | `CAL-W017` | An `ASSEMBLE` token budget dropped grains its sources had already retrieved, naming the sources and the counts — including when the 4000-token default applied because no `BUDGET` clause was written |
 | `CAL-W018` | A `GROUP BY` key names a field no grain in the result carries, so every row fell into one group under the empty key — the ranking has one group because the key is absent, not because one value dominates |
 | `CAL-W019` | A calibrated decision backend judged grains off-topic for their `ASSEMBLE` source's `ABOUT` query and they were omitted before the budget applied — names the sources, the count, the provider and the relevance line (decision-backend phase 3) |
+| `CAL-W020` | A `SUM`/`MIN`/`MAX`/`AVG` stage (#368) left grains out — their value at the path was not a number, or they carried none — naming both counts: the aggregate is over the rest, not over every row |
 
 `CAL-E116` is the "needs an external LLM, not implemented" error for
 `WITH hyde` / `WITH llm_rerank` — Areev takes no LLM dependency by policy.

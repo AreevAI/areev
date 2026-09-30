@@ -403,6 +403,9 @@ impl RunManifest {
             plan,
             ns,
         )?;
+        // `op: query` reads (#370) freeze the saved query's body and hash
+        // here, at start — what the run reads, whatever the row says later.
+        crate::memread::pin_queries(&mut reads, m)?;
         let mut pinned = Vec::with_capacity(plan.nodes.len());
         for (i, node) in plan.nodes.iter().enumerate() {
             if let Some(spec) = reads.remove(node) {

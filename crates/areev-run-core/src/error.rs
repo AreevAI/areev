@@ -150,6 +150,16 @@ pub enum RunError {
     /// scheduler's OPTIONAL asks (the decision-guided fold, the tool-offer
     /// narrowing) never raise this: without a backend they are not asked.
     NoDecider { node: String },
+    /// RUN-E031 — a declared `op: query` read (#370) cannot be served: at
+    /// run start the saved query is not defined or its parameters do not fit
+    /// the declaration; at dispatch the body pinned at run start is missing
+    /// from the manifest or no longer matches the hash recorded beside it.
+    ///
+    /// The run reads the body PINNED at start, never the live `qry:` row, so
+    /// a body superseded or dropped mid-run does not change a running run;
+    /// this code is what a pin that cannot be honoured fails with instead of
+    /// quietly reading something else.
+    SavedQueryUnavailable { node: String, name: String, why: String },
 }
 
 /// The budget axes (§6.7). `Supersteps` is the global backstop too.
@@ -220,6 +230,7 @@ impl RunError {
             Self::TransferLimitInvalid { .. } => "RUN-E028",
             Self::NotPausable { .. } => "RUN-E029",
             Self::NoDecider { .. } => "RUN-E030",
+            Self::SavedQueryUnavailable { .. } => "RUN-E031",
         }
     }
 }
@@ -381,6 +392,11 @@ impl fmt::Display for RunError {
                  $AREEV_DECIDE, or `Runner::with_decider`), or bind the node to \
                  an ordinary tool"
             ),
+            Self::SavedQueryUnavailable { node, name, why } => write!(
+                f,
+                "{code}: read '{node}' names saved query \"{name}\", which cannot be \
+                 served: {why}"
+            ),
         }
     }
 }
@@ -422,6 +438,11 @@ mod tests {
             RunError::TransferLimitInvalid { node: "n".into(), detail: "d".into() },
             RunError::NotPausable { run_id: "r".into(), why: "w".into() },
             RunError::NoDecider { node: "n".into() },
+            RunError::SavedQueryUnavailable {
+                node: "n".into(),
+                name: "q".into(),
+                why: "w".into(),
+            },
         ]
     }
 

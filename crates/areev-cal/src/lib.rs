@@ -26,7 +26,9 @@ pub mod render;
 pub mod store_types;
 pub mod templates;
 
-pub use executor::{CalExecutor, CalExecutorConfig};
+pub use executor::{
+    effective_max_limit, CalExecutor, CalExecutorConfig, DEFAULT_MAX_LIMIT, HARD_MAX_LIMIT,
+};
 pub use facade::CalStoreFacade;
 pub use areev_facade::{AreevFacade, GrantChange, PrincipalSession, SessionScope};
 pub use async_facade::AsyncFacade;

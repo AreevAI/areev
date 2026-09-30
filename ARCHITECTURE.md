@@ -2268,6 +2268,10 @@ trigger's `--context-query`, or a new operation with its own decision.
 
 ### In-run recall is a third typed read; saved queries are not
 
+*Superseded in part by "A run may read a saved query it pinned at start"
+(#370), which answers the three objections below rather than setting them
+aside.*
+
 **Decision (2026-09-23, #342):** `reads` gains `op: recall` — the bindings'
 `recall(subject, relation, k, ns)` as a plan-declared read — and does NOT gain
 an `op: saved_query`. The use case is a host that only calls `run
@@ -2307,6 +2311,86 @@ three typed operations whose every operand is on the plan. A start/resume-only
 host that needs a richer question keeps the documented path: a saved query
 feeding a trigger's `--context-query` (bound values travel as a parsed AST,
 never inside CAL text), or a driver-side pre-read into the run input.
+
+### A run may read a saved query it pinned at start (#370)
+
+**Decision (2026-09-30, #370):** `reads` gains `op: query {name, params,
+params_from}`, reversing the #342 refusal above on the three grounds it named,
+each answered rather than waived. The use case is a pack that ships a certified
+library of saved queries and wants a node to call one with parameters, journaled
+with the run, instead of the driver pre-reading rows into the input where the
+run's history cannot show them.
+
+- **It is an address now.** At run start `pin_queries` resolves the name (a
+  `qry:` row, else a built-in) and freezes the **body and its SHA-256** into
+  the manifest. Dispatch runs the pinned text through
+  `CalExecutor::execute_query_body` — never the live row — and re-hashes it
+  first; a pin missing from the manifest or no longer matching its hash fails
+  the node with `RUN-E031` instead of reading something else. A body
+  redefined or dropped mid-run therefore cannot change a running run
+  (conformance-tested on both backends with a tool that redefines the query
+  between start and the read). The manifest is the reviewable record of the
+  text a run may execute.
+- **State fills holes the query's author declared, and only as literals.**
+  `params` are plan literals, `params_from` JSON pointers into the node's
+  input; a parameter the query does not declare, or a required one left
+  unsupplied, refuses the run at start (`RUN-E031` — stricter than `RUN`'s
+  `CAL-W006`, because a plan is reviewed). A value is a string, number,
+  boolean or array of them, rendered through the same escaping binder `RUN`
+  uses, in **one pass over the original body** — substituting parameter by
+  parameter re-scanned earlier values, so a value containing `$other` could
+  break a string literal open, and that path is closed for `RUN` too.
+- **Reach does not widen.** The read runs with `tier1_enabled` and
+  destructive ops off, the executor refuses a body that is not a read, and
+  `namespace_override` pins every recall in the body — `ASSEMBLE` sources
+  included — to the read's `ns` (the run's namespace or a dotted descendant),
+  so a saved query naming another namespace, or a mount, reads the run's own.
+  `verify`/`shadow` answer it from the journaled result (`mg:query`, with
+  `{op, ns, name, body_hash, params, result_count, grains}`) like any read.
+
+What stays declined is binding state into *arbitrary* CAL text: a plan names a
+query a reviewer can read, not a statement.
+
+### Aggregates are pipeline stages over a dotted path (#368)
+
+**Decision (2026-09-30, #368, OMS CAL amendment):** CAL gains `SUM`, `MIN`,
+`MAX` and `AVG` as pipeline stages over a field or dotted path, and `GROUP BY`
+/ `ORDER BY` accept a dotted path. This is new syntax and so an OMS conformance
+decision; it is recorded here, in `docs/cal-reference.md` §4 and in the
+conformance suite (`cal_aggregates_over_dotted_paths`, both backends).
+
+The shape follows the `GROUP BY … COUNT` precedent (#209) rather than adding a
+projection language: one function, one path, alone → one value
+(`CalResultPayload::Aggregate`), after `GROUP BY` → one grain-shaped row per
+group (`GroupAggregates`, empty hash, extreme first). No expressions, no
+`HAVING`, no arithmetic between columns — the smallest addition that removes
+host-side summing. The keywords are identifiers, not lexer tokens, so no field
+name became reserved. Three choices are contract, not implementation: integer
+inputs keep an exact integer for `SUM`/`MIN`/`MAX` (minor units must not round
+through f64), a non-numeric or absent value is skipped **and announced**
+(`CAL-W020`), and path resolution is the one `WHERE` uses (`resolve_grain_field`),
+so a filter, a grouping and a sum on the same path read the same value.
+
+Aggregates widen the scan like `COUNT` does, which makes the 1,000-grain
+window the binding constraint. `max_limit` may therefore be raised — to at most
+100,000 — **only on a read-only handle** (`effective_max_limit`, applied by the
+executor and by the facade's recall clamp): a scan that wide is an analysis
+read, and a handle that can never write is the one a host declares for it.
+`CAL-W015` names the window that applied.
+
+### A mount is a host capability on every surface, and never a write target (#369)
+
+**Decision (2026-09-30, #369):** the Node and Python handles take
+`mount(alias, target)`, the same read-only mount the CLI and MCP server take as
+`--mount`, through ONE open (`Areev::open_mount`, file or postgres DSN, always
+`read_only`) and one checked installer (`AreevFacade::mount_read_only`: alias
+shape, duplicates, and mounting the primary refused). `mount()` rather than a
+`mounts` constructor option keeps the two bindings in lockstep without growing
+Node's positional constructor. And a write addressed to `"<alias>.inner"` is
+now refused with `STO-E004` in `check_verb` — before, it succeeded against the
+PRIMARY memory under the mount's name, where every read of that namespace,
+routed to the mount, would never see it. `ABOUT` inside a mount stays
+BM25-only: an embedder belongs to the store it was installed on.
 
 ### A hold binds the memory where destruction is decided (1.9.0, #278, #279)
 

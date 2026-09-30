@@ -749,6 +749,71 @@ test('readOnly serves reads and refuses every write', async () => {
   )
 })
 
+async function twoMemories() {
+  const dir = mkdtempSync(join(tmpdir(), 'areev-js-mount-'))
+  const bPath = join(dir, 'b.db')
+  const b = new Areev(bPath, 'ledger')
+  await b.addFact('acme', 'paid', '1200')
+  await b.addFact('globex', 'paid', '800')
+  b.close()
+  const a = new Areev(join(dir, 'a.db'), 'notes')
+  await a.addFact('acme', 'risk', 'late payer')
+  return { a, bPath, dir }
+}
+
+test('mount lets one ASSEMBLE read across memories (#369)', async () => {
+  const { a, bPath } = await twoMemories()
+  a.mount('clients_b', bPath)
+  const rows = JSON.parse(await a.cal('RECALL facts WHERE namespace = "clients_b.ledger"'))
+  assert.deepEqual(new Set(rows.grains.map((g) => g.fields.subject)), new Set(['acme', 'globex']))
+  const out = await a.cal(
+    'ASSEMBLE "review" FROM ' +
+      'ledger: (RECALL facts WHERE namespace = "clients_b.ledger"), ' +
+      'notes: (RECALL facts WHERE namespace = "notes")',
+  )
+  assert.ok(out.includes('late payer') && out.includes('1200'), out)
+  a.close()
+})
+
+test('a write through a mount is refused, and mount validates its input', async () => {
+  const { a, bPath, dir } = await twoMemories()
+  a.mount('clients_b', bPath)
+  const out = await a.cal(
+    'ADD fact SET namespace = "clients_b.ledger" SET subject = "acme" ' +
+      'SET relation = "paid" SET object = "0" REASON "t"',
+  )
+  assert.match(out, /STO-E004/)
+  assert.throws(() => a.mount('gone', join(dir, 'missing.db')), /STO-E005/)
+  assert.throws(() => a.mount('a.b', bPath), /VAL-E001/)
+  assert.throws(() => a.mount('clients_b', bPath), /already mounted/)
+  a.close()
+  const b = new Areev(bPath, 'ledger', null, null, null, null, null, null, true)
+  assert.equal(JSON.parse(await b.recall('acme')).length, 1)
+  b.close()
+})
+
+test('SUM over a dotted path, and setMaxLimit above 1000 needs readOnly (#368)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'areev-js-agg-'))
+  const path = join(dir, 'ledger.db')
+  const m = new Areev(path, 'ledger')
+  for (const [i, amt] of [1200, 300, 4500].entries()) {
+    await m.addFact(`txn-${i}`, 'posted', JSON.stringify({ amount_minor: amt, counterparty: 'ACME' }))
+  }
+  const res = JSON.parse(await m.cal('RECALL facts WHERE namespace = "ledger" | SUM object.amount_minor'))
+  assert.equal(res.value, 6000)
+  assert.equal(res.counted, 3)
+  const grouped = JSON.parse(await m.cal(
+    'RECALL facts WHERE namespace = "ledger" GROUP BY object.counterparty | MAX object.amount_minor'))
+  assert.deepEqual(grouped.groups.map((g) => [g.fields.key, g.fields.value]), [['ACME', 4500]])
+  assert.throws(() => m.setMaxLimit(5000), /readOnly/)
+  m.setMaxLimit(500)
+  m.close()
+  const ro = new Areev(path, 'ledger', null, null, null, null, null, null, true)
+  ro.setMaxLimit(5000)
+  assert.throws(() => ro.setMaxLimit(0), /between 1 and/)
+  ro.close()
+})
+
 test('toolEnv clears a host tool environment down to what it names', async () => {
   // Without toolEnv a tool inherits this process's environment, so a variable
   // the host holds for its own use is visible to it. With one, the environment
