@@ -75,6 +75,33 @@ one spec decision, recorded in
   templates) equal: a path that parses must be one the executor walks and a
   template can express.
 
+**Aggregates + dotted pipeline paths (#368).** `SUM`/`MIN`/`MAX`/`AVG`
+are ONE `PipelineStage::Aggregate { function: AggregateFn, field }` — parsed
+from identifiers (not lexer tokens, so `max` stays a field name; a stage only
+when a field follows, `at_aggregate_stage`). Alone → `CalResultPayload::
+Aggregate {value, counted, skipped, missing}`; after `GROUP BY` →
+`GroupAggregates` (rows like `GroupCounts`', `{key, count, value}`, extreme
+first). Integer inputs stay exact for sum/min/max (`AggNum::Int(i128)`); avg is
+always a float; skipped/missing raise `CAL-W020`. `ORDER BY`/`SORT`/`GROUP BY`
+now parse `parse_field_name` (dotted), and every pipeline read of a field goes
+through `pipeline_value` — a plain name is `json_field`, a dotted one
+`resolve_grain_field`, the resolver `WHERE` uses. Aggregates widen the scan
+like `COUNT`. `max_limit` above `DEFAULT_MAX_LIMIT` (1,000) is honoured only
+when `CalStoreFacade::is_read_only()` (default `false` — fails closed), capped
+at `HARD_MAX_LIMIT`, by `effective_max_limit`; the facade's recall clamp
+applies the same rule to the store serving the recall. `CAL-W015` names the
+effective limit.
+
+**Saved-query parameters bind in ONE pass** (`bind_query_body` →
+`substitute_params`), shared by `RUN` and `execute_query_body` (the run's
+pinned-body read, #370). The old per-name `str::replace` re-scanned earlier
+substitutions, so a value containing `$other` broke a string literal open.
+
+**Mount writes are refused** (#369): `check_verb` refuses any non-`Read`
+verb on a namespace whose first segment is a mount alias (`STO-E004`), and
+`mount_read_only(alias, target, primary)` is the checked installer the CLI and
+both bindings use (`Areev::open_mount`: always read-only, file or DSN).
+
 An `ASSEMBLE` **source** now carries its own `pipeline` (`NamedSource`), run in
 `execute_source` before dedup and budgeting — that is what lets a frequency
 roll-up be a prompt section. `extract_grains` lives in `executor.rs` and is

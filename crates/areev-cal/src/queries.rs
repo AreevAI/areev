@@ -71,6 +71,14 @@ fn is_valid_agent_query_name(name: &str) -> bool {
 // Persisted format (JSON in Fjall meta partition)
 // ---------------------------------------------------------------------------
 
+/// The address a run pins a saved query's body to (#370): SHA-256 over the
+/// body's exact UTF-8 bytes, lowercase hex. Not NFC-normalized and not
+/// trimmed — a pin compares what was stored, byte for byte.
+pub fn query_body_hash(body: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(body.as_bytes()))
+}
+
 /// Serialized form stored in Fjall under `qry:{name}`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedQuery {

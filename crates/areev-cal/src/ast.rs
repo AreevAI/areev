@@ -1598,6 +1598,19 @@ pub enum PipelineStage {
         span: Option<Span>,
     },
 
+    /// `| SUM <path>` / `| MIN <path>` / `| MAX <path>` / `| AVG <path>`
+    /// (#368) — a numeric aggregate over a field or a dotted path into one
+    /// (`object.amount_minor`). Alone it answers one value; after a
+    /// `GROUP BY` it answers one row per group.
+    ///
+    /// Wire form: `{"stage": "aggregate", "function": "sum", "field": "…"}`.
+    Aggregate {
+        function: AggregateFn,
+        field: String,
+        #[serde(skip)]
+        span: Option<Span>,
+    },
+
     /// `| PROJECT field1, field2, ...` (alias for SELECT with remapping).
     Project {
         fields: Vec<ProjectField>,
@@ -1615,6 +1628,43 @@ pub enum PipelineStage {
         #[serde(skip)]
         span: Option<Span>,
     },
+}
+
+/// The function of an [`PipelineStage::Aggregate`] stage (#368).
+///
+/// Integer inputs keep an integer result for `SUM`, `MIN` and `MAX` — a sum
+/// of minor currency units must come back as the exact integer, not a float
+/// that rounds past 2^53. `AVG` is a mean and is always a float.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AggregateFn {
+    Sum,
+    Min,
+    Max,
+    Avg,
+}
+
+impl AggregateFn {
+    /// The CAL keyword, uppercase.
+    pub fn keyword(self) -> &'static str {
+        match self {
+            Self::Sum => "SUM",
+            Self::Min => "MIN",
+            Self::Max => "MAX",
+            Self::Avg => "AVG",
+        }
+    }
+
+    /// Parse a stage keyword, case-insensitively.
+    pub fn from_keyword(word: &str) -> Option<Self> {
+        match word.to_ascii_uppercase().as_str() {
+            "SUM" => Some(Self::Sum),
+            "MIN" => Some(Self::Min),
+            "MAX" => Some(Self::Max),
+            "AVG" => Some(Self::Avg),
+            _ => None,
+        }
+    }
 }
 
 /// A field in a `PROJECT` clause, optionally with an alias.

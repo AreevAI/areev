@@ -31,9 +31,22 @@
 //! — the bindings' `db.recall(subject, relation, k, ns)` — with `k` capped at
 //! [`MAX_K`] on the plan and enforced on the result, and an optional instant
 //! that makes it an as-of recall (`Areev::recall_at`, one `entity_at` answer
-//! per relation). Naming a saved query was considered and declined: see
-//! ARCHITECTURE.md §10, "In-run recall is a third typed read; saved queries
-//! are not".
+//! per relation). Naming a saved query was considered and declined for
+//! 1.9.3 (ARCHITECTURE.md §10, "In-run recall is a third typed read; saved
+//! queries are not") because a `qry:` row is mutable and not
+//! content-addressed.
+//!
+//! A fourth op, `query` (#370), reverses that decision on the one condition
+//! it named: the read is **pinned**. `{"op": "query", "name": "…",
+//! "params": {…}, "params_from": {…}}` resolves the saved query at run
+//! start, checks the parameters against the ones it declares, and freezes
+//! the BODY and its SHA-256 into the manifest ([`pin_queries`]). Dispatch
+//! runs the pinned text — never the live row — through
+//! `CalExecutor::execute_query_body`, read-only and pinned to the read's
+//! namespace, so a body superseded or dropped mid-run cannot change a running
+//! run; a pin that is missing or no longer matches its hash fails the node
+//! with `RUN-E031`. See ARCHITECTURE.md §10, "A run may read a saved query
+//! it pinned at start".
 //!
 //! What it deliberately is not:
 //! - **not a tool's capability.** Nothing a `--tool-cmd`, a native blob or a
@@ -46,7 +59,9 @@
 //! - **not a query language.** Three typed operations whose every operand is
 //!   on the plan; `relation`, `axis`, `ns`, `k` and the walk's shape are
 //!   literals a reviewer can read, and only the subject, the start and the
-//!   instant may come from state. No free text, no predicate.
+//!   instant may come from state. No free text, no predicate. The fourth,
+//!   `query`, names a saved query a reviewer can read (and whose body the
+//!   manifest pins); only its declared parameters may come from state.
 
 use areev_cal::AreevFacade;
 use areev_run_core::{EffectOutcome, FailCause, PlanGraph, RunError};
@@ -62,7 +77,7 @@ pub const MEMORY_EXECUTOR: &str = "memory";
 /// The extra field on a read's RESULT grain naming what was read.
 pub const READ_RECORD_FIELD: &str = "read";
 
-const OPS: [&str; 3] = ["entity_at", "related", "recall"];
+const OPS: [&str; 4] = ["entity_at", "related", "recall", "query"];
 const COMMON_KEYS: [&str; 3] = ["op", "ns", "into"];
 const ENTITY_AT_KEYS: [&str; 6] = [
     "subject",
@@ -89,6 +104,8 @@ const RECALL_KEYS: [&str; 7] = [
     "at_from",
     "axis",
 ];
+
+const QUERY_KEYS: [&str; 3] = ["name", "params", "params_from"];
 
 /// `related`'s bounds, refused rather than clamped: the store clamps silently,
 /// and a declaration that asks for depth 9 should learn it gets 4.
@@ -149,6 +166,103 @@ pub fn parse_reads(
     Ok(out)
 }
 
+/// Freeze every `op: query` read to the saved query's body AS IT IS NOW
+/// (#370): look the name up — a `qry:` row in the memory, else a built-in —
+/// check the declaration's parameters against the ones the query declares,
+/// and record `body`, `body_hash` and `declared` into the spec the manifest
+/// pins. Run-start only; dispatch never consults the registry again.
+///
+/// Refused with `RUN-E031`, naming the node: a name no saved query has, a
+/// parameter the query does not declare (RUN only warns, but a plan is
+/// reviewed — a misspelled parameter there is a wrong read, not a typo), and
+/// a required parameter the declaration never supplies.
+pub fn pin_queries(
+    reads: &mut BTreeMap<String, Value>,
+    m: &areev_store::Areev,
+) -> Result<(), RunError> {
+    for (node, spec) in reads.iter_mut() {
+        if spec.get("op").and_then(Value::as_str) != Some("query") {
+            continue;
+        }
+        let name = spec.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
+        let unavailable = |why: String| RunError::SavedQueryUnavailable {
+            node: node.clone(),
+            name: name.clone(),
+            why,
+        };
+        let (body, declared) = match m
+            .meta_get(&format!("qry:{name}"))
+            .map_err(|e| unavailable(format!("reading it failed: {e}")))?
+        {
+            Some(row) => {
+                let p: areev_cal::queries::PersistedQuery = serde_json::from_str(&row)
+                    .map_err(|e| unavailable(format!("its stored row does not parse: {e}")))?;
+                (p.body, p.params)
+            }
+            None => match areev_cal::queries::QueryRegistry::new().get(&name) {
+                Some(e) if e.builtin => (e.body.clone(), e.params.clone()),
+                _ => return Err(unavailable("no saved query has that name".into())),
+            },
+        };
+        let supplied: Vec<String> = ["params", "params_from"]
+            .iter()
+            .filter_map(|k| spec.get(*k).and_then(Value::as_object))
+            .flat_map(|o| o.keys().cloned())
+            .collect();
+        if let Some(extra) = supplied.iter().find(|k| !declared.iter().any(|p| &p.name == *k)) {
+            let names: Vec<&str> = declared.iter().map(|p| p.name.as_str()).collect();
+            return Err(unavailable(format!(
+                "it declares no parameter `{extra}` (declared: [{}])",
+                names.join(", ")
+            )));
+        }
+        if let Some(p) = declared
+            .iter()
+            .find(|p| p.default.is_none() && !supplied.contains(&p.name))
+        {
+            return Err(unavailable(format!(
+                "its required parameter `{}` is supplied by neither `params` nor `params_from`",
+                p.name
+            )));
+        }
+        let obj = spec.as_object_mut().expect("normalized specs are objects");
+        obj.insert("body_hash".into(), json!(areev_cal::queries::query_body_hash(&body)));
+        obj.insert("body".into(), json!(body));
+        obj.insert(
+            "declared".into(),
+            serde_json::to_value(&declared).unwrap_or(Value::Array(Vec::new())),
+        );
+    }
+    Ok(())
+}
+
+/// A value a saved-query parameter may take from the plan: a CAL literal.
+fn is_param_literal(v: &Value) -> bool {
+    match v {
+        Value::String(_) | Value::Bool(_) => true,
+        Value::Number(n) => n.as_f64().is_some_and(f64::is_finite),
+        Value::Array(a) => a.iter().all(|x| !x.is_array() && is_param_literal(x)),
+        _ => false,
+    }
+}
+
+/// A JSON parameter value as the CAL literal `RUN` would have bound.
+fn param_value(v: &Value) -> Option<areev_cal::ast::Value> {
+    use areev_cal::ast::Value as Cal;
+    Some(match v {
+        Value::String(s) => Cal::String { value: s.clone() },
+        Value::Bool(b) => Cal::Boolean { value: *b },
+        Value::Number(n) => Cal::Number { value: n.as_f64().filter(|f| f.is_finite())? },
+        Value::Array(a) => Cal::Array {
+            values: a
+                .iter()
+                .map(|x| if x.is_array() { None } else { param_value(x) })
+                .collect::<Option<Vec<_>>>()?,
+        },
+        _ => return None,
+    })
+}
+
 fn normalize(node: &str, raw: &Value, run_ns: &str) -> Result<Value, RunError> {
     let invalid = |why: String| RunError::InvalidPlan {
         why: format!("read '{node}': {why}"),
@@ -160,18 +274,19 @@ fn normalize(node: &str, raw: &Value, run_ns: &str) -> Result<Value, RunError> {
         Some(op) if OPS.contains(&op) => op,
         Some(op) => {
             return Err(invalid(format!(
-                "unknown op {op:?} (accepted: entity_at, related, recall)"
+                "unknown op {op:?} (accepted: entity_at, related, recall, query)"
             )))
         }
         None => {
             return Err(invalid(
-                "names no `op` (entity_at | related | recall)".into(),
+                "names no `op` (entity_at | related | recall | query)".into(),
             ))
         }
     };
     let op_keys: &[&str] = match op {
         "entity_at" => &ENTITY_AT_KEYS,
         "related" => &RELATED_KEYS,
+        "query" => &QUERY_KEYS,
         _ => &RECALL_KEYS,
     };
     if let Some(k) = obj
@@ -217,7 +332,49 @@ fn normalize(node: &str, raw: &Value, run_ns: &str) -> Result<Value, RunError> {
     };
     spec.insert("into".into(), json!(into));
 
-    if op == "entity_at" {
+    if op == "query" {
+        spec.insert("name".into(), json!(required_str(obj, "name").map_err(invalid)?));
+        let params = match obj.get("params") {
+            None => Map::new(),
+            Some(Value::Object(p)) => {
+                for (k, v) in p {
+                    if !is_param_literal(v) {
+                        return Err(invalid(format!(
+                            "`params.{k}` must be a string, number, boolean or an array of \
+                             them, not {v}"
+                        )));
+                    }
+                }
+                p.clone()
+            }
+            Some(_) => return Err(invalid("`params` must be an object of name → value".into())),
+        };
+        let params_from = match obj.get("params_from") {
+            None => Map::new(),
+            Some(Value::Object(p)) => {
+                for (k, v) in p {
+                    if !v.as_str().is_some_and(|ptr| ptr.starts_with('/')) {
+                        return Err(invalid(format!(
+                            "`params_from.{k}` must be a JSON pointer starting with '/'"
+                        )));
+                    }
+                    if params.contains_key(k) {
+                        return Err(invalid(format!(
+                            "parameter `{k}` is in both `params` and `params_from` — name it once"
+                        )));
+                    }
+                }
+                p.clone()
+            }
+            Some(_) => {
+                return Err(invalid(
+                    "`params_from` must be an object of name → JSON pointer".into(),
+                ))
+            }
+        };
+        spec.insert("params".into(), Value::Object(params));
+        spec.insert("params_from".into(), Value::Object(params_from));
+    } else if op == "entity_at" {
         operand(obj, "subject", &mut spec).map_err(invalid)?;
         spec.insert(
             "relation".into(),
@@ -607,6 +764,110 @@ pub fn execute(facade: &AreevFacade, run_ns: &str, spec: &Value, input: &Value) 
                 })
                 .collect();
             (Value::Array(payload), record)
+        }
+        "query" => {
+            let name = spec.get("name").and_then(Value::as_str).unwrap_or_default();
+            // The pin, verified before anything runs: the body the manifest
+            // froze at run start, and the hash recorded beside it. Never the
+            // live `qry:` row — that is the whole point of the pin.
+            let pinned = spec.get("body").and_then(Value::as_str);
+            let recorded = spec.get("body_hash").and_then(Value::as_str);
+            let body = match (pinned, recorded) {
+                (Some(b), Some(h)) if areev_cal::queries::query_body_hash(b) == h => b,
+                (None, _) | (_, None) => {
+                    return failed(
+                        FailCause::Unknown,
+                        format!(
+                            "RUN-E031: memory read of saved query \"{name}\": the manifest \
+                             carries no pinned body — the run cannot read a body it did not \
+                             pin at start"
+                        ),
+                    )
+                }
+                _ => {
+                    return failed(
+                        FailCause::Unknown,
+                        format!(
+                            "RUN-E031: memory read of saved query \"{name}\": the pinned body \
+                             no longer matches its recorded hash"
+                        ),
+                    )
+                }
+            };
+            let declared: Vec<areev_cal::ast::QueryParam> = spec
+                .get("declared")
+                .cloned()
+                .and_then(|d| serde_json::from_value(d).ok())
+                .unwrap_or_default();
+            let mut bindings: Vec<(String, areev_cal::ast::Value)> = Vec::new();
+            let mut bound = Map::new();
+            if let Some(p) = spec.get("params").and_then(Value::as_object) {
+                for (k, v) in p {
+                    let Some(cal) = param_value(v) else {
+                        return schema(format!("`params.{k}` is not a CAL literal"));
+                    };
+                    bindings.push((k.clone(), cal));
+                    bound.insert(k.clone(), v.clone());
+                }
+            }
+            if let Some(p) = spec.get("params_from").and_then(Value::as_object) {
+                for (k, ptr) in p {
+                    let ptr = ptr.as_str().unwrap_or_default();
+                    let Some(v) = input.pointer(ptr) else {
+                        return schema(format!(
+                            "`params_from.{k}` {ptr} does not resolve against the node's input"
+                        ));
+                    };
+                    let Some(cal) = param_value(v) else {
+                        return schema(format!(
+                            "`params_from.{k}` resolved to {v}, which is not a string, number, \
+                             boolean or an array of them"
+                        ));
+                    };
+                    bindings.push((k.clone(), cal));
+                    bound.insert(k.clone(), v.clone());
+                }
+            }
+            // Read-only whatever the body says (the executor refuses a body
+            // that is not a read regardless), and pinned to the read's own
+            // namespace: a saved query naming another namespace reads this one.
+            let ex = areev_cal::CalExecutor::new(areev_cal::CalExecutorConfig {
+                tier1_enabled: false,
+                allow_destructive_ops: false,
+                namespace_override: Some(ns.to_string()),
+                ..areev_cal::CalExecutorConfig::default()
+            });
+            let res = match ex.execute_query_body(name, body, &declared, &bindings, facade) {
+                Ok(res) => res,
+                // A store failure may pass on a retry; anything else (a
+                // missing parameter, a body that is not a read, a parse
+                // error) fails the same way every time.
+                Err(e) if e.store_code().is_some_and(|c| c.starts_with("STO")) => {
+                    return failed(FailCause::ExecutorError, format!("memory read: {e}"))
+                }
+                Err(e) => return schema(format!("saved query \"{name}\": {e}")),
+            };
+            let payload = match res.payload_json() {
+                Ok(p) => p,
+                Err(e) => return failed(FailCause::ExecutorError, format!("memory read: {e}")),
+            };
+            let grains: Vec<String> = payload
+                .get("grains")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|g| g.get("hash").and_then(Value::as_str))
+                        .filter(|h| !h.is_empty())
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let record = json!({
+                "op": op, "ns": ns, "name": name,
+                "body_hash": recorded, "params": bound,
+                "result_count": res.metadata.result_count, "grains": grains,
+            });
+            (payload, record)
         }
         other => {
             return failed(

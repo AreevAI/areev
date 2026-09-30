@@ -22,6 +22,31 @@ export declare class Areev {
    */
   close(): void
   /**
+   * Mount another memory **read-only** under `alias` (#369), so `cal()`
+   * can read it as `"<alias>.<namespace>"` — above all from one `ASSEMBLE`
+   * that draws on this memory and the mounted one together.
+   *
+   * `target` is a memory file path or a postgres DSN
+   * (`postgres://…?schema=<name>`); it is always opened read-only, so a
+   * missing file is refused (`STO-E005`) and a SELECT-only role is enough.
+   * A write addressed to a mounted namespace is refused with `STO-E004`.
+   * `ABOUT` inside a mount is BM25-only: the mount has no embedder, and
+   * one installed on this handle does not reach it.
+   *
+   * Call it right after open: it needs this handle to itself, so it is
+   * refused while another call on the handle is in flight. Under a bound
+   * principal it needs `admin` on `*`, like `setDecider`.
+   */
+  mount(alias: string, target: string): void
+  /**
+   * Raise (or lower) the widest window a `cal()` statement scans — a
+   * post-retrieval `ORDER BY`, `COUNT`, `GROUP BY`, `SUM`/`MIN`/`MAX`/
+   * `AVG` (#368). The default is 1,000. A value above it is accepted only
+   * on a handle opened `readOnly` (VAL-E001 otherwise), up to 100,000.
+   * `CAL-W015` names the limit that applied when a scan still fills.
+   */
+  setMaxLimit(maxLimit: number): void
+  /**
    * Reconciliation warnings from open (file-vs-host declaration changes,
    * embedding-model mismatches). JSON list string.
    */

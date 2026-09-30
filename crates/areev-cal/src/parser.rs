@@ -28,6 +28,7 @@ use std::collections::HashMap;
 
 use super::ast::{
     AboutClause, AccumulateStmt, AccumulateTarget, AddStmt, AddWithOption, AddWorkflowStmt,
+    AggregateFn,
     AliasedFormat, AssembleStmt, AssembleWithOption, BatchEntry, BatchStmt, BetweenClause,
     BindClause, BudgetSpec, BudgetUnit, CalQuery, CalStatement, CalVersion, CoalesceBranch,
     CoalesceStmt, Comparator, Condition, ContradictionsClause, DefineTemplateStmt, DeltaOp,
@@ -2438,6 +2439,11 @@ impl Parser {
         ) {
             return true;
         }
+        // SUM/MIN/MAX/AVG (#368) are identifiers, not tokens, so they stay
+        // usable as field names — a stage only when a field follows.
+        if self.at_aggregate_stage() {
+            return true;
+        }
         // SORT is an alias for ORDER BY — treat as pipeline stage.
         matches!(
             self.peek(),
@@ -2446,6 +2452,28 @@ impl Parser {
                 ..
             }) if id.eq_ignore_ascii_case("SORT")
         )
+    }
+
+    /// Is the cursor on `SUM|MIN|MAX|AVG <field>`?
+    fn at_aggregate_stage(&self) -> bool {
+        let is_fn = matches!(
+            self.peek(),
+            Some(SpannedToken { token: Token::Ident(id), .. })
+                if AggregateFn::from_keyword(id).is_some()
+        );
+        is_fn
+            && matches!(
+                self.peek_ahead(1),
+                Some(SpannedToken {
+                    token: Token::Ident(_)
+                        | Token::On
+                        | Token::When
+                        | Token::Bind
+                        | Token::Priority
+                        | Token::Scope,
+                    ..
+                })
+            )
     }
 
     fn parse_pipeline(&mut self) -> CalResult<Vec<PipelineStage>> {
@@ -2497,7 +2525,9 @@ impl Parser {
             }) => {
                 self.advance();
                 self.expect_exact(&Token::By)?;
-                let field = self.parse_identifier()?;
+                // A dotted path orders by a value inside a structured field
+                // (`object.amount_minor`, #368).
+                let field = self.parse_field_name()?;
                 let descending = if self.at_exact(&Token::Desc) {
                     self.advance();
                     true
@@ -2589,9 +2619,10 @@ impl Parser {
             }) => {
                 self.advance();
                 self.expect_exact(&Token::By)?;
-                let mut fields = vec![self.parse_identifier()?];
+                // Each key may be a dotted path (`object.counterparty`, #368).
+                let mut fields = vec![self.parse_field_name()?];
                 while self.eat_exact(&Token::Comma) {
-                    fields.push(self.parse_identifier()?);
+                    fields.push(self.parse_field_name()?);
                 }
                 if fields.len() > MAX_GROUP_BY_KEYS {
                     return Err(CalError::TooManyGroupKeys {
@@ -2628,13 +2659,27 @@ impl Parser {
                     span: Some(span),
                 })
             }
+            // `SUM|MIN|MAX|AVG <field or dotted path>` (#368).
+            Some(SpannedToken {
+                token: Token::Ident(id),
+                ..
+            }) if AggregateFn::from_keyword(id).is_some() => {
+                let function = AggregateFn::from_keyword(id).expect("guarded above");
+                self.advance();
+                let field = self.parse_field_name()?;
+                Ok(PipelineStage::Aggregate {
+                    function,
+                    field,
+                    span: Some(span),
+                })
+            }
             // `SORT field [ASC|DESC]` — alias for ORDER BY.
             Some(SpannedToken {
                 token: Token::Ident(id),
                 ..
             }) if id.eq_ignore_ascii_case("SORT") => {
                 self.advance(); // consume SORT
-                let field = self.parse_identifier()?;
+                let field = self.parse_field_name()?;
                 let descending = if self.at_exact(&Token::Desc) {
                     self.advance();
                     true
@@ -2653,7 +2698,7 @@ impl Parser {
                 let sp = st.span;
                 Err(CalError::UnexpectedToken {
                     expected: "pipeline stage (SELECT, ORDER BY, LIMIT, OFFSET, COUNT, FIRST, \
-                         SUBJECTS, OBJECTS, HASHES, GROUP BY, PROJECT)"
+                         SUBJECTS, OBJECTS, HASHES, GROUP BY, PROJECT, SUM, MIN, MAX, AVG)"
                         .into(),
                     found,
                     span: Some(sp),

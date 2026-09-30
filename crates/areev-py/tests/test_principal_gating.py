@@ -130,6 +130,9 @@ def calls(db, tmp_path):
         # its state — host config, admin on "*" like the embedder.
         ("set_decider", lambda: db.set_decider(cmd="cat")),
         ("set_reranker_command", lambda: db.set_reranker_command("cat")),
+        # A mount widens what the handle can read — host config, admin on "*"
+        # like the decider (#369).
+        ("mount", lambda: db.mount("org", str(tmp_path / "other.db"))),
         ("set_trigger_paused", lambda: db.trigger_pause("abc", "because")),
     ]
 
@@ -164,6 +167,8 @@ EXEMPT = {
     "anonymize_text": "pure text transform, no store read",
     "rehydrate_text": "pure text transform over a caller-supplied mapping",
     "set_recall_deadline_ms": "a per-handle latency bound; reads and writes nothing",
+    "set_max_limit": "sizes the CAL scan window; every statement it applies to is "
+                     "still gated by the executor, and >1000 needs a read-only handle (#368)",
     "recall_deadline_ms": "reports the per-handle latency bound",
     "decide": "judges caller-supplied state, no store read; the backend is installed "
               "only via admin-gated set_decider; egress policy consulted fail-safe",

@@ -398,8 +398,22 @@ The shape of the rules, and why each one is load-bearing:
   of range (the manifest is replicated data) and truncates the store's answer
   to `k`. With `at`/`at_from` it calls `Areev::recall_at` — `entity_at` per
   relation, one grain each — never a second as-of semantics. `axis` without
-  an instant is refused (a knob that would do nothing). `op: saved_query`
-  was declined (ARCHITECTURE.md §10): a `qry:` row is not an address.
+  an instant is refused (a knob that would do nothing).
+- **`op: query` (#370) pins, then never looks again.** `parse_reads` checks
+  shape (`name`, literal `params`, pointer `params_from`, no name in both);
+  `pin_queries` — called from `resolve_with_fields`, the only place with the
+  store — reads the `qry:` row (else a built-in) and writes `body`,
+  `body_hash` (`areev_cal::queries::query_body_hash`, SHA-256 of the exact
+  bytes) and `declared` INTO THE SPEC the manifest freezes. Undeclared or
+  missing-required params are `RUN-E031` at start. `execute` re-hashes the
+  pinned body before running it (`RUN-E031` on a missing/mismatched pin),
+  binds params via `CalExecutor::execute_query_body` (the one binder `RUN`
+  also uses — single pass, so a state value containing `$x` is never
+  re-substituted), with tier-1 and destructive ops off and
+  `namespace_override` = the read's `ns`. Never read the live registry at
+  dispatch: that is the whole point (ARCHITECTURE.md §10, "A run may read a
+  saved query it pinned at start"). Tests: `tests/query_read_tests.rs` (a
+  tool redefines the query mid-run; the read answers from the pin).
 - **Operand failures are `SchemaValidationFailed`** (not retryable for a Tool
   effect: same state, same failure); store errors `ExecutorError` (node
   `retries` apply); scope/grant refusals `Unknown`. A miss is a COMPLETED

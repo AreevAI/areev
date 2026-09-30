@@ -377,7 +377,13 @@ streamed output. There is a 2000-grain post-dedup cap across all sources.
 A mount target is a memory **file or a Postgres DSN**
 (`postgres://…?schema=<name>`) — the mount tier is not file-only. The host
 supplies them; the CLI's spelling is
-`areev serve --mcp --mount alias=<path|DSN>[,alias=…]`. Mounts are opened
+`areev serve --mcp --mount alias=<path|DSN>[,alias=…]`, and the Node and
+Python handles take the same thing as `mount(alias, target)` (#369), called
+right after open — so a host that keeps one memory per business can answer one
+`ASSEMBLE` across two of them from its own process. **A write addressed to a
+mounted namespace is refused with `STO-E004`** — it used to land in the
+primary memory under the mount's name, where no read of that namespace (routed
+to the mount) would ever see it. Mounts are opened
 **read-only on either backend**, which is what lets a `SELECT`-only Postgres
 role back one, and what turns a mistyped file path into an `STO-E005` refusal
 instead of a silently-created empty memory.
@@ -918,14 +924,15 @@ Pipeline stages post-process a statement's result set, chained with `|` (up to
 |---|---|
 | `\| SELECT f1, f2` | Keep only these fields |
 | `\| PROJECT f1 AS a, f2` | Select with renaming |
-| `\| ORDER BY field [ASC\|DESC]` | Sort |
+| `\| ORDER BY field [ASC\|DESC]` | Sort — `field` may be a dotted path (`object.amount_minor`) |
 | `\| LIMIT n` / `\| OFFSET n` | Paginate (limit ≤ 1000) |
 | `\| COUNT` | Return the count instead of the rows |
 | `\| FIRST` | Return only the first result |
 | `\| SUBJECTS` / `\| OBJECTS` | Extract the `subject`/`object` of each Fact |
 | `\| HASHES` | Extract the content hash of each grain |
-| `\| GROUP BY field [, field …]` | Group results (up to 4 fields make one composite key) |
+| `\| GROUP BY field [, field …]` | Group results (up to 4 fields make one composite key; each may be a dotted path) |
 | `\| GROUP BY field \| COUNT` | One row per group with its size, **most frequent first** |
+| `\| SUM path` / `\| MIN path` / `\| MAX path` / `\| AVG path` | A numeric aggregate over a field or dotted path; after `GROUP BY`, one row per group |
 
 ```sql
 RECALL facts WHERE subject = "john" | SELECT relation, object | LIMIT 5
@@ -990,10 +997,59 @@ on the message alone loses the endpoint — so the key has to be able to be
 both. The parts ride on the row as `keys` and render individually as
 `{{group.key.<n>}}` (§6), so nothing has to split the label back apart.
 
+**A key may be a dotted path** (#368): `GROUP BY object.counterparty` groups
+Facts whose `object` is a JSON document by a value inside it, resolved exactly
+as `WHERE object.counterparty = …` resolves it (a document stored as a string
+is parsed; a path that does not resolve is the empty key).
+
 **A key no grain carries is `CAL-W018`.** Every row then falls into one group
 under the empty key, which is exactly the shape a ranking has when one value
 dominates — indistinguishable unless the answer says so. `DESCRIBE FIELDS
 <type>` is the list of fields that group.
+
+#### Aggregates: `SUM`, `MIN`, `MAX`, `AVG`
+
+A numeric aggregate over a field or a dotted path into one (#368) — "how much
+did we pay ACME", "the largest debit", "totals per counterparty" — answered by
+CAL instead of summed in host code over whatever window the host received:
+
+```sql
+RECALL facts WHERE namespace = "ledger.transactions" AND object.counterparty = "ACME" | SUM object.amount_minor
+RECALL facts WHERE namespace = "ledger.transactions" | MAX object.amount_minor
+RECALL facts WHERE namespace = "ledger.transactions" GROUP BY object.counterparty | SUM object.amount_minor
+RECALL facts WHERE namespace = "ledger.transactions" GROUP BY object.counterparty, object.month | AVG object.amount_minor | LIMIT 10
+RECALL facts WHERE namespace = "ledger.transactions" ORDER BY object.amount_minor DESC LIMIT 10
+```
+
+Alone, an aggregate answers one value:
+
+```json
+{"type": "aggregate", "function": "sum", "field": "object.amount_minor",
+ "value": 6000, "counted": 3, "skipped": 0, "missing": 0}
+```
+
+After a `GROUP BY` it answers one row per group, grain-shaped like a
+`GROUP BY … COUNT` row (`grain_type: "group"`, empty hash) with fields
+`{key, count, value}` (+ `keys` for a composite key). Rows come **extreme
+first** — the largest value for `SUM`/`MAX`/`AVG`, the smallest for `MIN` — a
+group with no numeric value last, ties by key ascending. `LIMIT`/`OFFSET`/
+`FIRST` then bound the ranking and `total_available` keeps the group count.
+
+- **Integers stay integers.** `SUM`, `MIN` and `MAX` over integer inputs
+  answer an exact integer — a sum of minor currency units is not a float that
+  rounds past 2^53. Any float input makes the result a float. `AVG` is a mean
+  and always a float.
+- **Empty input:** `SUM` is `0`; `MIN`/`MAX`/`AVG` are `null`.
+- **A non-numeric value is skipped and said to be skipped.** A value that is
+  not a JSON number (a string `"12.00"`, a boolean) is `skipped`; a grain with
+  no value at the path is `missing`; either raises **`CAL-W020`** naming both
+  counts. A total over a result that mixed transactions with other Facts is a
+  well-formed number that is not the total you meant — narrow with `WHERE`.
+- The words are identifiers, not reserved: `SELECT max` still selects a field
+  named `max`. They are stages only when a field follows them.
+
+The JSON-CAL wire form is `{"stage": "aggregate", "function": "sum", "field":
+"object.amount_minor"}`.
 
 `WHERE session_id = "…"` is **pushed into the thread index**
 (`idx_thread(ns, session, seq)`) rather than applied as a post-filter, so
@@ -1009,12 +1065,24 @@ it.** A pipeline stage runs over the grains the statement returned, and that
 is `default_limit` (50) rows unless the statement said otherwise — so
 `ORDER BY priority DESC | LIMIT 5` used to return the top 5 *of the newest 50*
 and was indistinguishable from the top 5 overall. When an `ORDER BY`, a
-type-specific `WHERE` post-filter, or a `COUNT` is present, the scan widens to
-`max_limit` (1000) and the caller's bound is re-applied afterwards: **LIMIT
-bounds the answer, not the search for it.** If even the widened scan comes back
-full, the result carries `CAL-W015` — past that point the answer is the top-k
-of a window rather than of the memory, and nothing else would distinguish the
-two. Narrow with `WHERE`/`ABOUT`/`SINCE`, or raise `max_limit`.
+type-specific `WHERE` post-filter, a `COUNT` or an aggregate is present, the
+scan widens to `max_limit` (1000) and the caller's bound is re-applied
+afterwards: **LIMIT bounds the answer, not the search for it.** If even the
+widened scan comes back full, the result carries `CAL-W015`, naming the limit
+that applied — past that point the answer is the top-k (or the total) of a
+window rather than of the memory, and nothing else would distinguish the two.
+Narrow with `WHERE`/`ABOUT`/`SINCE`, or raise `max_limit`.
+
+**`max_limit` above 1000 is a read-only-handle setting** (#368). A year of an
+active account's transactions does not fit in 1,000 grains, so a host may raise
+the window — `CalExecutorConfig::max_limit` in Rust, `setMaxLimit(n)` /
+`set_max_limit(n)` on the Node / Python handle — up to **100,000**, and the
+executor honours a value above 1,000 **only when the handle was opened
+read-only** (`readOnly` / `read_only=True` / `--read-only`). On a read-write
+handle it is clamped to 1,000 (the bindings refuse the call with `VAL-E001`),
+so the widest scans only ever run on a handle that can never write. A statement's
+own `LIMIT n` stays capped at 1000; the window is what an aggregate or a ranking
+scans, not how many rows come back.
 
 `ORDER BY created_at` is the one ordering pushed into the scan itself, so it is
 exact at any corpus size: `created_at` is a column on the `grains` table.
@@ -1547,6 +1615,7 @@ The parser and executor enforce these hard bounds:
 | Max query length | 64 KiB (65,536 bytes) |
 | Max nesting depth | 8 |
 | Max result `LIMIT` value | 1,000 |
+| Post-retrieval scan window (`max_limit`) | 1,000 — up to 100,000 on a read-only handle |
 | Max `IN (...)` set size | 100 |
 | Max pipeline stages | 5 |
 | Max set-operation operands | 4 |

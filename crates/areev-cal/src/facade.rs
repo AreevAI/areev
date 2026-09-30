@@ -104,6 +104,17 @@ pub trait CalStoreFacade: Send + Sync {
     /// this value when no explicit namespace is provided in the CAL query.
     fn default_namespace(&self) -> Option<&str>;
 
+    /// Is the memory behind this facade open read-only?
+    ///
+    /// The executor honours a `CalExecutorConfig::max_limit` above
+    /// [`crate::executor::DEFAULT_MAX_LIMIT`] only when this answers `true`
+    /// (#368): a wide scan is a read, and a handle that can never write is
+    /// the one a host has declared as an analysis handle. Defaults to
+    /// `false`, so a facade that does not know clamps — fails closed.
+    fn is_read_only(&self) -> bool {
+        false
+    }
+
     /// Return the active user ID for this session, if any.
     ///
     /// Injected from the auth/capability token. When present, the executor

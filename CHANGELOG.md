@@ -6,6 +6,39 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **CAL aggregates** (#368): `| SUM <path>`, `| MIN <path>`, `| MAX <path>`,
+  `| AVG <path>` over a field or dotted path (`object.amount_minor`) — one
+  value alone, one row per group after `GROUP BY` (largest first; smallest for
+  `MIN`). Integer inputs keep an exact integer for `SUM`/`MIN`/`MAX`; a
+  non-numeric or absent value is skipped and announced as `CAL-W020`.
+  `GROUP BY` and `ORDER BY` accept a dotted path. New syntax, recorded as an
+  OMS CAL amendment in ARCHITECTURE.md §10.
+- **A scan window above 1,000 on a read-only handle** (#368):
+  `CalExecutorConfig::max_limit` — and `setMaxLimit(n)` / `set_max_limit(n)`
+  on the Node / Python handles — may be raised to 100,000, honoured only when
+  the handle was opened read-only. `CAL-W015` names the limit that applied.
+- **Read-only mounts in the bindings** (#369): `mount(alias, target)` on the
+  Node and Python handles (a file path or a postgres DSN, always opened
+  read-only), so one `ASSEMBLE` can read across memories from a host process.
+- **`op: query` run reads** (#370): a plan node calls a saved query with
+  `params` / `params_from`; the body and its SHA-256 are pinned into the
+  manifest at `run start`, so a query redefined or dropped mid-run cannot
+  change a running run. Journaled as `mg:query` with the body hash and bound
+  parameters. `RUN-E031` for a missing or misbound query at start, or a pin
+  that fails its hash at dispatch.
+
+### Fixed
+
+- **A write addressed to a mounted namespace succeeded against the primary
+  memory** (#369), under the mount's name, where no read of that namespace
+  (routed to the mount) would ever see it. It is now refused with `STO-E004`.
+- **Saved-query parameters could re-substitute each other.** `RUN` replaced
+  `$name` one parameter at a time, so a bound value containing `$other` was
+  rewritten by `other`'s binding and could break a string literal open. They
+  now bind in a single pass over the original body.
+
 ## [1.10.2] — 2026-09-28
 
 The bindings follow-ups (#364).

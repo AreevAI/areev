@@ -513,7 +513,26 @@ impl AreevFacade {
 
     /// The enforcement read used by every gated method.
     fn check_verb(&self, verb: Verb, ns: &str) -> Result<()> {
+        if verb != Verb::Read {
+            self.refuse_mount_write(ns)?;
+        }
         self.rights().check(verb, ns)
+    }
+
+    /// A namespace a mount serves is read-only (#369). Without this refusal
+    /// a write to `"<alias>.inner"` did not fail: it landed in the PRIMARY
+    /// memory under that name, where every later read of the namespace —
+    /// routed to the mount — would never see it. `STO-E004`, the code a
+    /// read-only handle already answers every write with.
+    fn refuse_mount_write(&self, ns: &str) -> Result<()> {
+        let alias = ns.split_once('.').map_or(ns, |(a, _)| a);
+        if self.mounts.contains_key(alias) {
+            return Err(AreevError::ReadOnly(format!(
+                "namespace \"{ns}\" is served by the read-only mount \"{alias}\" — a mount is \
+                 never written through; write to the mounted memory's own handle"
+            )));
+        }
+        Ok(())
     }
 
     /// This session's EFFECTIVE rights: an active [`PrincipalSession`]'s when
@@ -670,6 +689,44 @@ impl AreevFacade {
     /// is what makes single-statement ASSEMBLE span user + org files.
     pub fn mount(&mut self, alias: &str, store: Areev) {
         self.mounts.insert(alias.to_string(), Mutex::new(store));
+    }
+
+    /// Open `target` read-only ([`Areev::open_mount`]) and mount it under
+    /// `alias` — the checked form every host surface uses (#369): the CLI's
+    /// `--mount`, and `mount()` on the Node and Python handles.
+    ///
+    /// Refused (`VAL-E001`) before anything is opened: an alias that is not
+    /// one identifier (`[A-Za-z0-9_-]+` — it becomes the namespace prefix,
+    /// and routing splits on the FIRST dot, so a dotted alias could never
+    /// match), an alias already mounted, and a target naming the same
+    /// postgres memory as `primary` (the embedded backend refuses a second
+    /// handle on one file by itself, `STO-E002`; postgres admits it, and
+    /// `"<alias>.ns"` would then read the rows `"ns"` already reaches).
+    ///
+    /// The target never appears in an error: a DSN carries a password.
+    pub fn mount_read_only(&mut self, alias: &str, target: &str, primary: Option<&str>) -> Result<()> {
+        if alias.is_empty()
+            || !alias.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+        {
+            return Err(AreevError::Validation(format!(
+                "mount alias {alias:?} is not a name: an alias is [A-Za-z0-9_-]+ and becomes a \
+                 namespace prefix (\"alias.inner\")"
+            )));
+        }
+        if self.mounts.contains_key(alias) {
+            return Err(AreevError::Validation(format!(
+                "mount alias \"{alias}\" is already mounted on this handle"
+            )));
+        }
+        if primary.is_some_and(|p| areev_store::same_postgres_memory(p, target)) {
+            return Err(AreevError::Validation(format!(
+                "mount \"{alias}\" names the same postgres memory as this handle — a mount is a \
+                 SECOND store; mounting the primary would read every row twice"
+            )));
+        }
+        let store = Areev::open_mount(target)?;
+        self.mount(alias, store);
+        Ok(())
     }
 
     /// Install a reranker on the primary store (Tier-2). It runs only when a
@@ -2194,7 +2251,10 @@ impl CalStoreFacade for AreevFacade {
         // single-namespace fast path below.
         let scoped = ns_list.len() > 1;
         let ns = ns_list[0].as_str();
-        let k = params.limit.unwrap_or(16).min(1000);
+        // The executor's scan ceiling, applied to the store actually serving
+        // this recall: above 1,000 only on a read-only handle (#368).
+        let ceiling = crate::executor::effective_max_limit(u64::MAX, m.is_read_only()) as usize;
+        let k = params.limit.unwrap_or(16).min(ceiling);
 
         // M4: hybrid recall — structural leg + BM25 leg fused with RRF.
         // A query alone, a subject alone, or both are all valid.
@@ -2281,7 +2341,7 @@ impl CalStoreFacade for AreevFacade {
                 },
             )
         }) {
-            let n = k.min(1000);
+            let n = k.min(ceiling);
             unscored(if scoped {
                 m.recent_ordered_scoped(&ns_list, params.grain_type, n, !include_superseded, order)?
             } else {
@@ -2833,6 +2893,10 @@ impl CalStoreFacade for AreevFacade {
 
     fn default_namespace(&self) -> Option<&str> {
         self.namespace.as_deref()
+    }
+
+    fn is_read_only(&self) -> bool {
+        self.store.lock().unwrap_or_else(|p| p.into_inner()).is_read_only()
     }
 
     fn active_user(&self) -> Option<&str> {
@@ -3652,6 +3716,9 @@ impl crate::facade::CalStoreFacade for PrincipalSession<'_> {
     /// defaulting reads at the namespace they work in (#302).
     fn default_namespace(&self) -> Option<&str> {
         self.namespace.as_deref().or(self.facade.default_namespace())
+    }
+    fn is_read_only(&self) -> bool {
+        self.facade.is_read_only()
     }
     fn active_user(&self) -> Option<&str> {
         let _scope = self.enter();

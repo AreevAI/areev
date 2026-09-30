@@ -124,7 +124,7 @@ What each piece means:
   They are law-tested for batching invariance, which is what makes fan-out
   results order-independent.
 - **`reads`** — node → a declared read of the run's **own memory**
-  (`entity_at`, `related` or `recall`). The runtime answers that node itself, from the
+  (`entity_at`, `related`, `recall`, or a pinned saved `query`). The runtime answers that node itself, from the
   file it already holds; no tool is involved. See
   [Reading the run's own memory](#reading-the-runs-own-memory-reads).
 
@@ -193,6 +193,52 @@ axis, ordered newest first on the asked clock (`valid_from` for world,
 `k: 1` is exactly `entity_at` in recall's shape, and an as-of recall is one
 grain per relation where a current recall returns every live grain.
 
+#### Calling a saved query: `op: query`
+
+`"op": "query"` runs one of the memory's **saved queries** (`DEFINE QUERY`)
+with parameters (#370) — the read a pack with a certified library of queries
+wants a node to make, journaled with the run instead of pre-read by the driver:
+
+```python
+db.cal('DEFINE QUERY "by_counterparty"($counterparty) AS { '
+       'RECALL facts WHERE relation = "paid_to" AND object = $counterparty }')
+
+"reads": {
+    "rows": {"op": "query", "name": "by_counterparty",
+             "params_from": {"counterparty": "/counterparty"}},
+    # or a literal: "params": {"counterparty": "ACME"}
+}
+```
+
+The node's `into` key receives the query's CAL result, exactly what
+`db.cal('RUN "by_counterparty"(…)')` returns (`{"type": "grains", "grains":
+[…]}`, an aggregate, an assembly — whatever the body is).
+
+**The body is pinned at `run start`.** The runtime resolves the name then (a
+saved query in the memory, else a built-in), checks the parameters against the
+ones it declares, and freezes the **body text and its SHA-256** into the run
+manifest. Every dispatch — including after a resume — runs the pinned text,
+never the live saved query, so a query redefined (`DEFINE QUERY` again) or
+dropped mid-run does not change a running run. A manifest whose pin is missing
+or no longer matches its hash fails the node with `RUN-E031` rather than
+reading anything else.
+
+- `params` are literals on the plan; `params_from` are JSON pointers into the
+  node's input. A value is a string, number, boolean or an array of them,
+  bound exactly as `RUN` binds it. A parameter named in both is refused.
+- **Refused at start with `RUN-E031`**, naming the node: a name no saved query
+  has, a parameter the query does not declare (`RUN` only warns; a reviewed
+  plan refuses), and a required parameter neither key supplies.
+- The read is **read-only and stays in its namespace**: writes and destructive
+  statements are off, a body that is not a read is refused, and every recall
+  in the body — `ASSEMBLE` sources included — is pinned to the read's `ns`
+  (default the run's). A body naming another namespace, or a mount, reads the
+  run's own.
+- Journaled as `mg:query` with `{op, ns, name, body_hash, params,
+  result_count, grains}` under `read`, so `run-trace` shows which body (by
+  hash) the run read and with what, and `verify`/`shadow` answer it from the
+  journal.
+
 | Key | `entity_at` | `related` | `recall` | |
 |---|---|---|---|---|
 | `op` | `"entity_at"` | `"related"` | `"recall"` | required |
@@ -211,9 +257,10 @@ Only the subject, the start and the instant may come from state; the
 relation, the axis, the namespace, the count and the walk's shape are literals
 on the plan, so a reviewer reads exactly what a run may see. There is no free
 text and no predicate: a question richer than these three reads is a saved
-query feeding a trigger's [`--context-query`](triggers.md), or a driver-side
-pre-read into the run input (ARCHITECTURE.md §10, "In-run recall is a third
-typed read; saved queries are not"). Pointers resolve against
+query the plan names (`op: query` above — the plan names a query a reviewer
+can read, and the manifest pins its body; ARCHITECTURE.md §10, "A run may read
+a saved query it pinned at start"), a saved query feeding a trigger's
+[`--context-query`](triggers.md), or a driver-side pre-read into the run input. Pointers resolve against
 the node's input — the merged state for a node, the task's own input for a
 [`$send`](#fan-out-send) task, so one read node can fan out across many
 subjects (pair it with an `append` reducer on its `into` key).
@@ -2094,7 +2141,9 @@ transcript over `--llm-context-tokens` with nothing left to fold,
 `RUN-E026` a different scheduler epoch wrote this run (fork), `RUN-E027` a
 concurrency cap — retryable, and nothing was written, `RUN-E029` a pause
 asked of a run that already finished or has a cancel pending, `RUN-E030` a
-decision node on a host with no decision backend. The full registry is
+decision node on a host with no decision backend, `RUN-E031` an `op: query`
+read whose saved query is missing or misbound at start, or whose pinned body
+fails its hash at dispatch. The full registry is
 [`ERROR_CODES.md`](../ERROR_CODES.md).
 
 ## Bounds, stated

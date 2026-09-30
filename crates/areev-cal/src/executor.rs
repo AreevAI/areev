@@ -43,8 +43,17 @@ use areev_core::error::{AreevError, Hash};
 /// Configuration for the CAL executor.
 #[derive(Debug, Clone)]
 pub struct CalExecutorConfig {
-    /// Maximum LIMIT value allowed. Queries specifying higher limits are clamped.
-    /// Default: 1000.
+    /// The widest window a statement scans (a post-retrieval `ORDER BY`,
+    /// `COUNT`, `GROUP BY`, `SUM`/`MIN`/`MAX`/`AVG`, a residual `WHERE`) and
+    /// the clamp on a statement's own limit. Default: [`DEFAULT_MAX_LIMIT`]
+    /// (1,000).
+    ///
+    /// A value above the default is honoured **only on a read-only handle**
+    /// (`CalStoreFacade::is_read_only`), up to [`HARD_MAX_LIMIT`] (#368) —
+    /// an aggregate over a year of transactions needs more than 1,000 grains,
+    /// and a handle that can never write is the one a host has declared for
+    /// that. On a read-write handle it is clamped back to the default.
+    /// `CAL-W015` names the limit that actually applied.
     pub max_limit: u64,
     /// Default LIMIT applied when the query doesn't specify one.
     /// Default: 50.
@@ -98,10 +107,30 @@ pub struct CalExecutorConfig {
     pub caller_scopes: Vec<String>,
 }
 
+/// The `max_limit` every executor starts with, and the ceiling a
+/// read-WRITE handle is held to: a statement's scan window, and CAL's own
+/// `LIMIT n` bound.
+pub const DEFAULT_MAX_LIMIT: u64 = 1_000;
+
+/// The most a host may raise `max_limit` to, even on a read-only handle
+/// (#368). A scan window is materialized in memory, so it is bounded; a
+/// year of an active ledger fits well inside it.
+pub const HARD_MAX_LIMIT: u64 = 100_000;
+
+/// The `max_limit` rule, as a pure function so hosts can apply the same rule
+/// the executor does when they validate an open option (#368).
+pub fn effective_max_limit(configured: u64, read_only: bool) -> u64 {
+    if read_only {
+        configured.min(HARD_MAX_LIMIT)
+    } else {
+        configured.min(DEFAULT_MAX_LIMIT)
+    }
+}
+
 impl Default for CalExecutorConfig {
     fn default() -> Self {
         Self {
-            max_limit: 1000,
+            max_limit: DEFAULT_MAX_LIMIT,
             default_limit: 50,
             tier1_enabled: true,
             allow_destructive_ops: true,
@@ -222,6 +251,39 @@ pub enum CalResultPayload {
         /// The field the rows were grouped by.
         field: String,
         /// One synthetic row per group.
+        groups: Vec<CalGrainResult>,
+        /// Number of groups.
+        total_available: Option<usize>,
+    },
+    /// Result of `| SUM|MIN|MAX|AVG <path>` with no `GROUP BY` (#368).
+    ///
+    /// `value` is a JSON number — an integer when every counted input was an
+    /// integer and the function is `sum`/`min`/`max`, a float otherwise —
+    /// or `null` for `min`/`max`/`avg` over no numeric value (a `sum` over
+    /// none is `0`). `counted` is how many grains contributed; `skipped`
+    /// carried a value that is not a number, `missing` carried none. Both are
+    /// also announced as `CAL-W020`, so a total over a mixed set is never
+    /// mistaken for the total over the rows the caller meant.
+    Aggregate {
+        function: super::ast::AggregateFn,
+        field: String,
+        value: serde_json::Value,
+        counted: usize,
+        skipped: usize,
+        missing: usize,
+    },
+    /// Result of `GROUP BY <key> | SUM|MIN|MAX|AVG <path>` (#368) — one row
+    /// per group, shaped like a `GroupCounts` row (`grain_type: "group"`,
+    /// empty hash) with fields `{key, count, value}` (+ `keys` for a
+    /// composite key). Ordered by `value`, the extreme first: descending for
+    /// `sum`/`max`/`avg`, ascending for `min`; a group with no numeric value
+    /// last; ties by key ascending.
+    GroupAggregates {
+        /// The field(s) the rows were grouped by, joined with ", ".
+        field: String,
+        function: super::ast::AggregateFn,
+        /// The aggregated path.
+        path: String,
         groups: Vec<CalGrainResult>,
         /// Number of groups.
         total_available: Option<usize>,
@@ -687,6 +749,45 @@ impl CalExecutor {
     /// Create a new executor with the given configuration.
     pub fn new(config: CalExecutorConfig) -> Self {
         Self { config, governance: None, plan_cache: Default::default() }
+    }
+
+    /// Execute a saved query's BODY — text a host pinned, not the registry
+    /// row — with its parameters bound exactly as `RUN` binds them (#370).
+    ///
+    /// This is how a run reads a saved query without the read depending on
+    /// a mutable `qry:` row: the runtime pins the body (and its hash) at run
+    /// start and hands the pinned text back here at dispatch, so a body
+    /// superseded or dropped mid-run cannot change what the run reads. The
+    /// same gates as `RUN` apply: a missing required parameter is `CAL-E056`
+    /// and a body that is not a read is refused (`check_read_only_statement`)
+    /// whatever this executor's caps say.
+    pub fn execute_query_body(
+        &self,
+        name: &str,
+        body: &str,
+        params: &[crate::ast::QueryParam],
+        bindings: &[(String, crate::ast::Value)],
+        store: &dyn CalStoreFacade,
+    ) -> std::result::Result<CalExecResult, CalError> {
+        let mut warnings = Vec::new();
+        let text = bind_query_body(name, body, params, bindings, None, &mut warnings)?;
+        let parsed = self.parse_cached(&text).map_err(|e| CalError::InvalidQueryBody {
+            detail: e.to_string(),
+            span: None,
+        })?;
+        super::parser::check_read_only_statement(&parsed.statement, &Span::zero())?;
+        let mut res = self.execute(&text, store)?;
+        warnings.append(&mut res.warnings);
+        res.warnings = warnings;
+        Ok(res)
+    }
+
+    /// The scan window that applies against `store` (#368): the configured
+    /// `max_limit`, except that a value above [`DEFAULT_MAX_LIMIT`] is
+    /// honoured only on a read-only handle and never past
+    /// [`HARD_MAX_LIMIT`].
+    pub fn max_limit(&self, store: &dyn CalStoreFacade) -> u64 {
+        effective_max_limit(self.config.max_limit, store.is_read_only())
     }
 
     /// Parse `input`, reusing a cached AST for identical text.
@@ -2122,50 +2223,14 @@ impl CalExecutor {
             })?;
 
         // 2. Substitute parameters into body.
-        let mut body = entry.body.clone();
-
-        // Build a map of available bindings: call-site bindings override defaults.
-        let mut param_values: HashMap<String, String> = HashMap::new();
-
-        // Apply defaults first.
-        for p in &entry.params {
-            if let Some(ref default) = p.default {
-                param_values.insert(p.name.clone(), value_to_cal_literal(default));
-            }
-        }
-
-        // Apply call-site bindings (override defaults).
-        for (name, value) in &run.bindings {
-            param_values.insert(name.clone(), value_to_cal_literal(value));
-        }
-
-        // Check for missing required parameters.
-        for p in &entry.params {
-            if p.default.is_none() && !param_values.contains_key(&p.name) {
-                return Err(CalError::MissingQueryParam {
-                    name: p.name.clone(),
-                    query: run.name.clone(),
-                    span: run.span,
-                });
-            }
-        }
-
-        // Warn on unused parameters (supplied but not in query definition).
-        let declared_names: std::collections::HashSet<&str> =
-            entry.params.iter().map(|p| p.name.as_str()).collect();
-        for (name, _) in &run.bindings {
-            if !declared_names.contains(name.as_str()) {
-                exec_warnings.push(format!(
-                    "CAL-W006: Parameter \"${}\" supplied but not used in query \"{}\"",
-                    name, run.name
-                ));
-            }
-        }
-
-        // Substitute $param references in body text.
-        for (name, literal) in &param_values {
-            body = body.replace(&format!("${}", name), literal);
-        }
+        let body = bind_query_body(
+            &run.name,
+            &entry.body,
+            &entry.params,
+            &run.bindings,
+            run.span,
+            exec_warnings,
+        )?;
 
         // 3. Parse the substituted body.
         //
@@ -2328,12 +2393,12 @@ impl CalExecutor {
 
         // RECENT n → limit + implicit created_at DESC ordering.
         if let Some(ref recent) = recall.recent {
-            params.limit = Some(recent.count.min(self.config.max_limit) as usize);
+            params.limit = Some(recent.count.min(self.max_limit(store)) as usize);
         }
 
         // Inline LIMIT (overrides RECENT if both present — parser prevents that).
         if let Some(limit) = recall.limit {
-            params.limit = Some(limit.min(self.config.max_limit) as usize);
+            params.limit = Some(limit.min(self.max_limit(store)) as usize);
         }
 
         // Apply default limit if still unset.
@@ -2351,7 +2416,7 @@ impl CalExecutor {
         // LIMIT to the *contested* grains afterwards: LIMIT bounds the answer,
         // not the search for it.
         let contradictions_limit = if recall.contradictions.is_some() {
-            params.limit.replace(self.config.max_limit as usize)
+            params.limit.replace(self.max_limit(store) as usize)
         } else {
             None
         };
@@ -2388,6 +2453,14 @@ impl CalExecutor {
             .pipeline
             .iter()
             .any(|st| matches!(st, PipelineStage::Count { .. }));
+        // An aggregate (#368) is a COUNT that reads a value: it must see the
+        // whole matching set, not the default page.
+        let aggregate: Option<String> = query.pipeline.iter().find_map(|st| match st {
+            PipelineStage::Aggregate { function, field, .. } => {
+                Some(format!("{} {field}", function.keyword()))
+            }
+            _ => None,
+        });
         // #91 — plan the residual WHERE tree up front. This validates every
         // filter BEFORE the scan (refusing what cannot be honoured with
         // CAL-E060/E061 instead of widening) and decides whether a
@@ -2404,6 +2477,8 @@ impl CalExecutor {
             Some(format!("ORDER BY {f}"))
         } else if has_count {
             Some("COUNT".to_string())
+        } else if let Some(agg) = aggregate {
+            Some(agg)
         } else if has_post_filter {
             Some("a post-retrieval WHERE filter".to_string())
         } else {
@@ -2419,7 +2494,7 @@ impl CalExecutor {
             });
         }
         let widened_limit = if wide_reason.is_some() && !pushed_down_sort {
-            params.limit.replace(self.config.max_limit as usize)
+            params.limit.replace(self.max_limit(store) as usize)
         } else {
             None
         };
@@ -2506,23 +2581,13 @@ impl CalExecutor {
                 exec_warnings.push(
                     super::errors::CalWarning::ScanBounded {
                         stage: reason,
-                        scanned: self.config.max_limit as usize,
+                        scanned: self.max_limit(store) as usize,
                     }
                     .to_string(),
                 );
             }
             if let Some((ref field, descending)) = order_by {
-                grains.sort_by(|a, b| {
-                    let cmp = compare_json_values(
-                        json_field(&a.fields, field),
-                        json_field(&b.fields, field),
-                    );
-                    if descending {
-                        cmp.reverse()
-                    } else {
-                        cmp
-                    }
-                });
+                grains = sort_grains_by(grains, field, descending);
             }
             // A pipeline that bounds or aggregates the result does that job
             // itself, over the ranked set — truncating first would put the
@@ -2533,6 +2598,7 @@ impl CalExecutor {
                     PipelineStage::Limit { .. }
                         | PipelineStage::First { .. }
                         | PipelineStage::Count { .. }
+                        | PipelineStage::Aggregate { .. }
                 )
             });
             if !pipeline_bounds {
@@ -2670,7 +2736,7 @@ impl CalExecutor {
             if scan_was_bounded {
                 exec_warnings.push(
                     super::errors::CalWarning::ContradictionScanBounded {
-                        scanned: self.config.max_limit as usize,
+                        scanned: self.max_limit(store) as usize,
                     }
                     .to_string(),
                 );
@@ -3418,7 +3484,7 @@ impl CalExecutor {
         // General case: recall with limit 1 to detect presence — widened to
         // the scan bound when a residual filter still has to run.
         params.limit = if residual_where.is_some() {
-            Some(self.config.max_limit as usize)
+            Some(self.max_limit(store) as usize)
         } else {
             Some(1)
         };
@@ -3567,7 +3633,7 @@ impl CalExecutor {
                 // them.
                 if params.limit.is_none() {
                     params.limit = Some(if residual_where.is_some() {
-                        self.config.max_limit as usize
+                        self.max_limit(store) as usize
                     } else {
                         10
                     });
@@ -3698,12 +3764,13 @@ impl CalExecutor {
                 ],
                 "cal_version": 1,
                 "tier1_enabled": self.config.tier1_enabled,
-                "max_limit": self.config.max_limit,
+                "max_limit": self.max_limit(store),
                 "default_limit": self.config.default_limit,
                 "oms_version": "1.2",
                 "pipeline_stages": [
                     "SELECT", "ORDER BY", "LIMIT", "OFFSET", "COUNT",
-                    "FIRST", "SUBJECTS", "OBJECTS", "HASHES", "GROUP BY", "PROJECT"
+                    "FIRST", "SUBJECTS", "OBJECTS", "HASHES", "GROUP BY", "PROJECT",
+                    "SUM", "MIN", "MAX", "AVG"
                 ],
                 // What actually changes the result on a RECALL. The list used
                 // to advertise `score_breakdown`, which is inert here (there
@@ -5102,6 +5169,10 @@ impl CalExecutor {
         grain_type: &GrainTypePlural,
     ) -> std::result::Result<(), CalError> {
         let check = |field: &str, span: Option<Span>| -> std::result::Result<(), CalError> {
+            // A dotted path (`object.amount_minor`, #368) navigates INTO a
+            // field: validate its base, as WHERE does — the path's shape
+            // lives in the payload, not the schema. The parser bounds depth.
+            let field = field.split_once('.').map_or(field, |(base, _)| base);
             // Common fields are always valid.
             if COMMON_FIELDS.contains(&field) {
                 return Ok(());
@@ -5135,6 +5206,7 @@ impl CalExecutor {
                     }
                 }
                 PipelineStage::OrderBy { field, span, .. } => check(field, *span)?,
+                PipelineStage::Aggregate { field, span, .. } => check(field, *span)?,
                 PipelineStage::GroupBy { fields, span } => {
                     for f in fields {
                         check(f, *span)?;
@@ -5212,6 +5284,74 @@ impl CalExecutor {
                     }
                 }
 
+                // SUM / MIN / MAX / AVG (#368) — per group after a GROUP BY,
+                // otherwise one value over the whole (widened) set.
+                (
+                    CalResultPayload::Grains { grains, .. },
+                    PipelineStage::Aggregate { function, field, .. },
+                ) => match grouped_by.as_deref() {
+                    Some(keys) => {
+                        let (groups, tally) = aggregate_by_fields(&grains, keys, *function, field);
+                        tally.warn(*function, field, grains.len(), exec_warnings);
+                        CalResultPayload::GroupAggregates {
+                            field: keys.join(", "),
+                            function: *function,
+                            path: field.clone(),
+                            total_available: Some(groups.len()),
+                            groups,
+                        }
+                    }
+                    None => {
+                        let mut acc = Aggregator::default();
+                        for g in &grains {
+                            acc.push(pipeline_value(g, field).as_deref());
+                        }
+                        acc.tally.warn(*function, field, grains.len(), exec_warnings);
+                        CalResultPayload::Aggregate {
+                            function: *function,
+                            field: field.clone(),
+                            value: acc.finish(*function),
+                            counted: acc.tally.counted,
+                            skipped: acc.tally.skipped,
+                            missing: acc.tally.missing,
+                        }
+                    }
+                },
+
+                // LIMIT / OFFSET / FIRST on a grouped aggregate bound the
+                // ranking, exactly as they do on a grouped count; the total
+                // stays the number of groups the ranking HAS.
+                (
+                    CalResultPayload::GroupAggregates { field, function, path, groups, total_available },
+                    PipelineStage::Limit { value, .. },
+                ) => CalResultPayload::GroupAggregates {
+                    field,
+                    function,
+                    path,
+                    groups: groups.into_iter().take((*value).min(self.config.max_limit) as usize).collect(),
+                    total_available,
+                },
+                (
+                    CalResultPayload::GroupAggregates { field, function, path, groups, total_available },
+                    PipelineStage::Offset { value, .. },
+                ) => CalResultPayload::GroupAggregates {
+                    field,
+                    function,
+                    path,
+                    groups: groups.into_iter().skip(*value as usize).collect(),
+                    total_available,
+                },
+                (
+                    CalResultPayload::GroupAggregates { field, function, path, groups, total_available },
+                    PipelineStage::First { .. },
+                ) => CalResultPayload::GroupAggregates {
+                    field,
+                    function,
+                    path,
+                    groups: groups.into_iter().take(1).collect(),
+                    total_available,
+                },
+
                 // A bound written after `GROUP BY … COUNT` is a top-N of the
                 // ranking — the ordinary want, and the reading the clause
                 // invites. It used to fall through to the inert-stage arm and
@@ -5276,17 +5416,7 @@ impl CalExecutor {
                         field, descending, ..
                     },
                 ) => {
-                    let mut sorted = grains;
-                    sorted.sort_by(|a, b| {
-                        let va = json_field(&a.fields, field);
-                        let vb = json_field(&b.fields, field);
-                        let cmp = compare_json_values(va, vb);
-                        if *descending {
-                            cmp.reverse()
-                        } else {
-                            cmp
-                        }
-                    });
+                    let sorted = sort_grains_by(grains, field, *descending);
                     let count = sorted.len();
                     CalResultPayload::Grains {
                         grains: sorted,
@@ -5436,7 +5566,7 @@ impl CalExecutor {
                         if !grains.is_empty()
                             && !grains
                                 .iter()
-                                .any(|g| json_field(&g.fields, f).is_some())
+                                .any(|g| pipeline_value(g, f).is_some())
                         {
                             exec_warnings.push(
                                 super::errors::CalWarning::GroupKeyAbsent {
@@ -5691,6 +5821,83 @@ fn build_add_options(opts: &[AddWithOption], warnings: &mut Vec<String>) -> AddO
 }
 
 /// Convert a `Value` to its CAL literal representation for parameter substitution.
+/// Bind a saved query's parameters into its body text — ONE implementation
+/// for `RUN` and for a host-pinned body (#370), so the two can never bind
+/// differently. Defaults first, call-site bindings over them; a required
+/// parameter left unbound is `CAL-E056`; a binding the query does not
+/// declare is `CAL-W006`.
+fn bind_query_body(
+    name: &str,
+    body: &str,
+    params: &[super::ast::QueryParam],
+    bindings: &[(String, super::ast::Value)],
+    span: Option<Span>,
+    exec_warnings: &mut Vec<String>,
+) -> std::result::Result<String, CalError> {
+    let mut param_values: HashMap<String, String> = HashMap::new();
+    for p in params {
+        if let Some(ref default) = p.default {
+            param_values.insert(p.name.clone(), value_to_cal_literal(default));
+        }
+    }
+    for (pname, value) in bindings {
+        param_values.insert(pname.clone(), value_to_cal_literal(value));
+    }
+    for p in params {
+        if p.default.is_none() && !param_values.contains_key(&p.name) {
+            return Err(CalError::MissingQueryParam {
+                name: p.name.clone(),
+                query: name.to_string(),
+                span,
+            });
+        }
+    }
+    let declared_names: std::collections::HashSet<&str> =
+        params.iter().map(|p| p.name.as_str()).collect();
+    for (pname, _) in bindings {
+        if !declared_names.contains(pname.as_str()) {
+            exec_warnings.push(format!(
+                "CAL-W006: Parameter \"${}\" supplied but not used in query \"{}\"",
+                pname, name
+            ));
+        }
+    }
+    Ok(substitute_params(body, &param_values))
+}
+
+/// Replace each `$name` in `body` with its bound literal in ONE left-to-right
+/// pass over the ORIGINAL text.
+///
+/// Substituting one parameter at a time (`str::replace` per name) re-scanned
+/// text an earlier substitution had written, so a bound VALUE containing
+/// `$other` was rewritten too — `a = "$b"` became `""…""`, a string literal
+/// broken open by the text of another parameter. With values taken from run
+/// state (#370) that is an injection path, so a value is inserted exactly
+/// once and never read again. A `$name` is the longest identifier after the
+/// `$`; one with no binding is left as written (the parser then reports it).
+fn substitute_params(body: &str, values: &HashMap<String, String>) -> String {
+    let mut out = String::with_capacity(body.len());
+    let mut rest = body;
+    while let Some(i) = rest.find('$') {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 1..];
+        let len = after
+            .char_indices()
+            .find(|&(j, c)| !(c == '_' || c.is_ascii_alphanumeric()) || (j == 0 && c.is_ascii_digit()))
+            .map_or(after.len(), |(j, _)| j);
+        match values.get(&after[..len]) {
+            Some(literal) if len > 0 => out.push_str(literal),
+            _ => {
+                out.push('$');
+                out.push_str(&after[..len]);
+            }
+        }
+        rest = &after[len..];
+    }
+    out.push_str(rest);
+    out
+}
+
 fn value_to_cal_literal(value: &super::ast::Value) -> String {
     match value {
         super::ast::Value::String { value } => {
@@ -5849,6 +6056,8 @@ fn payload_kind_name(payload: &CalResultPayload) -> &'static str {
         CalResultPayload::Assembled { .. } => "assembled",
         CalResultPayload::Count { .. } => "count",
         CalResultPayload::GroupCounts { .. } => "group counts",
+        CalResultPayload::Aggregate { .. } => "aggregate",
+        CalResultPayload::GroupAggregates { .. } => "group aggregates",
         CalResultPayload::Formatted { .. } => "formatted",
         CalResultPayload::Exists { .. } => "exists",
         CalResultPayload::History { .. } => "history",
@@ -5875,6 +6084,13 @@ fn inert_stage_reason(payload: &CalResultPayload) -> &'static str {
         CalResultPayload::GroupCounts { .. } => {
             "a grouped count is already one row per group, ordered most \
              frequent first; stage it before GROUP BY … COUNT"
+        }
+        CalResultPayload::Aggregate { .. } => {
+            "an aggregate is a scalar; stage it before | SUM/MIN/MAX/AVG"
+        }
+        CalResultPayload::GroupAggregates { .. } => {
+            "a grouped aggregate is already one row per group, ordered by its \
+             value; stage it before GROUP BY … SUM/MIN/MAX/AVG"
         }
         CalResultPayload::Formatted { .. } => {
             "FORMAT has already rendered the grains to text; stage it before FORMAT"
@@ -5905,6 +6121,9 @@ fn pipeline_stage_name(stage: &PipelineStage) -> String {
         PipelineStage::Hashes { .. } => "HASHES".to_string(),
         PipelineStage::GroupBy { fields, .. } => format!("GROUP BY {}", fields.join(", ")),
         PipelineStage::Project { .. } => "PROJECT".to_string(),
+        PipelineStage::Aggregate { function, field, .. } => {
+            format!("{} {}", function.keyword(), field)
+        }
         PipelineStage::Filter { .. } => "WHERE (post-pipeline)".to_string(),
     }
 }
@@ -5916,6 +6135,8 @@ fn count_payload_results(payload: &CalResultPayload) -> usize {
         CalResultPayload::Exists { .. } => 1,
         CalResultPayload::Count { .. } => 1,
         CalResultPayload::GroupCounts { groups, .. } => groups.len(),
+        CalResultPayload::Aggregate { .. } => 1,
+        CalResultPayload::GroupAggregates { groups, .. } => groups.len(),
         CalResultPayload::History { versions } => versions.len(),
         CalResultPayload::Describe { .. } => 1,
         CalResultPayload::Explain { .. } => 1,
@@ -5965,6 +6186,8 @@ pub(crate) fn extract_grains(payload: CalResultPayload) -> Vec<CalGrainResult> {
         // than a separate read the host tallies itself. This is the
         // `execute_source` discard the issue names.
         CalResultPayload::GroupCounts { groups, .. } => groups,
+        // #368 — likewise "totals per counterparty" as a prompt section.
+        CalResultPayload::GroupAggregates { groups, .. } => groups,
         _ => Vec::new(),
     }
 }
@@ -6308,6 +6531,7 @@ fn apply_format_clause(
         // `CalGrainResult`s, so `FORMAT markdown` on a grouped count is the
         // same code path as `FORMAT markdown` on a recall.
         CalResultPayload::GroupCounts { groups, .. } => (groups, None),
+        CalResultPayload::GroupAggregates { groups, .. } => (groups, None),
         CalResultPayload::Assembled {
             grains,
             sources,
@@ -6949,10 +7173,10 @@ fn group_key_parts(grain: &CalGrainResult, fields: &[String]) -> Vec<String> {
     fields
         .iter()
         .map(|f| {
-            json_field(&grain.fields, f)
-                .map(|v| match v {
+            pipeline_value(grain, f)
+                .map(|v| match v.as_ref() {
                     serde_json::Value::String(s) => s.clone(),
-                    _ => v.to_string(),
+                    v => v.to_string(),
                 })
                 .unwrap_or_default()
         })
@@ -7727,6 +7951,259 @@ fn json_field<'a>(fields: &'a serde_json::Value, field: &str) -> Option<&'a serd
     }
 }
 
+/// The value a pipeline stage reads for `field` on one grain (#368).
+///
+/// A plain name is a top-level key, exactly as before. A dotted path
+/// navigates into the field's JSON — through the ONE resolver `WHERE` uses,
+/// so `ORDER BY`, `GROUP BY` and the aggregates see the same value a filter
+/// on the same path compares (a Fact's `object` stored as a JSON string is
+/// parsed, not treated as opaque text).
+fn pipeline_value<'a>(
+    grain: &'a CalGrainResult,
+    field: &str,
+) -> Option<std::borrow::Cow<'a, serde_json::Value>> {
+    if field.contains('.') {
+        resolve_grain_field(grain, field).map(std::borrow::Cow::Owned)
+    } else {
+        json_field(&grain.fields, field).map(std::borrow::Cow::Borrowed)
+    }
+}
+
+/// Sort grains on one field or dotted path (`ORDER BY`), stable, keys
+/// resolved once per grain rather than once per comparison.
+fn sort_grains_by(grains: Vec<CalGrainResult>, field: &str, descending: bool) -> Vec<CalGrainResult> {
+    let mut keyed: Vec<(Option<serde_json::Value>, CalGrainResult)> = grains
+        .into_iter()
+        .map(|g| (pipeline_value(&g, field).map(|v| v.into_owned()), g))
+        .collect();
+    keyed.sort_by(|a, b| {
+        let cmp = compare_json_values(a.0.as_ref(), b.0.as_ref());
+        if descending {
+            cmp.reverse()
+        } else {
+            cmp
+        }
+    });
+    keyed.into_iter().map(|(_, g)| g).collect()
+}
+
+/// One numeric input to an aggregate. Integers stay exact (`i128` holds any
+/// sum of `i64`/`u64` values an aggregate window can contain).
+#[derive(Clone, Copy)]
+enum AggNum {
+    Int(i128),
+    Float(f64),
+}
+
+impl AggNum {
+    fn of(v: &serde_json::Value) -> Option<Self> {
+        let serde_json::Value::Number(n) = v else { return None };
+        if let Some(i) = n.as_i64() {
+            Some(Self::Int(i as i128))
+        } else if let Some(u) = n.as_u64() {
+            Some(Self::Int(u as i128))
+        } else {
+            n.as_f64().filter(|f| f.is_finite()).map(Self::Float)
+        }
+    }
+
+    fn as_f64(self) -> f64 {
+        match self {
+            Self::Int(i) => i as f64,
+            Self::Float(f) => f,
+        }
+    }
+
+    fn cmp(self, other: Self) -> Ordering {
+        match (self, other) {
+            (Self::Int(a), Self::Int(b)) => a.cmp(&b),
+            (a, b) => a.as_f64().partial_cmp(&b.as_f64()).unwrap_or(Ordering::Equal),
+        }
+    }
+
+    fn to_json(self) -> serde_json::Value {
+        match self {
+            Self::Int(i) => {
+                if let Ok(v) = i64::try_from(i) {
+                    serde_json::Value::from(v)
+                } else if let Ok(v) = u64::try_from(i) {
+                    serde_json::Value::from(v)
+                } else {
+                    float_json(i as f64)
+                }
+            }
+            Self::Float(f) => float_json(f),
+        }
+    }
+}
+
+fn float_json(f: f64) -> serde_json::Value {
+    serde_json::Number::from_f64(f).map_or(serde_json::Value::Null, serde_json::Value::Number)
+}
+
+/// What an aggregate saw: how many grains contributed, carried a
+/// non-numeric value, or carried none.
+#[derive(Default, Clone, Copy)]
+struct AggTally {
+    counted: usize,
+    skipped: usize,
+    missing: usize,
+}
+
+impl AggTally {
+    /// `CAL-W020` when anything did not count — a total over a mixed set is
+    /// a well-formed number that is not the total the caller meant.
+    fn warn(&self, function: super::ast::AggregateFn, field: &str, grains: usize, out: &mut Vec<String>) {
+        if self.skipped + self.missing > 0 {
+            out.push(
+                super::errors::CalWarning::AggregateSkipped {
+                    stage: format!("{} {field}", function.keyword()),
+                    skipped: self.skipped,
+                    missing: self.missing,
+                    grains,
+                }
+                .to_string(),
+            );
+        }
+    }
+}
+
+/// A running SUM/MIN/MAX/AVG.
+#[derive(Default)]
+struct Aggregator {
+    int_sum: i128,
+    float_sum: f64,
+    any_float: bool,
+    min: Option<AggNum>,
+    max: Option<AggNum>,
+    tally: AggTally,
+}
+
+impl Aggregator {
+    fn push(&mut self, v: Option<&serde_json::Value>) {
+        let n = match v {
+            None | Some(serde_json::Value::Null) => {
+                self.tally.missing += 1;
+                return;
+            }
+            Some(v) => match AggNum::of(v) {
+                Some(n) => n,
+                None => {
+                    self.tally.skipped += 1;
+                    return;
+                }
+            },
+        };
+        self.tally.counted += 1;
+        match n {
+            AggNum::Int(i) => self.int_sum = self.int_sum.saturating_add(i),
+            AggNum::Float(f) => {
+                self.any_float = true;
+                self.float_sum += f;
+            }
+        }
+        if self.min.is_none_or(|m| n.cmp(m) == Ordering::Less) {
+            self.min = Some(n);
+        }
+        if self.max.is_none_or(|m| n.cmp(m) == Ordering::Greater) {
+            self.max = Some(n);
+        }
+    }
+
+    fn finish(&self, function: super::ast::AggregateFn) -> serde_json::Value {
+        use super::ast::AggregateFn;
+        match function {
+            AggregateFn::Sum => {
+                if self.any_float {
+                    float_json(self.int_sum as f64 + self.float_sum)
+                } else {
+                    AggNum::Int(self.int_sum).to_json()
+                }
+            }
+            AggregateFn::Min => self.min.map_or(serde_json::Value::Null, AggNum::to_json),
+            AggregateFn::Max => self.max.map_or(serde_json::Value::Null, AggNum::to_json),
+            AggregateFn::Avg => {
+                if self.tally.counted == 0 {
+                    serde_json::Value::Null
+                } else {
+                    float_json((self.int_sum as f64 + self.float_sum) / self.tally.counted as f64)
+                }
+            }
+        }
+    }
+}
+
+/// One row per group carrying the group's aggregate (#368) — the grouped
+/// twin of [`count_by_fields`], over the same `collect_groups` grouping so a
+/// grouped count and a grouped sum name identical groups.
+fn aggregate_by_fields(
+    grains: &[CalGrainResult],
+    fields: &[String],
+    function: super::ast::AggregateFn,
+    path: &str,
+) -> (Vec<CalGrainResult>, AggTally) {
+    let mut total = AggTally::default();
+    let mut rows: Vec<(String, Vec<String>, usize, serde_json::Value)> = collect_groups(grains, fields)
+        .into_iter()
+        .map(|(key, members)| {
+            let mut acc = Aggregator::default();
+            for g in &members {
+                acc.push(pipeline_value(g, path).as_deref());
+            }
+            total.counted += acc.tally.counted;
+            total.skipped += acc.tally.skipped;
+            total.missing += acc.tally.missing;
+            let parts = group_key_parts(members[0], fields);
+            (key, parts, members.len(), acc.finish(function))
+        })
+        .collect();
+    // The extreme first: smallest for MIN, largest otherwise. A group with
+    // no numeric value sorts last either way; ties by key, so the ranking is
+    // reproducible across backends.
+    let ascending = function == super::ast::AggregateFn::Min;
+    rows.sort_by(|a, b| {
+        let by_value = match (a.3.is_null(), b.3.is_null()) {
+            (true, true) => Ordering::Equal,
+            (true, false) => Ordering::Greater,
+            (false, true) => Ordering::Less,
+            (false, false) => {
+                let c = match (AggNum::of(&a.3), AggNum::of(&b.3)) {
+                    (Some(x), Some(y)) => x.cmp(y),
+                    _ => Ordering::Equal,
+                };
+                if ascending {
+                    c
+                } else {
+                    c.reverse()
+                }
+            }
+        };
+        by_value.then_with(|| a.0.cmp(&b.0))
+    });
+    let rows = rows
+        .into_iter()
+        .map(|(key, parts, count, value)| {
+            let mut row = serde_json::json!({ "key": key, "count": count, "value": value });
+            if fields.len() > 1 {
+                row["keys"] = serde_json::json!(parts);
+            }
+            CalGrainResult {
+                // Computed, not stored — see `count_by_fields`.
+                hash: String::new(),
+                grain_type: "group".to_string(),
+                score: 0.0,
+                fields: row,
+                score_breakdown: None,
+                explanation: None,
+                relative_time: None,
+                is_deterministic: true,
+                contested_by: None,
+            }
+        })
+        .collect();
+    (rows, total)
+}
+
 /// Project a subset of fields from a JSON value.
 fn project_fields(fields: &serde_json::Value, selected: &[String]) -> serde_json::Value {
     let mut out = serde_json::Map::new();
@@ -7798,6 +8275,23 @@ fn except_grains(left: Vec<CalGrainResult>, right: &[CalGrainResult]) -> Vec<Cal
 
 #[cfg(test)]
 mod tests {
+    /// A bound value is inserted once and never re-scanned: a value that
+    /// contains `$other` must not be rewritten by `other`'s binding (#370).
+    #[test]
+    fn substitute_params_never_rescans_a_substituted_value() {
+        let mut v = HashMap::new();
+        v.insert("a".to_string(), "\"$b\"".to_string());
+        v.insert("b".to_string(), "\"evil\"".to_string());
+        v.insert("id".to_string(), "\"x\"".to_string());
+        assert_eq!(
+            super::substitute_params("WHERE s = $a AND o = $b", &v),
+            "WHERE s = \"$b\" AND o = \"evil\""
+        );
+        // The longest identifier is the name: `$id_type` is not `$id` + `_type`,
+        // and an unbound name is left as written.
+        assert_eq!(super::substitute_params("$id $id_type $ $9", &v), "\"x\" $id_type $ $9");
+    }
+
     use super::*;
     use crate::facade::CalStoreFacade;
     use crate::store_types::{RecallParams, SearchHit};
