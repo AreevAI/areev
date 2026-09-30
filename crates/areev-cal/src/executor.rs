@@ -5862,7 +5862,7 @@ fn bind_query_body(
             ));
         }
     }
-    Ok(substitute_params(&body, &param_values))
+    Ok(substitute_params(body, &param_values))
 }
 
 /// Replace each `$name` in `body` with its bound literal in ONE left-to-right
