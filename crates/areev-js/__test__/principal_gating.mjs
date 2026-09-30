@@ -95,6 +95,9 @@ function calls(db, dir) {
     // state — host config, admin on "*" like the embedder.
     ['setDecider', () => db.setDecider(null, 'cat')],
     ['setRerankerCommand', () => db.setRerankerCommand('cat')],
+    // A mount widens what the handle can read — admin on "*" like the
+    // decider (#369).
+    ['mount', () => db.mount('org', join(dir, 'other.db'))],
   ]
 }
 

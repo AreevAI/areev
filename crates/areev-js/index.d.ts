@@ -34,7 +34,8 @@ export declare class Areev {
    * one installed on this handle does not reach it.
    *
    * Call it right after open: it needs this handle to itself, so it is
-   * refused while another call on the handle is in flight.
+   * refused while another call on the handle is in flight. Under a bound
+   * principal it needs `admin` on `*`, like `setDecider`.
    */
   mount(alias: string, target: string): void
   /**

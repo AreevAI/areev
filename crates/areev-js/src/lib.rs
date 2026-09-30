@@ -1226,7 +1226,8 @@ impl Areev {
     /// one installed on this handle does not reach it.
     ///
     /// Call it right after open: it needs this handle to itself, so it is
-    /// refused while another call on the handle is in flight.
+    /// refused while another call on the handle is in flight. Under a bound
+    /// principal it needs `admin` on `*`, like `setDecider`.
     #[napi]
     pub fn mount(&self, alias: String, target: String) -> napi::Result<()> {
         let mut slot = self.facade.lock().unwrap_or_else(|e| e.into_inner());
@@ -1235,6 +1236,9 @@ impl Areev {
                 "this handle is closed — open a new Areev for further calls".into(),
             ))
         })?;
+        // Host config, admin on "*" like the embedder and the decider: a
+        // mount widens what this handle can read.
+        check_verb(arc, areev_core::authz::Verb::Admin, "*")?;
         let facade = std::sync::Arc::get_mut(arc).ok_or_else(|| {
             err(AreevError::Validation(
                 "mount() needs this handle to itself — another call on it is still in \

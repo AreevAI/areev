@@ -1036,9 +1036,16 @@ impl Areev {
     /// A write addressed to a mounted namespace is refused with `STO-E004`.
     /// `ABOUT` inside a mount is BM25-only: the mount has no embedder, and
     /// one installed on this handle does not reach it. Mount right after
-    /// open — it needs the handle to itself.
+    /// open — it needs the handle to itself. Under a bound principal it needs
+    /// `admin` on `*`, like `set_decider`.
     #[pyo3(signature = (alias, target))]
     fn mount(&mut self, py: Python<'_>, alias: String, target: String) -> PyResult<()> {
+        // Host config, admin on "*" like the embedder and the decider: a
+        // mount widens what this handle can read.
+        self.facade
+            .effective_authz()
+            .check(areev_core::authz::Verb::Admin, "*")
+            .map_err(err)?;
         let primary = self.path.clone();
         let facade = std::sync::Arc::get_mut(&mut self.facade).ok_or_else(|| {
             err("mount: this handle is shared with a call still in flight (a run or trigger \
