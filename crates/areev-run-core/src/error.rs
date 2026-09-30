@@ -463,6 +463,6 @@ mod tests {
             );
             assert!(seen.insert(code), "duplicate code {code}");
         }
-        assert_eq!(seen.len(), 27);
+        assert_eq!(seen.len(), 28);
     }
 }
