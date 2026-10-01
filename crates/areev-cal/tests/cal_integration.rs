@@ -3045,3 +3045,52 @@ fn a_literal_source_still_renders_beside_a_staged_source() {
         other => panic!("expected Formatted, got {other:?}"),
     }
 }
+
+/// #373: `RUN` runs the saved body's stages. Before, they were merged and
+/// never applied — a `COUNT` body answered rows, a `LIMIT` body the scan.
+#[test]
+fn run_applies_the_saved_body_stages() {
+    let dir = TempDir::new().unwrap();
+    let facade = facade_at(&dir.path().join("m.db"));
+    let ex = CalExecutor::new(CalExecutorConfig::default());
+    for (s, o) in [("a", "x"), ("b", "x"), ("c", "y"), ("d", "x")] {
+        ex.execute(
+            &format!(r#"ADD fact SET subject = "{s}" SET relation = "tag" SET object = "{o}" REASON "seed""#),
+            &facade,
+        )
+        .unwrap();
+    }
+    for def in [
+        r#"DEFINE QUERY "n"() AS { RECALL facts | COUNT }"#,
+        r#"DEFINE QUERY "per"() AS { RECALL facts GROUP BY object COUNT }"#,
+        r#"DEFINE QUERY "top"($k) AS { RECALL facts ORDER BY subject DESC LIMIT $k }"#,
+    ] {
+        ex.execute(def, &facade).unwrap();
+    }
+
+    let n = ex.execute(r#"RUN "n"()"#, &facade).unwrap();
+    assert!(matches!(n.result, CalResultPayload::Count { count: 4 }), "{:?}", n.result);
+
+    let per = ex.execute(r#"RUN "per"()"#, &facade).unwrap();
+    let inline = ex.execute("RECALL facts GROUP BY object COUNT", &facade).unwrap();
+    assert!(matches!(per.result, CalResultPayload::GroupCounts { .. }), "{:?}", per.result);
+    assert_eq!(
+        serde_json::to_value(&per.result).unwrap(),
+        serde_json::to_value(&inline.result).unwrap()
+    );
+
+    let subjects = |r: &areev_cal::executor::CalExecResult| match &r.result {
+        CalResultPayload::Grains { grains, .. } => grains
+            .iter()
+            .map(|g| g.fields["subject"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>(),
+        other => panic!("expected Grains, got {other:?}"),
+    };
+    let top = ex.execute(r#"RUN "top"($k = 2)"#, &facade).unwrap();
+    assert_eq!(subjects(&top), ["d", "c"]);
+    // Call-site stages compose after the body's.
+    let one = ex.execute(r#"RUN "top"($k = 2) LIMIT 1"#, &facade).unwrap();
+    assert_eq!(subjects(&one), ["d"]);
+    let counted = ex.execute(r#"RUN "top"($k = 2) COUNT"#, &facade).unwrap();
+    assert!(matches!(counted.result, CalResultPayload::Count { count: 2 }), "{:?}", counted.result);
+}

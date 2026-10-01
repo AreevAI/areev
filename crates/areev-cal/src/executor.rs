@@ -2277,7 +2277,22 @@ impl CalExecutor {
             merged_query.format = outer_query.format.clone();
         }
 
-        // If the outer query has pipeline stages, append them.
+        // The body's own stages (#373). They are applied below, after the
+        // statement runs: `execute_statement` applies no stage, and the
+        // caller only applies the CALL SITE's. Before #373 the body's stages
+        // were merged here and never run, so a body ending in `SUM`/`COUNT`
+        // answered rows and a body's `ORDER BY … LIMIT n` answered the whole
+        // widened scan.
+        let body_pipeline = merged_query.pipeline.clone();
+        if let CalStatement::Recall(ref r) = merged_query.statement {
+            Self::validate_pipeline_fields(&body_pipeline, &r.grain_type)?;
+        }
+
+        // The call site's stages are appended too — not to be applied here
+        // (the caller applies them, after the body's), but so the statement
+        // plans its scan for every stage that will see its result: a
+        // call-site `| COUNT` or `ORDER BY` must widen the scan exactly as it
+        // would inline.
         for stage in &outer_query.pipeline {
             merged_query.pipeline.push(stage.clone());
         }
@@ -2293,6 +2308,13 @@ impl CalExecutor {
         // 5. Execute the parsed+merged query through the normal path.
         let result =
             self.execute_statement(&merged_query.statement, store, &merged_query, exec_warnings)?;
+
+        // 5a. Apply the body's stages, exactly as an inline statement would.
+        // A body that bounds or aggregates (`LIMIT`, `FIRST`, `COUNT`, `SUM`
+        // …) kept the widened scan whole for that stage; this is where the
+        // stage runs and the answer is bounded back. The call site's stages
+        // compose after these, applied by the caller.
+        let (result, _) = self.apply_pipeline(result, &body_pipeline, exec_warnings)?;
 
         // 6. Record last_run_at timestamp on successful execution.
         //    Best-effort — a persistence failure here should not fail the query.

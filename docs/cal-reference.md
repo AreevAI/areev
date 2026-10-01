@@ -656,6 +656,23 @@ Saved-query limits: 100 per namespace, 8 KiB body, 10 parameters. Saved-query
 bodies get an extra read-only verification pass, so a saved query can never
 smuggle in a write or a blocked keyword.
 
+**`RUN` answers what the body answers inline** (#373). The body's pipeline
+runs — a body ending in `SUM`/`MIN`/`MAX`/`AVG`, `COUNT`, or
+`GROUP BY … <aggregate|COUNT>` returns the same `aggregate` / `count` /
+grouped payload as the body run inline with its bindings substituted, and a
+body's `ORDER BY … LIMIT $limit` returns at most `$limit` grains in the body's
+order, however wide the scan behind it (a raised read-only `max_limit`
+included). Stages written at the call site compose **after** the body's:
+
+```sql
+RUN "latest"($cp = "ACME", $limit = 5) LIMIT 2
+```
+
+is the body's top 5, then the first 2 of those; a call-site `SUM` sums the
+body's rows. A call-site `FORMAT` replaces the body's. Grouping does not cross
+the boundary: a body that ends in a bare `GROUP BY` hands its rows, not the
+grouping, to the call site — put the `COUNT` or aggregate in the body.
+
 **Does `RUN` reuse a compiled plan?** Yes, per distinct *argument set*. The
 executor caches parsed statements keyed by exact text, and `RUN` substitutes
 parameters into the body **before** parsing — so a zero-parameter saved query

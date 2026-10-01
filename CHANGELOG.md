@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`RUN` dropped a saved query's pipeline stages** (#373). A body ending in
+  `SUM`/`MIN`/`MAX`/`AVG`, `COUNT` or `GROUP BY … <aggregate>` answered plain
+  rows, and a body's `ORDER BY … LIMIT n` answered the whole widened scan
+  (up to `max_limit`) instead of `n` grains. The body's stages now run, and
+  `RUN` answers the payload the body answers inline; call-site stages compose
+  after the body's.
+
 ## [1.11.0] — 2026-09-30
 
 Principal gating on `mount()`, CAL aggregates, pinned saved-query run reads, and binding fixes (#371).
