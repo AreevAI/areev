@@ -669,10 +669,14 @@ RUN "latest"($cp = "ACME", $limit = 5) LIMIT 2
 ```
 
 is the body's top 5, then the first 2 of those; a call-site `SUM` sums the
-body's rows. `FORMAT` is the exception: `RUN` renders with the call site's
-`FORMAT` only, and a body's own `FORMAT` is not applied. Grouping does not cross
-the boundary: a body that ends in a bare `GROUP BY` hands its rows, not the
-grouping, to the call site — put the `COUNT` or aggregate in the body.
+body's rows. Body and call-site stages run as **one** pipeline, so a body that
+ends in a bare `GROUP BY` leaves the grouping open: `RUN "by_cp"() COUNT`
+answers one count per group, exactly as `… GROUP BY object.counterparty COUNT`
+does inline. The body's `FORMAT` renders the result unless the call site
+names its own, which replaces it. All of this holds for a `RUN` entry in a
+`BATCH` too. A `RUN` nested inside another statement (a `COALESCE` branch, a
+set-operation operand, a `LET`, an `ASSEMBLE` source) applies the body's
+stages but not its `FORMAT`: the enclosing statement renders.
 
 **Does `RUN` reuse a compiled plan?** Yes, per distinct *argument set*. The
 executor caches parsed statements keyed by exact text, and `RUN` substitutes

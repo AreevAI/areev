@@ -233,8 +233,9 @@ pub fn run_query_reads_the_body_pinned_at_start(b: &dyn Backend) {
 
 /// #373: `RUN` of a saved query answers exactly what its body answers inline
 /// — the body's aggregate, `COUNT`, `GROUP BY … SUM` and `ORDER BY … LIMIT`
-/// all run — on a default handle and on a read-only one with a raised
-/// `max_limit`; a call-site stage composes after the body's.
+/// all run, and its `FORMAT` renders — on a default handle and on a
+/// read-only one with a raised `max_limit`; a call-site stage composes after
+/// the body's, in one pass (a body's `GROUP BY` stays open for it).
 pub fn run_applies_the_saved_body_stages(b: &dyn Backend) {
     let name = "cal_run_stages";
     {
@@ -251,6 +252,8 @@ pub fn run_applies_the_saved_body_stages(b: &dyn Backend) {
             format!(r#"DEFINE QUERY "n"() AS {{ RECALL facts WHERE namespace = "{LEDGER}" | COUNT }}"#),
             format!(r#"DEFINE QUERY "by_cp"() AS {{ RECALL facts WHERE namespace = "{LEDGER}" GROUP BY object.counterparty | SUM object.amount_minor }}"#),
             format!(r#"DEFINE QUERY "latest"($cp, $limit) AS {{ RECALL facts WHERE namespace = "{LEDGER}" AND object.counterparty = $cp ORDER BY object.amount_minor DESC LIMIT $limit FORMAT json }}"#),
+            format!(r#"DEFINE QUERY "rows_by_cp"() AS {{ RECALL facts WHERE namespace = "{LEDGER}" GROUP BY object.counterparty }}"#),
+            format!(r#"DEFINE QUERY "top_md"() AS {{ RECALL facts WHERE namespace = "{LEDGER}" ORDER BY object.amount_minor DESC LIMIT 3 FORMAT markdown }}"#),
         ] {
             cal(&facade, &def);
         }
@@ -265,6 +268,13 @@ pub fn run_applies_the_saved_body_stages(b: &dyn Backend) {
             r#"RUN "latest"($cp = "ACME", $limit = 5)"#.to_string(),
             format!(r#"{base} AND object.counterparty = "ACME" ORDER BY object.amount_minor DESC LIMIT 5 FORMAT json"#),
         ),
+        // A body's bare GROUP BY stays open for the call site's aggregate.
+        (
+            r#"RUN "rows_by_cp"() SUM object.amount_minor"#.to_string(),
+            format!("{base} GROUP BY object.counterparty | SUM object.amount_minor"),
+        ),
+        // The body's FORMAT renders when the call site names none.
+        (r#"RUN "top_md"()"#.to_string(), format!("{base} ORDER BY object.amount_minor DESC LIMIT 3 FORMAT markdown")),
     ];
     let payload = |r: &areev_cal::executor::CalExecResult| serde_json::to_value(&r.result).unwrap();
     let subjects = |r: &areev_cal::executor::CalExecResult| match &r.result {

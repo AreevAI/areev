@@ -12,8 +12,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `SUM`/`MIN`/`MAX`/`AVG`, `COUNT` or `GROUP BY … <aggregate>` answered plain
   rows, and a body's `ORDER BY … LIMIT n` answered the whole widened scan
   (up to `max_limit`) instead of `n` grains. The body's stages now run, and
-  `RUN` answers the payload the body answers inline; call-site stages compose
-  after the body's.
+  `RUN` answers the payload the body answers inline. Call-site stages
+  compose after the body's in one pass, so a body's bare `GROUP BY` stays open
+  for a call-site `COUNT` or aggregate. The body's `FORMAT`, never applied
+  before, now renders unless the call site names its own. This applies to
+  top-level `RUN` and to `RUN` entries in `BATCH`.
 
 ## [1.11.0] — 2026-09-30
 
