@@ -1,15 +1,15 @@
 {
-  "version": "1.11.0",
+  "version": "1.11.1",
   "crates": 17,
   "rust": {
     "files": 356,
-    "physical_lines": 252039,
-    "source_code": 116448,
-    "test_code": 73866,
+    "physical_lines": 252338,
+    "source_code": 116585,
+    "test_code": 73955,
     "unit_test_code": 30047,
-    "integration_test_code": 43819,
+    "integration_test_code": 43908,
     "example_code": 669,
-    "test_functions": 3360,
+    "test_functions": 3361,
     "test_ratio": 0.63,
     "test_share": 38.8
   },
@@ -17,10 +17,10 @@
     {
       "name": "areev-cal",
       "files": 50,
-      "physical": 62536,
-      "source_code": 26653,
-      "test_code": 21430,
-      "tests": 1105
+      "physical": 62729,
+      "source_code": 26700,
+      "test_code": 21519,
+      "tests": 1106
     },
     {
       "name": "areev-store",
@@ -105,8 +105,8 @@
     {
       "name": "areev-conformance",
       "files": 29,
-      "physical": 6036,
-      "source_code": 2992,
+      "physical": 6142,
+      "source_code": 3082,
       "test_code": 1535,
       "tests": 34
     },
@@ -153,7 +153,7 @@
   ],
   "docs": {
     "files": 66,
-    "lines": 36668
+    "lines": 36705
   },
   "error_codes": 128,
   "bindings": {
