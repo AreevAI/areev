@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.11.1] — 2026-10-02
+
 ### Fixed
 
 - **`RUN` dropped a saved query's pipeline stages** (#373). A body ending in
@@ -4731,7 +4733,8 @@ ecosystem adapters, and the enterprise plane.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.11.0...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.11.1...HEAD
+[1.11.1]: https://github.com/AreevAI/areev/compare/v1.11.0...v1.11.1
 [1.11.0]: https://github.com/AreevAI/areev/compare/v1.10.2...v1.11.0
 [1.10.2]: https://github.com/AreevAI/areev/compare/v1.10.1...v1.10.2
 [1.10.1]: https://github.com/AreevAI/areev/compare/v1.10.0...v1.10.1
