@@ -3045,3 +3045,108 @@ fn a_literal_source_still_renders_beside_a_staged_source() {
         other => panic!("expected Formatted, got {other:?}"),
     }
 }
+
+/// #373: `RUN` runs the saved body's stages. Before, they were merged and
+/// never applied — a `COUNT` body answered rows, a `LIMIT` body the scan.
+#[test]
+fn run_applies_the_saved_body_stages() {
+    let dir = TempDir::new().unwrap();
+    let facade = facade_at(&dir.path().join("m.db"));
+    let ex = CalExecutor::new(CalExecutorConfig::default());
+    for (s, o) in [("a", "x"), ("b", "x"), ("c", "y"), ("d", "x")] {
+        ex.execute(
+            &format!(r#"ADD fact SET subject = "{s}" SET relation = "tag" SET object = "{o}" REASON "seed""#),
+            &facade,
+        )
+        .unwrap();
+    }
+    for def in [
+        r#"DEFINE QUERY "n"() AS { RECALL facts | COUNT }"#,
+        r#"DEFINE QUERY "per"() AS { RECALL facts GROUP BY object COUNT }"#,
+        r#"DEFINE QUERY "top"($k) AS { RECALL facts ORDER BY subject DESC LIMIT $k }"#,
+    ] {
+        ex.execute(def, &facade).unwrap();
+    }
+
+    let n = ex.execute(r#"RUN "n"()"#, &facade).unwrap();
+    assert!(matches!(n.result, CalResultPayload::Count { count: 4 }), "{:?}", n.result);
+
+    let per = ex.execute(r#"RUN "per"()"#, &facade).unwrap();
+    let inline = ex.execute("RECALL facts GROUP BY object COUNT", &facade).unwrap();
+    assert!(matches!(per.result, CalResultPayload::GroupCounts { .. }), "{:?}", per.result);
+    assert_eq!(
+        serde_json::to_value(&per.result).unwrap(),
+        serde_json::to_value(&inline.result).unwrap()
+    );
+
+    let subjects = |r: &areev_cal::executor::CalExecResult| match &r.result {
+        CalResultPayload::Grains { grains, .. } => grains
+            .iter()
+            .map(|g| g.fields["subject"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>(),
+        other => panic!("expected Grains, got {other:?}"),
+    };
+    let top = ex.execute(r#"RUN "top"($k = 2)"#, &facade).unwrap();
+    assert_eq!(subjects(&top), ["d", "c"]);
+    // Call-site stages compose after the body's.
+    let one = ex.execute(r#"RUN "top"($k = 2) LIMIT 1"#, &facade).unwrap();
+    assert_eq!(subjects(&one), ["d"]);
+    let counted = ex.execute(r#"RUN "top"($k = 2) COUNT"#, &facade).unwrap();
+    assert!(matches!(counted.result, CalResultPayload::Count { count: 2 }), "{:?}", counted.result);
+
+    // A body's bare GROUP BY stays open for a call-site COUNT: one pass.
+    ex.execute(r#"DEFINE QUERY "grouped"() AS { RECALL facts GROUP BY object }"#, &facade)
+        .unwrap();
+    let grouped = ex.execute(r#"RUN "grouped"() COUNT"#, &facade).unwrap();
+    assert_eq!(
+        serde_json::to_value(&grouped.result).unwrap(),
+        serde_json::to_value(&inline.result).unwrap(),
+        "RUN body GROUP BY + call-site COUNT == inline GROUP BY … COUNT"
+    );
+
+    // The body's FORMAT renders when the call site names none; a call-site
+    // FORMAT replaces it.
+    ex.execute(
+        r#"DEFINE QUERY "md"() AS { RECALL facts ORDER BY subject LIMIT 2 FORMAT markdown }"#,
+        &facade,
+    )
+    .unwrap();
+    let md = ex.execute(r#"RUN "md"()"#, &facade).unwrap();
+    let md_inline = ex.execute("RECALL facts ORDER BY subject LIMIT 2 FORMAT markdown", &facade).unwrap();
+    assert!(!matches!(md.result, CalResultPayload::Grains { .. }), "{:?}", md.result);
+    assert_eq!(
+        serde_json::to_value(&md.result).unwrap(),
+        serde_json::to_value(&md_inline.result).unwrap()
+    );
+    let as_json = ex.execute(r#"RUN "md"() FORMAT json"#, &facade).unwrap();
+    assert_eq!(subjects(&as_json), ["a", "b"]);
+
+    // An ASSEMBLE body renders its own FORMAT once — not again on top.
+    ex.execute(
+        r#"DEFINE QUERY "ctx"() AS { ASSEMBLE "t" FROM facts: (RECALL facts LIMIT 3) BUDGET 500 FORMAT sml }"#,
+        &facade,
+    )
+    .unwrap();
+    let ctx = ex.execute(r#"RUN "ctx"()"#, &facade).unwrap();
+    let ctx_inline = ex
+        .execute(r#"ASSEMBLE "t" FROM facts: (RECALL facts LIMIT 3) BUDGET 500 FORMAT sml"#, &facade)
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&ctx.result).unwrap(),
+        serde_json::to_value(&ctx_inline.result).unwrap()
+    );
+
+    // BATCH entries compose the same way.
+    let batch = ex.execute(r#"BATCH { RUN "grouped"() COUNT ; RUN "md"() }"#, &facade).unwrap();
+    let CalResultPayload::Batch { results } = batch.result else {
+        panic!("expected Batch");
+    };
+    assert_eq!(
+        serde_json::to_value(&results["0"]).unwrap(),
+        serde_json::to_value(&inline.result).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(&results["1"]).unwrap(),
+        serde_json::to_value(&md_inline.result).unwrap()
+    );
+}

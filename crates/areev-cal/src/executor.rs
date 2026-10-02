@@ -924,22 +924,23 @@ impl CalExecutor {
             Self::validate_pipeline_fields(&query.pipeline, &r.grain_type)?;
         }
 
-        // 3. Execute the statement (collects execution-time warnings).
-        let payload =
-            self.execute_statement(&query.statement, store, &query, &mut exec_warnings)?;
-
-        // 4. Apply pipeline stages.
-        let (payload, grouped_by) = self.apply_pipeline(payload, &query.pipeline, &mut exec_warnings)?;
+        // 3–4. Execute the statement and apply its pipeline stages. For `RUN`
+        // that is the saved body's stages, then the call site's (#373).
+        let (payload, grouped_by, run_body) =
+            self.execute_staged(&query, store, &mut exec_warnings)?;
+        // A `RUN` renders with the merged body: the call site's FORMAT, else
+        // the body's own.
+        let render = run_body.as_ref().unwrap_or(&query);
 
         // 5. Apply FORMAT clause if present (CAL spec v1.0.1).
         let payload = apply_format_clause(
             payload,
-            &query.format,
+            &render.format,
             grouped_by.as_deref(),
             RenderInputs {
-                user_vars: &query.user_vars,
+                user_vars: &render.user_vars,
                 store,
-                disclosure: disclosure_of(&query.with_options),
+                disclosure: disclosure_of(&render.with_options),
             },
             None,
             &mut exec_warnings,
@@ -1006,22 +1007,20 @@ impl CalExecutor {
             Self::validate_pipeline_fields(&query.pipeline, &r.grain_type)?;
         }
 
-        // Execute the statement.
-        let payload =
-            self.execute_statement(&query.statement, store, &query, &mut exec_warnings)?;
-
-        // Apply pipeline stages.
-        let (payload, grouped_by) = self.apply_pipeline(payload, &query.pipeline, &mut exec_warnings)?;
+        // Execute the statement and apply its pipeline (mirror of execute()).
+        let (payload, grouped_by, run_body) =
+            self.execute_staged(&query, store, &mut exec_warnings)?;
+        let render = run_body.as_ref().unwrap_or(&query);
 
         // Apply FORMAT clause if present (CAL spec v1.0.1).
         let payload = apply_format_clause(
             payload,
-            &query.format,
+            &render.format,
             grouped_by.as_deref(),
             RenderInputs {
-                user_vars: &query.user_vars,
+                user_vars: &render.user_vars,
                 store,
-                disclosure: disclosure_of(&query.with_options),
+                disclosure: disclosure_of(&render.with_options),
             },
             None,
             &mut exec_warnings,
@@ -2207,6 +2206,12 @@ impl CalExecutor {
     // RUN (saved query execution)
     // -----------------------------------------------------------------------
 
+    /// `RUN` reached as a NESTED statement (a `COALESCE` branch, a set-op
+    /// operand, a `LET`, an `ASSEMBLE` source…). Applies the body's stages
+    /// only: the enclosing statement owns its stages and rendering, so the
+    /// body's `FORMAT` is not applied here. A top-level `RUN` goes through
+    /// [`execute_staged`](Self::execute_staged) instead, which composes the
+    /// call site's stages and the body's `FORMAT` as well.
     fn execute_run_query(
         &self,
         run: &super::ast::RunQueryStmt,
@@ -2214,6 +2219,45 @@ impl CalExecutor {
         outer_query: &CalQuery,
         exec_warnings: &mut Vec<String>,
     ) -> std::result::Result<CalResultPayload, CalError> {
+        self.run_query_staged(run, store, outer_query, false, exec_warnings)
+            .map(|(payload, _, _)| payload)
+    }
+
+    /// Run a statement and its pipeline, returning the payload, the grouping
+    /// the pipeline left open (for `FORMAT`), and — for `RUN` — the merged
+    /// saved-query AST whose `format` / `user_vars` / `with_options` the
+    /// caller renders with. The one place a top-level statement's stages are
+    /// applied, so `RUN` and an inline statement cannot drift (#373).
+    fn execute_staged(
+        &self,
+        query: &CalQuery,
+        store: &dyn CalStoreFacade,
+        exec_warnings: &mut Vec<String>,
+    ) -> std::result::Result<Staged<Option<CalQuery>>, CalError> {
+        if let CalStatement::RunQuery(ref run) = query.statement {
+            // The same gate `execute_statement` applies before dispatch.
+            self.check_caller_scope(&query.statement)?;
+            let (payload, grouped_by, merged) =
+                self.run_query_staged(run, store, query, true, exec_warnings)?;
+            return Ok((payload, grouped_by, Some(merged)));
+        }
+        let payload = self.execute_statement(&query.statement, store, query, exec_warnings)?;
+        let (payload, grouped_by) = self.apply_pipeline(payload, &query.pipeline, exec_warnings)?;
+        Ok((payload, grouped_by, None))
+    }
+
+    /// Execute a saved query. With `compose_call_site`, the call site's stages
+    /// run here too, after the body's, in ONE pass — so a body's `GROUP BY`
+    /// is still open for a call-site `COUNT` or aggregate. Without it, only
+    /// the body's stages run and the caller applies its own.
+    fn run_query_staged(
+        &self,
+        run: &super::ast::RunQueryStmt,
+        store: &dyn CalStoreFacade,
+        outer_query: &CalQuery,
+        compose_call_site: bool,
+        exec_warnings: &mut Vec<String>,
+    ) -> std::result::Result<Staged<CalQuery>, CalError> {
         // 1. Load saved query from store.
         let entry = store
             .get_query(&run.name)
@@ -2277,7 +2321,22 @@ impl CalExecutor {
             merged_query.format = outer_query.format.clone();
         }
 
-        // If the outer query has pipeline stages, append them.
+        // The body's own stages (#373). They are applied below, after the
+        // statement runs: `execute_statement` applies no stage, and the
+        // caller only applies the CALL SITE's. Before #373 the body's stages
+        // were merged here and never run, so a body ending in `SUM`/`COUNT`
+        // answered rows and a body's `ORDER BY … LIMIT n` answered the whole
+        // widened scan.
+        let body_pipeline = merged_query.pipeline.clone();
+        if let CalStatement::Recall(ref r) = merged_query.statement {
+            Self::validate_pipeline_fields(&body_pipeline, &r.grain_type)?;
+        }
+
+        // The call site's stages are appended too — not to be applied here
+        // (the caller applies them, after the body's), but so the statement
+        // plans its scan for every stage that will see its result: a
+        // call-site `| COUNT` or `ORDER BY` must widen the scan exactly as it
+        // would inline.
         for stage in &outer_query.pipeline {
             merged_query.pipeline.push(stage.clone());
         }
@@ -2294,11 +2353,24 @@ impl CalExecutor {
         let result =
             self.execute_statement(&merged_query.statement, store, &merged_query, exec_warnings)?;
 
+        // 5a. Apply the body's stages, exactly as an inline statement would.
+        // A body that bounds or aggregates (`LIMIT`, `FIRST`, `COUNT`, `SUM`
+        // …) kept the widened scan whole for that stage; this is where the
+        // stage runs and the answer is bounded back. The call site's stages
+        // compose after these — here, in the same pass, when asked to;
+        // otherwise by the caller.
+        let stages = if compose_call_site {
+            &merged_query.pipeline
+        } else {
+            &body_pipeline
+        };
+        let (result, grouped_by) = self.apply_pipeline(result, stages, exec_warnings)?;
+
         // 6. Record last_run_at timestamp on successful execution.
         //    Best-effort — a persistence failure here should not fail the query.
         let _ = store.update_query_last_run(&run.name);
 
-        Ok(result)
+        Ok((result, grouped_by, merged_query))
     }
 
     // -----------------------------------------------------------------------
@@ -4549,29 +4621,41 @@ impl CalExecutor {
             warnings: Vec::new(),
         };
 
-        let payload = self
-            .execute_statement(&entry.statement, store, &surrogate_query, exec_warnings)
-            .unwrap_or_else(|e| CalResultPayload::Unsupported {
-                statement: statement_type_name(&entry.statement),
-                message: e.to_string(),
-            });
-
-        // Apply pipeline stages (SELECT, LIMIT, ORDER BY, WHERE, etc.).
-        let (payload, grouped_by) = if entry.pipeline.is_empty() {
-            (payload, None)
-        } else {
-            self.apply_pipeline(payload, &entry.pipeline, exec_warnings)?
+        let unsupported = |e: CalError| CalResultPayload::Unsupported {
+            statement: statement_type_name(&entry.statement),
+            message: e.to_string(),
         };
+
+        // A `RUN` entry composes the saved body's stages, the entry's stages
+        // and the body's FORMAT the way a top-level `RUN` does (#373).
+        let (payload, grouped_by, run_body) =
+            if matches!(entry.statement, CalStatement::RunQuery(_)) {
+                self.execute_staged(&surrogate_query, store, exec_warnings)
+                    .unwrap_or_else(|e| (unsupported(e), None, None))
+            } else {
+                let payload = self
+                    .execute_statement(&entry.statement, store, &surrogate_query, exec_warnings)
+                    .unwrap_or_else(unsupported);
+
+                // Apply pipeline stages (SELECT, LIMIT, ORDER BY, WHERE, etc.).
+                let (payload, grouped_by) = if entry.pipeline.is_empty() {
+                    (payload, None)
+                } else {
+                    self.apply_pipeline(payload, &entry.pipeline, exec_warnings)?
+                };
+                (payload, grouped_by, None)
+            };
+        let render = run_body.as_ref().unwrap_or(&surrogate_query);
 
         // Apply FORMAT clause if present.
         let payload = apply_format_clause(
             payload,
-            &entry.format,
+            &render.format,
             grouped_by.as_deref(),
             RenderInputs {
-                user_vars: &entry.user_vars,
+                user_vars: &render.user_vars,
                 store,
-                disclosure: disclosure_of(&entry.with_options),
+                disclosure: disclosure_of(&render.with_options),
             },
             None,
             exec_warnings,
@@ -6468,6 +6552,10 @@ fn extract_hash_from_condition(condition: Option<&Condition>) -> Option<String> 
 // ---------------------------------------------------------------------------
 // FORMAT clause application (CAL spec v1.0.1)
 // ---------------------------------------------------------------------------
+
+/// A statement's payload after its pipeline, the grouping that pipeline left
+/// open (for `FORMAT`), and `R` — for `RUN`, the merged saved-query AST.
+type Staged<R> = (CalResultPayload, Option<Vec<String>>, R);
 
 /// Apply a `FormatClause` to a payload after pipeline stages.
 ///

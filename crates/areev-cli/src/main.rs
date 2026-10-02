@@ -1774,7 +1774,7 @@ fn extract_tool_records(v: &serde_json::Value) -> Vec<ImportedToolRecord> {
                 .get("content")
                 .or_else(|| v.get("output"))
                 .or_else(|| v.get("result"))
-                .map(&stringify)
+                .map(stringify)
                 .unwrap_or_default();
             let is_error = v
                 .get("is_error")

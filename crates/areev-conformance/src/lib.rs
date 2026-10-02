@@ -343,11 +343,13 @@ macro_rules! for_each_conformance_case {
         $per_case!(recall_at_is_entity_at_per_relation);
         $per_case!(run_recall_is_bounded_and_refused_past_its_ceiling);
         // #368 aggregates + dotted paths + read-only max_limit; #369 mounts by
-        // locator; #370 the pinned `op: query` run read
+        // locator; #370 the pinned `op: query` run read; #373 RUN applies the
+        // saved body's stages
         $per_case!(cal_aggregates_over_dotted_paths);
         $per_case!(max_limit_above_default_applies_only_read_only);
         $per_case!(mount_by_locator_reads_and_refuses_writes);
         $per_case!(run_query_reads_the_body_pinned_at_start);
+        $per_case!(run_applies_the_saved_body_stages);
         // dictionary values are unbounded by their index (#160)
         $per_case!(incompressible_values_of_any_size_are_stored);
         // namespace prefix scoping ("org.*") + the ns registry

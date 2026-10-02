@@ -230,3 +230,107 @@ pub fn run_query_reads_the_body_pinned_at_start(b: &dyn Backend) {
     assert_eq!(subjects, vec!["txn-0", "txn-1"], "[{}] the pinned body, not the redefined one", b.name());
     assert!(runner.verify("rq").unwrap().verified, "[{}] replays from the journal", b.name());
 }
+
+/// #373: `RUN` of a saved query answers exactly what its body answers inline
+/// — the body's aggregate, `COUNT`, `GROUP BY … SUM` and `ORDER BY … LIMIT`
+/// all run, and its `FORMAT` renders — on a default handle and on a
+/// read-only one with a raised `max_limit`; a call-site stage composes after
+/// the body's, in one pass (a body's `GROUP BY` stays open for it).
+pub fn run_applies_the_saved_body_stages(b: &dyn Backend) {
+    let name = "cal_run_stages";
+    {
+        let mut m = b.open_named(name);
+        // 1,200 transactions, 800 of them ACME: past the default scan window
+        // (1,000), so the read-only handle's raised max_limit is load-bearing.
+        for i in 0..1_200 {
+            let cp = if i % 3 == 2 { "Globex" } else { "ACME" };
+            m.add(&txn(i, cp, i as i64 + 1)).unwrap();
+        }
+        let facade = AreevFacade::with_session(m, Some(LEDGER.into()), None);
+        for def in [
+            format!(r#"DEFINE QUERY "total"($cp) AS {{ RECALL facts WHERE namespace = "{LEDGER}" AND object.counterparty = $cp | SUM object.amount_minor }}"#),
+            format!(r#"DEFINE QUERY "n"() AS {{ RECALL facts WHERE namespace = "{LEDGER}" | COUNT }}"#),
+            format!(r#"DEFINE QUERY "by_cp"() AS {{ RECALL facts WHERE namespace = "{LEDGER}" GROUP BY object.counterparty | SUM object.amount_minor }}"#),
+            format!(r#"DEFINE QUERY "latest"($cp, $limit) AS {{ RECALL facts WHERE namespace = "{LEDGER}" AND object.counterparty = $cp ORDER BY object.amount_minor DESC LIMIT $limit FORMAT json }}"#),
+            format!(r#"DEFINE QUERY "rows_by_cp"() AS {{ RECALL facts WHERE namespace = "{LEDGER}" GROUP BY object.counterparty }}"#),
+            format!(r#"DEFINE QUERY "top_md"() AS {{ RECALL facts WHERE namespace = "{LEDGER}" ORDER BY object.amount_minor DESC LIMIT 3 FORMAT markdown }}"#),
+        ] {
+            cal(&facade, &def);
+        }
+    }
+
+    let base = format!(r#"RECALL facts WHERE namespace = "{LEDGER}""#);
+    let pairs = [
+        (r#"RUN "total"($cp = "ACME")"#.to_string(), format!(r#"{base} AND object.counterparty = "ACME" | SUM object.amount_minor"#)),
+        (r#"RUN "n"()"#.to_string(), format!("{base} | COUNT")),
+        (r#"RUN "by_cp"()"#.to_string(), format!("{base} GROUP BY object.counterparty | SUM object.amount_minor")),
+        (
+            r#"RUN "latest"($cp = "ACME", $limit = 5)"#.to_string(),
+            format!(r#"{base} AND object.counterparty = "ACME" ORDER BY object.amount_minor DESC LIMIT 5 FORMAT json"#),
+        ),
+        // A body's bare GROUP BY stays open for the call site's aggregate.
+        (
+            r#"RUN "rows_by_cp"() SUM object.amount_minor"#.to_string(),
+            format!("{base} GROUP BY object.counterparty | SUM object.amount_minor"),
+        ),
+        // The body's FORMAT renders when the call site names none.
+        (r#"RUN "top_md"()"#.to_string(), format!("{base} ORDER BY object.amount_minor DESC LIMIT 3 FORMAT markdown")),
+    ];
+    let payload = |r: &areev_cal::executor::CalExecResult| serde_json::to_value(&r.result).unwrap();
+    let subjects = |r: &areev_cal::executor::CalExecResult| match &r.result {
+        CalResultPayload::Grains { grains, .. } => grains
+            .iter()
+            .map(|g| g.fields["subject"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>(),
+        other => panic!("[{}] expected Grains, got {other:?}", b.name()),
+    };
+
+    let check = |facade: &AreevFacade, ex: &CalExecutor, handle: &str, expect_n: usize, expect_sum: i64| {
+        for (run, inline) in &pairs {
+            let ran = ex.execute(run, facade).unwrap();
+            let direct = ex.execute(inline, facade).unwrap();
+            assert_eq!(payload(&ran), payload(&direct), "[{}/{handle}] {run} vs inline", b.name());
+        }
+        let n = ex.execute(r#"RUN "n"()"#, facade).unwrap();
+        assert!(
+            matches!(n.result, CalResultPayload::Count { count } if count == expect_n),
+            "[{}/{handle}] {:?}",
+            b.name(),
+            n.result
+        );
+        let total = ex.execute(r#"RUN "total"($cp = "ACME")"#, facade).unwrap();
+        assert!(
+            matches!(&total.result, CalResultPayload::Aggregate { value, .. } if *value == json!(expect_sum)),
+            "[{}/{handle}] {:?}",
+            b.name(),
+            total.result
+        );
+        let latest = ex.execute(r#"RUN "latest"($cp = "ACME", $limit = 5)"#, facade).unwrap();
+        assert_eq!(subjects(&latest).len(), 5, "[{}/{handle}] the body's LIMIT bounds RUN", b.name());
+        // A call-site stage composes AFTER the body's: the body's top 5, then 2.
+        let capped = ex.execute(r#"RUN "latest"($cp = "ACME", $limit = 5) LIMIT 2"#, facade).unwrap();
+        assert_eq!(subjects(&capped), subjects(&latest)[..2].to_vec(), "[{}/{handle}]", b.name());
+        let summed = ex
+            .execute(r#"RUN "latest"($cp = "ACME", $limit = 5) SUM object.amount_minor"#, facade)
+            .unwrap();
+        assert!(
+            matches!(&summed.result, CalResultPayload::Aggregate { counted: 5, .. }),
+            "[{}/{handle}] a call-site SUM reads the body's 5 rows: {:?}",
+            b.name(),
+            summed.result
+        );
+    };
+
+    {
+        let facade = AreevFacade::with_session(b.open_named(name), Some(LEDGER.into()), None);
+        let ex = CalExecutor::new(CalExecutorConfig::default());
+        // The default window (1,000) sees the newest 1,000 rows — ids 200..1200.
+        let (n, sum) = (1_000, (200..1_200).filter(|i| i % 3 != 2).map(|i| i as i64 + 1).sum());
+        check(&facade, &ex, "default", n, sum);
+    }
+    let ro = b.open_named_with(name, areev_store::AreevOptions { read_only: true, ..Default::default() });
+    let facade = AreevFacade::with_session(ro, Some(LEDGER.into()), None);
+    let ex = CalExecutor::new(CalExecutorConfig { max_limit: 20_000, ..Default::default() });
+    let sum = (0..1_200).filter(|i| i % 3 != 2).map(|i| i as i64 + 1).sum();
+    check(&facade, &ex, "read-only", 1_200, sum);
+}
