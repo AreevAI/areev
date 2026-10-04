@@ -1111,7 +1111,13 @@ exact at any corpus size: `created_at` is a column on the `grains` table.
 Every other sort key (`priority`, `status`, `confidence`, and all
 type-specific fields) lives inside the immutable, content-addressed blob, where
 SQL cannot reach it without materializing a column per field — those are ranked
-in the executor over the widened scan.
+in the executor over the widened scan. Because the pushed-down sort needs no
+wide scan, its scan is sized by the pipeline's own bound instead (#377):
+`ORDER BY created_at DESC LIMIT 500` reads 500 rows (`OFFSET`s ahead of the
+`LIMIT` included), not the 50-row default page it used to answer from without
+a word. The ceiling is `max_limit` (1000 by default): past it the result is
+the newest `max_limit` rows and carries `CAL-W015` naming the ceiling. Without
+a `LIMIT`, `ORDER BY created_at` alone still returns a `default_limit` page.
 
 A stage attached to a payload it cannot act on — most usefully `ORDER BY` on a
 multi-source `ASSEMBLE`, which returns an assembled section list rather than a

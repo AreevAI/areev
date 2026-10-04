@@ -347,6 +347,7 @@ macro_rules! for_each_conformance_case {
         // saved body's stages
         $per_case!(cal_aggregates_over_dotted_paths);
         $per_case!(max_limit_above_default_applies_only_read_only);
+        $per_case!(order_by_created_at_honors_a_pipeline_limit);
         $per_case!(mount_by_locator_reads_and_refuses_writes);
         $per_case!(run_query_reads_the_body_pinned_at_start);
         $per_case!(run_applies_the_saved_body_stages);
