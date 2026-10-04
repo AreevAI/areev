@@ -6,6 +6,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **A brokered credential can ride a named header** (#374). Prefix any
+  credential source with `header:<Name>=` to send it as that header instead
+  of `Authorization: Bearer`. For example,
+  `--credential 'vendor=header:X-Api-Key=cmd:cat /run/secrets/key'` works for
+  env, `cmd:` and `vault:` sources, on the CLI (`run start`/`resume`,
+  `trigger run`) and in the Node and Python `credentials` arguments. The
+  source keeps its TTL, re-minting, owner binding and withholding. The header
+  name is checked at parse time: it must be an HTTP token, and broker-owned
+  or message-framing names are refused. A guest header colliding with it is
+  refused with `RUN-E022`. Like the bearer form, it is dropped on a
+  cross-origin redirect and never journaled. Bearer specs are unchanged. An
+  env-sourced value holding a CR/LF is now refused, as a minted one already
+  was.
+
 ### Fixed
 
 - **`ORDER BY created_at … LIMIT n` answered at most 50 rows** (#377). The

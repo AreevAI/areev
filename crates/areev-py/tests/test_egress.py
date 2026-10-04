@@ -187,3 +187,95 @@ def test_the_trigger_surface_takes_the_same_grants(tmp_path, upstream, monkeypat
     assert report["runs_started"] == 1, report
     run_id = json.loads(m.run_list(10))[0]
     assert_outcome(*outcome(m, run_id), "trigger")
+
+
+# ---- #374: a credential source selects a named header ----------------------
+
+HEADER_FETCHER = os.path.join(HERE, "egress_header_fetcher.py")
+KEYS = ["key-374-first", "key-374-rotated"]
+
+
+class _KeyedUpstream(BaseHTTPRequestHandler):
+    """Demands `X-Api-Key` and reports which headers carried a key — by the
+    key's INDEX, never the key, since a reflected credential is scrubbed."""
+
+    def do_POST(self):
+        pending = int(self.headers.get("Content-Length") or 0)
+        if pending:
+            self.rfile.read(pending)
+        sent = self.headers.get("X-Api-Key")
+        carriers = sorted(k.lower() for k, v in self.headers.items() if any(key in v for key in KEYS))
+        body = json.dumps({"keyIndex": KEYS.index(sent) if sent in KEYS else -1,
+                           "auth": bool(self.headers.get("Authorization")),
+                           "carriers": carriers}).encode()
+        self.send_response(200 if sent in KEYS else 401)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_):
+        pass
+
+
+@pytest.fixture
+def keyed_upstream():
+    srv = HTTPServer(("127.0.0.1", 0), _KeyedUpstream)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    yield "http://127.0.0.1:%d" % srv.server_address[1]
+    srv.shutdown()
+    srv.server_close()
+
+
+def test_a_command_sourced_key_rides_only_x_api_key_across_resume(tmp_path, keyed_upstream):
+    up = keyed_upstream
+    key_file = tmp_path / "vendor.key"
+    key_file.write_text(KEYS[0] + "\n")
+    m = areev.Areev(str(tmp_path / "h.db"), ns="ops")
+    uri = m.put_blob(json.dumps({"upstream": up}).encode())
+    fetcher = m.add("tool", json.dumps({
+        "tool_name": "fetcher", "kind": "definition", "executor_uri": uri,
+        "runtime": "wasm32-areev-io",
+        "capabilities": [{"http": {"hosts": [up], "methods": ["POST"], "credentials": ["vendor"]}}]}))
+    approve = m.add("tool", json.dumps({
+        "tool_name": "approve", "kind": "definition", "tool_description": "human approves",
+        "executor_kind": "client"}))
+    wf = m.add("workflow", json.dumps({
+        "name": "keyed", "nodes": ["approve", "fetcher"],
+        "edges": [{"src": "approve", "dst": "fetcher"}],
+        "bindings": {"approve": approve, "fetcher": fetcher}}))
+    run = dict(allow_executor=uri.removeprefix("cas://sha256:"),
+               executor_cache=str(tmp_path / "execache"),
+               sandbox_cmd="%s %s" % (sys.executable, HEADER_FETCHER),
+               credentials="vendor=header:X-Api-Key=cmd:cat %s" % key_file,
+               allow_hosts=up, tool_egress="fetcher:vendor:POST")
+
+    # A bad header is refused before anything is journaled.
+    for bad, why in (("Authorization", "owned by the broker"), ("Content-Length", "frames"),
+                     ("X Api", "not a valid HTTP header name")):
+        with pytest.raises(ValueError, match=why):
+            m.run_start(wf, "py-bad", **{**run, "credentials": "vendor=header:%s=cmd:cat %s" % (bad, key_file)})
+
+    parked = json.loads(m.run_start(wf, "py-h1", **run))
+    assert "parked" in parked, parked
+    m.run_respond("py-h1", parked["parked"]["asks"][0]["tool_call_id"], '{"ok": true}',
+                  responder="user:officer")
+    # Rotated while parked: the resumed run resolves the CURRENT value.
+    key_file.write_text(KEYS[1] + "\n")
+    done = json.loads(m.run_resume("py-h1", **run))
+    assert done["finished"] == "Completed", done
+
+    result, refusals = outcome(m, "py-h1")
+    assert result["admitted"]["status"] == 200, result["admitted"]
+    assert result["admitted"]["body"]["status"] == 200, result["admitted"]
+    saw = json.loads(result["admitted"]["body"]["body"])
+    assert saw == {"keyIndex": 1, "auth": False, "carriers": ["x-api-key"]}, saw
+    assert result["collision"]["status"] == 403, result["collision"]
+    assert result["collision"]["body"]["code"] == "RUN-E022"
+    assert len(refusals) == 1, refusals
+    journal = json.dumps(result) + m.run_trace("py-h1", 500, False, "ops") \
+        + m.run_trace("py-h1", 500, False, "agent:harness")
+    for k in KEYS:
+        assert k not in result["env"], "the module's environment never holds the key"
+        assert k not in journal, "no grain, result or refusal holds the key"

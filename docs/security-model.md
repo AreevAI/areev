@@ -1003,6 +1003,22 @@ Each of the following is worth stating because it closes a specific hole:
   contain `@`, and mis-parsing one would bind the credential to an owner the
   operator never wrote. `Credential`'s `Debug` is redacted for the same class
   of reason a resolver's output is never quoted.
+
+  **A source may name the header it rides in** (#374):
+  `NAME=header:X-Api-Key=<source>` sends the value as `X-Api-Key: <value>`
+  instead of `Authorization: Bearer <value>`. Without it, a key that had to go
+  in a named header could only travel in the tool's own `headers`, which are
+  non-credential inputs and are journaled in full. The name is checked at
+  parse time. It must be an RFC 9110 token, which keeps CR/LF out. It must not
+  be broker-owned, and it must not frame the message (`Content-Length`,
+  `Transfer-Encoding`, `Connection`, `TE`, `Trailer`, `Upgrade`,
+  `Keep-Alive`, `Expect`). The configured name then joins the broker-owned set
+  for that call: a guest header colliding with it is refused, in any casing,
+  after resolution, which is the first point the name is known. The header
+  travels exactly as far as the bearer form does: it is dropped on a
+  cross-origin redirect, scrubbed from a reflected response, and never
+  journaled. An env-sourced value is now refused if it holds a control
+  character, the same check a minted value already passed.
 - **The allowlist governs every hop, not just the first** (#99, fixed in
   1.6.0). The HTTP client used to follow up to ten redirects on its own while
   the allowlist was checked once, on the caller-supplied URL, before dispatch

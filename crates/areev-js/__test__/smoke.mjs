@@ -2175,6 +2175,123 @@ test('a wasm32-areev-io tool reaches the credential broker from the binding exac
   }
 })
 
+// ---- #374: a credential source selects a named header ---------------------
+
+const HEADER_FETCHER = fileURLToPath(new URL('./fixtures/egress_header_fetcher.mjs', import.meta.url))
+
+/// An upstream that demands `X-Api-Key` and reports which headers carried a key.
+async function keyedUpstream(keys) {
+  const server = createServer((req, res) => {
+    const carriers = Object.entries(req.headers)
+      .filter(([, v]) => keys.some((k) => String(v).includes(k))).map(([k]) => k)
+    res.statusCode = keys.includes(req.headers['x-api-key']) ? 200 : 401
+    res.setHeader('content-type', 'application/json')
+    // The INDEX of the key, never the key: a reflected credential is scrubbed.
+    res.end(JSON.stringify({ keyIndex: keys.indexOf(req.headers['x-api-key']), auth: !!req.headers.authorization, carriers }))
+  })
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  return { url: `http://127.0.0.1:${server.address().port}`, close: () => server.close() }
+}
+
+/// approve (a human gate) → fetcher, so the fetcher runs on RESUME.
+async function declareHeaderFetcher(m, up) {
+  const uri = await m.putBlob(Buffer.from(JSON.stringify({ upstream: up })))
+  const fetcher = await m.add('tool', JSON.stringify({
+    tool_name: 'fetcher', kind: 'definition', executor_uri: uri, runtime: 'wasm32-areev-io',
+    capabilities: [{ http: { hosts: [up], methods: ['POST'], credentials: ['vendor'] } }],
+  }))
+  const approve = await m.add('tool', JSON.stringify({
+    tool_name: 'approve', kind: 'definition', tool_description: 'human approves', executor_kind: 'client',
+  }))
+  const wf = await m.add('workflow', JSON.stringify({
+    name: 'keyed', nodes: ['approve', 'fetcher'], edges: [{ src: 'approve', dst: 'fetcher' }],
+    bindings: { approve, fetcher },
+  }))
+  return { wf, addr: uri.replace('cas://sha256:', '') }
+}
+
+async function assertKeyedOutcome(m, runId, want, keys, label) {
+  const { result, refusals } = await fetcherOutcome(m, runId)
+  assert.equal(result.admitted.status, 200, `${label}: ${JSON.stringify(result.admitted)}`)
+  assert.equal(result.admitted.body.status, 200, `${label}: ${JSON.stringify(result.admitted)}`)
+  const saw = JSON.parse(result.admitted.body.body)
+  assert.equal(saw.keyIndex, want, `${label}: the upstream got the current key in X-Api-Key`)
+  assert.equal(saw.auth, false, `${label}: and no Authorization header`)
+  assert.deepEqual(saw.carriers, ['x-api-key'], `${label}: the key rode only that header`)
+  assert.equal(result.collision.status, 403, `${label}: ${JSON.stringify(result.collision)}`)
+  assert.equal(result.collision.body.code, 'RUN-E022')
+  assert.equal(refusals.length, 1, `${label}: the collision is journaled`)
+  const journal = JSON.stringify(result) + await m.runTrace(runId, 500, false, 'ops')
+    + await m.runTrace(runId, 500, false, 'agent:harness')
+  for (const k of keys) {
+    assert.ok(!result.env.includes(k), `${label}: the module's environment never holds the key`)
+    assert.ok(!journal.includes(k), `${label}: no grain, result or refusal holds the key`)
+  }
+}
+
+test('a command-sourced key rides only X-Api-Key, from the binding and from CLI resume (#374)', async (t) => {
+  const KEYS = ['key-374-first', 'key-374-rotated']
+  const up = await keyedUpstream(KEYS)
+  const dir = mkdtempSync(join(tmpdir(), 'areev-hdr-'))
+  const db = join(dir, 'h.db')
+  const cache = join(dir, 'execache')
+  const keyFile = join(dir, 'vendor.key')
+  writeFileSync(keyFile, KEYS[0] + '\n')
+  const sandbox = `${process.execPath} ${HEADER_FETCHER}`
+  const creds = `vendor=header:X-Api-Key=cmd:cat ${keyFile}`
+  const egress = [creds, up.url, 'fetcher:vendor:POST']
+  try {
+    const m = new Areev(db, 'ops')
+    const { wf, addr } = await declareHeaderFetcher(m, up.url)
+    const start = (id, c = creds) => m.runStart(
+      wf, id, null, null, null, null, null, null, null, null, null, null,
+      addr, cache, sandbox, null, null, null, c, egress[1], egress[2])
+
+    // A bad header is refused before anything is journaled.
+    await assert.rejects(start('js-bad', `vendor=header:Authorization=cmd:cat ${keyFile}`), /owned by the broker/)
+    await assert.rejects(start('js-bad', `vendor=header:X Api=cmd:cat ${keyFile}`), /not a valid HTTP header name/)
+
+    const parked = JSON.parse(await start('js-h1'))
+    assert.ok(parked.parked, JSON.stringify(parked))
+    await m.runRespond('js-h1', parked.parked.asks[0].tool_call_id, '{"ok":true}', 'user:officer')
+    // Rotated while parked: the resumed run resolves the CURRENT value.
+    writeFileSync(keyFile, KEYS[1] + '\n')
+    const done = JSON.parse(await m.runResume(
+      'js-h1', null, null, null, null, null, addr, cache, sandbox, null, null, null, ...egress))
+    assert.equal(done.finished, 'Completed', JSON.stringify(done))
+    await assertKeyedOutcome(m, 'js-h1', 1, KEYS, 'binding')
+
+    // The CLI leg: parked by the binding, resumed by `areev run resume`.
+    const cliParked = JSON.parse(await start('cli-h1'))
+    await m.runRespond('cli-h1', cliParked.parked.asks[0].tool_call_id, '{"ok":true}', 'user:officer')
+    m.close()
+    const bin = process.env.AREEV_BIN
+      || ['target/debug/areev', 'target/release/areev'].map((p) => join(REPO, p)).find(existsSync)
+    if (!bin) {
+      t.diagnostic('CLI leg skipped: no areev binary found (set AREEV_BIN)')
+      return
+    }
+    const cli = await new Promise((resolve) => {
+      const child = spawn(bin, [
+        'run', '--db', db, '--ns', 'ops', 'resume', '--run-id', 'cli-h1',
+        '--allow-executor', addr, '--executor-cache', cache, '--sandbox-cmd', sandbox,
+        '--credential', creds, '--allow-host', egress[1], '--tool-egress', egress[2],
+      ])
+      let stdout = '', stderr = ''
+      child.stdout.on('data', (d) => { stdout += d })
+      child.stderr.on('data', (d) => { stderr += d })
+      child.on('close', (status) => resolve({ status, stdout, stderr }))
+    })
+    assert.equal(cli.status, 0, `${cli.stdout}\n${cli.stderr}`)
+    for (const k of KEYS) assert.ok(!(cli.stdout + cli.stderr).includes(k), 'the CLI never prints the key')
+    const m2 = new Areev(db, 'ops')
+    await assertKeyedOutcome(m2, 'cli-h1', 1, KEYS, 'cli')
+    m2.close()
+  } finally {
+    up.close()
+  }
+})
+
 test('grain attestation: keyed writes attest, require-policy import admits signed and refuses unsigned', async () => {
   // docs/grain-attestation-plan.md — same contract as the Python test.
   const dir = mkdtempSync(join(tmpdir(), 'areev-js-attest-'))

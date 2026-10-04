@@ -319,7 +319,7 @@ fn js_evaluator(
     let mut credentials = std::collections::BTreeMap::new();
     if let Some(raw) = credentials_json {
         let map: std::collections::BTreeMap<String, String> = serde_json::from_str(&raw)
-            .map_err(|e| err(format!("credentialsJson: expected {{\"name\": \"ENV_VAR|cmd:CMD|vault:PATH#FIELD\"}}: {e}")))?;
+            .map_err(|e| err(format!("credentialsJson: expected {{\"name\": \"[header:NAME=]ENV_VAR|cmd:CMD|vault:PATH#FIELD\"}}: {e}")))?;
         for (name, spec) in map {
             // `@principal` binds a credential to a run principal for its use
             // in a started RUN (#101); this connector-poll path is the
