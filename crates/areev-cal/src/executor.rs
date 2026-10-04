@@ -2543,9 +2543,12 @@ impl CalExecutor {
         };
         let has_post_filter = residual_where.is_some();
         // CONTRADICTIONS has already widened to the same bound; don't stack.
+        // `created_at` is the one sort key the index can serve, so push it
+        // down instead of widening for it.
+        let pushed_down_sort = matches!(order_by, Some((ref f, _)) if f == "created_at");
         let wide_reason: Option<String> = if recall.contradictions.is_some() {
             None
-        } else if let Some((ref f, _)) = order_by {
+        } else if let Some((f, _)) = order_by.as_ref().filter(|_| !pushed_down_sort) {
             Some(format!("ORDER BY {f}"))
         } else if has_count {
             Some("COUNT".to_string())
@@ -2556,20 +2559,37 @@ impl CalExecutor {
         } else {
             None
         };
-        // `created_at` is the one sort key the index can serve, so push it
-        // down instead of widening for it.
-        let pushed_down_sort = matches!(order_by, Some((ref f, _)) if f == "created_at");
         if let (true, Some((ref field, descending))) = (pushed_down_sort, &order_by) {
             params.order_by = Some(crate::store_types::SortKey {
                 field: field.clone(),
                 descending: *descending,
             });
         }
-        let widened_limit = if wide_reason.is_some() && !pushed_down_sort {
+        let widened_limit = if wide_reason.is_some() {
             params.limit.replace(self.max_limit(store) as usize)
         } else {
             None
         };
+        // #377 — a pushed-down sort needs no wide scan, but the `LIMIT` after
+        // `ORDER BY created_at` is a pipeline stage, so the scan must be sized
+        // by it: left at the default page, `LIMIT 500` silently answered 50.
+        // Past `max_limit` the answer is bounded, and CAL-W015 says so.
+        let mut pushdown_bounded: Option<String> = None;
+        if pushed_down_sort
+            && wide_reason.is_none()
+            && recall.contradictions.is_none()
+            && recall.limit.is_none()
+            && recall.recent.is_none()
+        {
+            let descending = order_by.as_ref().is_some_and(|(_, d)| *d);
+            if let Some(need) = pipeline_row_bound(&query.pipeline, ("created_at", descending)) {
+                let max = self.max_limit(store) as usize;
+                params.limit = Some(need.min(max));
+                if need > max {
+                    pushdown_bounded = Some(format!("ORDER BY created_at … LIMIT {need}"));
+                }
+            }
+        }
 
         // WITH options.
         self.apply_with_options(&query.with_options, &mut params)?;
@@ -2644,6 +2664,17 @@ impl CalExecutor {
         // still runs afterwards and re-sorts the same grains — idempotent, and
         // it keeps the stage's behaviour unchanged for every path that did not
         // widen.
+        if let Some(stage) = pushdown_bounded {
+            if scan_was_bounded {
+                exec_warnings.push(
+                    super::errors::CalWarning::ScanBounded {
+                        stage,
+                        scanned: self.max_limit(store) as usize,
+                    }
+                    .to_string(),
+                );
+            }
+        }
         if let Some(reason) = wide_reason {
             // Even a max_limit scan can fill up. Saying so is the point: the
             // result is a well-formed list that happens to be the top-k of a
@@ -8059,6 +8090,27 @@ fn pipeline_value<'a>(
 
 /// Sort grains on one field or dotted path (`ORDER BY`), stable, keys
 /// resolved once per grain rather than once per comparison.
+/// How many rows, in the scan's own order, a pipeline needs to produce its
+/// answer (#377): `OFFSET`s ahead of the first `LIMIT`/`FIRST`, plus that
+/// bound. `None` when the pipeline is unbounded, or when a stage before the
+/// bound could reorder or drop rows (a re-sort on another field, a filter,
+/// an extraction) — the caller then keeps whatever scan it had.
+fn pipeline_row_bound(stages: &[PipelineStage], scan_sort: (&str, bool)) -> Option<usize> {
+    let mut skipped: usize = 0;
+    for stage in stages {
+        match stage {
+            PipelineStage::Select { .. } | PipelineStage::Project { .. } => {}
+            PipelineStage::OrderBy { field, descending, .. }
+                if (field.as_str(), *descending) == scan_sort => {}
+            PipelineStage::Offset { value, .. } => skipped = skipped.saturating_add(*value as usize),
+            PipelineStage::Limit { value, .. } => return Some(skipped.saturating_add(*value as usize)),
+            PipelineStage::First { .. } => return Some(skipped.saturating_add(1)),
+            _ => return None,
+        }
+    }
+    None
+}
+
 fn sort_grains_by(grains: Vec<CalGrainResult>, field: &str, descending: bool) -> Vec<CalGrainResult> {
     let mut keyed: Vec<(Option<serde_json::Value>, CalGrainResult)> = grains
         .into_iter()

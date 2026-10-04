@@ -107,6 +107,54 @@ pub fn max_limit_above_default_applies_only_read_only(b: &dyn Backend) {
     assert_eq!(value(&res), json!(1010), "[{}] read-only sees the whole set", b.name());
 }
 
+/// #377: `ORDER BY created_at` is pushed into the backend's sort, and the
+/// `LIMIT` after it is a pipeline stage — so the scan must be sized by that
+/// stage, not by the 50-row default page it used to run over. Above
+/// `max_limit` the answer is bounded and `CAL-W015` says so.
+pub fn order_by_created_at_honors_a_pipeline_limit(b: &dyn Backend) {
+    let mut m = b.open_named("cal_order_by_limit");
+    for i in 0..120 {
+        m.add(&txn(i, "ACME", 1)).unwrap();
+    }
+    let facade = AreevFacade::with_session(m, Some(LEDGER.into()), None);
+    let base = format!(r#"RECALL facts WHERE namespace = "{LEDGER}" AND relation = "transaction""#);
+    let subjects = |res: &areev_cal::executor::CalExecResult| -> Vec<String> {
+        let CalResultPayload::Grains { grains, .. } = &res.result else {
+            panic!("[{}] expected Grains, got {:?}", b.name(), res.result);
+        };
+        grains.iter().map(|g| g.fields["subject"].as_str().unwrap().to_string()).collect()
+    };
+    for (n, want) in [(49, 49), (50, 50), (51, 51), (100, 100), (500, 120)] {
+        let res = cal(&facade, &format!("{base} ORDER BY created_at DESC LIMIT {n} FORMAT json"));
+        let got = subjects(&res);
+        assert_eq!(got.len(), want, "[{}] LIMIT {n}", b.name());
+        assert_eq!(got[0], "txn-119", "[{}] LIMIT {n} is newest first", b.name());
+        assert_eq!(got[want - 1], format!("txn-{}", 120 - want), "[{}] LIMIT {n}", b.name());
+        assert!(res.warnings.iter().all(|w| !w.starts_with("CAL-W015")), "[{}] {:?}", b.name(), res.warnings);
+    }
+    // Ascending, and an OFFSET ahead of the LIMIT, size the scan the same way.
+    let asc = subjects(&cal(&facade, &format!("{base} ORDER BY created_at ASC | OFFSET 60 | LIMIT 55")));
+    assert_eq!(asc.len(), 55, "[{}]", b.name());
+    assert_eq!((asc[0].as_str(), asc[54].as_str()), ("txn-60", "txn-114"), "[{}]", b.name());
+    // A COUNT after the pushed-down sort counts the whole set, not a page.
+    let count = cal(&facade, &format!("{base} ORDER BY created_at DESC | COUNT"));
+    match count.result {
+        CalResultPayload::Count { count } => assert_eq!(count, 120, "[{}]", b.name()),
+        other => panic!("[{}] expected Count, got {other:?}", b.name()),
+    }
+
+    // Past the ceiling the answer is bounded, and says so.
+    let small = CalExecutor::new(CalExecutorConfig { max_limit: 100, ..Default::default() });
+    let res = small.execute(&format!("{base} ORDER BY created_at DESC LIMIT 500"), &facade).unwrap();
+    assert_eq!(subjects(&res).len(), 100, "[{}]", b.name());
+    assert!(
+        res.warnings.iter().any(|w| w.starts_with("CAL-W015") && w.contains("100")),
+        "[{}] {:?}",
+        b.name(),
+        res.warnings
+    );
+}
+
 /// #369: a mount opened by LOCATOR — a file on the embedded backend, a DSN
 /// on postgres — is read through CAL and refuses a write addressed to it.
 pub fn mount_by_locator_reads_and_refuses_writes(b: &dyn Backend) {

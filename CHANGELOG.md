@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`ORDER BY created_at … LIMIT n` answered at most 50 rows** (#377). The
+  `created_at` sort is pushed into the scan, so it skipped the wide scan the
+  other sort keys get. The `LIMIT` after it is a pipeline stage, so the scan
+  stayed at the 50-row default page and `LIMIT 500` returned 50 rows with no
+  error. That scan also raised a false `CAL-W015` claiming 1,000 grains had
+  been scanned. The scan is now sized by the pipeline's own
+  `OFFSET`/`LIMIT`/`FIRST`. Past `max_limit` the answer is bounded and
+  `CAL-W015` names the ceiling. A `COUNT`, aggregate or post-filter after the
+  pushed-down sort now widens like any other, instead of counting a page.
+
 ## [1.11.1] — 2026-10-02
 
 ### Fixed
