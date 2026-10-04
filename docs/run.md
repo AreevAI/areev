@@ -562,6 +562,51 @@ from changed. Four things worth knowing:
 A resolver command containing a comma has to live in a script: commas separate
 credentials in this flag.
 
+**Every source rides `Authorization: Bearer <value>` unless it names another
+header** (#374). An API that wants its key in a header of its own, such as
+`X-Api-Key`, gets it by prefixing the source with `header:<Name>=`:
+
+```bash
+--credential 'vendor=header:X-Api-Key=cmd:cat /run/secrets/vendor-key'
+--credential 'vendor=header:X-Api-Key=VENDOR_KEY'                 # env var, read once
+--credential 'vendor=header:apikey=vault:secret/data/vendor#key'  # Vault/OpenBao
+```
+
+The selector changes only where the value is sent. The source behind it keeps
+its own rules: TTL and re-minting, fail-closed resolution, `@principal`
+binding, and withholding from child processes. The bindings take the same
+string: `credentials` on `runStart`/`runResume` (Node) and `run_start`/`run_resume`
+(Python), and the values of a trigger's credentials JSON map. A complete Node
+run looks like this:
+
+```js
+const run = JSON.parse(await m.runStart(
+  wf, 'vendor-1', null, null, null, null, null, null, null, null, null, null,
+  addr, cache, null, null, null, null,
+  'vendor=header:X-Api-Key=cmd:cat /run/secrets/vendor-key', // credentials
+  'https://api.vendor.example',                               // allowHosts
+  'fetcher:vendor:POST',                                      // toolEgress
+))
+```
+
+In Python, the same run is `m.run_start(wf, "vendor-1", allow_executor=addr,
+executor_cache=cache, credentials="vendor=header:X-Api-Key=cmd:cat
+/run/secrets/vendor-key", allow_hosts="https://api.vendor.example",
+tool_egress="fetcher:vendor:POST")`. On the CLI it is `areev run start …
+--credential 'vendor=header:X-Api-Key=cmd:cat /run/secrets/vendor-key'`.
+`run resume` takes the same flags and resolves the credential again under the
+TTL rules above.
+
+The header name is checked when the spec is parsed, so a bad one fails before
+the run starts. It must be an HTTP token, so an empty name or one containing
+CR/LF is refused. It may not be one the broker owns (`Authorization`, `Cookie`,
+`Host`, `Proxy-Authorization`) or one that frames the message
+(`Content-Length`, `Transfer-Encoding`, `Connection`, …). Once configured,
+that header is the broker's: a tool that sets it among its own `headers` is
+refused with `RUN-E022`, like one setting `Authorization`. The value travels
+only as far as the credential does: a cross-origin redirect is followed without
+it, and neither the journal nor a refusal records it.
+
 **A refusal is journaled, not just logged.** It reaches the tool as a `403`
 carrying `RUN-E022`, prints to stderr when the run ends, *and* lands in the
 memory as an Observation in `agent:harness`:

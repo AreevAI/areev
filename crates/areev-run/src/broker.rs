@@ -128,6 +128,13 @@ impl Credential {
         if v.trim().is_empty() {
             return Err(format!("credential env var {var} is empty"));
         }
+        // Sent verbatim in a header; a CR or LF would split it in two (#374).
+        if !areev_core::types::capability::is_valid_header_value(&v) {
+            return Err(format!(
+                "credential env var {var} holds a control character (such as CR/LF) and cannot \
+                 be sent in an HTTP header"
+            ));
+        }
         areev_core::proc::deny_env_var(var);
         Ok(Credential::Bearer(v))
     }
@@ -225,6 +232,9 @@ pub enum CredentialSource {
         /// resolver's own auth (`VAULT_TOKEN`, `AWS_PROFILE`, …). See
         /// `CredentialSource::spawn_policy` for why this list exists at all.
         pass_env: Vec<String>,
+        /// The header the minted value rides in (#374); `None` is
+        /// `Authorization: Bearer`.
+        header: Option<String>,
     },
     /// Read from HashiCorp Vault or OpenBao's KV API over its HTTP interface.
     ///
@@ -242,7 +252,56 @@ pub enum CredentialSource {
         /// Which field of the secret carries the token.
         field: String,
         ttl: std::time::Duration,
+        /// The header the value rides in (#374); `None` is
+        /// `Authorization: Bearer`.
+        header: Option<String>,
     },
+}
+
+/// Header names a `header:<Name>=` credential may not select (#374).
+///
+/// The broker-owned four ([`BROKER_OWNED_HEADERS`]) are refused because the
+/// bearer form already owns `Authorization`, and `Cookie`/`Host`/
+/// `Proxy-Authorization` are refused to guests for reasons that hold for an
+/// operator's secret too. The rest frame or route the HTTP message itself: a
+/// secret written into `Content-Length` or `Transfer-Encoding` corrupts the
+/// request rather than authenticating it.
+///
+/// [`BROKER_OWNED_HEADERS`]: areev_core::types::capability::BROKER_OWNED_HEADERS
+const CREDENTIAL_HEADER_REFUSED: [&str; 8] = [
+    "connection",
+    "content-length",
+    "expect",
+    "keep-alive",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+];
+
+/// Refuse a header name a credential cannot ride in (#374): empty, not an RFC
+/// 9110 token (which is what keeps CR/LF out), broker-owned, or one that
+/// frames the message.
+fn check_credential_header(name: &str) -> Result<()> {
+    if !areev_core::types::capability::is_valid_header_name(name) {
+        return Err(format!(
+            "credential header {name:?} is not a valid HTTP header name — write \
+             header:<Name>=<source>, e.g. header:X-Api-Key=cmd:…"
+        ));
+    }
+    let lower = name.to_ascii_lowercase();
+    if areev_core::types::capability::is_broker_owned_header(name) {
+        return Err(format!(
+            "credential header {name:?} is owned by the broker — a bearer credential already \
+             rides in Authorization; drop the header: prefix to use it"
+        ));
+    }
+    if CREDENTIAL_HEADER_REFUSED.contains(&lower.as_str()) {
+        return Err(format!(
+            "credential header {name:?} frames the HTTP message and cannot carry a credential"
+        ));
+    }
+    Ok(())
 }
 
 impl From<Credential> for CredentialSource {
@@ -261,6 +320,12 @@ impl CredentialSource {
     /// | `SHEETS_TOKEN` / `SHEETS_TOKEN@user:alice` | environment variable |
     /// | `cmd:gcloud auth print-access-token` | [`CredentialSource::Command`] |
     /// | `vault:secret/data/google#access_token` | [`CredentialSource::Vault`] |
+    /// | `header:X-Api-Key=<any of the above>` | the same source, sent in `X-Api-Key` (#374) |
+    ///
+    /// Every form but the last sends `Authorization: Bearer <value>`. The
+    /// `header:` selector names a different header for APIs that want one; its
+    /// name is checked here (an RFC 9110 token, not broker-owned, not one that
+    /// frames the message), so a bad one fails at configuration, not mid-run.
     ///
     /// ## Why only the bare form parses `@principal`
     ///
@@ -276,6 +341,21 @@ impl CredentialSource {
     /// carries no such ambiguity.
     pub fn from_spec(spec: &str) -> Result<(CredentialSource, Option<String>)> {
         let spec = spec.trim();
+        if let Some(rest) = spec.strip_prefix("header:") {
+            let (header, inner) = rest.split_once('=').ok_or_else(|| {
+                format!(
+                    "credential spec {spec:?}: a header credential is written \
+                     header:<Name>=<source>, e.g. header:X-Api-Key=cmd:cat /run/secrets/key"
+                )
+            })?;
+            let header = header.trim();
+            check_credential_header(header)?;
+            if inner.trim_start().starts_with("header:") {
+                return Err(format!("credential spec {spec:?} selects a header twice"));
+            }
+            let (source, owner) = Self::from_spec(inner)?;
+            return Ok((source.in_header(header), owner));
+        }
         if let Some(rest) = spec.strip_prefix("cmd:") {
             let command = rest.trim();
             if command.is_empty() {
@@ -286,6 +366,7 @@ impl CredentialSource {
                     command: command.to_string(),
                     ttl: DEFAULT_CREDENTIAL_TTL,
                     pass_env: Vec::new(),
+                    header: None,
                 },
                 None,
             ));
@@ -314,12 +395,41 @@ impl CredentialSource {
                     path: path.to_string(),
                     field: field.to_string(),
                     ttl: DEFAULT_CREDENTIAL_TTL,
+                    header: None,
                 },
                 None,
             ));
         }
         let (cred, owner) = Credential::bearer_from_env_spec(spec)?;
         Ok((CredentialSource::Static(cred), owner))
+    }
+
+    /// The source half of a spec, past any `header:<Name>=` selector (#374) —
+    /// what a host inspects to decide which variables a spec names.
+    pub fn source_spec(spec: &str) -> &str {
+        let spec = spec.trim();
+        match spec.strip_prefix("header:").and_then(|r| r.split_once('=')) {
+            Some((_, inner)) => inner.trim(),
+            None => spec,
+        }
+    }
+
+    /// The same source, its value carried in the named header instead of
+    /// `Authorization: Bearer` (#374). The name has already been checked.
+    fn in_header(self, name: &str) -> CredentialSource {
+        let name = name.to_string();
+        match self {
+            CredentialSource::Static(Credential::Bearer(value))
+            | CredentialSource::Static(Credential::Header { value, .. }) => {
+                CredentialSource::Static(Credential::Header { name, value })
+            }
+            CredentialSource::Command { command, ttl, pass_env, .. } => {
+                CredentialSource::Command { command, ttl, pass_env, header: Some(name) }
+            }
+            CredentialSource::Vault { path, field, ttl, .. } => {
+                CredentialSource::Vault { path, field, ttl, header: Some(name) }
+            }
+        }
     }
 
     /// Apply host-level resolver settings. No-op on a static source, which has
@@ -575,14 +685,19 @@ fn resolve_credential(
             }
         }
     }
-    let value = match source {
+    let (value, header) = match source {
         CredentialSource::Static(_) => unreachable!("handled above"),
-        CredentialSource::Command { command, pass_env, .. } => {
-            mint_from_command(name, command, pass_env)?
+        CredentialSource::Command { command, pass_env, header, .. } => {
+            (mint_from_command(name, command, pass_env)?, header)
         }
-        CredentialSource::Vault { path, field, .. } => mint_from_vault(name, path, field)?,
+        CredentialSource::Vault { path, field, header, .. } => {
+            (mint_from_vault(name, path, field)?, header)
+        }
     };
-    let token = Credential::Bearer(value);
+    let token = match header {
+        Some(h) => Credential::Header { name: h.clone(), value },
+        None => Credential::Bearer(value),
+    };
     if let Ok(mut guard) = cache.lock() {
         // `Instant + Duration` PANICS on overflow, and this runs inside the
         // cache lock on the broker's accept-loop thread — an operator typo of

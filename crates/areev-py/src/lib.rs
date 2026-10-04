@@ -3878,7 +3878,7 @@ impl Areev {
         if let Some(raw) = credentials_json {
             let map: std::collections::BTreeMap<String, String> =
                 serde_json::from_str(&raw).map_err(|e| {
-                    err(format!("credentials_json: expected {{\"name\": \"ENV_VAR|cmd:CMD|vault:PATH#FIELD\"}}: {e}"))
+                    err(format!("credentials_json: expected {{\"name\": \"[header:NAME=]ENV_VAR|cmd:CMD|vault:PATH#FIELD\"}}: {e}"))
                 })?;
             for (name, spec) in map {
                 // `@principal` binds a credential to a run principal for its

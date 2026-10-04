@@ -153,7 +153,7 @@ COMMANDS:
                                       and gates member aliases for a
                                       `composite` one
   trigger  run [--id T] [--connector-cmd CMD] [--tool-cmd CMD] [--dry-run]
-           [--lease SECS] [--max-items N] [--credential NAME=ENV_VAR|cmd:CMD|vault:P#F]
+           [--lease SECS] [--max-items N] [--credential NAME=[header:H=]ENV_VAR|cmd:CMD|vault:P#F]
            [--credential-ttl SECS] [--resolver-env VAR,...]
            [--allow-executor HEX,...] [--sandbox-cmd CMD] [--executor-cache DIR]
            [--executor-timeout SECS] [--tool-env VAR,...]
@@ -404,7 +404,12 @@ COMMANDS:
            (default 300s), re-minted after it, and refused rather than sent
            unauthenticated if the resolver fails. Bind a principal to a minted
            credential on the NAME side (NAME@PRINCIPAL=cmd:...), because a
-           command may itself contain '@'. --resolver-env names the variables
+           command may itself contain '@'. Every credential rides
+           `Authorization: Bearer` unless its source is prefixed
+           header:NAME= (NAME=header:X-Api-Key=cmd:cat /run/secrets/key,
+           or =header:X-Api-Key=ENV_VAR / =header:apikey=vault:P#F), for
+           APIs that want a key in a header of their own; broker-owned and
+           message-framing header names are refused. --resolver-env names the variables
            a resolver needs for its OWN authentication ($VAULT_TOKEN,
            $AWS_PROFILE): they are withheld from every other subprocess and
            re-admitted only for resolvers. All five also read their
@@ -1861,7 +1866,9 @@ fn run() -> Result<(), String> {
     if let Some(list) = run_stack::flag_or_env(&flags, "credential", areev_run::egress_spec::ENV_CREDENTIAL) {
         for pair in list.split(',') {
             if let Some((_, spec)) = pair.split_once('=') {
-                let spec = spec.trim();
+                // A `header:NAME=` selector (#374) changes where the value is
+                // sent, not where it comes from — judge the source behind it.
+                let spec = areev_run::CredentialSource::source_spec(spec);
                 // A `cmd:` spec names no variable to withhold — the secret is
                 // minted at call time and never sits in the environment at
                 // all, which is the point of #113. Skipping it also keeps a

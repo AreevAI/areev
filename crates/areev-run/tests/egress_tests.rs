@@ -2852,3 +2852,182 @@ fn a_resolver_failure_tells_the_guest_nothing_about_the_vault() {
     std::env::remove_var("VAULT_ADDR");
     std::env::remove_var("VAULT_TOKEN");
 }
+
+// ---- #374: a credential source selects a named header ----------------------
+
+/// `header:<Name>=<source>` wraps every source form and leaves the bearer
+/// forms exactly as they were.
+#[test]
+fn the_header_selector_wraps_every_source_and_refuses_bad_names() {
+    std::env::set_var("AREEV_TEST_HDR_SPEC", "v");
+    let (s, owner) =
+        CredentialSource::from_spec("header:X-Api-Key=AREEV_TEST_HDR_SPEC@user:alice").unwrap();
+    assert!(
+        matches!(&s, CredentialSource::Static(Credential::Header { name, value }) if name == "X-Api-Key" && value == "v"),
+        "{s:?}"
+    );
+    assert_eq!(owner.as_deref(), Some("user:alice"), "the env form still binds an owner");
+
+    let (s, _) = CredentialSource::from_spec("header:X-Api-Key=cmd:cat /k=v").unwrap();
+    match s {
+        CredentialSource::Command { command, header, .. } => {
+            assert_eq!(command, "cat /k=v", "only the first '=' ends the header name");
+            assert_eq!(header.as_deref(), Some("X-Api-Key"));
+        }
+        other => panic!("{other:?}"),
+    }
+    let (s, _) = CredentialSource::from_spec(" header: apikey = vault:secret/data/v#key").unwrap();
+    assert!(
+        matches!(&s, CredentialSource::Vault { header: Some(h), field, .. } if h == "apikey" && field == "key"),
+        "{s:?}"
+    );
+    // Bearer specs are unchanged.
+    let (s, _) = CredentialSource::from_spec("cmd:cat /k").unwrap();
+    assert!(matches!(s, CredentialSource::Command { header: None, .. }));
+    assert_eq!(CredentialSource::source_spec("header:X-Api-Key=cmd:cat /k"), "cmd:cat /k");
+    assert_eq!(CredentialSource::source_spec("AREEV_TEST_HDR_SPEC"), "AREEV_TEST_HDR_SPEC");
+
+    for bad in [
+        "header:=cmd:cat /k",                   // empty name
+        "header:X-Api-Key",                     // no source
+        "header:X Api=cmd:cat /k",              // not a token
+        "header:X-Api\r\nX-Evil=cmd:cat /k",    // CR/LF
+        "header:Authorization=cmd:cat /k",      // broker-owned
+        "header:cookie=cmd:cat /k",
+        "header:Content-Length=cmd:cat /k",     // frames the message
+        "header:Transfer-Encoding=cmd:cat /k",
+        "header:X-A=header:X-B=cmd:cat /k",     // selected twice
+        "header:X-Api-Key=cmd:",                // the inner spec's own refusal
+    ] {
+        assert!(CredentialSource::from_spec(bad).is_err(), "{bad:?} must not parse");
+    }
+    std::env::remove_var("AREEV_TEST_HDR_SPEC");
+}
+
+/// End to end, through the broker: the minted key arrives in `X-Api-Key` and
+/// nowhere else, the guest never holds it, a guest header colliding with it is
+/// refused, and neither the call record nor a refusal repeats it.
+#[cfg(unix)]
+#[test]
+fn a_command_sourced_key_rides_only_the_selected_header() {
+    const KEY: &str = "fixture-key-374";
+    let dir = tempfile::TempDir::new().unwrap();
+    let key_file = dir.path().join("key");
+    std::fs::write(&key_file, format!("{KEY}\n")).unwrap();
+    let site = Upstream::start(vec![("/x", 200, Vec::new(), "{\"ok\":true}"), ("/fail", 500, Vec::new(), "boom")]);
+    let (source, _) =
+        CredentialSource::from_spec(&format!("header:X-Api-Key=cmd:cat {}", key_file.display()))
+            .unwrap();
+    let broker = Broker::start(
+        policy_for(&[site.origin()]),
+        [("vendor".to_string(), source)].into_iter().collect(),
+        EgressGrants::new().grant("t", CallerGrant::new().method("POST").credential("vendor")),
+        "RUN-E022",
+    )
+    .unwrap();
+    let token = broker.token_for("t").unwrap().to_string();
+
+    let (code, body) = ask(
+        broker.url(),
+        &token,
+        json!({ "url": format!("{}/x", site.origin()), "method": "POST", "credential": "vendor", "body": "{}" }),
+    );
+    assert_eq!(code, 200, "{body}");
+    assert!(!body.to_string().contains(KEY), "the guest never sees the key: {body}");
+    let reqs = site.requests();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].2, None, "no Authorization header: {reqs:?}");
+    let carrying: Vec<_> = reqs[0].3.iter().filter(|(_, v)| v.contains(KEY)).collect();
+    assert_eq!(carrying, vec![&("x-api-key".to_string(), KEY.to_string())], "{reqs:?}");
+
+    // An upstream failure is reported, not the key.
+    let (code, body) = ask(
+        broker.url(),
+        &token,
+        json!({ "url": format!("{}/fail", site.origin()), "method": "POST", "credential": "vendor", "body": "{}" }),
+    );
+    assert_eq!(code, 200, "a non-2xx reaches the caller as a status: {body}");
+    assert!(!body.to_string().contains(KEY), "{body}");
+
+    // A guest writing the configured header is refused, in any casing.
+    let (code, body) = ask(
+        broker.url(),
+        &token,
+        json!({
+            "url": format!("{}/x", site.origin()), "method": "POST", "credential": "vendor",
+            "headers": { "X-API-KEY": "attacker-chosen" }, "body": "{}"
+        }),
+    );
+    assert_eq!(code, 403, "{body}");
+    assert!(!body.to_string().contains(KEY), "{body}");
+    assert_eq!(site.requests().len(), 2, "the refused call never went out");
+
+    let audit = format!("{:?}{:?}", broker.calls(), broker.refusals());
+    assert!(!audit.contains(KEY), "the call record and refusals never hold the key: {audit}");
+    assert!(audit.contains("vendor"), "they name the credential: {audit}");
+}
+
+/// The selected header is the credential, so it obeys the origin rule the
+/// bearer form does: a cross-origin redirect is followed without it.
+#[test]
+fn a_header_credential_does_not_follow_a_cross_origin_redirect() {
+    let other = Upstream::start(vec![("/there", 200, Vec::new(), "landed")]);
+    let first = Upstream::start(vec![(
+        "/here",
+        302,
+        header("Location", &format!("{}/there", other.origin())),
+        "",
+    )]);
+    std::env::set_var("AREEV_TEST_HDR_XORIGIN", "do-not-forward");
+    let (source, _) = CredentialSource::from_spec("header:X-Api-Key=AREEV_TEST_HDR_XORIGIN").unwrap();
+    std::env::remove_var("AREEV_TEST_HDR_XORIGIN");
+    let broker = Broker::start(
+        policy_for(&[first.origin(), other.origin()]),
+        [("api".to_string(), source)].into_iter().collect(),
+        EgressGrants::new().grant("t", CallerGrant::new().credential("api")),
+        "RUN-E022",
+    )
+    .unwrap();
+    let token = broker.token_for("t").unwrap().to_string();
+    let (code, body) = ask(
+        broker.url(),
+        &token,
+        json!({ "url": format!("{}/here", first.origin()), "method": "GET", "credential": "api" }),
+    );
+    assert_eq!(code, 200, "{body}");
+    let first_hop = first.requests();
+    assert!(first_hop[0].3.iter().any(|(k, v)| k == "x-api-key" && v == "do-not-forward"));
+    let reqs = other.requests();
+    assert_eq!(reqs.len(), 1);
+    assert!(
+        reqs[0].3.iter().all(|(k, v)| k != "x-api-key" && !v.contains("do-not-forward")),
+        "a different origin gets no credential: {reqs:?}"
+    );
+}
+
+/// A resolver that prints a CR/LF inside its value is refused by name, never
+/// sent and never echoed.
+#[cfg(unix)]
+#[test]
+fn a_minted_value_carrying_crlf_is_refused_by_name() {
+    let site = Upstream::start(vec![("/x", 200, Vec::new(), "ok")]);
+    let (source, _) =
+        CredentialSource::from_spec("header:X-Api-Key=cmd:printf 'k1\\r\\nX-Evil: k2'").unwrap();
+    let broker = Broker::start(
+        policy_for(&[site.origin()]),
+        [("vendor".to_string(), source)].into_iter().collect(),
+        EgressGrants::new().grant("t", CallerGrant::new().method("POST").credential("vendor")),
+        "RUN-E022",
+    )
+    .unwrap();
+    let token = broker.token_for("t").unwrap().to_string();
+    let (code, body) = ask(
+        broker.url(),
+        &token,
+        json!({ "url": format!("{}/x", site.origin()), "method": "POST", "credential": "vendor", "body": "{}" }),
+    );
+    assert_eq!(code, 403, "{body}");
+    assert!(site.requests().is_empty(), "nothing went out");
+    let audit = format!("{:?}{body}", broker.refusals());
+    assert!(audit.contains("vendor") && !audit.contains("k2"), "{audit}");
+}

@@ -22,7 +22,9 @@ use crate::egress::EgressPolicy;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EgressSpec {
     /// `--credential`: `name=ENV_VAR[@principal]`, `name[@principal]=cmd:COMMAND`
-    /// or `name[@principal]=vault:PATH#FIELD`, comma-separated.
+    /// or `name[@principal]=vault:PATH#FIELD`, comma-separated. Any source may
+    /// be prefixed `header:NAME=` to send it in that header instead of
+    /// `Authorization: Bearer` (#374).
     pub credentials: Option<String>,
     /// `--allow-host`: URL prefixes, comma-separated. Absent means unrestricted.
     pub allow_hosts: Option<String>,
@@ -107,7 +109,8 @@ impl EgressSpec {
             let (lhs, spec) = pair.split_once('=').ok_or_else(|| {
                 format!(
                     "--credential: expected name=ENV_VAR[@principal], name[@principal]=cmd:COMMAND, \
-                     or name[@principal]=vault:PATH#FIELD, got {pair:?} — note that a comma \
+                     or name[@principal]=vault:PATH#FIELD (any of them optionally prefixed \
+                     header:NAME=), got {pair:?} — note that a comma \
                      separates credentials, so a resolver command containing one belongs in a script"
                 )
             })?;
