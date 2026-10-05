@@ -32,8 +32,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@nightly
+      # Pinned, not floating. `branches` (a `turso_core` dependency) calls
+      # `core::intrinsics::abort`, which nightly removed between 2026-10-02
+      # and 2026-10-04 — every release of the crate fails on a newer nightly,
+      # so a floating `nightly` failed this job while the code it fuzzes was
+      # fine. Move the date forward once turso_core's tree builds on it (try
+      # `cargo +nightly check -p branches --manifest-path fuzz/Cargo.toml`).
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: nightly-2026-10-02
           targets: x86_64-unknown-linux-gnu
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
