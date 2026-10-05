@@ -39,6 +39,14 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-fuzz
+      # `fuzz/Cargo.lock` is gitignored, so without this the build resolves
+      # every dependency to its newest release: `branches` 0.4.6 stopped
+      # compiling on current nightly (`core::intrinsics::abort` is gone) and
+      # failed this job while the tree it fuzzes was fine. Seeding from the
+      # root lockfile fuzzes the dependency versions the project actually
+      # tests with; cargo adds the fuzz crate's own entries on top.
+      - name: Seed the fuzz lockfile from the root lockfile
+        run: cp Cargo.lock fuzz/Cargo.lock
       # Run from the repo root (auto-detects the detached `fuzz/` workspace).
       # Force the gnu target: the runner's default host can be musl, whose
       # static libc is incompatible with the fuzzer's AddressSanitizer.
