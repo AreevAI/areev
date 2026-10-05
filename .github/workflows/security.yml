@@ -32,21 +32,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@nightly
+      # Pinned, not floating. `branches` (a `turso_core` dependency) calls
+      # `core::intrinsics::abort`, which nightly removed between 2026-10-02
+      # and 2026-10-04 — every release of the crate fails on a newer nightly,
+      # so a floating `nightly` failed this job while the code it fuzzes was
+      # fine. Move the date forward once turso_core's tree builds on it (try
+      # `cargo +nightly check -p branches --manifest-path fuzz/Cargo.toml`).
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: nightly-2026-10-02
           targets: x86_64-unknown-linux-gnu
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-fuzz
-      # `fuzz/Cargo.lock` is gitignored, so without this the build resolves
-      # every dependency to its newest release: `branches` 0.4.6 stopped
-      # compiling on current nightly (`core::intrinsics::abort` is gone) and
-      # failed this job while the tree it fuzzes was fine. Seeding from the
-      # root lockfile fuzzes the dependency versions the project actually
-      # tests with; cargo adds the fuzz crate's own entries on top.
-      - name: Seed the fuzz lockfile from the root lockfile
-        run: cp Cargo.lock fuzz/Cargo.lock
       # Run from the repo root (auto-detects the detached `fuzz/` workspace).
       # Force the gnu target: the runner's default host can be musl, whose
       # static libc is incompatible with the fuzzer's AddressSanitizer.
