@@ -2493,6 +2493,9 @@ impl CalExecutor {
             None
         };
 
+        // Plan with the WITH filters in place as well as the WHERE filters.
+        self.apply_with_options(&query.with_options, &mut params)?;
+
         // ── A post-retrieval stage must see the whole matching set ────────
         //
         // Same defect as CONTRADICTIONS above, in three more places. ORDER BY,
@@ -2546,6 +2549,20 @@ impl CalExecutor {
         // `created_at` is the one sort key the index can serve, so push it
         // down instead of widening for it.
         let pushed_down_sort = matches!(order_by, Some((ref f, _)) if f == "created_at");
+        // #385: a sort pushed into SQL does NOT imply its predicates are.
+        // Relation/object/IN/tags/time/confidence are filtered by the facade
+        // after its ordered scan. Anchor-based legs do not serve that sort at
+        // all. Both must see the full bounded window before the pipeline LIMIT.
+        let filtered_sort = pushed_down_sort && (
+            params.subject.is_some() || params.subject_in.is_some()
+                || params.query.is_some() || params.session_id.is_some()
+                || params.relation.is_some() || params.relation_in.is_some()
+                || params.object.is_some() || params.object_in.is_some()
+                || params.tags.is_some() || params.exclude_tags.is_some()
+                || params.time_start.is_some() || params.time_end.is_some()
+                || params.confidence_threshold.is_some()
+                || params.conflict_resolution == Some(true)
+        );
         let wide_reason: Option<String> = if recall.contradictions.is_some() {
             None
         } else if let Some((f, _)) = order_by.as_ref().filter(|_| !pushed_down_sort) {
@@ -2554,7 +2571,7 @@ impl CalExecutor {
             Some("COUNT".to_string())
         } else if let Some(agg) = aggregate {
             Some(agg)
-        } else if has_post_filter {
+        } else if has_post_filter || filtered_sort {
             Some("a post-retrieval WHERE filter".to_string())
         } else {
             None
@@ -2591,9 +2608,6 @@ impl CalExecutor {
             }
         }
 
-        // WITH options.
-        self.apply_with_options(&query.with_options, &mut params)?;
-
         // WITH exhaustive requires an ABOUT clause for semantic search.
         if params.exhaustive.is_some() && recall.about.is_none() {
             return Err(CalError::UnexpectedToken {
@@ -2626,13 +2640,13 @@ impl CalExecutor {
         }
 
         // Execute via the facade.
-        let hits = store
-            .recall(&params)
+        let (hits, scanned) = store
+            .recall_with_scan_count(&params)
             .map_err(|e| map_store_err(e, recall.span))?;
 
         // A recall that came back exactly full was cut off by the limit, so
         // anything CONTRADICTIONS says about grains beyond it is unknown.
-        let scan_was_bounded = params.limit.is_some_and(|l| hits.len() >= l);
+        let scan_was_bounded = params.limit.is_some_and(|l| scanned >= l);
 
         let mut grains = hits_to_grain_results(&hits);
 

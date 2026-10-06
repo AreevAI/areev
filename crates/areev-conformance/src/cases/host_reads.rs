@@ -155,6 +155,67 @@ pub fn order_by_created_at_honors_a_pipeline_limit(b: &dyn Backend) {
     );
 }
 
+/// #385: non-matching rows must not consume a date-ordered result page.
+pub fn order_by_created_at_filters_before_limit(b: &dyn Backend) {
+    let mut m = b.open_named("cal_filtered_order");
+    for i in 0..4 {
+        m.add(&Fact::new(&format!("s{i}"), "r", "o").namespace("a.ops").created_at(100 + i)).unwrap();
+    }
+    // More than the old default page, on both sides of the matching rows.
+    for i in 0..60 {
+        for stamp in [i, 200 + i] {
+            m.add(&Fact::new(&format!("noise-{stamp}"), "note", "other")
+                .namespace("a.ops").created_at(stamp)).unwrap();
+        }
+    }
+    // A superseded version newer than all matching heads must not take a slot.
+    let old = m.add(&Fact::new("versioned", "r", "o").namespace("a.ops").created_at(400)).unwrap();
+    let mut new = Fact::new("versioned", "r", "o").namespace("a.ops").created_at(99);
+    m.supersede(&old, &mut new).unwrap();
+    m.add(&Fact::new("sibling-noise", "note", "other").namespace("a.other").created_at(500)).unwrap();
+    let facade = AreevFacade::with_session(m, Some("a.ops".into()), None);
+    let subjects = |res: &areev_cal::executor::CalExecResult| -> Vec<String> {
+        let CalResultPayload::Grains { grains, .. } = &res.result else { panic!("expected grains"); };
+        grains.iter().map(|g| g.fields["subject"].as_str().unwrap().to_string()).collect()
+    };
+    for predicate in [r#"relation = "r""#, r#"relation IN ("r")"#, r#"object = "o""#, r#"object IN ("o")"#] {
+        let base = format!(r#"RECALL facts WHERE namespace = "a.ops" AND {predicate}"#);
+        for (tail, expected) in [
+            ("ORDER BY created_at DESC LIMIT 2", vec!["s3", "s2"]),
+            ("ORDER BY created_at DESC LIMIT 4", vec!["s3", "s2", "s1", "s0"]),
+            ("ORDER BY created_at ASC LIMIT 2", vec!["versioned", "s0"]),
+            ("ORDER BY created_at DESC | OFFSET 2 | LIMIT 2", vec!["s1", "s0"]),
+            ("ORDER BY created_at DESC | FIRST", vec!["s3"]),
+        ] {
+            let q = format!("{base} {tail}");
+            let res = cal(&facade, &q);
+            assert_eq!(subjects(&res), expected, "[{}] {q}", b.name());
+            assert!(!res.warnings.iter().any(|w| w.starts_with("CAL-W015")), "{:?}", res.warnings);
+        }
+        // The ceiling measures candidates BEFORE the facade drops non-matches.
+        let small = CalExecutor::new(CalExecutorConfig { max_limit: 20, ..Default::default() });
+        let res = small.execute(&format!("{base} ORDER BY created_at DESC LIMIT 2"), &facade).unwrap();
+        assert!(subjects(&res).is_empty());
+        assert!(res.warnings.iter().any(|w| w.starts_with("CAL-W015") && w.contains("20")), "{:?}", res.warnings);
+    }
+    let history = cal(&facade, r#"RECALL facts WHERE relation = "r" ORDER BY created_at DESC LIMIT 2 WITH superseded"#);
+    assert_eq!(subjects(&history), vec!["versioned", "s3"]);
+    for scope in [r#"namespace IN ("a.ops", "a.other")"#, r#"namespace = "a.*""#] {
+        let res = cal(&facade, &format!(r#"RECALL facts WHERE {scope} AND relation = "r" ORDER BY created_at DESC LIMIT 2"#));
+        assert_eq!(subjects(&res), vec!["s3", "s2"], "[{}] {scope}", b.name());
+    }
+    // The diagnostic read must retain PrincipalSession's authorization scope.
+    facade.set_grants("reader", &[areev_core::authz::Grant {
+        verbs: vec![areev_core::authz::Verb::Read], namespaces: vec!["a.ops".into()],
+    }], "regression test").unwrap();
+    let session = facade.principal_session("reader").unwrap();
+    let executor = CalExecutor::new(CalExecutorConfig { max_limit: 20, ..Default::default() });
+    let res = executor.execute(r#"RECALL facts WHERE namespace = "a.ops" AND relation = "r" ORDER BY created_at DESC LIMIT 2"#, &session).unwrap();
+    assert!(subjects(&res).is_empty());
+    assert!(res.warnings.iter().any(|w| w.starts_with("CAL-W015")));
+    assert!(executor.execute(r#"RECALL facts WHERE namespace = "a.other" ORDER BY created_at DESC LIMIT 2"#, &session).is_err());
+}
+
 /// #369: a mount opened by LOCATOR — a file on the embedded backend, a DSN
 /// on postgres — is read through CAL and refuses a write addressed to it.
 pub fn mount_by_locator_reads_and_refuses_writes(b: &dyn Backend) {

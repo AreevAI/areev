@@ -1107,7 +1107,9 @@ own `LIMIT n` stays capped at 1000; the window is what an aggregate or a ranking
 scans, not how many rows come back.
 
 `ORDER BY created_at` is the one ordering pushed into the scan itself, so it is
-exact at any corpus size: `created_at` is a column on the `grains` table.
+exact at any corpus size when all filters are served by that scan (namespace,
+grain type and live-head selection): `created_at` is a column on the `grains`
+table.
 Every other sort key (`priority`, `status`, `confidence`, and all
 type-specific fields) lives inside the immutable, content-addressed blob, where
 SQL cannot reach it without materializing a column per field — those are ranked
@@ -1118,6 +1120,15 @@ wide scan, its scan is sized by the pipeline's own bound instead (#377):
 a word. The ceiling is `max_limit` (1000 by default): past it the result is
 the newest `max_limit` rows and carries `CAL-W015` naming the ceiling. Without
 a `LIMIT`, `ORDER BY created_at` alone still returns a `default_limit` page.
+
+When a date-ordered query also filters after retrieval — for example
+`WHERE relation = "transaction"`, `object IN (…)`, tags, confidence or a
+type-specific field — the scan widens to `max_limit` before filtering and
+applying the pipeline's `OFFSET`/`LIMIT`/`FIRST` (#385). Newer non-matching
+rows therefore do not consume the result page. If that window fills,
+`CAL-W015` reports the candidate ceiling even when filtering leaves fewer
+rows or none. Subject-, session- and query-anchored recalls also widen before
+sorting by date, since those retrieval legs do not serve the date order.
 
 A stage attached to a payload it cannot act on — most usefully `ORDER BY` on a
 multi-source `ASSEMBLE`, which returns an assembled section list rather than a

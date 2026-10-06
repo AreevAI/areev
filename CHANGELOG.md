@@ -6,6 +6,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.12.2] — 2026-10-06
+
+### Fixed
+
+- **Filtered date-ordered recall no longer loses matching rows** (#385).
+  The 1.12.0 fix for large `ORDER BY created_at … LIMIT n` queries sized
+  the scan to `n` before the facade applied relation/object and other
+  filters. Newer non-matching rows could consume the entire page, yielding
+  zero results even when matching facts existed. Filtered queries now scan
+  up to `max_limit` before applying the result bound; `OFFSET` and `FIRST`
+  follow the same rule. `CAL-W015` uses the ordered scan's candidate count,
+  so a full window warns even if filters leave a short or empty answer.
+  Conformance coverage exercises both sort directions, newer non-matches,
+  superseded versions, paging and the scan ceiling on both backends.
+
 ## [1.12.1] — 2026-10-06
 
 ### Fixed
@@ -4779,7 +4794,8 @@ ecosystem adapters, and the enterprise plane.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.12.1...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.12.2...HEAD
+[1.12.2]: https://github.com/AreevAI/areev/compare/v1.12.1...v1.12.2
 [1.12.1]: https://github.com/AreevAI/areev/compare/v1.12.0...v1.12.1
 [1.12.0]: https://github.com/AreevAI/areev/compare/v1.11.1...v1.12.0
 [1.11.1]: https://github.com/AreevAI/areev/compare/v1.11.0...v1.11.1
