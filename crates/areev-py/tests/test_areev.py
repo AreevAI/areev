@@ -2225,3 +2225,20 @@ def test_a_run_takes_the_environments_chain_when_none_is_installed(tmp_path, fak
     session = json.loads(m.run_start(wf, "py-decide-env", '{"state":"window seat"}', TOOL_CMD))
     assert session["finished"] == "Completed"
     assert "bill" in _ran_nodes(m, "py-decide-env")
+
+
+def test_date_ordered_filtered_recall_fills_page(tmp_path):
+    """#385: newer non-matches must not consume the LIMIT."""
+    m = make_db(tmp_path, "a.ops")
+    for i in range(7):
+        m.add("fact", json.dumps({
+            "subject": f"s{i}", "relation": "r" if i < 4 else "note",
+            "object": "o", "created_at": 1000 + i,
+        }))
+    for n in (2, 4):
+        res = json.loads(m.cal(
+            f'RECALL facts WHERE relation = "r" AND namespace = "a.ops" '
+            f'ORDER BY created_at DESC LIMIT {n}'
+        ))
+        assert [g["fields"]["subject"] for g in res["grains"]] == ["s3", "s2", "s1", "s0"][:n]
+        assert not any(w.startswith("CAL-W015") for w in res.get("warnings", []))

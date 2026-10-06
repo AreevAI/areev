@@ -2145,6 +2145,10 @@ impl CalStoreFacade for AreevFacade {
     }
 
     fn recall(&self, params: &RecallParams) -> Result<Vec<SearchHit>> {
+        self.recall_with_scan_count(params).map(|(hits, _)| hits)
+    }
+
+    fn recall_with_scan_count(&self, params: &RecallParams) -> Result<(Vec<SearchHit>, usize)> {
         // `WHERE <field> IN (...)` with nothing in it selects nothing. This is
         // the sharp edge of the whole `IN` family: `LET $friends = …` binding to
         // the empty set is the *natural* "this user has no friends yet"
@@ -2152,7 +2156,7 @@ impl CalStoreFacade for AreevFacade {
         // entire table. Fail closed, before any leg runs.
         for empty in [&params.subject_in, &params.relation_in, &params.object_in] {
             if empty.as_ref().is_some_and(|v| v.is_empty()) {
-                return Ok(Vec::new());
+                return Ok((Vec::new(), 0));
             }
         }
 
@@ -2240,7 +2244,7 @@ impl CalStoreFacade for AreevFacade {
         // no namespace answer empty, honestly — but only when the caller
         // actually named a scope (the no-scope session default is below).
         if ns_set.is_empty() && !requested_terms.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), 0));
         }
         if ns_set.is_empty() {
             ns_set.insert("shared".to_string()); // the no-scope store default
@@ -2316,6 +2320,7 @@ impl CalStoreFacade for AreevFacade {
             v.into_iter().map(|g| (g, 1.0)).collect()
         };
         let deadline = self.recall_deadline;
+        let mut ordered_scan_count = None;
         let raw = if let Some(session) = params.session_id.as_deref().filter(|_| unanchored) {
             let n = k.saturating_mul(Self::RECALL_OVERFETCH);
             unscored(if scoped {
@@ -2342,11 +2347,13 @@ impl CalStoreFacade for AreevFacade {
             )
         }) {
             let n = k.min(ceiling);
-            unscored(if scoped {
+            let grains = if scoped {
                 m.recent_ordered_scoped(&ns_list, params.grain_type, n, !include_superseded, order)?
             } else {
                 m.recent_ordered(ns, params.grain_type, n, !include_superseded, order)?
-            })
+            };
+            ordered_scan_count = Some(grains.len());
+            unscored(grains)
         } else if unanchored {
             unscored(match params.grain_type {
                 // Heads only, unless `WITH superseded` asked otherwise. The
@@ -2824,7 +2831,8 @@ impl CalStoreFacade for AreevFacade {
             }
         }
 
-        Ok(hits)
+        let scanned = ordered_scan_count.unwrap_or(hits.len());
+        Ok((hits, scanned))
     }
 
     fn exists(&self, hash: &Hash) -> Result<bool> {
@@ -3694,6 +3702,10 @@ impl crate::facade::CalStoreFacade for PrincipalSession<'_> {
     fn recall(&self, params: &RecallParams) -> Result<Vec<SearchHit>> {
         let _scope = self.enter();
         self.facade.recall(params)
+    }
+    fn recall_with_scan_count(&self, params: &RecallParams) -> Result<(Vec<SearchHit>, usize)> {
+        let _scope = self.enter();
+        self.facade.recall_with_scan_count(params)
     }
     fn exists(&self, hash: &Hash) -> Result<bool> {
         let _scope = self.enter();

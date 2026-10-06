@@ -2794,3 +2794,24 @@ test('a run takes the environment\'s chain when the handle installed none', asyn
   }
   m.close()
 })
+
+// #385: LIMIT applies to matching rows, after newer non-matches are removed.
+test('date-ordered filtered recall fills its result page', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'areev-js-385-'))
+  const m = new Areev(join(dir, 'test.db'), 'a.ops', null, null, 'off')
+  try {
+    for (let i = 0; i < 7; i++) {
+      await m.add('fact', JSON.stringify({
+        subject: `s${i}`, relation: i < 4 ? 'r' : 'note', object: 'o',
+        created_at: 1000 + i,
+      }), 'a.ops')
+    }
+    for (const n of [2, 4]) {
+      const res = JSON.parse(await m.cal(`RECALL facts WHERE relation = "r" AND namespace = "a.ops" ORDER BY created_at DESC LIMIT ${n}`))
+      assert.deepEqual(res.grains.map(g => g.fields.subject), ['s3', 's2', 's1', 's0'].slice(0, n))
+      assert.ok(!(res.warnings ?? []).some(w => w.startsWith('CAL-W015')))
+    }
+  } finally {
+    await m.close()
+  }
+})

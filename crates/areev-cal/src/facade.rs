@@ -80,6 +80,16 @@ pub trait CalStoreFacade: Send + Sync {
     /// Execute a recall query. Maps to `Areev::recall()`.
     fn recall(&self, params: &RecallParams) -> Result<Vec<SearchHit>>;
 
+    /// Recall plus the candidate count before date-ordered scan post-filters.
+    /// The executor uses this count to report a full scan window even when
+    /// filters leave fewer hits (#385). Facades without a separate scan keep
+    /// the historical hit-count fallback.
+    fn recall_with_scan_count(&self, params: &RecallParams) -> Result<(Vec<SearchHit>, usize)> {
+        let hits = self.recall(params)?;
+        let scanned = hits.len();
+        Ok((hits, scanned))
+    }
+
     /// Check if a grain exists by hash. Maps to `Areev::has()`.
     fn exists(&self, hash: &Hash) -> Result<bool>;
 

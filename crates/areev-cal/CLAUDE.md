@@ -275,6 +275,13 @@ areev-store already depends on it with the same features.
   **Read-only mounts**: `mount(alias, store)`; `recall` routes
   `"alias.inner"` namespaces to the mount — writes only ever hit the session
   store, so mounts are read-only by construction.
+  **Date-ordered scan bounds** (#385): a pipeline LIMIT can size the scan
+  only when no facade or executor post-filter remains. Relation/object/IN,
+  tags, confidence and time filters widen to `max_limit` before the answer is
+  bounded. `CalStoreFacade::recall_with_scan_count` carries the ordered scan's
+  pre-filter candidate count with the hits so `CAL-W015` still fires when a
+  full window filters down to nothing; `PrincipalSession` delegates under
+  its scope guard. Namespace/type/live-head predicates remain store-side.
   **Recall scores + host recall config** (decision-backend phase 0): the
   hybrid arms call the store's `recall_hybrid_scored*`, so `SearchHit.score`
   is the normalized fused score (top = 1.0) or the normalized reranker score;
