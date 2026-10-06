@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.12.1] — 2026-10-06
+
 ### Fixed
 
 - **Concurrent writers on one Postgres memory no longer deadlock** on the
@@ -4777,7 +4779,8 @@ ecosystem adapters, and the enterprise plane.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.12.0...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.12.1...HEAD
+[1.12.1]: https://github.com/AreevAI/areev/compare/v1.12.0...v1.12.1
 [1.12.0]: https://github.com/AreevAI/areev/compare/v1.11.1...v1.12.0
 [1.11.1]: https://github.com/AreevAI/areev/compare/v1.11.0...v1.11.1
 [1.11.0]: https://github.com/AreevAI/areev/compare/v1.10.2...v1.11.0
