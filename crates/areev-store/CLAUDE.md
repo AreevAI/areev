@@ -19,7 +19,10 @@ transports implement it:
   schema, **multiple concurrent writers allowed**. Write txns claim id
   blocks from the in-schema `counters` row via the `Db::reserve_write` hook
   (which also serializes concurrent write txns, keeping op-log order equal
-  to commit order); the term dictionary and BM25 collection stats are
+  to commit order — its three counter rows are locked in KEY order by a
+  `SELECT … ORDER BY name FOR UPDATE` CTE, never in the heap order a bare
+  multi-row `UPDATE` scan takes, which deadlocked concurrent writers with
+  `40P01`; `many_writers_never_deadlock_on_the_counters` pins it); the term dictionary and BM25 collection stats are
   DB-authoritative on cache miss (`intern_term`/`lookup_term*`/
   `collection_stats` hooks); in-txn rechecks use `Db::for_update`. An
   explicit statement translator handles the divergent dialect (per-table

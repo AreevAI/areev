@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Concurrent writers on one Postgres memory no longer deadlock** on the
+  write counters. `reserve_write` updated its three `counters` rows with one
+  `UPDATE … WHERE name IN (…)`, which Postgres plans as a sequential scan and
+  so locks the rows in heap order — an order that moves as each update writes
+  new row versions. Two writers could each hold one row and wait on the
+  other's, and one failed with `STO-E001: storage error: postgres error
+  40P01: deadlock detected` (two of eight concurrent jobs on one memory in a
+  production deployment). The rows are now locked in key order by a
+  `SELECT … ORDER BY name FOR UPDATE` before the update. The conformance
+  runner's `many_writers_never_deadlock_on_the_counters` (eight writers adding
+  and superseding overlapping facts) failed on the old statement and passes.
+
 ## [1.12.0] — 2026-10-05
 
 ### Added
