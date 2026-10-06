@@ -92,6 +92,48 @@ fn concurrent_writers_all_land() {
     assert_eq!(m.recall("ns", "b7", Some("writes"), 4).unwrap().len(), 1);
 }
 
+/// Many writers on one memory, each adding and superseding facts whose
+/// subjects overlap: every write either lands or loses a supersession race
+/// cleanly — never a `40P01` deadlock. `reserve_write`'s `UPDATE counters …
+/// WHERE name IN (…)` ran as a sequential scan and so locked the three
+/// counter rows in HEAP order, which moves as each update writes new row
+/// versions: two writers could hold one row each and wait on the other's
+/// (production, 2026-10-06: two of eight statement jobs failed `STO-E001 …
+/// 40P01`). The rows are now locked in key order first.
+#[test]
+fn many_writers_never_deadlock_on_the_counters() {
+    let Some(b) = backend() else { return };
+    let url = pg_url().unwrap();
+    let schema = b.schema_for("dl");
+    drop(b.open_named("dl"));
+    let writers: Vec<_> = (0..8)
+        .map(|w| {
+            let url = url.clone();
+            let schema = schema.clone();
+            std::thread::spawn(move || {
+                let mut m = areev_store::Areev::open_postgres(&url, &schema).unwrap();
+                let mut errors = Vec::new();
+                for i in 0..60 {
+                    let subject = format!("cp{}", i % 15);
+                    let mut g = areev_conformance::fact("ns", &subject, "seen", &format!("{w}:{i}"));
+                    let r = match m.latest("ns", &subject, "seen").unwrap() {
+                        Some(head) => m.supersede(&head.hash, &mut g).map(|_| ()),
+                        None => m.add(&g).map(|_| ()),
+                    };
+                    if let Err(e) = r {
+                        if !matches!(e, areev_core::error::AreevError::SupersessionConflict(_)) {
+                            errors.push(e.to_string());
+                        }
+                    }
+                }
+                errors
+            })
+        })
+        .collect();
+    let errors: Vec<String> = writers.into_iter().flat_map(|t| t.join().unwrap()).collect();
+    assert!(errors.is_empty(), "every write lands or loses a race cleanly: {errors:?}");
+}
+
 /// Two processes opening a BRAND-NEW memory simultaneously: the schema
 /// bootstrap (DDL + seeding) runs under an advisory lock, so both succeed —
 /// Postgres's IF NOT EXISTS DDL alone is racy and the loser would otherwise

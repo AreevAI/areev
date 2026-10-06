@@ -1901,10 +1901,19 @@ impl Db for PgDb {
         wall_hlc: i64,
         hlc_floor: i64,
     ) -> Result<Option<WriteIds>> {
-        // One statement, three counter rows, locked in a consistent order
-        // (identical statement text for every writer -> identical plan) —
-        // held until the enclosing transaction commits, which is what
-        // serializes concurrent write transactions per memory.
+        // One statement, three counter rows, locked in KEY order — held until
+        // the enclosing transaction commits, which is what serializes
+        // concurrent write transactions per memory.
+        //
+        // The order is the CTE's `ORDER BY name FOR UPDATE` (LockRows sits
+        // above the Sort), not the UPDATE's own scan. A three-row table is
+        // planned as a sequential scan, and a bare `UPDATE … WHERE name IN
+        // (…)` locks rows in HEAP order — which moves as every update writes
+        // new row versions. Two writers could each hold one counter row and
+        // wait on the other's: `40P01 deadlock detected`, two of eight
+        // concurrent jobs on one memory in production (2026-10-06). The
+        // conformance runner's `many_writers_never_deadlock_on_the_counters`
+        // reproduces it on the old statement.
         //
         // Counters hold the LAST USED id. New hlc last =
         // max(old + n, wall + n - 1, floor); the first of the block is
@@ -1912,11 +1921,13 @@ impl Db for PgDb {
         // Any local write may change the BM25 collection stats.
         *self.stats.borrow_mut() = None;
         let rows = self.run_query(
-            "UPDATE counters SET v = CASE name \
+            "WITH locked(k) AS (SELECT name FROM counters \
+               WHERE name IN ('seq','op','hlc') ORDER BY name FOR UPDATE) \
+             UPDATE counters SET v = CASE name \
                WHEN 'seq' THEN v + ?1 \
                WHEN 'op' THEN v + ?2 \
                ELSE GREATEST(v + ?3, ?4 + ?3 - 1, ?5) END \
-             WHERE name IN ('seq','op','hlc') RETURNING name, v",
+             FROM locked WHERE name = locked.k RETURNING name, v",
             vec![pi(n_seq), pi(n_op), pi(n_hlc), pi(wall_hlc), pi(hlc_floor)],
             true,
         )?;
