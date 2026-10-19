@@ -163,6 +163,12 @@ pub struct Usage {
 }
 
 /// One tool-calling request. `max_tokens` is mandatory by design.
+///
+/// `Default` exists so a caller can name the fields it sets and write
+/// `..Default::default()` for the rest: the optional request fields below grew
+/// in 1.13 (#391, #394) and will grow again, and a struct literal naming every
+/// field breaks every host each time one is added.
+#[derive(Default)]
 pub struct ToolCallRequest<'a> {
     pub system: Option<String>,
     pub messages: Vec<ChatMessage>,
@@ -173,6 +179,95 @@ pub struct ToolCallRequest<'a> {
     /// Defaults to 0.0 at every call site that wants reproducible-ish output;
     /// carried explicitly so the journaled request is complete.
     pub temperature: f64,
+    /// Send NO temperature on this request, whatever `temperature` says (#391).
+    ///
+    /// The GPT-5 family answers HTTP 400 "Unsupported value: 'temperature'" to
+    /// any value at all, so a plan node driving one says `"temperature":
+    /// "omit"`. The endpoint's request profile can omit it too; either one is
+    /// enough.
+    pub omit_temperature: bool,
+    /// Structured output the caller asks for (#391). Sent natively where the
+    /// wire format has a field for it (`response_format` on OpenAI-compatible
+    /// endpoints, `format` on Ollama) and stated in the system text where it
+    /// has none (Anthropic). Either way the CALLER still validates the answer:
+    /// a provider that ignores the field must not be able to hand back prose
+    /// as if it were the schema's object.
+    pub response_format: Option<ResponseFormat>,
+    /// `parallel_tool_calls` (#394). `None` sends nothing and leaves the
+    /// provider's default; `Some(false)` asks for at most one call per turn.
+    /// OpenAI-compatible endpoints take the field as is; Anthropic takes the
+    /// inverse, `tool_choice.disable_parallel_tool_use`.
+    pub parallel_tool_calls: Option<bool>,
+}
+
+/// A structured-output request (#391).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResponseFormat {
+    /// Any JSON object.
+    JsonObject,
+    /// A JSON object conforming to `schema`. `name` labels it on the wire
+    /// (OpenAI requires `^[a-zA-Z0-9_-]{1,64}$`; [`ResponseFormat::json_schema`]
+    /// sanitizes to that).
+    JsonSchema { name: String, schema: Value },
+}
+
+impl ResponseFormat {
+    /// A schema request whose wire name is `name` made safe for every
+    /// provider: characters outside `[a-zA-Z0-9_-]` become `_`, cut to 64.
+    pub fn json_schema(name: &str, schema: Value) -> Self {
+        let mut safe: String = name
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+            .take(64)
+            .collect();
+        if safe.is_empty() {
+            safe = "response".into();
+        }
+        ResponseFormat::JsonSchema { name: safe, schema }
+    }
+
+    /// The OpenAI-compatible `response_format` value — also the shape the
+    /// runtime journals as "what was asked for", so a reader of a run sees
+    /// the field exactly as it went out on that wire.
+    pub fn to_openai(&self) -> Value {
+        match self {
+            ResponseFormat::JsonObject => json!({"type": "json_object"}),
+            ResponseFormat::JsonSchema { name, schema } => json!({
+                "type": "json_schema",
+                "json_schema": {"name": name, "schema": schema, "strict": true},
+            }),
+        }
+    }
+
+    /// Read back the OpenAI-compatible shape [`to_openai`](Self::to_openai)
+    /// writes. `None` for anything else.
+    pub fn from_openai(v: &Value) -> Option<Self> {
+        match v.get("type").and_then(Value::as_str)? {
+            "json_object" => Some(ResponseFormat::JsonObject),
+            "json_schema" => {
+                let js = v.get("json_schema")?;
+                Some(ResponseFormat::JsonSchema {
+                    name: js.get("name").and_then(Value::as_str).unwrap_or("response").to_string(),
+                    schema: js.get("schema")?.clone(),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// The instruction a provider with no native field is given instead,
+    /// appended to the system text.
+    pub fn as_instruction(&self) -> String {
+        match self {
+            ResponseFormat::JsonObject => {
+                "Answer with a single JSON object and nothing else.".to_string()
+            }
+            ResponseFormat::JsonSchema { schema, .. } => format!(
+                "Answer with a single JSON object and nothing else. It must conform to this \
+                 JSON Schema:\n{schema}"
+            ),
+        }
+    }
 }
 
 /// A parsed tool-calling response.
@@ -553,7 +648,7 @@ fn openai_tool_choice(tc: &ToolChoice) -> Value {
     }
 }
 
-fn openai_parse(resp: &Value) -> ToolCallResult<ToolCallResponse> {
+pub(crate) fn openai_parse(resp: &Value) -> ToolCallResult<ToolCallResponse> {
     let msg = resp
         .pointer("/choices/0/message")
         .ok_or_else(|| terminal("response has no choices[0].message"))?;
@@ -625,8 +720,8 @@ fn openai_body(
         "stream": false,
     });
     body[profile.token_limit_key()] = json!(req.max_tokens);
-    if profile.sends_temperature() {
-        body["temperature"] = json!(req.temperature);
+    if let Some(t) = profile.temperature_for(req) {
+        body["temperature"] = json!(t);
     }
     if !req.tools.is_empty() {
         body["tools"] = Value::Array(render_tools(req.tools, ProviderKind::OpenAiTools)?);
@@ -635,6 +730,20 @@ fn openai_body(
     // Merged last, and it can never clobber an owned key — the profile
     // constructor already refused those (#285).
     profile.apply_extra(&mut body);
+    // The REQUEST's own fields after the profile's pass-through: a node that
+    // asked for `parallel_tool_calls: false` or a schema gets it even on an
+    // endpoint whose profile injects a different default through
+    // `extra_body` (which predates both fields and so may carry them).
+    if let Some(rf) = &req.response_format {
+        body["response_format"] = rf.to_openai();
+    }
+    if let Some(p) = req.parallel_tool_calls {
+        // Only meaningful with tools on the request; OpenAI refuses the field
+        // on a request that offers none.
+        if !req.tools.is_empty() {
+            body["parallel_tool_calls"] = json!(p);
+        }
+    }
     Ok(body)
 }
 
@@ -757,7 +866,7 @@ fn anthropic_tool_choice(tc: &ToolChoice) -> Option<Value> {
     }
 }
 
-fn anthropic_parse(resp: &Value) -> ToolCallResult<ToolCallResponse> {
+pub(crate) fn anthropic_parse(resp: &Value) -> ToolCallResult<ToolCallResponse> {
     let blocks = resp
         .get("content")
         .and_then(|c| c.as_array())
@@ -871,10 +980,20 @@ fn anthropic_body(
     });
     // The model's own contract first (#283: current Claude models 400 on a
     // sampling parameter), then the operator's profile (#285).
-    if anthropic_accepts_temperature(model) && profile.sends_temperature() {
-        body["temperature"] = json!(req.temperature);
+    if anthropic_accepts_temperature(model) {
+        if let Some(t) = profile.temperature_for(req) {
+            body["temperature"] = json!(t);
+        }
     }
-    if let Some(s) = &req.system {
+    // This wire format has no structured-output field, so a requested format
+    // is stated in the system text instead. The caller validates the answer
+    // either way — this only makes a conforming answer likelier.
+    let system = match (&req.system, &req.response_format) {
+        (Some(s), Some(rf)) => Some(format!("{s}\n\n{}", rf.as_instruction())),
+        (None, Some(rf)) => Some(rf.as_instruction()),
+        (s, None) => s.clone(),
+    };
+    if let Some(s) = &system {
         // Same cache posture as the loop adapter: the stable prefix is
         // marked ephemeral-cacheable.
         body["system"] =
@@ -882,7 +1001,12 @@ fn anthropic_body(
     }
     if !req.tools.is_empty() && req.tool_choice != ToolChoice::None {
         body["tools"] = Value::Array(render_tools(req.tools, ProviderKind::AnthropicTools)?);
-        if let Some(tc) = anthropic_tool_choice(&req.tool_choice) {
+        if let Some(mut tc) = anthropic_tool_choice(&req.tool_choice) {
+            // `parallel_tool_calls: false` is spelled the other way round
+            // here, on the tool choice.
+            if req.parallel_tool_calls == Some(false) {
+                tc["disable_parallel_tool_use"] = json!(true);
+            }
             body["tool_choice"] = tc;
         }
     }
@@ -974,7 +1098,7 @@ impl ToolCallLlm for crate::Anthropic {
 
 // ---- Ollama -----------------------------------------------------------------
 
-fn ollama_parse(resp: &Value) -> ToolCallResult<ToolCallResponse> {
+pub(crate) fn ollama_parse(resp: &Value) -> ToolCallResult<ToolCallResponse> {
     let msg = resp
         .get("message")
         .ok_or_else(|| terminal("response has no message"))?;
@@ -1039,9 +1163,20 @@ fn ollama_body(req: &ToolCallRequest<'_>, model: &str) -> ToolCallResult<Value> 
         "stream": false,
         "options": {"temperature": req.temperature, "num_predict": req.max_tokens},
     });
+    if req.omit_temperature {
+        if let Some(o) = body["options"].as_object_mut() {
+            o.remove("temperature");
+        }
+    }
     if !req.tools.is_empty() {
         // Ollama's native /api/chat takes OpenAI-shaped tool definitions.
         body["tools"] = Value::Array(render_tools(req.tools, ProviderKind::OpenAiTools)?);
+    }
+    // Ollama's structured output: `format` is a JSON Schema, or "json".
+    match &req.response_format {
+        Some(ResponseFormat::JsonSchema { schema, .. }) => body["format"] = schema.clone(),
+        Some(ResponseFormat::JsonObject) => body["format"] = json!("json"),
+        None => {}
     }
     Ok(body)
 }
@@ -1152,6 +1287,7 @@ mod tests {
             tool_choice: ToolChoice::Named("receipt.prepare".into()),
             max_tokens: 256,
             temperature: 0.0,
+            ..Default::default()
         };
 
         let openai = openai_messages(&req);

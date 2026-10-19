@@ -75,6 +75,12 @@ pub(crate) fn openai_accumulate(
     let mut calls: BTreeMap<u64, (String, String, String)> = BTreeMap::new();
     let mut finish: Option<String> = None;
     let mut usage: Option<Usage> = None;
+    // What the provider says it SERVED (#287, #394). Every chunk of an
+    // OpenAI-compatible stream repeats `model`; the first one is taken, so a
+    // streamed turn journals exactly the provenance a non-streamed one does —
+    // a run observed through `onEvent` (which turns streaming on) used to
+    // record less than the same run unobserved.
+    let mut served_model: Option<String> = None;
     for line in lines {
         let line = line.map_err(|e| transport(format!("stream read: {e}")))?;
         let Some(payload) = line.strip_prefix("data:").map(str::trim) else {
@@ -85,6 +91,10 @@ pub(crate) fn openai_accumulate(
         }
         let chunk: Value = serde_json::from_str(payload)
             .map_err(|e| terminal(format!("stream chunk does not parse: {e}")))?;
+        if served_model.is_none() {
+            served_model =
+                chunk.get("model").and_then(Value::as_str).filter(|m| !m.is_empty()).map(str::to_string);
+        }
         if let Some(delta) = chunk.pointer("/choices/0/delta") {
             if let Some(t) = delta.get("content").and_then(|c| c.as_str()) {
                 if !t.is_empty() {
@@ -151,7 +161,10 @@ pub(crate) fn openai_accumulate(
         tool_calls,
         stop_reason,
         usage,
-    ))
+    )
+    // No OpenAI-compatible wire format names a serving region, streamed or
+    // not; `None` matches `openai_parse`.
+    .with_served(served_model, None))
 }
 
 // ---- Anthropic (SSE, typed data events) ------------------------------------
@@ -183,6 +196,9 @@ pub(crate) fn anthropic_accumulate(
     let mut output_tokens = 0u64;
     let mut cache_read: Option<u64> = None;
     let mut saw_usage = false;
+    // `message_start` carries the message object, `model` included — the same
+    // field `anthropic_parse` reads off a whole response (#394).
+    let mut served_model: Option<String> = None;
     for line in lines {
         let line = line.map_err(|e| transport(format!("stream read: {e}")))?;
         let Some(payload) = line.strip_prefix("data:").map(str::trim) else {
@@ -192,6 +208,10 @@ pub(crate) fn anthropic_accumulate(
             .map_err(|e| terminal(format!("stream event does not parse: {e}")))?;
         match ev.get("type").and_then(|t| t.as_str()) {
             Some("message_start") => {
+                served_model = ev
+                    .pointer("/message/model")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
                 if let Some(u) = ev.pointer("/message/usage") {
                     input_tokens = u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
                     cache_read =
@@ -351,7 +371,8 @@ pub(crate) fn anthropic_accumulate(
     )
     // Only when the turn actually held opaque content, so a stream of plain
     // text and tool calls journals exactly what it did before #284.
-    .with_provider_content(has_opaque.then_some(Value::Array(content))))
+    .with_provider_content(has_opaque.then_some(Value::Array(content)))
+    .with_served(served_model, None))
 }
 
 // ---- Ollama (NDJSON) -------------------------------------------------------
@@ -364,6 +385,8 @@ pub(crate) fn ollama_accumulate(
     let mut tool_calls: Vec<ToolCallOut> = Vec::new();
     let mut done_reason: Option<String> = None;
     let mut usage: Option<Usage> = None;
+    // Every NDJSON line names the model, as the whole response does (#394).
+    let mut served_model: Option<String> = None;
     for line in lines {
         let line = line.map_err(|e| transport(format!("stream read: {e}")))?;
         if line.trim().is_empty() {
@@ -371,6 +394,9 @@ pub(crate) fn ollama_accumulate(
         }
         let chunk: Value = serde_json::from_str(&line)
             .map_err(|e| terminal(format!("stream line does not parse: {e}")))?;
+        if served_model.is_none() {
+            served_model = chunk.get("model").and_then(Value::as_str).map(str::to_string);
+        }
         if let Some(t) = chunk.pointer("/message/content").and_then(|c| c.as_str()) {
             if !t.is_empty() {
                 on_token(t);
@@ -429,7 +455,8 @@ pub(crate) fn ollama_accumulate(
         tool_calls,
         stop_reason,
         usage,
-    ))
+    )
+    .with_served(served_model, None))
 }
 
 #[cfg(test)]
@@ -552,5 +579,59 @@ data: {"type":"message_stop"}
         assert_eq!(resp.stop_reason, StopReason::ToolUse, "tool calls override stop");
         assert_eq!(resp.usage.input_tokens, 21);
         assert_eq!(resp.usage.output_tokens, 5);
+    }
+    /// #394: a streamed turn records the provenance the same turn records
+    /// unstreamed — `served_model` from the response's `model`, and the same
+    /// (absent) `served_region` — on all three wire formats. A run observed
+    /// through `onEvent` streams, so before this it journaled less than the
+    /// identical run with no observer.
+    #[test]
+    fn a_streamed_turn_records_the_provenance_a_whole_response_does() {
+        let whole = serde_json::json!({
+            "model": "gpt-5-mini-2026-08-07",
+            "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1},
+        });
+        let streamed = r#"data: {"model":"gpt-5-mini-2026-08-07","choices":[{"delta":{"content":"hi"}}]}
+data: {"model":"gpt-5-mini-2026-08-07","choices":[{"delta":{},"finish_reason":"stop"}]}
+data: {"model":"gpt-5-mini-2026-08-07","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":1}}
+data: [DONE]
+"#;
+        let a = crate::toolcall::openai_parse(&whole).unwrap();
+        let b = openai_accumulate(lines(streamed), &mut |_| {}).unwrap();
+        assert_eq!(a.served_model.as_deref(), Some("gpt-5-mini-2026-08-07"));
+        assert_eq!((a.served_model, a.served_region), (b.served_model, b.served_region));
+
+        let whole = serde_json::json!({
+            "model": "claude-sonnet-5-20260901",
+            "content": [{"type": "text", "text": "hi"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 3, "output_tokens": 1},
+        });
+        let streamed = r#"data: {"type":"message_start","message":{"model":"claude-sonnet-5-20260901","usage":{"input_tokens":3}}}
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}
+data: {"type":"message_stop"}
+"#;
+        let a = crate::toolcall::anthropic_parse(&whole).unwrap();
+        let b = anthropic_accumulate(lines(streamed), &mut |_| {}).unwrap();
+        assert_eq!(a.served_model.as_deref(), Some("claude-sonnet-5-20260901"));
+        assert_eq!((a.served_model, a.served_region), (b.served_model, b.served_region));
+
+        let whole = serde_json::json!({
+            "model": "llama3.1:8b",
+            "message": {"content": "hi"},
+            "done_reason": "stop",
+            "prompt_eval_count": 3,
+            "eval_count": 1,
+        });
+        let streamed = r#"{"model":"llama3.1:8b","message":{"content":"hi"},"done":false}
+{"model":"llama3.1:8b","message":{"content":""},"done":true,"done_reason":"stop","prompt_eval_count":3,"eval_count":1}
+"#;
+        let a = crate::toolcall::ollama_parse(&whole).unwrap();
+        let b = ollama_accumulate(lines(streamed), &mut |_| {}).unwrap();
+        assert_eq!(a.served_model.as_deref(), Some("llama3.1:8b"));
+        assert_eq!((a.served_model, a.served_region), (b.served_model, b.served_region));
     }
 }

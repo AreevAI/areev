@@ -5919,6 +5919,7 @@ fn run_eval_case_model(
         tool_choice: ToolChoice::None,
         max_tokens,
         temperature: 0.0,
+        ..Default::default()
     };
     match llm.call(&req) {
         Ok(resp) => {

@@ -1209,6 +1209,7 @@ fn run_llm_effect(
         tool_choice: areev_llm::ToolChoice::Auto,
         max_tokens: prepared.max_tokens,
         temperature: 0.0,
+        ..Default::default()
     };
     let result = match prepared.on_token {
         Some(mut sink) => llm.call_streaming(&request, &mut *sink),

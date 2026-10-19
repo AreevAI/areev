@@ -50,8 +50,8 @@ pub use extract::{extract_facts, extract_pipeline, ground_facts, ExtractedFact, 
 pub use llm_detect::LlmDetector;
 pub use pseudonymize::{PseudonymizingBackend, PseudonymizingDecider};
 pub use toolcall::{
-    ChatMessage, StopReason, ToolCallError, ToolCallLlm, ToolCallOut, ToolCallRequest,
-    ToolCallResponse, ToolChoice, Usage,
+    ChatMessage, ResponseFormat, StopReason, ToolCallError, ToolCallLlm, ToolCallOut,
+    ToolCallRequest, ToolCallResponse, ToolChoice, Usage,
 };
 
 use serde_json::{json, Value};
@@ -723,14 +723,51 @@ pub fn resolve_toolcall(
     base_url: Option<&str>,
     key_env: Option<&str>,
 ) -> Result<std::sync::Arc<dyn toolcall::ToolCallLlm>> {
+    resolve_toolcall_with_profile(spec, base_url, key_env, None)
+}
+
+/// [`resolve_toolcall`] with a request profile (#285) installed on the
+/// transport — what the CLI's `--llm-token-field` / `--llm-no-temperature` /
+/// `--llm-extra-body` and the bindings' `llm_profile` build (#394).
+///
+/// A non-default profile on the Ollama transport is refused rather than
+/// ignored: that body takes none of the profile's fields, and a host that
+/// asked to omit the temperature must not be told it did.
+pub fn resolve_toolcall_with_profile(
+    spec: &str,
+    base_url: Option<&str>,
+    key_env: Option<&str>,
+    profile: Option<profile::RequestProfile>,
+) -> Result<std::sync::Arc<dyn toolcall::ToolCallLlm>> {
+    #[cfg_attr(
+        not(any(feature = "anthropic", feature = "openai", feature = "ollama")),
+        allow(unused_variables)
+    )]
+    let profile = profile.filter(|p| !p.is_default());
     #[allow(unreachable_code)]
     Ok(match build_provider(spec, base_url, key_env)? {
         #[cfg(feature = "anthropic")]
-        Provider::Anthropic(p) => std::sync::Arc::new(p),
+        Provider::Anthropic(p) => std::sync::Arc::new(match profile {
+            Some(pr) => p.with_request_profile(pr),
+            None => p,
+        }),
         #[cfg(feature = "openai")]
-        Provider::OpenAi(p) => std::sync::Arc::new(p),
+        Provider::OpenAi(p) => std::sync::Arc::new(match profile {
+            Some(pr) => p.with_request_profile(pr),
+            None => p,
+        }),
         #[cfg(feature = "ollama")]
-        Provider::Ollama(p) => std::sync::Arc::new(p),
+        Provider::Ollama(p) => {
+            if profile.is_some() {
+                return Err(Error::LlmBackend(
+                    "the ollama transport takes no request profile (token field, temperature \
+                     mode, extra body) — drop the profile, or reach the model through an \
+                     OpenAI-compatible endpoint"
+                        .into(),
+                ));
+            }
+            std::sync::Arc::new(p)
+        }
     })
 }
 
@@ -809,6 +846,25 @@ mod tests {
         // Ollama needs no key.
         assert_eq!(resolve("ollama:llama3.1", None, None).unwrap().model(), "llama3.1");
         std::env::remove_var("ANTHROPIC_API_KEY");
+    }
+
+    #[test]
+    #[cfg(feature = "ollama")]
+    fn a_profile_the_ollama_transport_cannot_honour_is_refused_not_ignored() {
+        use crate::profile::{RequestProfile, TemperatureMode};
+        let omit = RequestProfile::new().temperature(TemperatureMode::Omit);
+        let err = resolve_toolcall_with_profile("ollama:llama3.1", None, None, Some(omit))
+            .err()
+            .expect("refused");
+        assert!(err.to_string().contains("no request profile"), "{err}");
+        // A default profile is no profile at all.
+        assert!(resolve_toolcall_with_profile(
+            "ollama:llama3.1",
+            None,
+            None,
+            Some(RequestProfile::default())
+        )
+        .is_ok());
     }
 
     /// `post_json` end-to-end over a real loopback socket (regression for the

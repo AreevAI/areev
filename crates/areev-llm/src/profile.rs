@@ -50,6 +50,10 @@ pub struct RequestProfile {
     pub token_limit: TokenLimitField,
     pub temperature: TemperatureMode,
     extra_body: Map<String, Value>,
+    /// A temperature this endpoint is always sent (#394), in place of the
+    /// request's own. `None` sends what the request asks for. Meaningless
+    /// under [`TemperatureMode::Omit`], which sends none at all.
+    temperature_value: Option<f64>,
 }
 
 /// Keys the adapters own. `extra_body` may not set any of them: a profile
@@ -82,6 +86,90 @@ impl RequestProfile {
     pub fn temperature(mut self, m: TemperatureMode) -> Self {
         self.temperature = m;
         self
+    }
+
+    /// Always send this temperature, whatever the request asks for (#394).
+    /// The profile describes the ENDPOINT, so it wins over a request's value
+    /// the way [`TemperatureMode::Omit`] already does.
+    pub fn temperature_value(mut self, t: f64) -> Self {
+        self.temperature = TemperatureMode::Send;
+        self.temperature_value = Some(t);
+        self
+    }
+
+    /// The temperature to put on the wire for `req`, or `None` to send none:
+    /// the profile's omission or the request's own (`omit_temperature`, a
+    /// plan node's `"temperature": "omit"`) — either is enough — else the
+    /// profile's pinned value, else the request's.
+    pub fn temperature_for(&self, req: &crate::toolcall::ToolCallRequest<'_>) -> Option<f64> {
+        if !self.sends_temperature() || req.omit_temperature {
+            return None;
+        }
+        Some(self.temperature_value.unwrap_or(req.temperature))
+    }
+
+    /// Parse the bindings' `llm_profile` JSON (#394):
+    /// `{"temperature": "omit" | <number>, "token_field": "max_tokens" |
+    /// "max_completion_tokens", "extra_body": {…}}`, every key optional.
+    ///
+    /// Unknown keys are refused by name, as `extra_body`'s reserved keys are:
+    /// a misspelt `temprature` that silently configured nothing is the run
+    /// that 400s on its first turn.
+    pub fn from_json(json: &str) -> Result<Self> {
+        let v: Value = serde_json::from_str(json)
+            .map_err(|e| Error::LlmBackend(format!("llm_profile is not valid JSON: {e}")))?;
+        let Value::Object(map) = v else {
+            return Err(Error::LlmBackend("llm_profile must be a JSON object".into()));
+        };
+        let mut p = RequestProfile::new();
+        for (k, v) in &map {
+            match k.as_str() {
+                "temperature" => match v {
+                    Value::String(s) if s == "omit" => p = p.temperature(TemperatureMode::Omit),
+                    Value::String(s) if s == "send" => p = p.temperature(TemperatureMode::Send),
+                    Value::Number(n) => {
+                        let t = n.as_f64().filter(|t| t.is_finite() && *t >= 0.0).ok_or_else(|| {
+                            Error::LlmBackend(format!(
+                                "llm_profile.temperature {n} is not a non-negative number"
+                            ))
+                        })?;
+                        p = p.temperature_value(t);
+                    }
+                    other => {
+                        return Err(Error::LlmBackend(format!(
+                            "llm_profile.temperature must be \"omit\" or a number, not {other}"
+                        )))
+                    }
+                },
+                "token_field" => {
+                    p = p.token_limit(match v.as_str() {
+                        Some("max_tokens") => TokenLimitField::MaxTokens,
+                        Some("max_completion_tokens") => TokenLimitField::MaxCompletionTokens,
+                        _ => {
+                            return Err(Error::LlmBackend(format!(
+                                "llm_profile.token_field must be \"max_tokens\" or \
+                                 \"max_completion_tokens\", not {v}"
+                            )))
+                        }
+                    })
+                }
+                "extra_body" => match v {
+                    Value::Object(m) => p = p.extra_body(m.clone())?,
+                    _ => {
+                        return Err(Error::LlmBackend(
+                            "llm_profile.extra_body must be a JSON object".into(),
+                        ))
+                    }
+                },
+                other => {
+                    return Err(Error::LlmBackend(format!(
+                        "llm_profile has no key {other:?} (known: temperature, token_field, \
+                         extra_body)"
+                    )))
+                }
+            }
+        }
+        Ok(p)
     }
 
     /// Extra top-level request fields, merged last and passed through
@@ -145,6 +233,7 @@ impl RequestProfile {
         self.token_limit == TokenLimitField::default()
             && self.temperature == TemperatureMode::default()
             && self.extra_body.is_empty()
+            && self.temperature_value.is_none()
     }
 
     /// A stable content address of this profile, for the run manifest's LLM
@@ -155,11 +244,16 @@ impl RequestProfile {
         }
         // `Map` is a BTreeMap under serde_json's default features, so the
         // serialization is key-sorted and the digest is stable.
-        let canonical = serde_json::json!({
+        let mut canonical = serde_json::json!({
             "token_limit": self.token_limit_key(),
             "temperature": if self.sends_temperature() { "send" } else { "omit" },
             "extra_body": Value::Object(self.extra_body.clone()),
         });
+        // Only when set, so every profile that existed before the pinned
+        // value keeps the digest a parked run was pinned to.
+        if let Some(t) = self.temperature_value {
+            canonical["temperature_value"] = serde_json::json!(t);
+        }
         let digest = areev_core::anon::hmac_sha256(
             b"areev-request-profile/v1",
             canonical.to_string().as_bytes(),
@@ -223,6 +317,37 @@ mod tests {
     fn malformed_json_is_refused_before_anything_runs() {
         assert!(RequestProfile::new().extra_body_json("{nope").is_err());
         assert!(RequestProfile::new().extra_body_json("[1,2]").is_err());
+    }
+
+    #[test]
+    fn the_bindings_profile_json_parses_every_key_and_refuses_strangers() {
+        let p = RequestProfile::from_json(
+            r#"{"temperature":"omit","token_field":"max_completion_tokens","extra_body":{"store":false}}"#,
+        )
+        .unwrap();
+        assert!(!p.sends_temperature());
+        assert_eq!(p.token_limit_key(), "max_completion_tokens");
+        let mut body = serde_json::json!({});
+        p.apply_extra(&mut body);
+        assert_eq!(body["store"], serde_json::json!(false));
+
+        let n = RequestProfile::from_json(r#"{"temperature":0.7}"#).unwrap();
+        assert!(n.sends_temperature());
+        assert!(!n.is_default(), "a pinned value is configuration");
+        assert_ne!(n.digest(), RequestProfile::default().digest());
+
+        assert!(RequestProfile::new().digest().is_none());
+        for bad in [
+            r#"{"temprature":"omit"}"#,
+            r#"{"temperature":"cold"}"#,
+            r#"{"temperature":-1}"#,
+            r#"{"token_field":"tokens"}"#,
+            r#"{"extra_body":{"model":"x"}}"#,
+            r#"{"extra_body":[1]}"#,
+            "[]",
+        ] {
+            assert!(RequestProfile::from_json(bad).is_err(), "{bad} must be refused");
+        }
     }
 
     #[test]
