@@ -968,7 +968,18 @@ pub struct PreparedLlm {
     /// non-streaming call. Purely observational: the journaled result is
     /// the same either way.
     pub on_token: Option<TokenSink>,
+    /// The node's own system text (#391); `None` = the built-in prompt.
+    pub system: Option<String>,
+    /// The temperature to send; `None` sends none (`"temperature": "omit"`).
+    pub temperature: Option<f64>,
+    pub response_format: Option<areev_llm::ResponseFormat>,
+    pub parallel_tool_calls: Option<bool>,
 }
+
+/// The system prompt an abstract node runs under when its plan sets none.
+pub const DEFAULT_SYSTEM_PROMPT: &str = "You are executing one node of a governed workflow. Use \
+the offered tools when needed; when done, answer with the node's final result (a JSON object \
+when structured output is wanted).";
 
 /// One in-flight dispatch handed to the pool.
 pub struct DispatchJob {
@@ -982,6 +993,12 @@ pub struct DispatchJob {
     /// Read and hash-verified on the driver thread, like `llm`'s pinned
     /// Definitions — the pool never touches a store handle.
     pub code: Option<PreparedCode>,
+    /// The name the host executor runs this effect under, when it is not the
+    /// executor's own: a dynamic tool (#392) is journaled under the name the
+    /// model called and EXECUTES as the pinned Definition it dispatches to —
+    /// the name `--tool-cmd`, a registry and the broker's grants know.
+    /// `None` = `executor`'s name, every effect before 1.13.
+    pub exec_name: Option<String>,
 }
 
 /// A code blob, read off the driver thread and ready to execute.
@@ -1073,7 +1090,7 @@ impl Pool {
                 let (tool_name, tool_hash) = match &job.executor {
                     NodeExecutor::Host { tool_name, tool_hash }
                     | NodeExecutor::Client { tool_name, tool_hash, .. } => {
-                        (tool_name.clone(), tool_hash.clone())
+                        (job.exec_name.clone().unwrap_or_else(|| tool_name.clone()), tool_hash.clone())
                     }
                     NodeExecutor::Subgraph { workflow_hash } => {
                         // Subgraphs never reach the pool — the driver runs
@@ -1198,18 +1215,15 @@ fn run_llm_effect(
         };
     };
     let request = areev_llm::ToolCallRequest {
-        system: Some(
-            "You are executing one node of a governed workflow. Use the \
-             offered tools when needed; when done, answer with the node's \
-             final result (a JSON object when structured output is wanted)."
-                .into(),
-        ),
+        system: Some(prepared.system.unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string())),
         messages: prepared.messages,
         tools: &prepared.tools,
         tool_choice: areev_llm::ToolChoice::Auto,
         max_tokens: prepared.max_tokens,
-        temperature: 0.0,
-        ..Default::default()
+        temperature: prepared.temperature.unwrap_or(0.0),
+        omit_temperature: prepared.temperature.is_none(),
+        response_format: prepared.response_format,
+        parallel_tool_calls: prepared.parallel_tool_calls,
     };
     let result = match prepared.on_token {
         Some(mut sink) => llm.call_streaming(&request, &mut *sink),

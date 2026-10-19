@@ -22,6 +22,7 @@ pub mod egress_spec;
 pub mod executor;
 pub mod journal;
 pub mod lease;
+pub mod llmcfg;
 pub mod manifest;
 pub mod memread;
 pub mod otel;

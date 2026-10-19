@@ -2,16 +2,16 @@
   "version": "1.12.2",
   "crates": 17,
   "rust": {
-    "files": 356,
-    "physical_lines": 252894,
-    "source_code": 116840,
-    "test_code": 74143,
-    "unit_test_code": 30047,
-    "integration_test_code": 44096,
+    "files": 358,
+    "physical_lines": 255919,
+    "source_code": 117891,
+    "test_code": 75559,
+    "unit_test_code": 30238,
+    "integration_test_code": 45321,
     "example_code": 669,
-    "test_functions": 3366,
-    "test_ratio": 0.63,
-    "test_share": 38.8
+    "test_functions": 3404,
+    "test_ratio": 0.64,
+    "test_share": 39.1
   },
   "per_crate": [
     {
@@ -23,6 +23,14 @@
       "tests": 1106
     },
     {
+      "name": "areev-run",
+      "files": 34,
+      "physical": 30148,
+      "source_code": 10374,
+      "test_code": 12397,
+      "tests": 344
+    },
+    {
       "name": "areev-store",
       "files": 45,
       "physical": 29819,
@@ -31,18 +39,10 @@
       "tests": 372
     },
     {
-      "name": "areev-run",
-      "files": 32,
-      "physical": 28525,
-      "source_code": 9859,
-      "test_code": 11541,
-      "tests": 325
-    },
-    {
       "name": "areev-cli",
       "files": 25,
-      "physical": 23189,
-      "source_code": 9117,
+      "physical": 23190,
+      "source_code": 9118,
       "test_code": 9223,
       "tests": 255
     },
@@ -71,28 +71,28 @@
       "tests": 115
     },
     {
+      "name": "areev-run-core",
+      "files": 8,
+      "physical": 7605,
+      "source_code": 3405,
+      "test_code": 2227,
+      "tests": 70
+    },
+    {
+      "name": "areev-llm",
+      "files": 11,
+      "physical": 7271,
+      "source_code": 3143,
+      "test_code": 2446,
+      "tests": 115
+    },
+    {
       "name": "areev-trigger",
       "files": 13,
       "physical": 6979,
       "source_code": 2140,
       "test_code": 2720,
       "tests": 141
-    },
-    {
-      "name": "areev-llm",
-      "files": 11,
-      "physical": 6741,
-      "source_code": 2942,
-      "test_code": 2234,
-      "tests": 107
-    },
-    {
-      "name": "areev-run-core",
-      "files": 8,
-      "physical": 6734,
-      "source_code": 3071,
-      "test_code": 1879,
-      "tests": 59
     },
     {
       "name": "areev-context",

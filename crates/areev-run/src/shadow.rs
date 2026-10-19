@@ -1153,5 +1153,12 @@ pub(crate) fn decide_context_for(
             ctx.tool_descriptions.insert(p.tool_name.clone(), line);
         }
     }
+    // Dynamic tools (#392) narrow like any other: their pinned descriptions.
+    for d in manifest.pinned.iter().filter_map(|p| p.llm.as_ref()).flat_map(|c| &c.dynamic_tools) {
+        if !d.description.trim().is_empty() {
+            let line = d.description.lines().next().unwrap_or_default().trim().to_string();
+            ctx.tool_descriptions.insert(d.name.clone(), line);
+        }
+    }
     Ok(ctx)
 }

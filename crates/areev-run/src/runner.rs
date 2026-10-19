@@ -482,6 +482,40 @@ impl Runner {
     }
 }
 
+/// The request fields of one LLM turn, read off its JOURNALED input (#391):
+/// the node's `llm` block as the scheduler wrote it under `llm`, else the
+/// run's defaults. Read from the journal rather than the manifest so the
+/// request a turn went out with is a function of the record alone.
+pub(crate) struct TurnRequest {
+    pub system: Option<String>,
+    /// `None` = send no temperature (`"omit"`).
+    pub temperature: Option<f64>,
+    pub max_tokens: u32,
+    pub response_format: Option<areev_llm::ResponseFormat>,
+    pub parallel_tool_calls: Option<bool>,
+}
+
+impl TurnRequest {
+    pub(crate) fn from_input(input: &Value, manifest: &RunManifest) -> Self {
+        let block = input.get("llm");
+        let field = |k: &str| block.and_then(|b| b.get(k));
+        TurnRequest {
+            system: field("system").and_then(Value::as_str).map(str::to_string),
+            temperature: match field("temperature") {
+                Some(Value::String(s)) if s == "omit" => None,
+                Some(t) => t.as_f64().or(Some(LLM_TEMPERATURE)),
+                None => Some(LLM_TEMPERATURE),
+            },
+            max_tokens: field("max_tokens")
+                .and_then(Value::as_u64)
+                .and_then(|n| u32::try_from(n).ok())
+                .unwrap_or_else(|| manifest.llm_max_tokens.unwrap_or(DEFAULT_LLM_MAX_TOKENS)),
+            response_format: field("response_format").and_then(areev_llm::ResponseFormat::from_openai),
+            parallel_tool_calls: field("parallel_tool_calls").and_then(Value::as_bool),
+        }
+    }
+}
+
 /// Journal-shaped transcript messages → the tool-calling seam's shape.
 /// Pure translation, on the driver thread; the pool never parses state.
 fn seam_messages(input: &Value) -> Vec<areev_llm::ChatMessage> {
@@ -664,6 +698,46 @@ impl Runner {
             .to_workflow()
             .map_err(|e| RunError::InvalidPlan { why: e.to_string() })?;
         PlanGraph::build(&wf)
+    }
+
+    /// The Definition one offered tool is shown to the model as. A pinned
+    /// Definition is read by its frozen address, with its locked keys taken
+    /// out of the schema (#393) — the model is not invited to set what it
+    /// cannot choose. A dynamic tool (#392) is the entry the manifest pinned:
+    /// its own name, description and schema, never the dispatch Definition's.
+    fn offered_definition(
+        &self,
+        t: &areev_run_core::OfferedTool,
+    ) -> Result<areev_core::types::Tool, RunError> {
+        if let Some(d) = &t.dynamic {
+            let mut def = areev_core::types::Tool::new(&d.name)
+                .kind(areev_core::types::ToolKind::Definition);
+            if !d.description.is_empty() {
+                def = def.tool_description(&d.description);
+            }
+            let mut schema = d.input_schema.clone();
+            // A lock lands where the model's arguments land: at the top level
+            // unless the entry wraps them, in which case the locked keys are
+            // the dispatch Definition's and say nothing about this schema.
+            if d.dispatch.arguments_into.is_none() {
+                if let Some(lock) = &t.locked {
+                    crate::llmcfg::strip_locked(&mut schema, lock);
+                }
+            }
+            def.input_schema = Some(schema);
+            return Ok(def);
+        }
+        let h = Hash::from_hex(&t.tool_hash).map_err(err_run)?;
+        let mut def = self
+            .facade
+            .with_store(|m| m.get(&h))
+            .map_err(err_run)?
+            .to_tool()
+            .map_err(err_run)?;
+        if let (Some(lock), Some(schema)) = (&t.locked, def.input_schema.as_mut()) {
+            crate::llmcfg::strip_locked(schema, lock);
+        }
+        Ok(def)
     }
 
     fn load_manifest(&self, run_id: &str) -> Result<RunManifest, RunError> {
@@ -2270,10 +2344,19 @@ impl Runner {
                             provider: in_agent
                                 .then(|| self.llm.as_ref().map(|l| l.provider().to_string()))
                                 .flatten(),
-                            max_tokens: is_llm.then(|| {
-                                manifest.llm_max_tokens.unwrap_or(DEFAULT_LLM_MAX_TOKENS)
-                            }),
-                            temperature: is_llm.then_some(LLM_TEMPERATURE),
+                            // What THIS request carries (#391): the node's
+                            // own ceiling and temperature when its block sets
+                            // them, nothing for an omitted temperature — a span
+                            // must not claim a parameter that never went out.
+                            max_tokens: is_llm
+                                .then(|| TurnRequest::from_input(&input, manifest).max_tokens),
+                            temperature: if is_llm {
+                                TurnRequest::from_input(&input, manifest).temperature.and_then(
+                                    |t| self.llm.as_ref().map_or(Some(t), |l| l.effective_temperature(t)),
+                                )
+                            } else {
+                                None
+                            },
                         });
                         intents.insert(key, h);
                         intents_written += 1;
@@ -2414,14 +2497,7 @@ impl Runner {
                             };
                             let mut defs = Vec::with_capacity(offered.len());
                             for t in offered {
-                                let h = Hash::from_hex(&t.tool_hash).map_err(err_run)?;
-                                let def = self
-                                    .facade
-                                    .with_store(|m| m.get(&h))
-                                    .map_err(err_run)?
-                                    .to_tool()
-                                    .map_err(err_run)?;
-                                defs.push(def);
+                                defs.push(self.offered_definition(t)?);
                             }
                             // §6.10 TokenChunk sink: only when observed —
                             // otherwise the plain call (no stream overhead).
@@ -2440,13 +2516,19 @@ impl Runner {
                                 }) as crate::executor::TokenSink
                             });
                             let to_model = self.pseudonymize_for_model(&input)?;
+                            // The node's request fields (#391), read off the
+                            // turn's own journaled `llm` — what the scheduler
+                            // wrote is what is sent, and what verify sees.
+                            let req = TurnRequest::from_input(&input, manifest);
                             Some(crate::executor::PreparedLlm {
                                 messages: seam_messages(&to_model),
                                 tools: defs,
-                                max_tokens: manifest
-                                    .llm_max_tokens
-                                    .unwrap_or(DEFAULT_LLM_MAX_TOKENS),
+                                max_tokens: req.max_tokens,
                                 on_token,
+                                system: req.system,
+                                temperature: req.temperature,
+                                response_format: req.response_format,
+                                parallel_tool_calls: req.parallel_tool_calls,
                             })
                         } else {
                             None
@@ -2457,12 +2539,39 @@ impl Runner {
                         // touches no store handle. `get_blob` verifies the
                         // digest on every read, so the bytes handed to the
                         // pool always are the address the manifest pinned.
-                        let code_prepared = match manifest
-                            .pinned
-                            .iter()
-                            .find(|p| p.node == key.node)
-                            .filter(|p| p.executor_uri.is_some())
-                        {
+                        // A model-issued call (inside an abstract node)
+                        // reaches the Definition it was offered as, found by
+                        // its frozen address — a lookup by NODE finds the
+                        // abstract node's own pin, which names no code, and
+                        // so used to send a call to a code-carrying
+                        // Definition to `--tool-cmd` instead of its blob. A
+                        // dynamic tool (#392) is journaled under its own name
+                        // but EXECUTES as that Definition: its name is what
+                        // the host executor and the broker's grants know.
+                        let flow_target = match &executor {
+                            areev_run_core::NodeExecutor::Host { tool_hash, tool_name }
+                                if key.kind == areev_run_core::EffectKind::Tool
+                                    && manifest
+                                        .pinned
+                                        .iter()
+                                        .any(|p| p.node == key.node && p.executor == "abstract") =>
+                            {
+                                manifest
+                                    .pinned
+                                    .iter()
+                                    .find(|p| p.executor == "host" && &p.tool_hash == tool_hash)
+                                    .map(|p| (p, p.tool_name != *tool_name))
+                            }
+                            _ => None,
+                        };
+                        let exec_name = flow_target
+                            .filter(|(_, renamed)| *renamed)
+                            .map(|(p, _)| p.tool_name.clone());
+                        let code_pin = match flow_target {
+                            Some((p, _)) => Some(p),
+                            None => manifest.pinned.iter().find(|p| p.node == key.node),
+                        };
+                        let code_prepared = match code_pin.filter(|p| p.executor_uri.is_some()) {
                             Some(pin) => {
                                 let uri = pin.executor_uri.as_deref().unwrap();
                                 let bytes = self
@@ -2523,6 +2632,7 @@ impl Runner {
                             idempotency_key: idem,
                             llm: llm_prepared,
                             code: code_prepared,
+                            exec_name,
                         });
                         in_flight += 1;
                     }
@@ -3204,6 +3314,18 @@ impl Runner {
                     }
                     if let Some(read) = &p.read {
                         row_obj.insert("read".into(), read.clone());
+                    }
+                    if let Some(lock) = &p.locked_params {
+                        row_obj.insert("locked_params".into(), lock.clone());
+                    }
+                    // The node's frozen `llm` block (#391), dynamic tools
+                    // as pinned (#392) — what a resume will send, not what
+                    // the plan says today.
+                    if let Some(llm) = &p.llm {
+                        row_obj.insert(
+                            "llm".into(),
+                            serde_json::to_value(llm).unwrap_or(Value::Null),
+                        );
                     }
                     row
                 })

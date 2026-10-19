@@ -87,6 +87,22 @@ pub struct PinnedTool {
     /// pin, so existing manifests serialize byte-identically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decide: Option<serde_json::Value>,
+    /// The Definition's `locked_params` (#393): keys merged OVER a model's
+    /// arguments when an abstract node calls this tool, the lock winning, and
+    /// stripped from the schema the model is offered. Frozen here with the
+    /// rest of the resolution, so a run whose Definition locked nothing when
+    /// it started — every run before 1.13 — never starts locking mid-flight.
+    /// Absent for every Definition without locks, so existing manifests
+    /// serialize byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locked_params: Option<serde_json::Value>,
+    /// An abstract node's frozen `llm` block (#391, #392): the plan's
+    /// declaration for this node, validated and normalized at start, with any
+    /// `tools_from` list resolved against the run input and pinned. Present
+    /// only on an abstract pin whose plan configured it, so existing manifests
+    /// serialize byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm: Option<areev_run_core::LlmNodeConfig>,
 }
 
 /// The `executor` a decision node (C3) pins as.
@@ -422,6 +438,8 @@ impl RunManifest {
                     read: Some(spec),
                     ask_kind: None,
                     decide: None,
+                    locked_params: None,
+                    llm: None,
                 });
                 continue;
             }
@@ -447,6 +465,8 @@ impl RunManifest {
                             read: None,
                             ask_kind: None,
                             decide: None,
+                            locked_params: None,
+                            llm: None,
                         }
                     } else {
                         pin_from_definition(node, &h, &g)?
@@ -493,12 +513,25 @@ impl RunManifest {
                             read: None,
                             ask_kind: None,
                             decide: None,
+                            locked_params: None,
+                            llm: None,
                         },
                         None => return Err(RunError::NoToolLlm { node: node.clone() }),
                     }
                 }
             };
             pinned.push(resolved);
+        }
+        // The per-node `llm` blocks (#391, #392), validated against the pins
+        // just resolved — a `tools` subset or a dynamic tool's dispatch may
+        // only name what the plan pinned — and FROZEN onto each abstract pin.
+        // `tools_from` resolves against the run input here, once.
+        let blocks =
+            crate::llmcfg::parse_llm(fields.and_then(|f| f.get(crate::llmcfg::LLM_FIELD)), plan, &pinned, &input)?;
+        for (node, block) in blocks {
+            if let Some(p) = pinned.iter_mut().find(|p| p.node == node) {
+                p.llm = Some(block);
+            }
         }
         // Reducer table (§6.5): declared on the Workflow grain, validated
         // here — an unknown name fails at run start, not at first merge.
@@ -670,8 +703,37 @@ impl RunManifest {
             .iter()
             .filter(|p| p.executor == "host")
             .filter(|p| seen.insert(p.tool_name.clone()))
-            .map(|p| areev_run_core::OfferedTool::new(p.tool_name.clone(), p.tool_hash.clone()))
+            .map(|p| {
+                let mut t = areev_run_core::OfferedTool::new(p.tool_name.clone(), p.tool_hash.clone());
+                t.locked = p.locked_params.clone();
+                t
+            })
             .collect();
+        // A node's own offer (#391, #392): its `tools` subset of the pinned
+        // set — manifest order, narrowing only — then the dynamic tools its
+        // block pinned from the run input, each locked by its entry and, over
+        // that, by the Definition it dispatches.
+        let offer_for = |p: &PinnedTool| -> Vec<areev_run_core::OfferedTool> {
+            let Some(cfg) = &p.llm else { return offered.clone() };
+            let mut tools: Vec<areev_run_core::OfferedTool> = match &cfg.tools {
+                Some(names) => offered.iter().filter(|t| names.contains(&t.tool_name)).cloned().collect(),
+                None => offered.clone(),
+            };
+            for d in &cfg.dynamic_tools {
+                let def_lock = self
+                    .pinned
+                    .iter()
+                    .find(|q| q.executor == "host" && q.tool_hash == d.dispatch.hash)
+                    .and_then(|q| q.locked_params.as_ref());
+                tools.push(areev_run_core::OfferedTool {
+                    tool_name: d.name.clone(),
+                    tool_hash: d.dispatch.hash.clone(),
+                    locked: crate::llmcfg::merge_locks(d.dispatch.locked.as_ref(), def_lock),
+                    dynamic: Some(Box::new(d.clone())),
+                });
+            }
+            tools
+        };
         self.pinned
             .iter()
             .map(|p| match p.executor.as_str() {
@@ -692,7 +754,10 @@ impl RunManifest {
                         spec,
                     }
                 }
-                "abstract" => NodeExecutor::Abstract { tools: offered.clone(), llm: None },
+                "abstract" => NodeExecutor::Abstract {
+                    tools: offer_for(p),
+                    llm: p.llm.clone().map(Box::new),
+                },
                 // Never Host, for the memory-read reason: a decision that
                 // fell through to `--tool-cmd` would let a tool answer it.
                 DECIDE_EXECUTOR => NodeExecutor::Decide {
@@ -1050,6 +1115,29 @@ pub fn pin_from_definition(
         }
     };
     let decide = if decide_node { Some(parse_decide(node, g.fields.get("decide"))?) } else { None };
+    // `locked_params` (#393): an object, or refused — the write path checks
+    // it, but a grain can arrive by sync or in a pack from an implementation
+    // we do not vouch for, and a lock that silently failed to apply is a
+    // parameter the model was trusted with by mistake.
+    let locked_params = match g.fields.get("locked_params") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::Object(o)) if o.is_empty() => None,
+        Some(v @ serde_json::Value::Object(_)) if executor == "host" && !decide_node => Some(v.clone()),
+        Some(serde_json::Value::Object(_)) => {
+            return Err(RunError::InvalidPlan {
+                why: format!(
+                    "node '{node}' binds a Definition declaring locked_params on a \
+                     {} tool — only a host tool a model calls takes locked parameters",
+                    if decide_node { "decision" } else { executor }
+                ),
+            })
+        }
+        Some(other) => {
+            return Err(RunError::InvalidPlan {
+                why: format!("node '{node}' binds a Definition whose locked_params is not an object: {other}"),
+            })
+        }
+    };
     Ok(PinnedTool {
         node: node.to_string(),
         tool_hash: h.to_hex(),
@@ -1062,6 +1150,8 @@ pub fn pin_from_definition(
         read: None,
         ask_kind,
         decide,
+        locked_params,
+        llm: None,
     })
 }
 
@@ -1258,6 +1348,8 @@ mod tests {
             read: None,
             ask_kind: None,
             decide: None,
+            locked_params: None,
+            llm: None,
         }
     }
 
@@ -1281,6 +1373,8 @@ mod tests {
                 read: None,
                 ask_kind: None,
                 decide: None,
+                locked_params: None,
+                llm: None,
             },
             host_pin("reply_done", "reply_email"),
             host_pin("reply_rejected", "reply_email"),
@@ -1326,6 +1420,8 @@ mod tests {
             read,
             ask_kind: None,
             decide: None,
+            locked_params: None,
+            llm: None,
         };
         let mut m = bare();
         m.pinned = vec![
@@ -1387,5 +1483,55 @@ mod tests {
         assert_eq!(m.max_effects_per_attempt(), 40);
         let json = serde_json::to_string(&m).unwrap();
         assert!(json.contains(r#""max_effects_per_attempt":40"#), "{json}");
+    }
+    /// #391/#393: a pin without a lock or a block serializes as it always did,
+    /// so every stored manifest keeps its address.
+    #[test]
+    fn a_pin_without_a_lock_or_a_block_keeps_its_bytes() {
+        let json = serde_json::to_string(&host_pin("parse", "parse")).unwrap();
+        assert!(!json.contains("locked_params") && !json.contains("\"llm\""), "{json}");
+    }
+
+    /// A node's offer is its `tools` subset in manifest order, then its pinned
+    /// dynamic tools — each locked by its entry and, over that, by the
+    /// Definition it dispatches; every other abstract node keeps the full set.
+    #[test]
+    fn a_nodes_offer_is_its_subset_then_its_dynamic_tools() {
+        let mut m = bare();
+        let mut mcp = host_pin("mcp", "mcp.call");
+        mcp.locked_params = Some(json!({"credential": "gateway"}));
+        let cfg = areev_run_core::LlmNodeConfig {
+            tools: Some(vec!["lookup".into()]),
+            dynamic_tools: vec![areev_run_core::DynamicTool {
+                name: "paid_to".into(),
+                description: String::new(),
+                input_schema: json!({"type": "object"}),
+                dispatch: areev_run_core::DynamicDispatch {
+                    definition: "mcp.call".into(),
+                    hash: "hash-mcp.call".into(),
+                    locked: Some(json!({"url": "u", "credential": "loses"})),
+                    arguments_into: Some("arguments".into()),
+                },
+            }],
+            ..Default::default()
+        };
+        m.pinned = vec![
+            host_pin("lookup", "lookup"),
+            mcp,
+            PinnedTool { executor: "abstract".into(), llm: Some(cfg), ..host_pin("agent", "agent") },
+            PinnedTool { executor: "abstract".into(), ..host_pin("other", "other") },
+        ];
+        let ex = m.executors();
+        let NodeExecutor::Abstract { tools, llm } = &ex[2] else { panic!("{ex:?}") };
+        let names: Vec<&str> = tools.iter().map(|t| t.tool_name.as_str()).collect();
+        assert_eq!(names, vec!["lookup", "paid_to"]);
+        assert_eq!(tools[1].tool_hash, "hash-mcp.call");
+        assert_eq!(tools[1].locked, Some(json!({"url": "u", "credential": "gateway"})));
+        assert!(llm.is_some());
+        let NodeExecutor::Abstract { tools, llm } = &ex[3] else { panic!("{ex:?}") };
+        let names: Vec<&str> = tools.iter().map(|t| t.tool_name.as_str()).collect();
+        assert_eq!(names, vec!["lookup", "mcp.call"]);
+        assert_eq!(tools[1].locked, Some(json!({"credential": "gateway"})));
+        assert!(llm.is_none());
     }
 }
