@@ -719,7 +719,7 @@ impl Runner {
             // A lock lands where the model's arguments land: at the top level
             // unless the entry wraps them, in which case the locked keys are
             // the dispatch Definition's and say nothing about this schema.
-            if d.dispatch.arguments_into.is_none() {
+            if d.dispatch.args_into.is_none() {
                 if let Some(lock) = &t.locked {
                     crate::llmcfg::strip_locked(&mut schema, lock);
                 }
@@ -828,7 +828,7 @@ impl Runner {
         // otherwise take a lease, write a manifest, and fail on first
         // dispatch, leaving a terminal run to explain. The address is named
         // so pinning it is a copy-paste.
-        for p in &manifest.pinned {
+        for p in manifest.code_pins() {
             if let Some(uri) = &p.executor_uri {
                 if !self.executor.code_allowed(&p.tool_hash, uri) {
                     return Err(RunError::CodeExecRefused {
@@ -2557,9 +2557,7 @@ impl Runner {
                                         .any(|p| p.node == key.node && p.executor == "abstract") =>
                             {
                                 manifest
-                                    .pinned
-                                    .iter()
-                                    .find(|p| p.executor == "host" && &p.tool_hash == tool_hash)
+                                    .host_pin_by_hash(tool_hash)
                                     .map(|p| (p, p.tool_name != *tool_name))
                             }
                             _ => None,
@@ -3291,6 +3289,8 @@ impl Runner {
             pinned: manifest
                 .pinned
                 .iter()
+                // `llm.dispatch` pins (#392) follow the nodes' rows, marked.
+                .chain(&manifest.dispatch_pins)
                 .map(|p| {
                     // The resolution, not a summary of it (#230). A node
                     // bound to a Definition that names a code blob used to
@@ -3317,6 +3317,9 @@ impl Runner {
                     }
                     if let Some(lock) = &p.locked_params {
                         row_obj.insert("locked_params".into(), lock.clone());
+                    }
+                    if manifest.dispatch_pins.iter().any(|d| std::ptr::eq(d, p)) {
+                        row_obj.insert("dispatch_only".into(), json!(true));
                     }
                     // The node's frozen `llm` block (#391), dynamic tools
                     // as pinned (#392) — what a resume will send, not what

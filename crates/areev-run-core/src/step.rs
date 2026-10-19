@@ -680,6 +680,10 @@ fn validated_dispatch_input(
             .map_err(|k| format!("schema violation: {}", k.as_str()))?;
     }
     let input = tool.dispatch_input(arguments);
+    if let Some(schema) = tool.dynamic.as_ref().and_then(|d| d.dispatch.definition_schema.as_ref()) {
+        areev_core::types::validate_instance(&input, schema)
+            .map_err(|k| format!("schema violation: {} (the call as dispatched)", k.as_str()))?;
+    }
     (env.validate_args)(tool.dispatch_name(), &input)?;
     Ok(input)
 }

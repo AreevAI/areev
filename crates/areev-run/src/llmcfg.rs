@@ -36,6 +36,7 @@ use std::collections::BTreeMap;
 pub const LLM_FIELD: &str = "llm";
 
 const BLOCK_KEYS: &[&str] = &[
+    "dispatch",
     "system",
     "instruction",
     "instruction_from",
@@ -50,21 +51,28 @@ const BLOCK_KEYS: &[&str] = &[
 ];
 
 const ENTRY_KEYS: &[&str] = &["name", "description", "input_schema", "dispatch"];
-const DISPATCH_KEYS: &[&str] = &["definition", "locked", "arguments_into"];
+const DISPATCH_KEYS: &[&str] = &["definition", "locked", "args_into"];
 
 /// Validate the plan's `llm` table against the resolved pins and the run
 /// input, and return node → frozen block. Every node named must be in the
 /// plan and resolve ABSTRACT: the block configures a model loop, and a node
 /// that binds a tool runs no model to configure.
+///
+/// `resolve` pins one `dispatch` entry (a Definition name or content address)
+/// for a node — the store-side half, which this module does not hold. The
+/// pins it returns come back beside the blocks, for the manifest's
+/// `dispatch_pins`: pinned like a bound Definition (code address, runtime,
+/// capabilities, locks), never offered to a model on their own.
 pub fn parse_llm(
     field: Option<&Value>,
     plan: &PlanGraph,
     pinned: &[PinnedTool],
     input: &Value,
-) -> Result<BTreeMap<String, LlmNodeConfig>, RunError> {
+    resolve: &mut dyn FnMut(&str, &str) -> Result<PinnedTool, RunError>,
+) -> Result<(BTreeMap<String, LlmNodeConfig>, Vec<PinnedTool>), RunError> {
     let invalid = |why: String| RunError::InvalidPlan { why };
     let table = match field {
-        None | Some(Value::Null) => return Ok(BTreeMap::new()),
+        None | Some(Value::Null) => return Ok((BTreeMap::new(), Vec::new())),
         Some(Value::Object(t)) => t,
         Some(_) => return Err(invalid(format!("`{LLM_FIELD}` must be an object of node → block"))),
     };
@@ -74,6 +82,7 @@ pub fn parse_llm(
     // model-callable).
     let host: Vec<&PinnedTool> = pinned.iter().filter(|p| p.executor == "host").collect();
     let mut out = BTreeMap::new();
+    let mut dispatch_pins: Vec<PinnedTool> = Vec::new();
     for (node, raw) in table {
         if !plan.nodes.iter().any(|n| n == node) {
             return Err(invalid(format!("`{LLM_FIELD}` names unknown node '{node}'")));
@@ -86,15 +95,48 @@ pub fn parse_llm(
                 pin.map(|p| p.executor.as_str()).unwrap_or("missing")
             )));
         }
-        out.insert(node.clone(), parse_block(node, raw, &host, input)?);
+        // `dispatch` (#392): Definitions this node's dynamic tools may reach
+        // that no node binds — the blessed `mcp.call`, typically. Resolved
+        // first, so the entries below can name them.
+        let mut mine: Vec<PinnedTool> = Vec::new();
+        match raw.get("dispatch") {
+            None | Some(Value::Null) => {}
+            Some(Value::Array(list)) => {
+                for e in list {
+                    let Some(entry) = e.as_str().filter(|s| !s.is_empty()) else {
+                        return Err(invalid(format!(
+                            "node '{node}' llm: `dispatch` lists {e}, which is not a Definition \
+                             name or content address"
+                        )));
+                    };
+                    let pin = resolve(node, entry)?;
+                    if !mine.iter().any(|p| p.tool_hash == pin.tool_hash) {
+                        mine.push(pin);
+                    }
+                }
+            }
+            Some(other) => {
+                return Err(invalid(format!(
+                    "node '{node}' llm: `dispatch` must be a list of Definition names or \
+                     content addresses, not {other}"
+                )))
+            }
+        }
+        let mut universe: Vec<&PinnedTool> = mine.iter().collect();
+        universe.extend(host.iter().copied());
+        let mut cfg = parse_block(node, raw, &host, &universe, input)?;
+        cfg.dispatch = mine.iter().map(|p| p.tool_name.clone()).collect();
+        out.insert(node.clone(), cfg);
+        dispatch_pins.extend(mine);
     }
-    Ok(out)
+    Ok((out, dispatch_pins))
 }
 
 fn parse_block(
     node: &str,
     raw: &Value,
     host: &[&PinnedTool],
+    dispatchable: &[&PinnedTool],
     input: &Value,
 ) -> Result<LlmNodeConfig, RunError> {
     let bad = |why: String| RunError::InvalidPlan { why: format!("node '{node}' llm: {why}") };
@@ -180,7 +222,7 @@ fn parse_block(
 
     if let Some(ptr) = string("tools_from")? {
         check_pointer(&ptr).map_err(|why| bad(format!("`tools_from` {why}")))?;
-        cfg.dynamic_tools = parse_dynamic(node, &ptr, input, host)?;
+        cfg.dynamic_tools = parse_dynamic(node, &ptr, input, host, dispatchable)?;
         cfg.tools_from = Some(ptr);
     }
 
@@ -268,11 +310,16 @@ fn pinned_names(host: &[&PinnedTool]) -> String {
 }
 
 /// Resolve `tools_from` against the run input and pin every entry.
+///
+/// `host` is what a dynamic name must not collide with (the tools a model may
+/// be offered); `dispatchable` is what an entry may dispatch through — the
+/// node's `dispatch` pins, then the plan's host pins.
 fn parse_dynamic(
     node: &str,
     ptr: &str,
     input: &Value,
     host: &[&PinnedTool],
+    dispatchable: &[&PinnedTool],
 ) -> Result<Vec<DynamicTool>, RunError> {
     let bad = |why: String| RunError::InvalidPlan { why: format!("node '{node}' llm.tools_from: {why}") };
     let list = match input.pointer(ptr) {
@@ -342,17 +389,18 @@ fn parse_dynamic(
         let Some(target) = d.get("definition").and_then(Value::as_str) else {
             return Err(ebad("`dispatch.definition` must name a pinned Definition".into()));
         };
-        let Some(def) = host
+        let Some(def) = dispatchable
             .iter()
             .find(|p| p.tool_name == target)
-            .or_else(|| host.iter().find(|p| p.tool_hash.eq_ignore_ascii_case(target)))
+            .or_else(|| dispatchable.iter().find(|p| p.tool_hash.eq_ignore_ascii_case(target)))
+            .or_else(|| dispatchable.iter().find(|p| normalize_tool_name(&p.tool_name) == target))
         else {
             return Err(RunError::UnresolvedRef {
                 what: format!(
                     "node '{node}' llm.tools_from {label} dispatches through '{target}', which \
-                     the plan does not pin as a host tool ({}) — a dynamic tool may only reach \
-                     a Definition the plan's reviewer saw",
-                    pinned_names(host)
+                     is neither in the node's `dispatch` list nor a host tool the plan pins \
+                     ({}) — a dynamic tool may only reach a Definition the plan's reviewer saw",
+                    pinned_names(dispatchable)
                 ),
             });
         };
@@ -361,12 +409,12 @@ fn parse_dynamic(
             Some(Value::Object(o)) => Some(Value::Object(o.clone())),
             Some(other) => return Err(ebad(format!("`dispatch.locked` must be an object, not {other}"))),
         };
-        let arguments_into = match d.get("arguments_into") {
+        let args_into = match d.get("args_into") {
             None | Some(Value::Null) => None,
             Some(Value::String(s)) if !s.is_empty() => Some(s.clone()),
             Some(other) => {
                 return Err(ebad(format!(
-                    "`dispatch.arguments_into` must be a non-empty key, not {other}"
+                    "`dispatch.args_into` must be a non-empty key, not {other}"
                 )))
             }
         };
@@ -378,7 +426,9 @@ fn parse_dynamic(
                 definition: def.tool_name.clone(),
                 hash: def.tool_hash.clone(),
                 locked,
-                arguments_into,
+                args_into,
+                // Filled from the store by the caller, which holds it.
+                definition_schema: None,
             },
         });
     }

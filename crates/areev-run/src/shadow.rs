@@ -1072,7 +1072,9 @@ pub(crate) fn arg_schemas_for(
     manifest: &RunManifest,
 ) -> Result<std::collections::BTreeMap<String, Value>, RunError> {
     let mut schemas = std::collections::BTreeMap::new();
-    for p in &manifest.pinned {
+    // `llm.dispatch` pins (#392) included: a dynamic tool's merged input is
+    // judged under the Definition it dispatches, strict like any other.
+    for p in manifest.code_pins() {
         // A decision node's strict schema applies to the `{state, questions}`
         // the driver builds for it (C3), as a strict host tool's applies to
         // a model's call.

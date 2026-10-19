@@ -1955,7 +1955,8 @@ fn dynamic_paid_to() -> OfferedTool {
                 definition: "mcp.call".into(),
                 hash: "hmcp".into(),
                 locked: Some(json!({"url": "https://mcp.example/mcp", "tool": "paid_to", "credential": "gateway"})),
-                arguments_into: Some("arguments".into()),
+                args_into: Some("arguments".into()),
+                definition_schema: None,
             },
         })),
     }

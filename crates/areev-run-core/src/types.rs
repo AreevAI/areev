@@ -250,13 +250,13 @@ impl OfferedTool {
     }
 
     /// The input a model-issued call dispatches with (#392, #393): the
-    /// model's arguments — under `dispatch.arguments_into` for a dynamic tool
+    /// model's arguments — under `dispatch.args_into` for a dynamic tool
     /// that names one — with every locked key merged over them. Shallow, top
     /// level, the lock always winning. Pure and total, so replay rebuilds the
     /// same object; a non-object argument payload (refused before dispatch
     /// anyway) passes through unlocked.
     pub fn dispatch_input(&self, arguments: &Value) -> Value {
-        let mut input = match self.dynamic.as_ref().and_then(|d| d.dispatch.arguments_into.as_deref()) {
+        let mut input = match self.dynamic.as_ref().and_then(|d| d.dispatch.args_into.as_deref()) {
             Some(key) => {
                 let mut o = serde_json::Map::new();
                 o.insert(key.to_string(), arguments.clone());
@@ -307,7 +307,14 @@ pub struct DynamicDispatch {
     /// lock is merged — `"arguments"` for `mcp.call`, whose input carries the
     /// MCP tool's arguments one level down. Absent = merged at the top level.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub arguments_into: Option<String>,
+    pub args_into: Option<String>,
+    /// The dispatch Definition's own `input_schema`, frozen at start. The
+    /// MERGED input — locks plus the wrapped arguments — is validated against
+    /// it whether or not the Definition is `strict`: the host promised the
+    /// model's arguments fit inside it, and a call that does not is a
+    /// correction for the model, not a request the Definition refuses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub definition_schema: Option<Value>,
 }
 
 /// A plan's per-node LLM configuration (#391, #392) — the `llm` block for one
@@ -320,6 +327,11 @@ pub struct DynamicDispatch {
 /// temperature 0, the run's `llm_max_tokens`.
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct LlmNodeConfig {
+    /// The Definitions this node's dynamic tools may dispatch through that no
+    /// node binds (#392), by canonical name — pinned at start into the
+    /// manifest's `dispatch_pins`, never offered to the model themselves.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dispatch: Vec<String>,
     /// Replaces the built-in system prompt for this node.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system: Option<String>,

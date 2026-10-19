@@ -573,7 +573,7 @@ fn paid_to(definition: &str) -> Value {
                          "required": ["invoice"], "additionalProperties": false},
         "dispatch": {"definition": definition,
                      "locked": {"url": "https://mcp.example/mcp", "tool": "paid_to", "credential": "gateway"},
-                     "arguments_into": "arguments"},
+                     "args_into": "arguments"},
     })
 }
 
@@ -827,7 +827,7 @@ fn a_run_using_every_key_at_once_verifies_from_the_journal_alone() {
         "name": "paid_to",
         "input_schema": {"type": "object", "properties": {"invoice": {"type": "string"}}, "required": ["invoice"]},
         "dispatch": {"definition": "mcp.call", "locked": {"url": "https://mcp.example/mcp", "tool": "paid_to",
-                     "credential": "the-entry-loses"}, "arguments_into": "arguments"},
+                     "credential": "the-entry-loses"}, "args_into": "arguments"},
     }]});
     finished(runner.start(&plan, "all-1", input, &opts()).unwrap());
 
@@ -885,4 +885,169 @@ fn a_parked_run_resumes_under_the_block_it_started_with() {
     assert_eq!(sent[0].first_user["instruction"], "Reconcile.");
     assert!(sent[0].tools.is_empty(), "`tools: []` offers nothing");
     assert!(runner.verify("park-1").unwrap().verified);
+}
+
+// ---- `llm.dispatch`: a Definition no node binds (#392) ----------------------
+
+/// The blessed `mcp.call` shape under the name a pack gave it, bound to NO
+/// node: only the agent's `dispatch` list pins it.
+fn unbound_mcp(rig: &Rig, ns: &str) -> String {
+    let uri = rig.blob(b"\0asm-mcp");
+    let t = Tool::new("mcp_call")
+        .kind(ToolKind::Definition)
+        .tool_description("call a tool on an MCP server")
+        .input_schema(json!({"type": "object", "properties": {
+            "url": {"type": "string"}, "credential": {"type": "string"},
+            "tool": {"type": "string"}, "arguments": {"type": "object"}},
+            "required": ["url", "tool", "arguments"], "additionalProperties": false}))
+        .executor_uri(&uri)
+        .created_at(500)
+        .namespace(ns);
+    rig.facade.with_store(|m| m.add(&t)).unwrap().to_hex()
+}
+
+fn bank_paid_to() -> Value {
+    json!({
+        "name": "bank.paid_to",
+        "description": "Who an invoice was paid to",
+        "input_schema": {"type": "object", "properties": {"invoice": {"type": "string"}},
+                         "required": ["invoice"]},
+        "dispatch": {"definition": "mcp_call",
+                     "locked": {"url": "http://127.0.0.1:7798/mcp/orgs/org_x", "credential": "gateway",
+                                "tool": "bank.paid_to"},
+                     "args_into": "arguments"},
+    })
+}
+
+fn agent_only_plan(rig: &Rig, ns: &str, llm: Value) -> Hash {
+    let mut wf = Workflow::new(vec!["context".into(), "agent".into()]).edge("context", "agent");
+    let ctx = Tool::new("context").kind(ToolKind::Definition).created_at(500).namespace(ns);
+    let ctx = rig.facade.with_store(|m| m.add(&ctx)).unwrap().to_hex();
+    wf = wf.bind("context", &ctx);
+    let mut wf = wf.created_at(600).namespace(ns);
+    wf.common.extra_fields.insert("llm".into(), llm);
+    rig.facade.with_store(|m| m.add(&wf)).unwrap()
+}
+
+#[test]
+fn a_dispatch_list_pins_an_unbound_definition_that_is_never_offered_itself() {
+    let rig = Rig::new();
+    let hash = unbound_mcp(&rig, "ops");
+    let plan = agent_only_plan(
+        &rig,
+        "ops",
+        json!({"agent": {
+            "dispatch": ["mcp_call"],
+            "tools": [],
+            "tools_from": "/tools",
+            // A nested pointer: an `op: query` read with FORMAT markdown
+            // lands `{type: "formatted", text, …}` under its key.
+            "instruction_from": "/prompt/text",
+        }}),
+    );
+    let exec = Arc::new(TestExec { allow_code: true, ..Default::default() });
+    let llm = CapturingLlm::new(vec![
+        calls(vec![("c1", "bank_paid_to", json!({"invoice": "4471"}))]),
+        answer(r#"{"payee": "ACME"}"#),
+    ]);
+    let runner = rig.runner(Arc::clone(&exec), Arc::clone(&llm));
+    let input = json!({
+        "prompt": {"type": "formatted", "format": "markdown", "text": "## Invoice 4471\nWho was paid?"},
+        "tools": [bank_paid_to()],
+    });
+    finished(runner.start(&plan, "d1", input, &opts()).unwrap());
+
+    let sent = llm.sent();
+    assert_eq!(sent[0].first_user["instruction"], "## Invoice 4471\nWho was paid?");
+    let names: Vec<&str> = sent[0].tools.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, vec!["bank.paid_to"], "only the dynamic tool; mcp_call itself is never offered");
+
+    let (name, input, code) =
+        exec.seen().into_iter().find(|(n, _, _)| n == "mcp_call").expect("dispatched as mcp_call");
+    assert_eq!(name, "mcp_call");
+    assert!(code.is_some(), "the pinned blob ran");
+    assert_eq!(
+        input,
+        json!({"url": "http://127.0.0.1:7798/mcp/orgs/org_x", "credential": "gateway",
+               "tool": "bank.paid_to", "arguments": {"invoice": "4471"}}),
+        "{{...locked, args_into: <model args>}}"
+    );
+    let journaled = rig
+        .intent_inputs("d1", "agent")
+        .into_iter()
+        .find(|(_, k, _, _)| *k == EffectKind::Tool)
+        .unwrap();
+    assert_eq!(journaled.2, "bank.paid_to");
+    assert_eq!(journaled.3, input, "the merged input is what is journaled");
+
+    let m = rig.facade.with_store(|m| areev_run::RunManifest::load(m, "d1")).unwrap();
+    assert_eq!(m.dispatch_pins.len(), 1);
+    assert_eq!(m.dispatch_pins[0].tool_hash, hash);
+    assert_eq!(m.dispatch_pins[0].node, "agent");
+    assert!(m.dispatch_pins[0].executor_uri.is_some(), "pinned with its code address");
+    let report = runner.inspect("d1").unwrap();
+    let row = report.pinned.iter().find(|r| r["dispatch_only"] == true).unwrap();
+    assert_eq!(row["tool"], "mcp_call");
+    assert!(row.get("executor_uri").is_some());
+    assert!(runner.verify("d1").unwrap().verified);
+}
+
+#[test]
+fn the_merged_input_is_judged_by_the_definitions_schema_strict_or_not() {
+    // mcp_call is NOT strict, and its schema forbids extra keys: an entry
+    // that wraps nothing puts the model's `invoice` at the top level, which
+    // the Definition refuses — so the model gets a correction, and the
+    // Definition never receives a call it does not take.
+    let rig = Rig::new();
+    unbound_mcp(&rig, "ops");
+    let plan = agent_only_plan(&rig, "ops", json!({"agent": {"dispatch": ["mcp_call"], "tools_from": "/tools"}}));
+    let mut entry = bank_paid_to();
+    entry["dispatch"].as_object_mut().unwrap().remove("args_into");
+    let exec = Arc::new(TestExec { allow_code: true, ..Default::default() });
+    let llm = CapturingLlm::new(vec![
+        calls(vec![("c1", "bank_paid_to", json!({"invoice": "4471"}))]),
+        answer("{}"),
+    ]);
+    let runner = rig.runner(Arc::clone(&exec), Arc::clone(&llm));
+    finished(runner.start(&plan, "d2", json!({"tools": [entry]}), &opts()).unwrap());
+    assert!(llm.sent()[1].last_user.contains("failed validation"), "{}", llm.sent()[1].last_user);
+    assert!(!exec.seen().iter().any(|(n, _, _)| n == "mcp_call"), "never dispatched");
+}
+
+#[test]
+fn a_dispatch_name_resolves_in_the_plans_namespace_and_a_miss_is_refused() {
+    let rig = Rig::new();
+    // Authored in `lib`, run in `ops`: the plan grain's namespace answers.
+    unbound_mcp(&rig, "lib");
+    let plan = agent_only_plan(&rig, "lib", json!({"agent": {"dispatch": ["mcp_call"], "tools_from": "/tools"}}));
+    let runner = rig.runner(
+        Arc::new(TestExec { allow_code: true, ..Default::default() }),
+        CapturingLlm::new(vec![answer("{}")]),
+    );
+    finished(runner.start(&plan, "d3", json!({"tools": [bank_paid_to()]}), &opts()).unwrap());
+
+    for (block, input, code, needle) in [
+        (json!({"agent": {"dispatch": ["nope"], "tools_from": "/tools"}}), json!({"tools": []}), "RUN-E004", "'nope'"),
+        (json!({"agent": {"dispatch": "mcp_call"}}), json!({}), "RUN-E019", "`dispatch`"),
+        // An entry naming a Definition outside the list (and unpinned) is refused.
+        (json!({"agent": {"tools_from": "/tools"}}), json!({"tools": [bank_paid_to()]}), "RUN-E004", "'mcp_call'"),
+    ] {
+        let plan = agent_only_plan(&rig, "lib", block.clone());
+        let runner = rig.runner(Arc::new(TestExec { allow_code: true, ..Default::default() }), CapturingLlm::new(vec![]));
+        let err = runner.start(&plan, "bad", input, &opts()).unwrap_err();
+        assert_eq!(err.code(), code, "{block}: {err}");
+        assert!(err.to_string().contains(needle), "{block}: {err}");
+        assert!(!rig.manifest_exists("bad"));
+    }
+}
+
+#[test]
+fn an_unpinned_dispatch_blob_is_refused_before_the_run_exists() {
+    let rig = Rig::new();
+    unbound_mcp(&rig, "ops");
+    let plan = agent_only_plan(&rig, "ops", json!({"agent": {"dispatch": ["mcp_call"], "tools_from": "/tools"}}));
+    let runner = rig.runner(Arc::new(TestExec::default()), CapturingLlm::new(vec![]));
+    let err = runner.start(&plan, "d4", json!({"tools": [bank_paid_to()]}), &opts()).unwrap_err();
+    assert_eq!(err.code(), "RUN-E018", "{err}");
+    assert!(!rig.manifest_exists("d4"));
 }
