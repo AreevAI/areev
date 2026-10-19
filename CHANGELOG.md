@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.13.0] — unreleased
+
 ### Added
 
 - **A plan configures each LLM node (`llm`)** (#391). A Workflow's new `llm`
@@ -4853,7 +4855,8 @@ ecosystem adapters, and the enterprise plane.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.12.2...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.13.0...HEAD
+[1.13.0]: https://github.com/AreevAI/areev/compare/v1.12.2...v1.13.0
 [1.12.2]: https://github.com/AreevAI/areev/compare/v1.12.1...v1.12.2
 [1.12.1]: https://github.com/AreevAI/areev/compare/v1.12.0...v1.12.1
 [1.12.0]: https://github.com/AreevAI/areev/compare/v1.11.1...v1.12.0
