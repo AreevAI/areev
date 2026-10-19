@@ -11,6 +11,7 @@
 //!     "instruction_from": "/prompt",
 //!     "state": ["question", "account"],
 //!     "tools": ["records_query"],
+//!     "dispatch": ["mcp_call"],
 //!     "tools_from": "/tools",
 //!     "response": {"json_schema": {…}},
 //!     "temperature": "omit",

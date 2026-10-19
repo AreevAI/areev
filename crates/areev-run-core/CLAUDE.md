@@ -187,6 +187,33 @@ replays identically, which is exactly what the epoch is about.
   in the manifest); merge order is static results by node index, then Send
   results by task path.
 
+## The per-node `llm` block (#391–#393) — pinned
+
+- `NodeExecutor::Abstract { tools, llm }`. `llm` is the frozen
+  `LlmNodeConfig`, and `None` must build byte-identical commands and state
+  (pinned by `an_empty_block_and_no_block_build_identical_commands`), which is
+  why the epoch did not move.
+- `messages[0]` comes from `first_message`: `instruction`, or
+  `instruction_from` (a pointer into the node's input; a miss is
+  `fail_abstract_coded("SchemaValidationFailed: …")` before any effect), then
+  `select_state`. `$inbox` always rides along.
+- The request fields ride every turn as `input.llm` (`request_block`). A fold
+  turn takes system, temperature and max_tokens but not response_format or
+  parallel_tool_calls. `reserve_for` uses the node's `max_tokens` for the
+  per-dispatch reservation.
+- A `response` declaration gets `check_response` on the final text. One
+  re-prompt (`AbstractFlow.response_strikes`, with the model's answer kept as
+  an assistant entry), then the node fails `SchemaValidationFailed`.
+- `tool_results_into`: `AbstractFlow.tool_log` gets an entry per settled flow
+  tool, inserted by `effect_seq` (never arrival order), with the WHOLE result
+  and the dispatched input. It is moved into the result at completion.
+- `OfferedTool.locked` / `.dynamic`: `validated_dispatch_input` checks a
+  dynamic tool's own schema, merges (`dispatch_input`: wrap under
+  `args_into`, then the lock wins), checks the merged input against the
+  frozen `definition_schema`, then runs `validate_args` under
+  `dispatch_name()`. Only the model's arguments stay in state and transcript.
+  `dispatch_flow_tool` re-derives the merged input.
+
 ## Decisions (C1–C3, `docs/decision-model-proposal.md`) — pinned
 
 A decision is an EFFECT, never a call: `NodeExecutor::Decide { tool_hash,

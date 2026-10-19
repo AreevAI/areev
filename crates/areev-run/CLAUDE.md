@@ -428,6 +428,40 @@ The shape of the rules, and why each one is load-bearing:
   ceiling is also a two-backend case in `areev-conformance`
   (`run_recall_is_bounded_and_refused_past_its_ceiling`).
 
+## The per-node `llm` block, `tools_from`, locks (`llmcfg.rs`, #391–#394)
+
+- **Frozen like `reads`.** `parse_llm` (called from `resolve_with_fields` after
+  the pins resolve) validates the plan's `llm` table: unknown keys and shapes
+  are `RUN-E019`, and a `tools` or `dispatch` name the run cannot resolve is
+  `RUN-E004`. The block becomes `PinnedTool.llm` on the abstract node's pin,
+  with `tools_from` resolved against the run INPUT there, once. Resume never
+  re-reads the plan or the input.
+- **`llm.dispatch` pins live in `RunManifest.dispatch_pins`**, not in
+  `pinned`. `pinned` is one entry per plan node and `executors()` indexes it
+  by node. A dispatch pin resolves like an unbound node's Definition (the run
+  namespace, then the plan's), is checked at start through `code_pins()`, is
+  found at dispatch through `host_pin_by_hash`, joins the strict table, and is
+  never in any offer.
+- **The request is built from the JOURNAL.** The scheduler writes the block's
+  request fields to each turn's `input.llm`. `TurnRequest::from_input` reads
+  them back for the request and for the span attributes, the same rule as
+  `input.fold` and `input.offer`. Never read them from the manifest at
+  prepare time.
+- **A flow tool finds its Definition by frozen hash** (`host_pin_by_hash`),
+  never by node. The by-node lookup found the abstract node's own pin, so a
+  model's call to a code-carrying Definition ran `--tool-cmd`. A dynamic
+  tool's Host executor carries the DYNAMIC name (journal) and the
+  Definition's hash. `DispatchJob.exec_name` makes the pool execute it under
+  the Definition's name, which is what `--tool-cmd`, `register_capability` and
+  the broker's grants key on. Result grains still re-state the dispatched
+  executor, so intent and result agree on the name.
+- **Locks.** `PinnedTool.locked_params` is frozen from the Definition, which
+  must be a host tool. `offered_definition` strips locked keys from the
+  offered schema, except for a dynamic entry with `args_into`, whose locks
+  belong to the Definition's input and not to the model's schema. The merge
+  itself is pure and happens in run-core (`OfferedTool::dispatch_input`).
+  Tests: `tests/llm_node_tests.rs`.
+
 ## Telemetry (`stream.rs` + `otel.rs`)
 
 **The event is the only channel.** The §6.10 observer runs on the bus's own

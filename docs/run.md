@@ -127,6 +127,13 @@ What each piece means:
   (`entity_at`, `related`, `recall`, or a pinned saved `query`). The runtime answers that node itself, from the
   file it already holds; no tool is involved. See
   [Reading the run's own memory](#reading-the-runs-own-memory-reads).
+- **`llm`**: node → the configuration of an **abstract** node's model loop
+  (#391). It sets the system text, the instruction (literal or from the
+  input), which state keys the model sees, which pinned tools it is offered,
+  tools declared in the run input (`tools_from`, #392), structured output,
+  temperature, the output ceiling, and whether the node's tool results reach
+  the nodes below. It is frozen at start like `reads`. See
+  [Configuring an LLM node](#configuring-an-llm-node-llm).
 
 Plan validation runs at load: unreachable nodes (`RUN-E003`), unresolvable
 bindings (`RUN-E004`), malformed conditions (`RUN-E005`), unbounded cycles
@@ -1606,6 +1613,191 @@ areev run start --workflow <WF> --run-id r1 --input '{}' \
   missing key fails without leaving behind a run that could never advance. The
   backend is host config and is deliberately not journaled with the run, which
   is why `run_resume` takes it too rather than recovering it from the manifest.
+- **Locked parameters** (#393). A Definition's `locked_params` are keys the
+  model must not choose. When an abstract node's model calls the tool, the
+  runtime merges them over the model's arguments at the top level, and the lock
+  wins. The intent journals the merged input and the executor receives it. The
+  transcript keeps what the model wrote. The locked keys are removed from the
+  `input_schema` the model is offered, from `properties` and from `required`.
+  A `strict` Definition validates the merged input, so a required key that is
+  locked is never reported missing. The locks are frozen into the run manifest
+  with the rest of the pin (`run inspect` shows them as `locked_params`). A run
+  that started before its Definition locked anything never starts locking
+  mid-run.
+- **From Python and Node**, `run_start`/`runStart` and `run_resume`/`runResume`
+  also take `llm_profile`/`llmProfile` as their **last** argument (#394). It is
+  a JSON string that shapes every request the transport sends:
+  `{"temperature": "omit" | <number>, "token_field": "max_tokens" |
+  "max_completion_tokens", "extra_body": {…}}`, with every key optional. It is
+  the bindings' form of the CLI's `--llm-no-temperature`, `--llm-token-field`
+  and `--llm-extra-body` (`$AREEV_RUN_LLM_NO_TEMPERATURE`,
+  `$AREEV_RUN_LLM_TOKEN_FIELD`, `$AREEV_RUN_LLM_EXTRA_BODY`). An unknown key,
+  a profile with no `model`, and a profile on the Ollama transport (whose body
+  takes none of it) are refused before a run exists. The run pins the
+  profile's digest (#287), so a resume passes the same profile or is refused
+  with `RUN-E025`. For one node, the plan's `llm` block below does the same job
+  and needs no host configuration.
+
+### Configuring an LLM node (`llm`)
+
+By default an abstract node gets a fixed system prompt, the node name as its
+instruction and the whole merged state. It is offered every pinned host tool,
+asks for no structured output and runs at temperature 0. A plan's `llm` field
+changes any of that per node (#391). It is a sibling of `reads`, `reducers` and
+`retries`. The runtime validates it at `run start` and freezes it into the
+abstract node's pin in the run manifest. A resume, a fork of the same plan and
+`verify` all run the frozen block, never the plan as it stands later.
+
+```json
+{
+  "nodes": ["context", "reply", "gate"],
+  "edges": [{"src": "context", "dst": "reply"}, {"src": "reply", "dst": "gate"}],
+  "bindings": {"gate": "<gate definition hash>"},
+  "reads": {"context": {"op": "query", "name": "account_brief",
+                        "params_from": {"account": "/account"}, "into": "prompt"}},
+  "llm": {
+    "reply": {
+      "system": "You are the accounts-payable assistant for this organisation.",
+      "instruction_from": "/prompt/text",
+      "state": ["question", "account"],
+      "tools": ["records_query"],
+      "dispatch": ["mcp_call"],
+      "tools_from": "/tools",
+      "response": {"json_schema": {"type": "object",
+        "properties": {"answer": {"type": "string"}, "sources": {"type": "array"}},
+        "required": ["answer", "sources"], "additionalProperties": false}},
+      "temperature": "omit",
+      "max_tokens": 2048,
+      "parallel_tool_calls": false,
+      "tool_results_into": "tool_results"
+    }
+  }
+}
+```
+
+| Key | Value | Effect |
+|---|---|---|
+| `system` | string | Replaces the built-in system prompt for this node's turns, its fold summaries included. |
+| `instruction` | string | The `instruction` of `messages[0]`. Default: the node name. |
+| `instruction_from` | JSON pointer | Takes the instruction from the node's input. The pointer may be nested: an `op: query` read with `FORMAT markdown` lands `{"type": "formatted", "text": …}`, so `/prompt/text` reaches the text. If the pointer resolves to nothing, or to something that is not a string, the node fails `schema_validation_failed` before any model call. It is not retried, because the same state fails the same way. Exclusive with `instruction`. |
+| `state` | `"all"` \| `"none"` \| `[keys]` | Which merged-state keys `messages[0].state` carries. Default `"all"`. A steering `$inbox` (`run input`) is always carried, because an operator's message must reach the model. |
+| `tools` | `[names]` | The subset of the plan's pinned host Definitions offered, in manifest order. Default: all. Accepts the canonical or the provider-safe spelling (`a.b` or `a_b`). A name the plan does not pin is refused at start with `RUN-E004`, naming the node and the name. A pinned tool the node was not offered is unknown to the model: calling it gets the unknown-tool re-prompt. `[]` offers nothing. |
+| `dispatch` | `[name \| hash]` | Definitions this node's dynamic tools dispatch through that no node binds (see `tools_from`). |
+| `tools_from` | JSON pointer | Tools declared in the run input (see below). |
+| `response` | `{"json_schema": {…}}` \| `{"json": true}` | Structured output, described below. |
+| `temperature` | number \| `"omit"` | Replaces the fixed 0. `"omit"` sends no temperature key at all, which the GPT-5 family needs: it answers HTTP 400 to any value. |
+| `max_tokens` | integer ≥ 1 | This node's output ceiling per call. Replaces `llm_max_tokens` and lands in the profile's token field (`max_tokens` or `max_completion_tokens`). It is also the turn's per-dispatch reservation against the token budget. |
+| `parallel_tool_calls` | boolean | Sent as `parallel_tool_calls` on OpenAI-compatible endpoints. Anthropic receives the inverse, `tool_choice.disable_parallel_tool_use`. Ollama ignores it. When absent, nothing is sent and the provider's default applies. |
+| `tool_results_into` | state key | Adds this key to the node's result when the node completes. It holds every tool call of the attempt, in `effect_seq` order: `[{name, tool_call_id, model_call_id, input, result, is_error, effect_seq}]`. `tool_call_id` is the journal key's digest (the grain's `tool_call_id`), `input` is the dispatched input with locks merged, and `result` is the whole journaled result, never the transcript's bounded excerpt. A gate bound below the node therefore sees what the model read. The list is built from the journaled outcomes, so `verify` rebuilds it byte for byte. If the model's answer has a key with the same name, the runtime's value wins. |
+
+**What is journaled.** The first message is `messages[0]` of every turn's
+intent. The request fields the block sets go into each `mg:llm` intent's
+`input.llm`, as sent: `{system, temperature, max_tokens, parallel_tool_calls,
+response_format}`. `response_format` is always in the OpenAI-compatible wire
+shape (`{"type": "json_schema", "json_schema": {"name": "<node>", "schema": …,
+"strict": true}}` or `{"type": "json_object"}`). The driver builds each request
+from that journaled input alone. A node with no block, or with an empty one,
+journals exactly what it did before 1.13.
+
+**Structured output.** On OpenAI-compatible endpoints `response` is sent as
+`response_format`. The wire `name` is the node id with characters outside
+`[a-zA-Z0-9_-]` replaced by `_`. Because OpenAI's strict mode applies, the
+schema must satisfy it (every property listed in `required`,
+`additionalProperties: false`). Ollama receives the schema as `format`.
+Anthropic has no such field, so the schema is appended to the system text. On
+every provider the runtime then checks the final answer itself: it must be a
+JSON object and, with `json_schema`, conform to it. The schema must be in the
+subset a Tool's `input_schema` is held to (an object root with no
+`oneOf`/`$ref`), or the plan is refused at start. A violation gets **one**
+corrective re-prompt. The model's own answer stays in the transcript so it can
+see what it said. A second violation fails the node with
+`schema_validation_failed`. A conforming answer merges into state as any JSON
+object answer does.
+
+Like `reads`, an `llm` block is authored through the generic JSON `add`,
+because CAL `ADD workflow` has no syntax for it. The console opens a plan that
+has one view-only, since a resave would drop the block.
+
+**Refused at start**, before the run exists, naming the node: an unknown key,
+a block on a node that is not abstract or not in the plan, both `instruction`
+and `instruction_from`, a pointer that does not start with `/`, a malformed
+`state`, `response`, `temperature`, `max_tokens`, `parallel_tool_calls` or
+`tool_results_into` (`RUN-E019`), and a `tools` or `dispatch` name the run
+cannot resolve (`RUN-E004`).
+
+#### Tools declared in the run input (`tools_from`)
+
+The tools a node may call are normally fixed when the plan is authored. A host
+whose agent must call tools that differ per tenant and per day, such as the
+`tools/list` of an MCP server the tenant connected, puts them in the run input
+instead (#392). `tools_from` is a JSON pointer into the **run input** that
+names a list of entries:
+
+```json
+{"tools": [{
+  "name": "bank.paid_to",
+  "description": "Who an invoice was paid to",
+  "input_schema": {"type": "object", "properties": {"invoice": {"type": "string"}},
+                   "required": ["invoice"]},
+  "dispatch": {
+    "definition": "mcp_call",
+    "locked": {"url": "http://127.0.0.1:7798/mcp/orgs/org_x", "credential": "gateway",
+               "tool": "bank.paid_to"},
+    "args_into": "arguments"
+  }
+}]}
+```
+
+- At `run start` the list is resolved and **pinned into the manifest** with
+  the node's block: names, descriptions, schemas, the dispatch Definition's
+  name and content address, its `input_schema`, the locks and `args_into`. A
+  resume and `verify` offer exactly that set, whatever input a later call
+  carries. `run inspect` shows it under the node's `llm.dynamic_tools`.
+- The node is offered each entry **by its own name and schema**, after its
+  `tools` subset. Dots become underscores on the wire, as for any Definition,
+  and a call to either spelling resolves.
+- **`dispatch.definition`** names the Definition the call reaches, by
+  `tool_name` or content address. It must be in the node's `dispatch` list or
+  be a host tool the plan pins. A Definition that is neither is refused at
+  start (`RUN-E004`, naming the entry). A dynamic tool may only reach code the
+  plan's reviewer saw.
+- **`llm.<node>.dispatch: ["mcp_call"]`** pins a Definition that no node binds,
+  such as the blessed `mcp.call` under whatever name the pack gave it. Each
+  entry, a name or a 64-hex content address, resolves at start exactly as an
+  unbound node's same-named Definition does: in the run's namespace, then in
+  the plan grain's namespace. A miss is `RUN-E004` naming the entry. The
+  Definition is pinned like a bound one, with its code address, runtime,
+  capabilities and locks, and the start refuses an unpinned code address
+  (`RUN-E018`) as it does for a node. It is **never offered to the model by
+  itself**. Only the dynamic tools that dispatch through it are offered.
+  `run inspect` lists it among the pins with `"dispatch_only": true`.
+- **A call** is validated against the entry's `input_schema`, always. The
+  model's arguments are then placed under `args_into` when the entry names
+  one (`mcp.call` takes the MCP tool's arguments one level down, under
+  `arguments`), or at the top level when it does not. Then `locked` is merged
+  over them, then the Definition's own `locked_params` over that, and the lock
+  wins each time. The merged input `{...locked, [args_into]: <arguments>}` is
+  validated against the dispatch Definition's `input_schema`, whether or not
+  the Definition is `strict`. A violation at either step is a corrective
+  re-prompt, as for any tool. The merged input is what the intent journals and
+  what the Definition receives.
+- **The call executes as the Definition**: the host executor, the sandbox and
+  the broker's `--tool-egress` grants all see the Definition's name, and its
+  pinned blob runs. The grain is journaled under the dynamic tool's name, with
+  the Definition's address as `spec_hash`. `verify` replays it from the
+  journal alone.
+- **Refused at start**, naming the entry (`RUN-E019`): a pointer that resolves
+  to nothing or to a non-list, an entry that is not an object or carries an
+  unknown key, an invalid name, a duplicate name (including two names that
+  differ only by `.`/`_`), a name that collides with a tool the plan pins, an
+  `input_schema` outside the tool-schema subset, and a `locked` that is not an
+  object.
+
+A model-issued call from an abstract node reaches the Definition it was
+offered as **by its frozen content address**. Before 1.13 the driver looked a
+call's code up by node. It found the abstract node's own pin, which names no
+code, so a call to a code-carrying Definition, a capability tool among them,
+fell through to `--tool-cmd` instead of running its pinned blob.
 
 ### What bounds the transcript (and what does not)
 

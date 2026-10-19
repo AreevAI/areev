@@ -6,6 +6,65 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **A plan configures each LLM node (`llm`)** (#391). A Workflow's new `llm`
+  field sets, per abstract node: `system` (replaces the built-in prompt);
+  `instruction` or `instruction_from`, a JSON pointer into the node's input
+  that may be nested, such as `/prompt/text`; `state` (`"all"`, `"none"` or a
+  list of keys); `tools` (a subset of the pinned host tools); `response`
+  (`{"json_schema": …}` or `{"json": true}`); `temperature` (a number, or
+  `"omit"` to send none, for the GPT-5 family); `max_tokens` (the node's
+  ceiling and reservation); `parallel_tool_calls`; and `tool_results_into`,
+  which hands every tool call of the attempt, built from the journal, to the
+  nodes below. The block is validated at start (`RUN-E019` for a shape error,
+  `RUN-E004` for an unpinned tool name) and frozen into the manifest, so
+  `run inspect` shows it and resume and `verify` use it. Each `mg:llm` intent
+  journals the request fields as sent under `input.llm`. The runtime checks a
+  structured answer whatever the provider did, with one corrective re-prompt
+  before the node fails `schema_validation_failed`. A node with no block
+  journals byte-identically, so the scheduler epoch did not move.
+- **Tools declared in the run input (`tools_from`)** (#392). An abstract
+  node's `llm.tools_from` points at a list in the run input:
+  `{name, description, input_schema, dispatch: {definition, locked,
+  args_into}}`. The list is pinned at start and offered under its own names
+  and schemas. A call is validated against the entry's schema, wrapped under
+  `args_into`, locked, validated against the dispatch Definition's
+  `input_schema`, executed as that Definition (same pin, sandbox and broker
+  grants) and journaled under the entry's name. `llm.dispatch: [name | hash]`
+  pins a Definition that no node binds, such as `mcp.call`. It resolves as an
+  unbound node's Definition does and is never offered to the model by itself.
+  A dispatch target that is not pinned, a duplicate name, or a name that
+  collides with a pinned tool is refused at start, naming the entry.
+- **`llm_profile` on the bindings** (#394). `runStart`/`runResume` (Node) and
+  `run_start`/`run_resume` (Python) take a trailing JSON string,
+  `{"temperature": "omit" | n, "token_field": …, "extra_body": {…}}`, so an
+  embedding host can run a model that refuses a temperature.
+  `ToolCallRequest` gains `response_format`, `parallel_tool_calls` and
+  `omit_temperature`, and now derives `Default`. `RequestProfile::from_json`
+  and `resolve_toolcall_with_profile` are new.
+
+### Fixed
+
+- **`locked_params` is applied** (#393). A Definition's locked parameters
+  were stored, validated and displayed, and never used: a model-issued call
+  was dispatched with whatever the model sent. Locks are now merged over the
+  model's arguments (the lock wins), stripped from the offered schema
+  (`properties` and `required`), checked by a strict Definition on the merged
+  input, journaled merged, and frozen with the pin.
+- **A streamed turn records `served_model`** (#394). The OpenAI-compatible,
+  Anthropic and Ollama stream accumulators now read the served model as the
+  whole-response parsers do. A run observed through `onEvent`, which streams,
+  no longer journals less provenance than the same run unobserved.
+- **An abstract node's call to a code-carrying Definition runs its blob.** The
+  driver looked up a model-issued call's code by node, found the abstract
+  node's own pin, and sent the call to `--tool-cmd`. It now finds the
+  Definition by its frozen content address.
+- **The CLI's `--llm-token-field`, `--llm-no-temperature` and
+  `--llm-extra-body` take effect.** `areev run`'s usage text has listed them
+  since #285, but nothing read them. They now build the request profile
+  (`$AREEV_RUN_LLM_*` twins).
+
 ## [1.12.2] — 2026-10-06
 
 ### Fixed

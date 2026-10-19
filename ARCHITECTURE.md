@@ -2586,6 +2586,40 @@ semantics while widening the import surface the by-name refusal keeps closed;
 an interpreter module was declined because the pinned address would name the
 interpreter while the tool's logic rode in its input, outside every pin.
 
+### A plan configures its model nodes; what reaches the provider rides the journal (#391–#394)
+
+**Decision (2026-10-20):** a Workflow's `llm` field configures each abstract
+node: system text, instruction (literal or a pointer into the input), state
+selection, a tool subset, structured output, temperature or none, the output
+ceiling, `parallel_tool_calls`, and whether the attempt's tool calls reach the
+nodes below. It also names tools a host declares in the run input
+(`tools_from`), each dispatched through a Definition the plan pins. Three
+rules carry the design.
+
+1. **Frozen at start, like `reads`.** The block, and the `tools_from` list
+   resolved from the input, are validated and frozen onto the node's pin.
+   Resume and `verify` run the frozen block, and neither the plan nor a later
+   input can change it.
+2. **Every request field rides the journal.** The scheduler, which is pure,
+   writes the first message and each turn's `input.llm` (with
+   `response_format` in wire shape). The driver builds the request from that
+   journaled input alone, which is the rule the fold's no-tools marker and the
+   narrowed offer already follow. A node with no block journals what it always
+   did.
+3. **The input names data, never code.** A dynamic tool may dispatch only
+   through a Definition the plan pinned, by a binding or by `llm.dispatch`. It
+   runs under that Definition's host pin and broker grants, with `locked` keys
+   the model cannot override, and journals under its own name with the
+   Definition's address. `locked_params` on a Definition, stored but never
+   applied before 1.13, follows the same merge.
+
+**Rejected:** per-run host flags for these knobs (the bindings had none, and a
+plan-level setting is what a reviewer reads); offering `mcp.call` itself to the
+model (one opaque tool, with the server and tool chosen by the model); and
+letting `tools_from` name a Definition by hash that the plan does not pin,
+which would let host data choose code. `docs/run.md` "Configuring an LLM node"
+is the reference.
+
 ### A host pause is a transient hold, never scheduler state (#344)
 
 **Decision (2026-09-23, #344):** a run gains a third stop beside cancel

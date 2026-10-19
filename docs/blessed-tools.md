@@ -145,6 +145,39 @@ them.
 endpoint receiving `text/plain` answers 415 — and a declaration must name every
 header it sets. Not supported in v1: the SSE/streamable transport.
 
+**Behind `tools_from` (#392).** Offered directly to a model, `mcp.call` is one
+opaque tool. The model picks the server URL and the MCP tool name, and the
+host cannot pin which server or which tool a call reaches. To offer an MCP
+server's tools one by one, under their own names and schemas, pin the
+Definition with the abstract node's `llm.dispatch` and list the tools in the
+run input. Each entry dispatches through `mcp.call` with the server, the MCP
+tool and the credential locked, and the model's arguments wrapped under
+`arguments`:
+
+```json
+"llm": {"reply": {"dispatch": ["mcp.call"], "tools": [], "tools_from": "/tools"}}
+```
+
+```json
+{"tools": [{"name": "bank.paid_to", "description": "Who an invoice was paid to",
+  "input_schema": {"type": "object", "properties": {"invoice": {"type": "string"}},
+                   "required": ["invoice"]},
+  "dispatch": {"definition": "mcp.call",
+               "locked": {"url": "https://mcp.example.com/mcp", "tool": "paid_to",
+                          "credential": "mcp"},
+               "args_into": "arguments"}}]}
+```
+
+The model sees `bank_paid_to` and never `mcp.call`. A call is validated
+against the entry's schema. The input `{url, tool, credential, arguments}` is
+then built and validated against `mcp.call`'s own `input_schema`, and that
+input is what this blob receives. It runs as `mcp.call`, under the same
+`--allow-executor` pin and the same broker grants (`--tool-egress
+'mcp.call:mcp@mcp.example.com:POST'`), and it is journaled under
+`bank.paid_to`. Without `args_into`, the model's arguments would land at the
+top level, beside `url`, and the blob would send `arguments: {}`. See
+[`docs/run.md`](run.md#tools-declared-in-the-run-input-tools_from).
+
 ### `a2a.call`
 
 The same envelope with `message/send` and the A2A `params` shape:
