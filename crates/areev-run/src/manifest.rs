@@ -670,10 +670,7 @@ impl RunManifest {
             .iter()
             .filter(|p| p.executor == "host")
             .filter(|p| seen.insert(p.tool_name.clone()))
-            .map(|p| areev_run_core::OfferedTool {
-                tool_name: p.tool_name.clone(),
-                tool_hash: p.tool_hash.clone(),
-            })
+            .map(|p| areev_run_core::OfferedTool::new(p.tool_name.clone(), p.tool_hash.clone()))
             .collect();
         self.pinned
             .iter()
@@ -695,7 +692,7 @@ impl RunManifest {
                         spec,
                     }
                 }
-                "abstract" => NodeExecutor::Abstract { tools: offered.clone() },
+                "abstract" => NodeExecutor::Abstract { tools: offered.clone(), llm: None },
                 // Never Host, for the memory-read reason: a decision that
                 // fell through to `--tool-cmd` would let a tool answer it.
                 DECIDE_EXECUTOR => NodeExecutor::Decide {
@@ -1291,7 +1288,7 @@ mod tests {
         let executors = m.executors();
         assert_eq!(executors.len(), 4);
         match &executors[1] {
-            NodeExecutor::Abstract { tools } => {
+            NodeExecutor::Abstract { tools, .. } => {
                 let names: Vec<&str> = tools.iter().map(|t| t.tool_name.as_str()).collect();
                 assert_eq!(names, vec!["parse_attachments", "reply_email"]);
                 assert_eq!(tools[1].tool_hash, "hash-reply_email");
@@ -1338,7 +1335,7 @@ mod tests {
         ];
         let executors = m.executors();
         assert_eq!(executors[1], NodeExecutor::MemoryRead { op: "entity_at".into(), spec });
-        let NodeExecutor::Abstract { tools } = &executors[2] else { panic!("{executors:?}") };
+        let NodeExecutor::Abstract { tools, .. } = &executors[2] else { panic!("{executors:?}") };
         let offered: Vec<&str> = tools.iter().map(|t| t.tool_name.as_str()).collect();
         assert_eq!(offered, vec!["parse_attachments"], "a read is never offered to a model");
 

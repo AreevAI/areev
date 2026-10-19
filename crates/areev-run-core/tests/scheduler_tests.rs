@@ -55,13 +55,18 @@ struct SimResult {
 }
 
 impl Sim<'_> {
-    fn run(mut self) -> SimResult {
+    fn run(self) -> SimResult {
+        self.run_from(json!({"seed_input": true}))
+    }
+
+    /// [`run`](Self::run) from a chosen run input.
+    fn run_from(mut self, input: Value) -> SimResult {
         let mut st = SchedulerState::new("run-1", self.env.plan);
         let mut all: Vec<Command> = Vec::new();
         let mut checkpoints = Vec::new();
         let mut events = vec![
             EventIn::ClockReading { unix_ms: self.clock },
-            EventIn::Start { input: json!({"seed_input": true}) },
+            EventIn::Start { input },
         ];
         let mut guard = 0;
         loop {
@@ -1025,8 +1030,9 @@ fn abstract_exec(names: &[&str]) -> Vec<NodeExecutor> {
     vec![NodeExecutor::Abstract {
         tools: names
             .iter()
-            .map(|n| OfferedTool { tool_name: (*n).into(), tool_hash: "deadbeef".into() })
+            .map(|n| OfferedTool::new(*n, "deadbeef"))
             .collect(),
+        llm: None,
     }]
 }
 
@@ -1729,4 +1735,350 @@ fn a_decision_node_dispatches_like_a_host_tool_and_edges_branch_on_its_answer() 
     assert!(r.state.context.get("ignore").is_none(), "the other branch never ran");
     let first = &dispatches(&r.commands)[0];
     assert!(matches!(first.1, NodeExecutor::Decide { .. }) && first.0.kind == EffectKind::Tool);
+}
+
+// ---- the per-node `llm` block (#391), locked params (#393), dynamic tools (#392)
+
+fn llm_exec(tools: Vec<OfferedTool>, cfg: LlmNodeConfig) -> Vec<NodeExecutor> {
+    vec![NodeExecutor::Abstract { tools, llm: Some(Box::new(cfg)) }]
+}
+
+fn final_turn(text: &str) -> EffectOutcome {
+    ok(json!({"text": text, "tool_calls": [], "stop_reason": "end_turn"}))
+}
+
+fn tool_turn(calls: Value) -> EffectOutcome {
+    ok(json!({"text": Value::Null, "tool_calls": calls, "stop_reason": "tool_use"}))
+}
+
+fn intents(cmds: &[Command]) -> Vec<(JournalKey, NodeExecutor, Value)> {
+    cmds.iter()
+        .filter_map(|c| match c {
+            Command::WriteIntent { key, executor, input, .. } => {
+                Some((key.clone(), executor.clone(), input.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn an_llm_block_shapes_the_first_message_and_rides_every_turn_input() {
+    let plan = PlanGraph::build(&wf(&["reply"])).unwrap();
+    let cfg = LlmNodeConfig {
+        system: Some("You are the AP assistant.".into()),
+        instruction_from: Some("/prompt".into()),
+        state: Some(json!(["question"])),
+        temperature: Some(json!("omit")),
+        max_tokens: Some(512),
+        parallel_tool_calls: Some(false),
+        response: Some(json!({"json": true})),
+        ..Default::default()
+    };
+    let execs = llm_exec(vec![OfferedTool::new("lookup", "h1")], cfg);
+    let behavior = |_k: &JournalKey, _i: &Value| final_turn(r#"{"answer": "paid"}"#);
+    let r = Sim { env: env(&plan, &execs, Budgets::default()), behavior: &behavior, seed: 1, clock: 1_000, respond: BTreeMap::new() }
+        .run_from(json!({
+            "prompt": "Was invoice 4471 paid?",
+            "question": "4471",
+            "account": {"huge": "x".repeat(50)},
+        }));
+    assert_eq!(r.state.outcome(), Some(&RunOutcome::Completed));
+    assert_eq!(r.state.context["answer"], json!("paid"));
+    let input = llm_input(&r.commands, 0);
+    assert_eq!(
+        input["messages"][0]["content"],
+        json!({"instruction": "Was invoice 4471 paid?", "state": {"question": "4471"}}),
+        "the instruction came from the pointer; only the listed key rode"
+    );
+    assert_eq!(
+        input["llm"],
+        json!({"system": "You are the AP assistant.", "temperature": "omit", "max_tokens": 512,
+               "parallel_tool_calls": false, "response_format": {"type": "json_object"}}),
+        "every request field the block sets is journaled as sent"
+    );
+}
+
+#[test]
+fn an_empty_block_and_no_block_build_identical_commands() {
+    let plan = PlanGraph::build(&wf(&["reply"])).unwrap();
+    let a = vec![NodeExecutor::Abstract { tools: vec![OfferedTool::new("t", "h")], llm: None }];
+    let b = llm_exec(vec![OfferedTool::new("t", "h")], LlmNodeConfig::default());
+    let behavior = |k: &JournalKey, _i: &Value| match (k.kind, k.effect_seq) {
+        (EffectKind::Llm, 0) => tool_turn(json!([{"id": "c0", "name": "t", "arguments": {"q": 1}}])),
+        (EffectKind::Llm, _) => final_turn("{\"done\": true}"),
+        (EffectKind::Tool, _) => ok(json!({"r": 1})),
+    };
+    let run = |execs: &[NodeExecutor]| {
+        Sim { env: env(&plan, execs, Budgets::default()), behavior: &behavior, seed: 3, clock: 1_000, respond: BTreeMap::new() }
+            .run()
+    };
+    let (ra, rb) = (run(&a), run(&b));
+    assert_eq!(
+        serde_json::to_value(&ra.state).unwrap(),
+        serde_json::to_value(&rb.state).unwrap()
+    );
+    assert_eq!(intents(&ra.commands).len(), intents(&rb.commands).len());
+    for ((ka, _, ia), (kb, _, ib)) in intents(&ra.commands).into_iter().zip(intents(&rb.commands)) {
+        assert_eq!((ka, ia), (kb, ib));
+    }
+}
+
+#[test]
+fn an_instruction_pointer_that_lands_on_nothing_fails_the_node_unretried_and_unsent() {
+    for (input, why) in [
+        (json!({"other": 1}), "resolves to nothing"),
+        (json!({"prompt": 7}), "a number"),
+    ] {
+        let plan = PlanGraph::build(&wf(&["reply"]).retry("reply", 3)).unwrap();
+        let cfg = LlmNodeConfig { instruction_from: Some("/prompt".into()), ..Default::default() };
+        let execs = llm_exec(vec![], cfg);
+        let behavior = |_k: &JournalKey, _i: &Value| -> EffectOutcome { panic!("nothing may be dispatched") };
+        let r = Sim { env: env(&plan, &execs, Budgets::default()), behavior: &behavior, seed: 1, clock: 1_000, respond: BTreeMap::new() }
+            .run_from(input);
+        let Some(RunOutcome::Failed { node, detail }) = r.state.outcome() else {
+            panic!("{:?}", r.state.outcome())
+        };
+        assert_eq!(node, "reply");
+        assert!(detail.starts_with("SchemaValidationFailed:") && detail.contains(why), "{detail}");
+        assert!(intents(&r.commands).is_empty(), "no effect was written");
+        assert_eq!(r.state.attempt[0], 1, "not retried: the same state fails the same way");
+    }
+}
+
+#[test]
+fn state_none_sends_no_state_and_a_literal_instruction_wins() {
+    let plan = PlanGraph::build(&wf(&["reply"])).unwrap();
+    let cfg = LlmNodeConfig {
+        instruction: Some("Say hello.".into()),
+        state: Some(json!("none")),
+        ..Default::default()
+    };
+    let execs = llm_exec(vec![], cfg);
+    let behavior = |_k: &JournalKey, _i: &Value| final_turn("hello");
+    let r = Sim { env: env(&plan, &execs, Budgets::default()), behavior: &behavior, seed: 1, clock: 1_000, respond: BTreeMap::new() }
+        .run();
+    let input = llm_input(&r.commands, 0);
+    assert_eq!(input["messages"][0]["content"], json!({"instruction": "Say hello."}));
+    assert!(input.get("llm").is_none(), "no request field set, so none journaled");
+    assert_eq!(r.state.context["reply"], json!("hello"), "prose lands under the node id");
+}
+
+#[test]
+fn a_response_schema_gets_one_corrective_reprompt_then_fails_the_node() {
+    let plan = PlanGraph::build(&wf(&["reply"])).unwrap();
+    let schema = json!({"type": "object", "properties": {"paid": {"type": "boolean"}}, "required": ["paid"]});
+    let cfg = LlmNodeConfig { response: Some(json!({"json_schema": schema})), ..Default::default() };
+    let execs = llm_exec(vec![], cfg.clone());
+
+    // Prose, then a conforming object: one re-prompt, then it merges.
+    let behavior = |k: &JournalKey, _i: &Value| match k.effect_seq {
+        0 => final_turn("It was paid."),
+        _ => final_turn(r#"{"paid": true}"#),
+    };
+    let r = Sim { env: env(&plan, &execs, Budgets::default()), behavior: &behavior, seed: 1, clock: 1_000, respond: BTreeMap::new() }
+        .run();
+    assert_eq!(r.state.outcome(), Some(&RunOutcome::Completed));
+    assert_eq!(r.state.context["paid"], json!(true));
+    let second = llm_input(&r.commands, 1);
+    let msgs = second["messages"].as_array().unwrap();
+    assert_eq!(msgs[1]["role"], "assistant", "the model sees what it answered");
+    assert_eq!(msgs[1]["text"], "It was paid.");
+    assert!(msgs[2]["content"].as_str().unwrap().contains("failed validation"), "{msgs:?}");
+    assert_eq!(
+        second["llm"]["response_format"]["json_schema"]["schema"], schema,
+        "the schema rides the request on the re-prompt too"
+    );
+    assert_eq!(second["llm"]["response_format"]["json_schema"]["name"], "reply");
+
+    // A schema violation twice: the node fails, schema_validation_failed.
+    let behavior = |_k: &JournalKey, _i: &Value| final_turn(r#"{"paid": "yes"}"#);
+    let r = Sim { env: env(&plan, &execs, Budgets::default()), behavior: &behavior, seed: 1, clock: 1_000, respond: BTreeMap::new() }
+        .run();
+    let Some(RunOutcome::Failed { detail, .. }) = r.state.outcome() else { panic!("{:?}", r.state.outcome()) };
+    assert!(detail.starts_with("SchemaValidationFailed:"), "{detail}");
+    assert_eq!(
+        intents(&r.commands).iter().filter(|(k, _, _)| k.kind == EffectKind::Llm).count(),
+        2,
+        "exactly one re-prompt"
+    );
+}
+
+#[test]
+fn locked_params_override_the_model_and_the_strict_check_sees_the_merged_input() {
+    let plan = PlanGraph::build(&wf(&["agent"])).unwrap();
+    let mut post = OfferedTool::new("post", "hpost");
+    post.locked = Some(json!({"url": "https://a.example/x"}));
+    let execs = vec![NodeExecutor::Abstract { tools: vec![post], llm: None }];
+    let seen: std::cell::RefCell<Vec<Value>> = Default::default();
+    let validate = |tool: &str, args: &Value| -> std::result::Result<(), String> {
+        seen.borrow_mut().push(json!({"tool": tool, "args": args}));
+        // A strict schema requiring `url`, which the model was never shown.
+        if args.get("url").is_none() { Err("schema violation: required".into()) } else { Ok(()) }
+    };
+    let behavior = |k: &JournalKey, _i: &Value| match (k.kind, k.effect_seq) {
+        (EffectKind::Llm, 0) => tool_turn(json!([{"id": "c0", "name": "post",
+            "arguments": {"url": "https://b.example/y", "body": "hi"}}])),
+        (EffectKind::Llm, _) => final_turn("{\"posted\": true}"),
+        (EffectKind::Tool, _) => ok(json!({"status": 200})),
+    };
+    let r = Sim {
+        env: StepEnv { validate_args: &validate, ..env(&plan, &execs, Budgets::default()) },
+        behavior: &behavior,
+        seed: 1,
+        clock: 1_000,
+        respond: BTreeMap::new(),
+    }
+    .run();
+    assert_eq!(r.state.outcome(), Some(&RunOutcome::Completed));
+    let (_, exec, input) = intents(&r.commands).into_iter().find(|(k, _, _)| k.kind == EffectKind::Tool).unwrap();
+    assert_eq!(input, json!({"url": "https://a.example/x", "body": "hi"}), "the lock wins, and is journaled");
+    assert_eq!(exec, NodeExecutor::Host { tool_hash: "hpost".into(), tool_name: "post".into() });
+    assert_eq!(seen.borrow()[0]["args"]["url"], "https://a.example/x", "validated merged");
+    // The transcript keeps what the model said.
+    let turn = llm_input(&r.commands, 2);
+    assert_eq!(turn["messages"][1]["tool_calls"][0]["arguments"]["url"], "https://b.example/y");
+}
+
+fn dynamic_paid_to() -> OfferedTool {
+    OfferedTool {
+        tool_name: "paid_to".into(),
+        tool_hash: "hmcp".into(),
+        locked: Some(json!({"url": "https://mcp.example/mcp", "tool": "paid_to", "credential": "gateway"})),
+        dynamic: Some(Box::new(DynamicTool {
+            name: "paid_to".into(),
+            description: "Who an invoice was paid to".into(),
+            input_schema: json!({"type": "object",
+                "properties": {"invoice": {"type": "string"}}, "required": ["invoice"],
+                "additionalProperties": false}),
+            dispatch: DynamicDispatch {
+                definition: "mcp.call".into(),
+                hash: "hmcp".into(),
+                locked: Some(json!({"url": "https://mcp.example/mcp", "tool": "paid_to", "credential": "gateway"})),
+                arguments_into: Some("arguments".into()),
+            },
+        })),
+    }
+}
+
+#[test]
+fn a_dynamic_tool_validates_its_own_schema_then_dispatches_the_pinned_definition() {
+    let plan = PlanGraph::build(&wf(&["agent"])).unwrap();
+    let execs = vec![NodeExecutor::Abstract { tools: vec![dynamic_paid_to()], llm: None }];
+    let strict_seen: std::cell::RefCell<Vec<String>> = Default::default();
+    let validate = |tool: &str, _args: &Value| -> std::result::Result<(), String> {
+        strict_seen.borrow_mut().push(tool.to_string());
+        Ok(())
+    };
+    let behavior = |k: &JournalKey, _i: &Value| match (k.kind, k.effect_seq) {
+        // First a call that violates the dynamic schema (unknown key)…
+        (EffectKind::Llm, 0) => tool_turn(json!([{"id": "c0", "name": "paid_to",
+            "arguments": {"invoice": "4471", "url": "https://evil.example"}}])),
+        // …then a good one, which the model may also try to point elsewhere —
+        // the lock holds regardless.
+        (EffectKind::Llm, 1) => tool_turn(json!([{"id": "c1", "name": "paid_to",
+            "arguments": {"invoice": "4471"}}])),
+        (EffectKind::Llm, _) => final_turn("{\"done\": true}"),
+        (EffectKind::Tool, _) => ok(json!({"status": 200, "result": {"payee": "ACME"}})),
+    };
+    let r = Sim {
+        env: StepEnv { validate_args: &validate, ..env(&plan, &execs, Budgets::default()) },
+        behavior: &behavior,
+        seed: 1,
+        clock: 1_000,
+        respond: BTreeMap::new(),
+    }
+    .run();
+    assert_eq!(r.state.outcome(), Some(&RunOutcome::Completed));
+    let reprompt = llm_input(&r.commands, 1);
+    let last = reprompt["messages"].as_array().unwrap().last().unwrap().clone();
+    assert!(last["content"].as_str().unwrap().contains("failed validation"), "{last}");
+    let (_, exec, input) = intents(&r.commands).into_iter().find(|(k, _, _)| k.kind == EffectKind::Tool).unwrap();
+    assert_eq!(
+        exec,
+        NodeExecutor::Host { tool_hash: "hmcp".into(), tool_name: "paid_to".into() },
+        "journaled under the dynamic name, with the Definition's address"
+    );
+    assert_eq!(
+        input,
+        json!({"url": "https://mcp.example/mcp", "tool": "paid_to", "credential": "gateway",
+               "arguments": {"invoice": "4471"}})
+    );
+    assert!(
+        strict_seen.borrow().iter().all(|t| t == "mcp.call"),
+        "the strict table is consulted under the dispatched Definition: {:?}",
+        strict_seen.borrow()
+    );
+}
+
+#[test]
+fn tool_results_into_lists_every_call_in_effect_seq_order_from_the_outcomes() {
+    let plan = PlanGraph::build(&wf(&["agent"])).unwrap();
+    let cfg = LlmNodeConfig { tool_results_into: Some("tool_results".into()), ..Default::default() };
+    let mut post = OfferedTool::new("post", "hpost");
+    post.locked = Some(json!({"url": "https://a.example/x"}));
+    let execs = llm_exec(vec![OfferedTool::new("lookup", "hl"), post], cfg);
+    let behavior = |k: &JournalKey, _i: &Value| match (k.kind, k.effect_seq) {
+        (EffectKind::Llm, 0) => tool_turn(json!([
+            {"id": "c0", "name": "lookup", "arguments": {"q": "a"}},
+            {"id": "c1", "name": "post", "arguments": {"body": "b"}},
+            {"id": "c2", "name": "lookup", "arguments": {"q": "c"}},
+        ])),
+        (EffectKind::Llm, _) => final_turn("{\"done\": true}"),
+        (EffectKind::Tool, 2) => EffectOutcome::Failed {
+            cause: FailCause::ExecutorError,
+            detail: "boom".into(),
+            journal_bytes: 4,
+        },
+        (EffectKind::Tool, seq) => ok(json!({"seq": seq, "blob": "x".repeat(200)})),
+    };
+    let mut reference: Option<Value> = None;
+    for seed in 1..=12 {
+        let r = Sim {
+            env: StepEnv { llm_tool_result_chars: Some(20), ..env(&plan, &execs, Budgets::default()) },
+            behavior: &behavior,
+            seed,
+            clock: 1_000,
+            respond: BTreeMap::new(),
+        }
+        .run();
+        assert_eq!(r.state.outcome(), Some(&RunOutcome::Completed));
+        let log = r.state.context["tool_results"].clone();
+        let seqs: Vec<u64> = log.as_array().unwrap().iter().map(|e| e["effect_seq"].as_u64().unwrap()).collect();
+        assert_eq!(seqs, vec![1, 2, 3], "seed {seed}: canonical order, not arrival order");
+        assert_eq!(log[0]["name"], "lookup");
+        assert_eq!(log[0]["model_call_id"], "c0");
+        assert_eq!(log[0]["result"]["blob"].as_str().unwrap().len(), 200, "the whole result, not the excerpt");
+        assert_eq!(log[1]["input"], json!({"body": "b", "url": "https://a.example/x"}), "as dispatched");
+        assert_eq!(log[1]["is_error"], true);
+        assert_eq!(log[1]["result"], "ExecutorError: boom");
+        let key = JournalKey {
+            run_id: "run-1".into(),
+            task_path: String::new(),
+            node: "agent".into(),
+            attempt: 1,
+            effect_seq: 3,
+            kind: EffectKind::Tool,
+        };
+        assert_eq!(log[2]["tool_call_id"], key.tool_call_id(), "joins the journaled grain");
+        assert_eq!(r.state.context["done"], true);
+        match &reference {
+            None => reference = Some(log),
+            Some(l) => assert_eq!(&log, l, "seed {seed}"),
+        }
+    }
+}
+
+#[test]
+fn a_nodes_max_tokens_is_the_reservation_its_turns_must_fit() {
+    let plan = PlanGraph::build(&wf(&["reply"])).unwrap();
+    let cfg = LlmNodeConfig { max_tokens: Some(4096), ..Default::default() };
+    let execs = llm_exec(vec![], cfg);
+    let behavior = |_k: &JournalKey, _i: &Value| final_turn("hi");
+    // The run's 1024 would fit a 2000-token budget; this node's 4096 does not.
+    let budgets = Budgets { max_tokens: Some(2_000), ..Budgets::default() };
+    let r = Sim { env: env(&plan, &execs, budgets), behavior: &behavior, seed: 1, clock: 1_000, respond: BTreeMap::new() }
+        .run();
+    assert_eq!(r.state.outcome(), Some(&RunOutcome::BudgetExhausted { axis: BudgetAxis::Tokens }));
+    assert!(intents(&r.commands).is_empty());
 }

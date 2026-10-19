@@ -51,7 +51,8 @@ use crate::state::{
 };
 use crate::types::{
     Ask, Budgets, Command, DecisionRecord, EdgeOutcome, EffectKind, EffectOutcome, EventIn,
-    FailCause, FoldRecord, JournalKey, NodeExecutor, OfferedTool, RunOutcome, DECIDE_TOOL,
+    FailCause, FoldRecord, JournalKey, LlmNodeConfig, NodeExecutor, OfferedTool, RunOutcome,
+    DECIDE_TOOL,
 };
 use areev_core::format::tool_schema::normalize_tool_name;
 use serde_json::Value;
@@ -455,15 +456,22 @@ fn flow_attempt(st: &SchedulerState, i: usize, path: &str) -> u32 {
 /// Open a fresh LLM loop for a node or one Send task against an abstract
 /// node, and emit its first turn.
 fn start_flow(env: &StepEnv<'_>, st: &mut SchedulerState, i: usize, path: &str, input: Value, out: &mut Vec<Command>) {
+    // The task, as the node's `llm` block shapes it (#391). A pointer that
+    // lands on nothing fails the node here, before any effect — the same
+    // state would fail the same way on every retry, so it is not one.
+    let content = match first_message(env, i, &input) {
+        Ok(c) => c,
+        Err(why) => {
+            fail_abstract_coded(env, st, i, path, &format!("SchemaValidationFailed: {why}"));
+            return;
+        }
+    };
     st.abstract_flows.insert(
         flow_key(i, path),
         crate::state::AbstractFlow {
             messages: vec![serde_json::json!({
                 "role": "user",
-                "content": {
-                    "instruction": env.plan.nodes[i],
-                    "state": input,
-                }
+                "content": content,
             })],
             next_effect_seq: 0,
             pending_tools: BTreeMap::new(),
@@ -477,6 +485,8 @@ fn start_flow(env: &StepEnv<'_>, st: &mut SchedulerState, i: usize, path: &str, 
             deciding: None,
             decide_fold_tried: false,
             offer: None,
+            response_strikes: 0,
+            tool_log: Vec::new(),
         },
     );
     // C1: with a calibrated backend and more than OFFER_TOP_K pinned tools,
@@ -486,6 +496,192 @@ fn start_flow(env: &StepEnv<'_>, st: &mut SchedulerState, i: usize, path: &str, 
         return;
     }
     dispatch_llm_turn(env, st, i, path, out);
+}
+
+// ---- the per-node `llm` block (#391, #392) -----------------------------------
+//
+// Everything here is a pure function of the frozen block and the node's input,
+// and every choice it makes that reaches the provider RIDES THE JOURNAL — the
+// first message in `messages[0]`, the request fields in each turn's `llm` —
+// so the driver builds the request from the journaled input alone and verify
+// needs nothing else. A node with no block takes none of these paths and
+// builds byte-identical commands and state.
+
+/// The node's frozen `llm` block, if it has one.
+fn llm_cfg<'e>(env: &'e StepEnv<'_>, i: usize) -> Option<&'e LlmNodeConfig> {
+    match &env.executors[i] {
+        NodeExecutor::Abstract { llm, .. } => llm.as_deref(),
+        _ => None,
+    }
+}
+
+/// The per-dispatch token reservation for node `i`'s turns: its own
+/// `max_tokens` when the block sets one (it is that turn's output ceiling, so
+/// it is what must fit), else the run's.
+fn reserve_for(env: &StepEnv<'_>, i: usize) -> u64 {
+    llm_cfg(env, i)
+        .and_then(|c| c.max_tokens)
+        .map(u64::from)
+        .unwrap_or(env.llm_reserve_tokens)
+}
+
+fn json_kind(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
+/// `messages[0]`'s content: `{"instruction", "state"}`, shaped by the block.
+fn first_message(env: &StepEnv<'_>, i: usize, input: &Value) -> Result<Value, String> {
+    let cfg = llm_cfg(env, i);
+    let instruction = match (cfg.and_then(|c| c.instruction.as_ref()), cfg.and_then(|c| c.instruction_from.as_ref())) {
+        (Some(text), _) => text.clone(),
+        (None, Some(ptr)) => match input.pointer(ptr) {
+            Some(Value::String(text)) => text.clone(),
+            Some(other) => {
+                return Err(format!(
+                    "instruction_from {ptr:?} resolves to a {} in the node's input, not a string",
+                    json_kind(other)
+                ))
+            }
+            None => return Err(format!("instruction_from {ptr:?} resolves to nothing in the node's input")),
+        },
+        (None, None) => env.plan.nodes[i].clone(),
+    };
+    let mut content = serde_json::Map::new();
+    content.insert("instruction".into(), Value::String(instruction));
+    if let Some(state) = select_state(cfg.and_then(|c| c.state.as_ref()), input) {
+        content.insert("state".into(), state);
+    }
+    Ok(Value::Object(content))
+}
+
+/// The merged state a node's first message carries. `"all"` (or no block):
+/// the whole input. `"none"`: nothing. A key list: those keys that are
+/// present, nothing else. A steering `$inbox` rides along in every case — an
+/// operator's message to the run is not state the plan may filter out.
+fn select_state(sel: Option<&Value>, input: &Value) -> Option<Value> {
+    let keep = |keys: &[&str]| {
+        let mut o = serde_json::Map::new();
+        if let Value::Object(src) = input {
+            for k in keys.iter().copied().chain([crate::types::INBOX]) {
+                if let Some(v) = src.get(k) {
+                    o.insert(k.to_string(), v.clone());
+                }
+            }
+        }
+        o
+    };
+    match sel {
+        None => Some(input.clone()),
+        Some(Value::String(s)) if s == "all" => Some(input.clone()),
+        Some(Value::String(s)) if s == "none" => {
+            let o = keep(&[]);
+            (!o.is_empty()).then_some(Value::Object(o))
+        }
+        Some(Value::Array(keys)) => {
+            let keys: Vec<&str> = keys.iter().filter_map(Value::as_str).collect();
+            Some(Value::Object(keep(&keys)))
+        }
+        // The manifest refused every other shape at start; a hand-edited one
+        // gets the whole state rather than a guess.
+        Some(_) => Some(input.clone()),
+    }
+}
+
+/// The wire name of a node's response schema: what OpenAI accepts
+/// (`^[a-zA-Z0-9_-]{1,64}$`), derived from the node id.
+fn response_name(node: &str) -> String {
+    let safe: String = node
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .take(64)
+        .collect();
+    if safe.is_empty() { "response".into() } else { safe }
+}
+
+/// The request fields a node's block sets, as journaled on each of its turns
+/// under `llm` — `response_format` already in the OpenAI-compatible wire
+/// shape, so the journal shows what was asked for as it went out. A fold's
+/// summarizer turn takes the node's system text, temperature and ceiling (a
+/// GPT-5 node's fold must not 400 on a temperature either) but neither the
+/// schema nor `parallel_tool_calls`: it answers in prose and is offered no
+/// tools. `None` when nothing is set, so such a turn is byte-identical to one
+/// from a node with no block.
+fn request_block(env: &StepEnv<'_>, i: usize, fold: bool) -> Option<Value> {
+    let c = llm_cfg(env, i)?;
+    let mut b = serde_json::Map::new();
+    if let Some(s) = &c.system {
+        b.insert("system".into(), Value::String(s.clone()));
+    }
+    if let Some(t) = &c.temperature {
+        b.insert("temperature".into(), t.clone());
+    }
+    if let Some(m) = c.max_tokens {
+        b.insert("max_tokens".into(), Value::from(m));
+    }
+    if !fold {
+        if let Some(p) = c.parallel_tool_calls {
+            b.insert("parallel_tool_calls".into(), Value::Bool(p));
+        }
+        if let Some(r) = &c.response {
+            let wire = match r.get("json_schema") {
+                Some(schema) => serde_json::json!({
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": response_name(&env.plan.nodes[i]),
+                        "schema": schema,
+                        "strict": true,
+                    },
+                }),
+                None => serde_json::json!({ "type": "json_object" }),
+            };
+            b.insert("response_format".into(), wire);
+        }
+    }
+    (!b.is_empty()).then_some(Value::Object(b))
+}
+
+/// Check a final answer against the node's `response` declaration: a JSON
+/// object, conforming to the schema when one is declared. The runtime checks
+/// whatever the provider did with `response_format`, because a provider that
+/// ignored the field must not hand prose through as the schema's object.
+fn check_response(response: &Value, text: &str) -> Result<(), String> {
+    let value: Value = serde_json::from_str(text.trim())
+        .map_err(|e| format!("the answer is not JSON ({e})"))?;
+    if !value.is_object() {
+        return Err(format!("the answer is a JSON {}, not an object", json_kind(&value)));
+    }
+    if let Some(schema) = response.get("json_schema") {
+        areev_core::types::validate_instance(&value, schema)
+            .map_err(|k| format!("schema violation: {}", k.as_str()))?;
+    }
+    Ok(())
+}
+
+/// Validate one model-issued call and build the input it dispatches with
+/// (#392, #393). A dynamic tool's arguments are checked against ITS schema,
+/// always — that is the contract the host declared for it. Then the locks are
+/// merged, and the strict-argument table judges the MERGED input under the
+/// Definition the call reaches, so a key the model was never shown (stripped
+/// from its schema because locked) is not reported missing.
+fn validated_dispatch_input(
+    env: &StepEnv<'_>,
+    tool: &OfferedTool,
+    arguments: &Value,
+) -> Result<Value, String> {
+    if let Some(d) = &tool.dynamic {
+        areev_core::types::validate_instance(arguments, &d.input_schema)
+            .map_err(|k| format!("schema violation: {}", k.as_str()))?;
+    }
+    let input = tool.dispatch_input(arguments);
+    (env.validate_args)(tool.dispatch_name(), &input)?;
+    Ok(input)
 }
 
 fn flow_owners(st: &SchedulerState) -> Vec<(usize, String)> {
@@ -656,7 +852,7 @@ fn handle_llm_outcome(
     path: &str,
     outcome: &EffectOutcome,
 ) {
-    let NodeExecutor::Abstract { tools } = &env.executors[i] else { return };
+    let NodeExecutor::Abstract { tools, .. } = &env.executors[i] else { return };
     let flow_id = flow_key(i, path);
     // A summarizer turn resolves differently from a model turn: its result is
     // not the node's answer, and any tool calls in it are ignored (it was
@@ -802,6 +998,9 @@ fn handle_llm_outcome(
             // Argument validation (§6.11): unparseable argument payloads and
             // strict-schema violations re-prompt with the error appended —
             // consuming `effect_seq`, bounded by `max_effects_per_attempt`.
+            // The check runs on the input the call will DISPATCH with —
+            // locks merged (#393), a dynamic tool's own schema first (#392) —
+            // so a strict Definition is judged on what it will receive.
             let invalid: Option<(String, String)> = calls.iter().find_map(|c| {
                 if !c.arguments.is_object() {
                     return Some((
@@ -809,7 +1008,8 @@ fn handle_llm_outcome(
                         "arguments are not a JSON object".to_string(),
                     ));
                 }
-                (env.validate_args)(&c.tool_name, &c.arguments)
+                let tool = tools.iter().find(|t| t.tool_name == c.tool_name)?;
+                validated_dispatch_input(env, tool, &c.arguments)
                     .err()
                     .map(|e| (c.tool_name.clone(), e))
             });
@@ -830,12 +1030,61 @@ fn handle_llm_outcome(
                 // JSON object merges as one; anything else lands under the
                 // node's own key.
                 let final_text = text.unwrap_or_default();
-                let value = serde_json::from_str::<Value>(&final_text)
+                // Structured output (#391): the answer must be what the block
+                // asked for. ONE corrective re-prompt, with the model's own
+                // answer kept in the transcript so it can see what it said,
+                // then the node fails — never a silent merge of prose.
+                let cfg = llm_cfg(env, i);
+                if let Some(response) = cfg.and_then(|c| c.response.as_ref()) {
+                    if let Err(why) = check_response(response, &final_text) {
+                        if flow.response_strikes >= 1 {
+                            fail_abstract_coded(
+                                env,
+                                st,
+                                i,
+                                path,
+                                &format!(
+                                    "SchemaValidationFailed: the final answer failed the node's \
+                                     response declaration after a corrective re-prompt ({why})"
+                                ),
+                            );
+                            return;
+                        }
+                        flow.response_strikes += 1;
+                        let mut entry = serde_json::json!({
+                            "role": "assistant",
+                            "text": final_text,
+                            "tool_calls": [],
+                        });
+                        if let Some(pc) = provider_content {
+                            entry["provider_content"] = pc;
+                        }
+                        flow.messages.push(entry);
+                        flow.messages.push(serde_json::json!({
+                            "role": "user",
+                            "content": format!(
+                                "Your final answer failed validation: {why}. Answer again with \
+                                 only a JSON object that satisfies the required response format."
+                            ),
+                        }));
+                        flow.need = Some(crate::state::FlowNeed::NextTurn);
+                        return;
+                    }
+                }
+                let mut value = serde_json::from_str::<Value>(&final_text)
                     .ok()
                     .filter(|v| v.is_object())
                     .unwrap_or_else(|| {
                         serde_json::json!({ env.plan.nodes[i].clone(): final_text })
                     });
+                // What the model read, for whatever is bound below this node
+                // (#391): every tool call of the attempt, off the journaled
+                // outcomes. The runtime's key wins over one the model wrote.
+                if let Some(key) = cfg.and_then(|c| c.tool_results_into.as_ref()) {
+                    if let Value::Object(o) = &mut value {
+                        o.insert(key.clone(), Value::Array(std::mem::take(&mut flow.tool_log)));
+                    }
+                }
                 st.abstract_flows.remove(&flow_id);
                 if path.is_empty() {
                     st.node_state[i] = NodeState::DoneOk;
@@ -1020,8 +1269,51 @@ fn handle_flow_tool_outcome(
     // truncation's journal pointer resolvable.
     let attempt = flow_attempt(st, i, path);
     let cap = env.llm_tool_result_chars;
+    let logging = llm_cfg(env, i).is_some_and(|c| c.tool_results_into.is_some());
+    let journal_id = JournalKey {
+        run_id: st.run_id.clone(),
+        task_path: path.to_string(),
+        node: env.plan.nodes[i].clone(),
+        attempt,
+        effect_seq,
+        kind: EffectKind::Tool,
+    }
+    .tool_call_id();
     let Some(flow) = st.abstract_flows.get_mut(&flow_key(i, path)) else { return };
     let Some(call) = flow.pending_tools.remove(&effect_seq) else { return };
+    if logging {
+        // `tool_results_into` (#391): the record a downstream gate reads. The
+        // input is what was DISPATCHED (locks merged), the result is the WHOLE
+        // journaled result — never the transcript's bounded excerpt — and the
+        // entry is placed by `effect_seq`, so arrival order cannot reorder it.
+        let NodeExecutor::Abstract { tools, .. } = &env.executors[i] else { return };
+        let input = tools
+            .iter()
+            .find(|t| t.tool_name == call.tool_name)
+            .map(|t| t.dispatch_input(&call.arguments))
+            .unwrap_or_else(|| call.arguments.clone());
+        let (result, is_error) = match outcome {
+            EffectOutcome::Completed { result, .. } => (result.clone(), false),
+            EffectOutcome::Failed { cause, detail, .. } => {
+                (Value::String(format!("{cause:?}: {detail}")), true)
+            }
+        };
+        let entry = serde_json::json!({
+            "name": call.tool_name,
+            "tool_call_id": journal_id,
+            "model_call_id": call.model_call_id,
+            "input": input,
+            "result": result,
+            "is_error": is_error,
+            "effect_seq": effect_seq,
+        });
+        let at = flow
+            .tool_log
+            .iter()
+            .position(|e| e.get("effect_seq").and_then(Value::as_u64).unwrap_or(0) > u64::from(effect_seq))
+            .unwrap_or(flow.tool_log.len());
+        flow.tool_log.insert(at, entry);
+    }
     let entry = match outcome {
         EffectOutcome::Completed { result, .. } => serde_json::json!({
             "role": "tool",
@@ -1496,10 +1788,13 @@ fn emit_fold_turn(
         effect_seq,
         kind: EffectKind::Llm,
     };
-    let input = serde_json::json!({
+    let mut input = serde_json::json!({
         "messages": messages,
         "fold": { "from": from, "to": to, "seq": effect_seq, "prompt_v": FOLD_PROMPT_V },
     });
+    if let Some(block) = request_block(env, i, true) {
+        input["llm"] = block;
+    }
     emit_effect(env, st, i, path, key, input, out);
 }
 
@@ -1515,9 +1810,10 @@ fn dispatch_llm_turn(
     out: &mut Vec<Command>,
 ) {
     let flow_id = flow_key(i, path);
+    let reserve = reserve_for(env, i);
     if let Some(max) = env.budgets.max_tokens {
         let spent = st.spent.input_tokens + st.spent.output_tokens;
-        if spent + env.llm_reserve_tokens > max {
+        if spent + reserve > max {
             st.exhausted = Some(crate::error::BudgetAxis::Tokens);
             // The un-dispatched turn survives as a need, so a resume with a
             // raised ceiling picks the loop up exactly here.
@@ -1539,7 +1835,7 @@ fn dispatch_llm_turn(
         let projected = flow_now
             .map(|f| f.last_prompt_tokens)
             .unwrap_or(0)
-            .saturating_add(env.llm_reserve_tokens);
+            .saturating_add(reserve);
         let idle = flow_now.is_some_and(|f| f.folding.is_none());
         // Two independent reasons to fold. The ceiling is a prediction and can
         // be unset; the provider's refusal is a fact and always wins.
@@ -1613,6 +1909,12 @@ fn dispatch_llm_turn(
     if let Some(offer) = offer {
         input["offer"] = offer;
     }
+    // #391: the node's request fields ride the journaled input too, which is
+    // how the driver builds the request from the journal alone — and how a
+    // reader of the run sees the system text and response format as sent.
+    if let Some(block) = request_block(env, i, false) {
+        input["llm"] = block;
+    }
     emit_effect(env, st, i, path, key, input, out);
 }
 
@@ -1661,7 +1963,7 @@ fn dispatch_flow_tool(
     // Resolve the offered tool BEFORE booking anything: a resolution set
     // that changed across a fork must fail the node loudly, not panic —
     // and never leave a booked pending tool with no outstanding key.
-    let NodeExecutor::Abstract { tools } = &env.executors[i] else { return };
+    let NodeExecutor::Abstract { tools, .. } = &env.executors[i] else { return };
     let Some(tool) = tools.iter().find(|t| t.tool_name == call.tool_name).cloned() else {
         fail_abstract(
             env,
@@ -1672,10 +1974,29 @@ fn dispatch_flow_tool(
         );
         return;
     };
+    // The input it DISPATCHES with (#392, #393): locks merged over the
+    // model's arguments, a dynamic tool's wrapped first. Validated when the
+    // turn resolved; re-derived here because only the model's own arguments
+    // are kept in state (the transcript must show what the model said). A
+    // failure now means the offer changed under the call — a fork that
+    // migrated the plan — and fails the node loudly, as the missing-tool case
+    // above does.
+    let arguments = match validated_dispatch_input(env, &tool, &call.arguments) {
+        Ok(input) => input,
+        Err(why) => {
+            fail_abstract(
+                env,
+                st,
+                i,
+                path,
+                &format!("tool '{}' arguments no longer validate: {why}", call.tool_name),
+            );
+            return;
+        }
+    };
     let Some(flow) = st.abstract_flows.get_mut(&flow_id) else { return };
     let effect_seq = flow.next_effect_seq;
     flow.next_effect_seq += 1;
-    let arguments = call.arguments.clone();
     flow.pending_tools.insert(effect_seq, call.clone());
     let key = JournalKey {
         run_id: st.run_id.clone(),
@@ -1855,7 +2176,7 @@ fn emit_offer_decide(
     out: &mut Vec<Command>,
 ) -> bool {
     let Some(d) = env.decide.as_ref().filter(|d| d.calibrated) else { return false };
-    let NodeExecutor::Abstract { tools } = &env.executors[i] else { return false };
+    let NodeExecutor::Abstract { tools, .. } = &env.executors[i] else { return false };
     // A choice carries 2..=255 options; past that the question cannot be
     // asked, and the full offer is the honest answer.
     if tools.len() <= OFFER_TOP_K || tools.len() > 255 {
@@ -2052,7 +2373,7 @@ fn resolve_offer_decide(
     effect_seq: u32,
     outcome: &EffectOutcome,
 ) {
-    let NodeExecutor::Abstract { tools } = &env.executors[i] else { return };
+    let NodeExecutor::Abstract { tools, .. } = &env.executors[i] else { return };
     // Rule 2: only a CALIBRATED answer may omit a tool. Anything else — an
     // uncalibrated answer, a failure, a malformed table — keeps the full
     // offer, which is what the flow would have had with no backend.
@@ -2802,6 +3123,30 @@ mod tests {
     }
 
     // ---- the fold's range decision -------------------------------------
+
+    #[test]
+    fn a_state_selection_keeps_the_steering_inbox_whatever_it_lists() {
+        let input = serde_json::json!({"a": 1, "b": 2, "$inbox": [{"text": "stop"}]});
+        assert_eq!(select_state(None, &input), Some(input.clone()));
+        assert_eq!(select_state(Some(&serde_json::json!("all")), &input), Some(input.clone()));
+        assert_eq!(
+            select_state(Some(&serde_json::json!(["b", "zz"])), &input),
+            Some(serde_json::json!({"b": 2, "$inbox": [{"text": "stop"}]}))
+        );
+        assert_eq!(
+            select_state(Some(&serde_json::json!("none")), &input),
+            Some(serde_json::json!({"$inbox": [{"text": "stop"}]}))
+        );
+        assert_eq!(select_state(Some(&serde_json::json!("none")), &serde_json::json!({"a": 1})), None);
+    }
+
+    #[test]
+    fn a_response_name_is_what_every_provider_accepts() {
+        assert_eq!(response_name("reply"), "reply");
+        assert_eq!(response_name("ap.reply now"), "ap_reply_now");
+        assert_eq!(response_name(&"n".repeat(80)).len(), 64);
+        assert_eq!(response_name(""), "response");
+    }
 
     fn msg(role: &str) -> Value {
         json!({"role": role, "content": "x"})
