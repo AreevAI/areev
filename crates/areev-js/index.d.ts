@@ -672,8 +672,18 @@ export declare class Areev {
    * Note `RunFinished` is emitted at a TERMINAL outcome: a run that parks
    * on a human gate ends this leg at `AskRaised`, and the `runResume` leg
    * carries `RunResumed` … `RunFinished`.
+   *
+   * `llmProfile` (#394, the LAST argument) shapes every request the model
+   * transport sends, as a JSON string: `{"temperature": "omit" | <number>,
+   * "token_field": "max_tokens" | "max_completion_tokens", "extra_body":
+   * {…}}`, each key optional — the CLI's `--llm-no-temperature` /
+   * `--llm-token-field` / `--llm-extra-body`. `'{"temperature":"omit"}'` is
+   * what runs the GPT-5 family, which answers 400 to any temperature. An
+   * unknown key is refused. The run pins the profile's digest, so
+   * `runResume` must be given the same one. A plan's per-node `llm` block
+   * (`docs/run.md`) configures abstract nodes without it.
    */
-  runStart(workflow: string, runId: string, inputJson?: string | undefined | null, toolCmd?: string | undefined | null, maxTokens?: number | undefined | null, maxUsdMicros?: number | undefined | null, maxWallMs?: number | undefined | null, askTtlSec?: number | undefined | null, model?: string | undefined | null, baseUrl?: string | undefined | null, keyEnv?: string | undefined | null, llmMaxTokens?: number | undefined | null, allowExecutor?: string | undefined | null, executorCache?: string | undefined | null, sandboxCmd?: string | undefined | null, executorTimeoutSecs?: number | undefined | null, toolEnv?: string | undefined | null, onEvent?: ((arg: string) => void) | undefined | null, credentials?: string | undefined | null, allowHosts?: string | undefined | null, toolEgress?: string | undefined | null, credentialTtlSecs?: number | undefined | null, resolverEnv?: string | undefined | null, maxEffectsPerAttempt?: number | undefined | null, llmToolResultChars?: number | undefined | null, llmContextTokens?: number | undefined | null): Promise<string>
+  runStart(workflow: string, runId: string, inputJson?: string | undefined | null, toolCmd?: string | undefined | null, maxTokens?: number | undefined | null, maxUsdMicros?: number | undefined | null, maxWallMs?: number | undefined | null, askTtlSec?: number | undefined | null, model?: string | undefined | null, baseUrl?: string | undefined | null, keyEnv?: string | undefined | null, llmMaxTokens?: number | undefined | null, allowExecutor?: string | undefined | null, executorCache?: string | undefined | null, sandboxCmd?: string | undefined | null, executorTimeoutSecs?: number | undefined | null, toolEnv?: string | undefined | null, onEvent?: ((arg: string) => void) | undefined | null, credentials?: string | undefined | null, allowHosts?: string | undefined | null, toolEgress?: string | undefined | null, credentialTtlSecs?: number | undefined | null, resolverEnv?: string | undefined | null, maxEffectsPerAttempt?: number | undefined | null, llmToolResultChars?: number | undefined | null, llmContextTokens?: number | undefined | null, llmProfile?: string | undefined | null): Promise<string>
   /**
    * Resume a parked/interrupted run from its latest checkpoint.
    *
@@ -684,7 +694,7 @@ export declare class Areev {
    * including the `RunFinished` a parked start leg never reached — so a
    * host that watched the start must be able to watch the rest.
    */
-  runResume(runId: string, toolCmd?: string | undefined | null, model?: string | undefined | null, baseUrl?: string | undefined | null, keyEnv?: string | undefined | null, llmMaxTokens?: number | undefined | null, allowExecutor?: string | undefined | null, executorCache?: string | undefined | null, sandboxCmd?: string | undefined | null, executorTimeoutSecs?: number | undefined | null, toolEnv?: string | undefined | null, onEvent?: ((arg: string) => void) | undefined | null, credentials?: string | undefined | null, allowHosts?: string | undefined | null, toolEgress?: string | undefined | null, credentialTtlSecs?: number | undefined | null, resolverEnv?: string | undefined | null): Promise<string>
+  runResume(runId: string, toolCmd?: string | undefined | null, model?: string | undefined | null, baseUrl?: string | undefined | null, keyEnv?: string | undefined | null, llmMaxTokens?: number | undefined | null, allowExecutor?: string | undefined | null, executorCache?: string | undefined | null, sandboxCmd?: string | undefined | null, executorTimeoutSecs?: number | undefined | null, toolEnv?: string | undefined | null, onEvent?: ((arg: string) => void) | undefined | null, credentials?: string | undefined | null, allowHosts?: string | undefined | null, toolEgress?: string | undefined | null, credentialTtlSecs?: number | undefined | null, resolverEnv?: string | undefined | null, llmProfile?: string | undefined | null): Promise<string>
   /**
    * Answer a pending Client ask. `responder` is REQUIRED — approval
    * separation of duties (responder ≠ triggering principal) is structural.

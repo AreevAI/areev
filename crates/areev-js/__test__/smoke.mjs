@@ -1623,6 +1623,30 @@ test('runStart resolves the tool-calling model before journaling a run', async (
   m.close()
 })
 
+// ── #394: the request profile is the LAST positional argument of runStart
+// and runResume, so every existing positional caller keeps its meaning.
+
+test('runStart and runResume take llmProfile last and refuse a malformed one', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'areev-profile-'))
+  const m = new Areev(join(dir, 'm.db'), 'caller')
+  const startArgs = (profile) => [
+    'e'.repeat(HEX64), 'r1', null, null, null, null, null, null,
+    'ollama:llama3.1', null, null, null, null, null, null, null, null, null,
+    null, null, null, null, null, null, null, null, profile,
+  ]
+  await assert.rejects(() => m.runStart(...startArgs('{"temprature":"omit"}')), /temprature/)
+  await assert.rejects(() => m.runStart(...startArgs('not json')), /llm_profile/)
+  // A profile the ollama transport cannot honour is refused, not ignored.
+  await assert.rejects(() => m.runStart(...startArgs('{"temperature":"omit"}')), /no request profile/)
+  await assert.rejects(
+    () => m.runResume('r1', null, 'ollama:llama3.1', null, null, null, null, null, null, null,
+      null, null, null, null, null, null, null, '{"token_field":"tokens"}'),
+    /token_field/,
+  )
+  assert.equal(JSON.parse(await m.runList(10)).length, 0, 'no run was journaled')
+  m.close()
+})
+
 // ── #67: the generic authoring path must validate too. `triggerAdd` alone was
 // not enough — `add("trigger", …)` is what a host actually reaches for, and it
 // stored declarations that could never fire.

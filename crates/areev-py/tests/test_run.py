@@ -208,3 +208,20 @@ def test_a_plan_declared_read_puts_db_entity_at_into_run_state(tmp_path):
     assert pinned["world_at_loss"]["executor"] == "memory"
     assert pinned["world_at_loss"]["read"]["axis"] == "world"
     assert json.loads(db.run_verify("claim-8801"))["verified"] is True
+
+
+def test_run_start_and_resume_take_an_llm_profile_and_refuse_a_malformed_one(db):
+    # #394: the request profile, as a JSON string — the CLI's --llm-* flags.
+    wf = _plan(db)
+    with pytest.raises(ValueError, match="temprature"):
+        db.run_start(wf, "py-p1", model="ollama:llama3.1", llm_profile='{"temprature": "omit"}')
+    with pytest.raises(ValueError, match="llm_profile"):
+        db.run_start(wf, "py-p2", model="ollama:llama3.1", llm_profile="not json")
+    # A profile the ollama transport cannot honour is refused, never ignored.
+    with pytest.raises(ValueError, match="no request profile"):
+        db.run_start(wf, "py-p3", model="ollama:llama3.1", llm_profile='{"temperature": "omit"}')
+    with pytest.raises(ValueError, match="pass `model`"):
+        db.run_start(wf, "py-p4", llm_profile='{"temperature": "omit"}')
+    with pytest.raises(ValueError, match="token_field"):
+        db.run_resume("py-p1", model="ollama:llama3.1", llm_profile='{"token_field": "tokens"}')
+    assert json.loads(db.run_list(10)) == [], "no run was journaled"

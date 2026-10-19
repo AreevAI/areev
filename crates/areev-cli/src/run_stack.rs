@@ -302,16 +302,56 @@ pub fn can_execute(flags: &HashMap<String, String>) -> bool {
 pub fn toolcall_llm(
     flags: &HashMap<String, String>,
 ) -> Result<Option<Arc<dyn areev_llm::ToolCallLlm>>, String> {
+    let profile = request_profile(flags)?;
     match flag_or_env(flags, "model", "AREEV_RUN_MODEL") {
         None => Ok(None),
-        Some(spec) => areev_llm::resolve_toolcall(
+        Some(spec) => areev_llm::resolve_toolcall_with_profile(
             &spec,
             flag_or_env(flags, "base-url", "AREEV_RUN_BASE_URL").as_deref(),
             flag_or_env(flags, "key-env", "AREEV_RUN_KEY_ENV").as_deref(),
+            profile,
         )
         .map(Some)
         .map_err(|e| e.to_string()),
     }
+}
+
+/// The endpoint's request profile (#285, #394): `--llm-token-field
+/// max_tokens|max_completion_tokens`, `--llm-no-temperature`, `--llm-extra-body
+/// JSON`, each with an `$AREEV_RUN_LLM_*` twin. `None` when none is given.
+///
+/// The USAGE text named these flags for a release in which nothing read them;
+/// they are parsed here, through the same `RequestProfile` the bindings'
+/// `llm_profile` builds, so a misconfiguration is refused before a run exists.
+pub fn request_profile(
+    flags: &HashMap<String, String>,
+) -> Result<Option<areev_llm::profile::RequestProfile>, String> {
+    use areev_llm::profile::{RequestProfile, TemperatureMode, TokenLimitField};
+    let mut p = RequestProfile::new();
+    let mut any = false;
+    if let Some(f) = flag_or_env(flags, "llm-token-field", "AREEV_RUN_LLM_TOKEN_FIELD") {
+        any = true;
+        p = p.token_limit(match f.as_str() {
+            "max_tokens" => TokenLimitField::MaxTokens,
+            "max_completion_tokens" => TokenLimitField::MaxCompletionTokens,
+            other => {
+                return Err(format!(
+                    "--llm-token-field {other:?}: expected max_tokens or max_completion_tokens"
+                ))
+            }
+        });
+    }
+    if flag_or_env(flags, "llm-no-temperature", "AREEV_RUN_LLM_NO_TEMPERATURE")
+        .is_some_and(|v| v != "false" && v != "0")
+    {
+        any = true;
+        p = p.temperature(TemperatureMode::Omit);
+    }
+    if let Some(body) = flag_or_env(flags, "llm-extra-body", "AREEV_RUN_LLM_EXTRA_BODY") {
+        any = true;
+        p = p.extra_body_json(&body).map_err(|e| e.to_string())?;
+    }
+    Ok(any.then_some(p))
 }
 
 /// `--events` prints each §6.10 run event to stderr as one JSON line (stdout
@@ -768,5 +808,24 @@ mod tests {
             ),
             ExecResult::Err { detail, .. } => panic!("{detail}"),
         }
+    }
+    #[test]
+    fn the_llm_profile_flags_build_a_profile_and_refuse_a_bad_one() {
+        let _g = env_guard();
+        let flags = |pairs: &[(&str, &str)]| -> HashMap<String, String> {
+            pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        };
+        assert!(request_profile(&flags(&[])).unwrap().is_none(), "no flag, no profile");
+        let p = request_profile(&flags(&[
+            ("llm-token-field", "max_completion_tokens"),
+            ("llm-no-temperature", "true"),
+            ("llm-extra-body", r#"{"reasoning_effort":"low"}"#),
+        ]))
+        .unwrap()
+        .unwrap();
+        assert_eq!(p.token_limit_key(), "max_completion_tokens");
+        assert!(!p.sends_temperature());
+        assert!(request_profile(&flags(&[("llm-token-field", "tokens")])).is_err());
+        assert!(request_profile(&flags(&[("llm-extra-body", r#"{"model":"x"}"#)])).is_err());
     }
 }
