@@ -522,7 +522,13 @@ pub(crate) fn strip_locked(schema: &mut Value, locked: &Value) {
 /// learnt from a 400 on the node's first turn.
 fn strict_mode_violation(schema: &Value, at: &str) -> Option<String> {
     let Value::Object(o) = schema else { return None };
-    let is_object = o.get("type").and_then(Value::as_str) == Some("object") || o.contains_key("properties");
+    // `type` may be a list (`["object", "null"]`): an object schema still.
+    let typed_object = match o.get("type") {
+        Some(Value::String(t)) => t == "object",
+        Some(Value::Array(ts)) => ts.iter().any(|t| t.as_str() == Some("object")),
+        _ => false,
+    };
+    let is_object = typed_object || o.contains_key("properties");
     if is_object {
         if o.get("additionalProperties") != Some(&Value::Bool(false)) {
             return Some(format!("{} must set \"additionalProperties\": false", if at.is_empty() { "/" } else { at }));
@@ -547,7 +553,23 @@ fn strict_mode_violation(schema: &Value, at: &str) -> Option<String> {
         }
     }
     if let Some(items) = o.get("items") {
-        return strict_mode_violation(items, &format!("{at}/items"));
+        if let Some(v) = strict_mode_violation(items, &format!("{at}/items")) {
+            return Some(v);
+        }
+    }
+    // A schema-valued `additionalProperties` is itself a schema strict mode
+    // walks (and on an object it is already a violation above).
+    if let Some(addl @ Value::Object(_)) = o.get("additionalProperties") {
+        if let Some(v) = strict_mode_violation(addl, &format!("{at}/additionalProperties")) {
+            return Some(v);
+        }
+    }
+    if let Some(Value::Array(alts)) = o.get("anyOf") {
+        for (n, alt) in alts.iter().enumerate() {
+            if let Some(v) = strict_mode_violation(alt, &format!("{at}/anyOf/{n}")) {
+                return Some(v);
+            }
+        }
     }
     None
 }
@@ -567,6 +589,21 @@ mod tests {
             schema,
             json!({"type": "object", "properties": {"body": {"type": "string"}}, "required": ["body"]})
         );
+    }
+
+    #[test]
+    fn strict_mode_walks_nullable_objects_any_of_and_schema_valued_additional_properties() {
+        let ok = json!({"type": "object", "properties": {"a": {"type": "string"}},
+                        "required": ["a"], "additionalProperties": false});
+        assert_eq!(strict_mode_violation(&ok, ""), None);
+        let nullable = json!({"type": ["object", "null"]});
+        assert!(strict_mode_violation(&nullable, "").unwrap().contains("additionalProperties"));
+        let any_of = json!({"anyOf": [ok.clone(), {"type": "object", "properties": {"b": {"type": "string"}},
+                            "additionalProperties": false}]});
+        assert!(strict_mode_violation(&any_of, "").unwrap().contains("/anyOf/1"));
+        let inner = json!({"type": "string", "additionalProperties": {"type": "object",
+                           "properties": {"x": {"type": "string"}}, "required": ["x"]}});
+        assert!(strict_mode_violation(&inner, "").unwrap().contains("/additionalProperties"));
     }
 
     #[test]
