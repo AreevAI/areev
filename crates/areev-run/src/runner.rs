@@ -733,6 +733,54 @@ impl Runner {
         Ok(def)
     }
 
+    /// Pseudonymize a dynamic tool's prose for the model: its description,
+    /// and every `description`, `title`, `default` and `examples` value in its
+    /// schema. A no-op without an `egress` boundary.
+    fn pseudonymize_tool_text(&self, def: &mut areev_core::types::Tool) -> Result<(), RunError> {
+        if !self.anon_boundary_active()? {
+            return Ok(());
+        }
+        const PROSE: [&str; 4] = ["description", "title", "default", "examples"];
+        // One walk order for both passes, so the values come back to the
+        // slots they left.
+        fn walk(schema: &mut Value, f: &mut dyn FnMut(&mut Value)) {
+            let Value::Object(o) = schema else { return };
+            for (k, v) in o.iter_mut() {
+                match k.as_str() {
+                    k if PROSE.contains(&k) => f(v),
+                    "properties" => {
+                        if let Value::Object(props) = v {
+                            for p in props.values_mut() {
+                                walk(p, f);
+                            }
+                        }
+                    }
+                    "items" | "additionalProperties" => walk(v, f),
+                    _ => {}
+                }
+            }
+        }
+        let mut schema = def.input_schema.clone().unwrap_or(Value::Null);
+        let mut slots = vec![Value::String(def.tool_description.clone().unwrap_or_default())];
+        walk(&mut schema, &mut |v| slots.push(v.clone()));
+        let masked = self.pseudonymize_for_model(&Value::Array(slots))?;
+        let mut masked = masked.as_array().cloned().unwrap_or_default().into_iter();
+        if let Some(Value::String(d)) = masked.next() {
+            if def.tool_description.is_some() {
+                def.tool_description = Some(d);
+            }
+        }
+        walk(&mut schema, &mut |v| {
+            if let Some(m) = masked.next() {
+                *v = m;
+            }
+        });
+        if def.input_schema.is_some() {
+            def.input_schema = Some(schema);
+        }
+        Ok(())
+    }
+
     fn load_manifest(&self, run_id: &str) -> Result<RunManifest, RunError> {
         self.facade.with_store(|m| RunManifest::load(m, run_id))
     }
@@ -2490,7 +2538,19 @@ impl Runner {
                             };
                             let mut defs = Vec::with_capacity(offered.len());
                             for t in offered {
-                                defs.push(self.offered_definition(t)?);
+                                let mut def = self.offered_definition(t)?;
+                                // A dynamic tool's text came from the run
+                                // INPUT — host data, possibly naming a
+                                // person — so its description and the prose
+                                // annotations of its schema cross the
+                                // boundary pseudonymized, as the input does.
+                                // Structural strings (types, enums, patterns)
+                                // are left alone: the arguments are validated
+                                // against them as stored.
+                                if t.dynamic.is_some() {
+                                    self.pseudonymize_tool_text(&mut def)?;
+                                }
+                                defs.push(def);
                             }
                             // §6.10 TokenChunk sink: only when observed —
                             // otherwise the plain call (no stream overhead).
@@ -2512,7 +2572,15 @@ impl Runner {
                             // The node's request fields (#391), read off the
                             // turn's own journaled `llm` — what the scheduler
                             // wrote is what is sent, and what verify sees.
-                            let req = TurnRequest::from_input(&input, manifest);
+                            // Read off `to_model`, never the raw input: the
+                            // node's system text crosses the model boundary
+                            // exactly as its messages do, so an `egress`
+                            // policy pseudonymizes it too (#391 review).
+                            // Only the PROSE is taken from the masked copy:
+                            // the response schema goes out as declared, since
+                            // the answer is checked against it as declared.
+                            let mut req = TurnRequest::from_input(&input, manifest);
+                            req.system = TurnRequest::from_input(&to_model, manifest).system;
                             Some(crate::executor::PreparedLlm {
                                 messages: seam_messages(&to_model),
                                 tools: defs,

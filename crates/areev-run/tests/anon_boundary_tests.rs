@@ -456,3 +456,56 @@ fn a_model_tool_call_with_an_invented_placeholder_is_refused() {
     let RunSession::Finished { outcome, .. } = session else { panic!("expected finish") };
     assert_eq!(outcome, RunOutcome::Completed, "{outcome:?}");
 }
+
+/// #391 review: a node's own `system` text and a dynamic tool's description
+/// and schema prose cross the model boundary pseudonymized, like the prompt.
+#[test]
+fn a_nodes_system_text_and_dynamic_tool_prose_are_pseudonymized() {
+    struct Seeing {
+        inner: Arc<ScriptedLlm>,
+        sent: Mutex<Vec<String>>,
+    }
+    impl ToolCallLlm for Seeing {
+        fn model(&self) -> &str {
+            "scripted"
+        }
+        fn call(&self, req: &ToolCallRequest<'_>) -> Result<ToolCallResponse, ToolCallError> {
+            let tools: Vec<String> = req
+                .tools
+                .iter()
+                .map(|t| format!("{:?} {:?}", t.tool_description, t.input_schema))
+                .collect();
+            self.sent.lock().unwrap().push(format!("{:?} {}", req.system, tools.join(" ")));
+            self.inner.call(req)
+        }
+    }
+    let rig = Rig::new(Some(r#"{"mode": "egress", "scope": "memory"}"#));
+    let post = Tool::new("post").kind(ToolKind::Definition).created_at(500).namespace(NS);
+    let dh = rig.facade.with_store(|m| m.add(&post)).unwrap();
+    let mut wf = Workflow::new(vec!["extract".into(), "post".into()])
+        .edge("extract", "post")
+        .bind("post", &dh.to_hex())
+        .created_at(800)
+        .namespace(NS);
+    wf.common.extra_fields.insert(
+        "llm".into(),
+        json!({"extract": {"system": format!("Escalate to {SUPPLIER}."), "tools_from": "/tools"}}),
+    );
+    let plan = rig.facade.with_store(|m| m.add(&wf)).unwrap();
+    let llm = Arc::new(Seeing { inner: ScriptedLlm::new(vec![done("{}")]), sent: Mutex::new(Vec::new()) });
+    let input = json!({"tools": [{
+        "name": "notify",
+        "description": format!("mails {SUPPLIER}"),
+        "input_schema": {"type": "object", "properties": {"to": {"type": "string",
+                         "description": format!("e.g. {SUPPLIER}")}}},
+        "dispatch": {"definition": "post"},
+    }]});
+    let session = rig
+        .runner(Arc::clone(&llm) as Arc<dyn ToolCallLlm>)
+        .start(&plan, "anon-sys", input, &opts())
+        .unwrap();
+    assert!(matches!(session, RunSession::Finished { outcome: RunOutcome::Completed, .. }));
+    let sent = llm.sent.lock().unwrap().join("\n");
+    assert!(!sent.contains(SUPPLIER), "the address reached the model: {sent}");
+    assert!(sent.contains("[EMAIL_"), "it was replaced by a token: {sent}");
+}
