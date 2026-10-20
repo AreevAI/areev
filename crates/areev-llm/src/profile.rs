@@ -56,6 +56,13 @@ pub struct RequestProfile {
     temperature_value: Option<f64>,
 }
 
+/// A switch's value as a boolean: everything is ON except the spellings of
+/// OFF — `false`, `0`, `off`, `no` (any case). One reader for the CLI flag,
+/// its environment twin and the bindings, so `=off` never means on.
+pub fn is_truthy(v: &str) -> bool {
+    !matches!(v.trim().to_ascii_lowercase().as_str(), "false" | "0" | "off" | "no")
+}
+
 /// Keys the adapters own. `extra_body` may not set any of them: a profile
 /// that could overwrite `model` or `messages` would let configuration
 /// silently redirect a governed run to another model, and a profile that
@@ -114,6 +121,46 @@ impl RequestProfile {
     /// `ToolCallLlm::effective_temperature`.
     pub fn effective_temperature(&self, requested: f64) -> Option<f64> {
         self.sends_temperature().then(|| self.temperature_value.unwrap_or(requested))
+    }
+
+    /// The profile the `$AREEV_RUN_LLM_*` variables describe —
+    /// `AREEV_RUN_LLM_TOKEN_FIELD`, `AREEV_RUN_LLM_NO_TEMPERATURE`,
+    /// `AREEV_RUN_LLM_EXTRA_BODY` — or `None` when none is set. The same
+    /// variables the CLI reads as its flags' twins, read by the bindings when
+    /// a host passes no `llm_profile`, so an embedding host configured out of
+    /// band behaves like the CLI.
+    pub fn from_env() -> Result<Option<Self>> {
+        Self::from_lookup(&|k| std::env::var(k).ok())
+    }
+
+    /// [`from_env`](Self::from_env) over any lookup — the parser itself, so a
+    /// test need not touch the process environment.
+    pub fn from_lookup(get: &dyn Fn(&str) -> Option<String>) -> Result<Option<Self>> {
+        let get = |k: &str| get(k).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+        let mut p = RequestProfile::new();
+        let mut any = false;
+        if let Some(f) = get("AREEV_RUN_LLM_TOKEN_FIELD") {
+            any = true;
+            p = p.token_limit(match f.as_str() {
+                "max_tokens" => TokenLimitField::MaxTokens,
+                "max_completion_tokens" => TokenLimitField::MaxCompletionTokens,
+                other => {
+                    return Err(Error::LlmBackend(format!(
+                        "AREEV_RUN_LLM_TOKEN_FIELD {other:?}: expected max_tokens or \
+                         max_completion_tokens"
+                    )))
+                }
+            });
+        }
+        if get("AREEV_RUN_LLM_NO_TEMPERATURE").is_some_and(|v| is_truthy(&v)) {
+            any = true;
+            p = p.temperature(TemperatureMode::Omit);
+        }
+        if let Some(body) = get("AREEV_RUN_LLM_EXTRA_BODY") {
+            any = true;
+            p = p.extra_body_json(&body)?;
+        }
+        Ok(any.then_some(p))
     }
 
     /// Parse the bindings' `llm_profile` JSON (#394):
@@ -356,6 +403,27 @@ mod tests {
         ] {
             assert!(RequestProfile::from_json(bad).is_err(), "{bad} must be refused");
         }
+    }
+
+    #[test]
+    fn the_env_twins_build_a_profile_and_off_means_off() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string())
+        };
+        assert!(RequestProfile::from_lookup(&env(&[])).unwrap().is_none());
+        for off in ["off", "no", "0", "false", "OFF"] {
+            let pairs: &'static [(&str, &str)] = Box::leak(Box::new([("AREEV_RUN_LLM_NO_TEMPERATURE", off)]));
+            assert!(RequestProfile::from_lookup(&env(pairs)).unwrap().is_none(), "{off} is off");
+        }
+        let p = RequestProfile::from_lookup(&env(&[
+            ("AREEV_RUN_LLM_NO_TEMPERATURE", "1"),
+            ("AREEV_RUN_LLM_TOKEN_FIELD", "max_completion_tokens"),
+        ]))
+        .unwrap()
+        .unwrap();
+        assert!(!p.sends_temperature());
+        assert_eq!(p.token_limit_key(), "max_completion_tokens");
+        assert!(RequestProfile::from_lookup(&env(&[("AREEV_RUN_LLM_TOKEN_FIELD", "x")])).is_err());
     }
 
     #[test]

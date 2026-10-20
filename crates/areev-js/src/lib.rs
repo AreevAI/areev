@@ -101,9 +101,12 @@ fn resolve_toolcall_llm(
     // …, "extra_body": {…}}` — the CLI's `--llm-*` flags as one JSON string.
     // Parsed before the model, and refused by name: a misspelt key that
     // configured nothing is the run that 400s on its first turn.
+    let explicit = llm_profile.as_deref().map(str::trim).filter(|s| !s.is_empty()).is_some();
     let profile = match llm_profile.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(raw) => Some(areev_llm::profile::RequestProfile::from_json(raw).map_err(err)?),
-        None => None,
+        // No argument: the `$AREEV_RUN_LLM_*` twins the CLI reads, so a host
+        // configured out of band behaves like `areev run` (#394 review).
+        None => areev_llm::profile::RequestProfile::from_env().map_err(err)?,
     };
     match model {
         Some(spec) => Ok(Some(
@@ -115,7 +118,7 @@ fn resolve_toolcall_llm(
             )
             .map_err(err)?,
         )),
-        None if profile.is_some() => Err(err(AreevError::Validation(
+        None if explicit => Err(err(AreevError::Validation(
             "llmProfile shapes a model's requests — pass `model` with it".into(),
         ))),
         None => Ok(None),
@@ -4288,6 +4291,8 @@ impl Areev {
         max_effects_per_attempt: Option<u32>,
         llm_tool_result_chars: Option<u32>,
         llm_context_tokens: Option<i64>,
+        // Appended (#394 review): the request profile `runStart` takes.
+        llm_profile: Option<String>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
         let path = self.path.clone();
@@ -4297,7 +4302,7 @@ impl Areev {
         let installed = installed_chain(&self.decide);
         StringJob::spawn(move || {
             let facade = take_facade(&slot)?;
-            let llm = resolve_toolcall_llm(model, base_url, key_env, None)?;
+            let llm = resolve_toolcall_llm(model, base_url, key_env, llm_profile)?;
             let decider = run_decider(installed, &facade, &ns)?;
             let ev = js_evaluator(
                 facade,
@@ -4374,6 +4379,8 @@ impl Areev {
         max_effects_per_attempt: Option<u32>,
         llm_tool_result_chars: Option<u32>,
         llm_context_tokens: Option<i64>,
+        // Appended (#394 review): the request profile `runStart` takes.
+        llm_profile: Option<String>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
         let path = self.path.clone();
@@ -4385,7 +4392,7 @@ impl Areev {
             let facade = take_facade(&slot)?;
             let payload: serde_json::Value = serde_json::from_str(&payload_json)
                 .map_err(|e| err(format!("payloadJson is not JSON: {e}")))?;
-            let llm = resolve_toolcall_llm(model, base_url, key_env, None)?;
+            let llm = resolve_toolcall_llm(model, base_url, key_env, llm_profile)?;
             let decider = run_decider(installed, &facade, &ns)?;
             let ev = js_evaluator(
                 facade,

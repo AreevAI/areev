@@ -225,3 +225,16 @@ def test_run_start_and_resume_take_an_llm_profile_and_refuse_a_malformed_one(db)
     with pytest.raises(ValueError, match="token_field"):
         db.run_resume("py-p1", model="ollama:llama3.1", llm_profile='{"token_field": "tokens"}')
     assert json.loads(db.run_list(10)) == [], "no run was journaled"
+
+
+def test_trigger_run_takes_llm_profile_and_the_env_twins_stand_in(db, monkeypatch):
+    # #394 review: the trigger path takes the profile; with none, the bindings
+    # read the CLI's $AREEV_RUN_LLM_* twins, and `off` means off.
+    with pytest.raises(ValueError, match="temprature"):
+        db.trigger_run(model="ollama:llama3.1", llm_profile='{"temprature": "omit"}')
+    wf = _plan(db)
+    monkeypatch.setenv("AREEV_RUN_LLM_NO_TEMPERATURE", "1")
+    with pytest.raises(ValueError, match="no request profile"):
+        db.run_start(wf, "py-env", model="ollama:llama3.1")
+    monkeypatch.setenv("AREEV_RUN_LLM_NO_TEMPERATURE", "off")
+    db.trigger_run(model="ollama:llama3.1")  # no profile, nothing to refuse

@@ -331,9 +331,12 @@ fn resolve_toolcall_llm(
     // The request profile (#394) — `{"temperature": "omit" | n, "token_field":
     // …, "extra_body": {…}}` — the CLI's `--llm-*` flags as one JSON string,
     // refused by name when malformed (the Node binding's twin).
+    let explicit = llm_profile.as_deref().map(str::trim).filter(|s| !s.is_empty()).is_some();
     let profile = match llm_profile.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(raw) => Some(areev_llm::profile::RequestProfile::from_json(raw).map_err(err)?),
-        None => None,
+        // No argument: the `$AREEV_RUN_LLM_*` twins the CLI reads, so a host
+        // configured out of band behaves like `areev run` (#394 review).
+        None => areev_llm::profile::RequestProfile::from_env().map_err(err)?,
     };
     match model {
         Some(spec) => Ok(Some(
@@ -345,7 +348,7 @@ fn resolve_toolcall_llm(
             )
             .map_err(err)?,
         )),
-        None if profile.is_some() => {
+        None if explicit => {
             Err(err("llm_profile shapes a model's requests — pass `model` with it"))
         }
         None => Ok(None),
@@ -3609,7 +3612,8 @@ impl Areev {
                         tool_env = None, credentials = None, allow_hosts = None,
                         tool_egress = None, credential_ttl_secs = None, resolver_env = None,
                         max_effects_per_attempt = None,
-                        llm_tool_result_chars = None, llm_context_tokens = None))]
+                        llm_tool_result_chars = None, llm_context_tokens = None,
+                        llm_profile = None))]
     #[allow(clippy::too_many_arguments)]
     fn trigger_run(
         &self,
@@ -3643,9 +3647,11 @@ impl Areev {
         max_effects_per_attempt: Option<u32>,
         llm_tool_result_chars: Option<usize>,
         llm_context_tokens: Option<u64>,
+        // Appended (#394 review): the request profile `run_start` takes.
+        llm_profile: Option<String>,
     ) -> PyResult<String> {
         let ev = self.evaluator(
-            connector_cmd, tool_cmd, credentials_json, model, base_url, key_env,
+            connector_cmd, tool_cmd, credentials_json, model, base_url, key_env, llm_profile,
             ExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs, tool_env },
             EgressPin { credentials, allow_hosts, tool_egress, credential_ttl_secs, resolver_env },
             run_options(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec,
@@ -3683,7 +3689,8 @@ impl Areev {
                         tool_env = None, credentials = None, allow_hosts = None,
                         tool_egress = None, credential_ttl_secs = None, resolver_env = None,
                         max_effects_per_attempt = None,
-                        llm_tool_result_chars = None, llm_context_tokens = None))]
+                        llm_tool_result_chars = None, llm_context_tokens = None,
+                        llm_profile = None))]
     #[allow(clippy::too_many_arguments)]
     fn trigger_deliver(
         &self,
@@ -3714,11 +3721,13 @@ impl Areev {
         max_effects_per_attempt: Option<u32>,
         llm_tool_result_chars: Option<usize>,
         llm_context_tokens: Option<u64>,
+        // Appended (#394 review): the request profile `run_start` takes.
+        llm_profile: Option<String>,
     ) -> PyResult<String> {
         let payload: serde_json::Value = serde_json::from_str(&payload_json)
             .map_err(|e| err(format!("payload_json is not JSON: {e}")))?;
         let ev = self.evaluator(
-            connector_cmd, tool_cmd, credentials_json, model, base_url, key_env,
+            connector_cmd, tool_cmd, credentials_json, model, base_url, key_env, llm_profile,
             ExecutorPin { allow_executor, executor_cache, sandbox_cmd, executor_timeout_secs, tool_env },
             EgressPin { credentials, allow_hosts, tool_egress, credential_ttl_secs, resolver_env },
             run_options(max_tokens, max_usd_micros, max_wall_ms, ask_ttl_sec,
@@ -3851,6 +3860,7 @@ impl Areev {
         model: Option<String>,
         base_url: Option<String>,
         key_env: Option<String>,
+        llm_profile: Option<String>,
         pin: ExecutorPin,
         egress: EgressPin,
         opts: areev_run::RunOptions,
@@ -3874,7 +3884,7 @@ impl Areev {
                 std::sync::Arc::new(ce) as std::sync::Arc<dyn areev_run::HostToolExecutor>
             });
 
-        let llm = resolve_toolcall_llm(model, base_url, key_env, None)?;
+        let llm = resolve_toolcall_llm(model, base_url, key_env, llm_profile)?;
         // A firing gets the runner `run_start` builds, pin included (#90).
         // Gating on `tool_cmd` alone was the same reduction one level down: a
         // plan whose nodes are all pinned code, or all abstract, needs no

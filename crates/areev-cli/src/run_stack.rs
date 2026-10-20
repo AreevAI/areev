@@ -342,7 +342,7 @@ pub fn request_profile(
         });
     }
     if flag_or_env(flags, "llm-no-temperature", "AREEV_RUN_LLM_NO_TEMPERATURE")
-        .is_some_and(|v| v != "false" && v != "0")
+        .is_some_and(|v| areev_llm::profile::is_truthy(&v))
     {
         any = true;
         p = p.temperature(TemperatureMode::Omit);
@@ -826,6 +826,12 @@ mod tests {
         assert_eq!(p.token_limit_key(), "max_completion_tokens");
         assert!(!p.sends_temperature());
         assert!(request_profile(&flags(&[("llm-token-field", "tokens")])).is_err());
+        for off in ["off", "no", "0", "false"] {
+            assert!(
+                request_profile(&flags(&[("llm-no-temperature", off)])).unwrap().is_none(),
+                "{off} is off"
+            );
+        }
         assert!(request_profile(&flags(&[("llm-extra-body", r#"{"model":"x"}"#)])).is_err());
     }
 }

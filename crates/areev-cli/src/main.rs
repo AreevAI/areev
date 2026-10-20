@@ -1385,12 +1385,31 @@ fn addr_is_loopback(addr: &str) -> bool {
     }
 }
 
+/// Switches that never take a value: a bare `--llm-no-temperature` followed by
+/// a positional must not swallow it as its value. `--switch=false` still
+/// spells it off.
+const BARE_SWITCHES: &[&str] = &["llm-no-temperature"];
+
 fn parse_args(rest: &[String]) -> (HashMap<String, String>, Vec<String>) {
     let mut flags = HashMap::new();
     let mut positional = Vec::new();
     let mut i = 0;
     while i < rest.len() {
         let a = &rest[i];
+        if let Some(name) = a.strip_prefix("--").filter(|n| BARE_SWITCHES.contains(n)) {
+            flags.insert(name.to_string(), "true".to_string());
+            i += 1;
+            continue;
+        }
+        if let Some((name, value)) = a
+            .strip_prefix("--")
+            .and_then(|n| n.split_once('='))
+            .filter(|(n, _)| BARE_SWITCHES.contains(n))
+        {
+            flags.insert(name.to_string(), value.to_string());
+            i += 1;
+            continue;
+        }
         if let Some(name) = a.strip_prefix("--") {
             // A value is the next token only if it is not itself a flag. Reject
             // any leading '-' (not just "--"), so a valueless long flag doesn't
@@ -5362,10 +5381,14 @@ fn run_eval(
                 (None, None) => return Err(usage.to_string()),
                 (Some(_), None) => None,
                 (None, Some(spec)) => Some(
-                    areev_llm::resolve_toolcall(
+                    // The same request profile `areev run` builds (#394):
+                    // grading a model that refuses a temperature must not
+                    // 400 where running it does not.
+                    areev_llm::resolve_toolcall_with_profile(
                         spec,
                         flag(flags, "base-url").as_deref(),
                         flag(flags, "key-env").as_deref(),
+                        run_stack::request_profile(flags)?,
                     )
                     .map_err(|e| e.to_string())?,
                 ),
@@ -7721,6 +7744,18 @@ mod tests {
 
     fn args(a: &[&str]) -> (HashMap<String, String>, Vec<String>) {
         parse_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+    }
+
+    // ── a bare switch takes no value (#394 review) ─────────────────────
+
+    #[test]
+    fn a_bare_switch_never_swallows_the_next_positional() {
+        let (f, p) = args(&["--llm-no-temperature", "start", "--model", "m"]);
+        assert_eq!(f.get("llm-no-temperature").map(String::as_str), Some("true"));
+        assert_eq!(p, vec!["start".to_string()]);
+        assert_eq!(f.get("model").map(String::as_str), Some("m"));
+        let (f, _) = args(&["--llm-no-temperature=off"]);
+        assert_eq!(f.get("llm-no-temperature").map(String::as_str), Some("off"));
     }
 
     // ── --mount parsing (issue #184) ────────────────────────────────────

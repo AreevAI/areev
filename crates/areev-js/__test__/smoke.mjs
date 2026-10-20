@@ -1647,6 +1647,30 @@ test('runStart and runResume take llmProfile last and refuse a malformed one', a
   m.close()
 })
 
+// #394 review: the trigger paths take the profile too, and with no
+// argument the bindings read the CLI's $AREEV_RUN_LLM_* twins.
+test('triggerRun takes llmProfile last, and the env twins stand in for a missing one', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'areev-profile-env-'))
+  const m = new Areev(join(dir, 'm.db'), 'caller')
+  const trig = new Array(30).fill(null)
+  trig[8] = 'ollama:llama3.1'
+  trig[29] = '{"temprature":"omit"}'
+  await assert.rejects(() => m.triggerRun(...trig), /temprature/)
+  const startArgs = [
+    'e'.repeat(HEX64), 'r1', null, null, null, null, null, null, 'ollama:llama3.1',
+  ]
+  process.env.AREEV_RUN_LLM_NO_TEMPERATURE = '1'
+  try {
+    await assert.rejects(() => m.runStart(...startArgs), /no request profile/)
+    process.env.AREEV_RUN_LLM_NO_TEMPERATURE = 'off'
+    // `off` is off: no profile, so the start proceeds to the (absent) plan.
+    await assert.rejects(() => m.runStart(...startArgs), (e) => !/no request profile/.test(String(e)))
+  } finally {
+    delete process.env.AREEV_RUN_LLM_NO_TEMPERATURE
+  }
+  m.close()
+})
+
 // ── #67: the generic authoring path must validate too. `triggerAdd` alone was
 // not enough — `add("trigger", …)` is what a host actually reaches for, and it
 // stored declarations that could never fire.
