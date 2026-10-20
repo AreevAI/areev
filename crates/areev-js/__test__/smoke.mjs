@@ -1668,6 +1668,13 @@ test('triggerRun takes llmProfile last, and the env twins stand in for a missing
   } finally {
     delete process.env.AREEV_RUN_LLM_NO_TEMPERATURE
   }
+  // A stale, malformed twin cannot fail a run that calls no model.
+  process.env.AREEV_RUN_LLM_TOKEN_FIELD = 'tokens'
+  try {
+    await assert.rejects(() => m.runStart('e'.repeat(HEX64), 'r2'), (e) => !/AREEV_RUN_LLM/.test(String(e)))
+  } finally {
+    delete process.env.AREEV_RUN_LLM_TOKEN_FIELD
+  }
   m.close()
 })
 

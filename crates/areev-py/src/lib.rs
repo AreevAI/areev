@@ -335,8 +335,11 @@ fn resolve_toolcall_llm(
     let profile = match llm_profile.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(raw) => Some(areev_llm::profile::RequestProfile::from_json(raw).map_err(err)?),
         // No argument: the `$AREEV_RUN_LLM_*` twins the CLI reads, so a host
-        // configured out of band behaves like `areev run` (#394 review).
-        None => areev_llm::profile::RequestProfile::from_env().map_err(err)?,
+        // configured out of band behaves like `areev run` (#394 review) —
+        // read only when there is a model to shape, so a stale, malformed
+        // variable cannot fail a run that calls no model at all.
+        None if model.is_some() => areev_llm::profile::RequestProfile::from_env().map_err(err)?,
+        None => None,
     };
     match model {
         Some(spec) => Ok(Some(

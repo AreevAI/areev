@@ -238,3 +238,13 @@ def test_trigger_run_takes_llm_profile_and_the_env_twins_stand_in(db, monkeypatc
         db.run_start(wf, "py-env", model="ollama:llama3.1")
     monkeypatch.setenv("AREEV_RUN_LLM_NO_TEMPERATURE", "off")
     db.trigger_run(model="ollama:llama3.1")  # no profile, nothing to refuse
+
+
+def test_a_malformed_env_twin_cannot_fail_a_run_with_no_model(db, monkeypatch):
+    # Delta review 4: the twins are read only when a model is configured.
+    monkeypatch.setenv("AREEV_RUN_LLM_TOKEN_FIELD", "tokens")
+    wf = _plan(db)
+    session = json.loads(db.run_start(wf, "py-nomodel", tool_cmd='printf \'{"greeting": "hi"}\''))
+    assert "parked" in session or "finished" in session
+    with pytest.raises(ValueError, match="AREEV_RUN_LLM_TOKEN_FIELD"):
+        db.run_start(wf, "py-model", model="ollama:llama3.1")
