@@ -1054,3 +1054,38 @@ fn an_unpinned_dispatch_blob_is_refused_before_the_run_exists() {
     assert_eq!(err.code(), "RUN-E018", "{err}");
     assert!(!rig.manifest_exists("d4"));
 }
+
+#[test]
+fn a_dynamic_schema_carrying_annotation_keywords_is_pinned_and_dispatched() {
+    // #397: what an MCP server's tools/list publishes, annotations and all.
+    let rig = Rig::new();
+    unbound_mcp(&rig, "ops");
+    let plan = agent_only_plan(&rig, "ops", json!({"agent": {"dispatch": ["mcp_call"], "tools": [], "tools_from": "/tools"}}));
+    let mut entry = bank_paid_to();
+    entry["input_schema"] = json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "urn:bank:paid_to", "$comment": "generated",
+        "title": "paid_to", "description": "arguments",
+        "type": "object",
+        "properties": {"invoice": {"type": "string", "title": "Invoice", "description": "number",
+                                   "examples": ["4471"], "default": "0", "deprecated": false,
+                                   "readOnly": false, "writeOnly": false}},
+        "required": ["invoice"],
+    });
+    let exec = Arc::new(TestExec { allow_code: true, ..Default::default() });
+    let llm = CapturingLlm::new(vec![
+        calls(vec![("c1", "bank_paid_to", json!({"invoice": "4471"}))]),
+        answer("{}"),
+    ]);
+    let runner = rig.runner(Arc::clone(&exec), Arc::clone(&llm));
+    finished(runner.start(&plan, "a1", json!({"tools": [entry]}), &opts()).unwrap());
+    let offered = llm.sent()[0].tools[0].1.clone().unwrap();
+    for k in ["$schema", "$id", "$comment"] {
+        assert!(offered.get(k).is_none(), "{k} is ignored, not offered: {offered}");
+    }
+    assert!(offered["properties"]["invoice"].get("readOnly").is_none());
+    assert_eq!(offered["properties"]["invoice"]["title"], "Invoice", "portable annotations stay");
+    let (_, input, _) = exec.seen().into_iter().find(|(n, _, _)| n == "mcp_call").unwrap();
+    assert_eq!(input["arguments"], json!({"invoice": "4471"}));
+    assert!(runner.verify("a1").unwrap().verified);
+}

@@ -28,7 +28,7 @@
 
 use crate::manifest::PinnedTool;
 use areev_core::format::tool_schema::normalize_tool_name;
-use areev_core::types::json_schema_subset::{is_valid_tool_name, SchemaValidator};
+use areev_core::types::json_schema_subset::{is_valid_tool_name, strip_annotations, SchemaValidator};
 use areev_run_core::{DynamicDispatch, DynamicTool, LlmNodeConfig, PlanGraph, RunError};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -234,8 +234,9 @@ fn parse_block(
             Some(serde_json::json!({"json": true}))
         }
         Some(Value::Object(r)) if r.len() == 1 && r.contains_key("json_schema") => {
-            let schema = &r["json_schema"];
-            SchemaValidator::tool_schema().validate(schema).map_err(|e| {
+            let mut schema = r["json_schema"].clone();
+            strip_annotations(&mut schema);
+            SchemaValidator::tool_schema().validate(&schema).map_err(|e| {
                 bad(format!("`response.json_schema` is not a usable schema: {e}"))
             })?;
             Some(serde_json::json!({"json_schema": schema}))
@@ -391,10 +392,15 @@ fn parse_dynamic(
         let input_schema = match e.get("input_schema") {
             None | Some(Value::Null) => serde_json::json!({"type": "object", "properties": {}}),
             Some(s) => {
+                // Annotations an MCP server publishes (`$schema`, `$id`, …)
+                // are accepted and dropped, never a refusal (#397); the
+                // pinned, offered and validating schema is the clean form.
+                let mut s = s.clone();
+                strip_annotations(&mut s);
                 SchemaValidator::tool_schema()
-                    .validate(s)
+                    .validate(&s)
                     .map_err(|err| ebad(format!("`input_schema` is not a usable schema: {err}")))?;
-                s.clone()
+                s
             }
         };
         let Some(Value::Object(d)) = e.get("dispatch") else {

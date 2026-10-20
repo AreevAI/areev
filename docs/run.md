@@ -1794,6 +1794,15 @@ names a list of entries:
   differ only by `.`/`_`), a name that collides with a tool the plan pins, an
   `input_schema` outside the tool-schema subset, and a `locked` that is not an
   object.
+- **Annotation keywords are accepted and ignored** (#397), at every level of
+  an entry's `input_schema`, of `response.json_schema`, and of a Definition's
+  `input_schema`/`output_schema` when it is written. The keywords are
+  `$schema`, `$id`, `$comment`, `deprecated`, `readOnly`, `writeOnly` and
+  vendor `x-*` keys. They are removed before the subset check, so the pinned,
+  offered and validating schema is the clean form. `title`, `description`,
+  `examples` and `default` are annotations too: they are already in the
+  subset and are kept. The structural rule is unchanged: `$ref`, `oneOf`,
+  `anyOf`, `allOf` and `patternProperties` are still refused.
 
 A model-issued call from an abstract node reaches the Definition it was
 offered as **by its frozen content address**. Before 1.13 the driver looked a

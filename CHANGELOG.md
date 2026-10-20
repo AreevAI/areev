@@ -62,6 +62,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   model's arguments (the lock wins), stripped from the offered schema
   (`properties` and `required`), checked by a strict Definition on the merged
   input, journaled merged, and frozen with the pin.
+- **Schema annotations no longer refuse a tool** (#397). A `tools_from`
+  entry's `input_schema` (or a `response.json_schema`, or a Definition's
+  `input_schema`/`output_schema` at write time) that carried `$schema`,
+  `$id`, `$comment`, `deprecated`, `readOnly`, `writeOnly` or `x-*` was
+  refused (`RUN-E019`, "unsupported keyword $schema"). MCP servers publish
+  these routinely. They are now accepted and dropped at every level
+  (`json_schema_subset::strip_annotations`). `title`, `description`,
+  `examples` and `default` were already accepted and are kept, and the
+  structural subset rule is unchanged.
 - **A streamed turn records `served_model`** (#394). The OpenAI-compatible,
   Anthropic and Ollama stream accumulators now read the served model as the
   whole-response parsers do. A run observed through `onEvent`, which streams,
