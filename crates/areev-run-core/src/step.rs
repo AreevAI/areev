@@ -656,7 +656,7 @@ fn handle_llm_outcome(
     path: &str,
     outcome: &EffectOutcome,
 ) {
-    let NodeExecutor::Abstract { tools } = &env.executors[i] else { return };
+    let NodeExecutor::Abstract { tools, .. } = &env.executors[i] else { return };
     let flow_id = flow_key(i, path);
     // A summarizer turn resolves differently from a model turn: its result is
     // not the node's answer, and any tool calls in it are ignored (it was
@@ -1661,7 +1661,7 @@ fn dispatch_flow_tool(
     // Resolve the offered tool BEFORE booking anything: a resolution set
     // that changed across a fork must fail the node loudly, not panic —
     // and never leave a booked pending tool with no outstanding key.
-    let NodeExecutor::Abstract { tools } = &env.executors[i] else { return };
+    let NodeExecutor::Abstract { tools, .. } = &env.executors[i] else { return };
     let Some(tool) = tools.iter().find(|t| t.tool_name == call.tool_name).cloned() else {
         fail_abstract(
             env,
@@ -1855,19 +1855,32 @@ fn emit_offer_decide(
     out: &mut Vec<Command>,
 ) -> bool {
     let Some(d) = env.decide.as_ref().filter(|d| d.calibrated) else { return false };
-    let NodeExecutor::Abstract { tools } = &env.executors[i] else { return false };
+    let NodeExecutor::Abstract { tools, narrow } = &env.executors[i] else { return false };
+    let narrow = narrow.as_ref().cloned().unwrap_or_default();
+    if !narrow.is_enabled() {
+        return false;
+    }
+    let top_k = narrow.top_k();
     // A choice carries 2..=255 options; past that the question cannot be
     // asked, and the full offer is the honest answer.
-    if tools.len() <= OFFER_TOP_K || tools.len() > 255 {
+    if tools.len() <= top_k || tools.len() > 255 {
         return false;
     }
     let Some(flow) = st.abstract_flows.get(&flow_key(i, path)) else { return false };
     let first = flow.messages.first().and_then(|m| m.get("content")).cloned().unwrap_or(Value::Null);
     let describe = |t: &OfferedTool| {
-        d.tool_descriptions
-            .get(&t.tool_name)
-            .filter(|s| !s.trim().is_empty())
-            .cloned()
+        t.description
+            .as_deref()
+            .map(|s| s.lines().next().unwrap_or_default().trim())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                d.tool_descriptions
+                    .get(&t.tool_name)
+                    .map(|s| s.lines().next().unwrap_or_default().trim())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+            })
             .unwrap_or_else(|| t.tool_name.clone())
     };
     let criteria: serde_json::Map<String, Value> =
@@ -2028,7 +2041,11 @@ fn handle_flow_decide(
 /// or above [`OFFER_KEEP_P`], returned in MANIFEST order. `None` when the
 /// table does not cover every pinned tool with a finite probability — a
 /// malformed answer narrows nothing.
-fn narrow_offer(tools: &[OfferedTool], probs: &serde_json::Map<String, Value>) -> Option<Vec<String>> {
+fn narrow_offer(
+    tools: &[OfferedTool],
+    probs: &serde_json::Map<String, Value>,
+    top_k: usize,
+) -> Option<Vec<String>> {
     let mut ranked: Vec<(usize, f64)> = Vec::with_capacity(tools.len());
     for (idx, t) in tools.iter().enumerate() {
         let p = probs.get(&t.tool_name).and_then(Value::as_f64).filter(|p| p.is_finite())?;
@@ -2038,7 +2055,7 @@ fn narrow_offer(tools: &[OfferedTool], probs: &serde_json::Map<String, Value>) -
     let keep: std::collections::BTreeSet<usize> = ranked
         .iter()
         .enumerate()
-        .filter(|(rank, (_, p))| *rank < OFFER_TOP_K || *p >= OFFER_KEEP_P)
+        .filter(|(rank, (_, p))| *rank < top_k || *p >= OFFER_KEEP_P)
         .map(|(_, (idx, _))| *idx)
         .collect();
     Some(keep.into_iter().map(|idx| tools[idx].tool_name.clone()).collect())
@@ -2052,7 +2069,8 @@ fn resolve_offer_decide(
     effect_seq: u32,
     outcome: &EffectOutcome,
 ) {
-    let NodeExecutor::Abstract { tools } = &env.executors[i] else { return };
+    let NodeExecutor::Abstract { tools, narrow } = &env.executors[i] else { return };
+    let top_k = narrow.as_ref().map(|n| n.top_k()).unwrap_or(OFFER_TOP_K);
     // Rule 2: only a CALIBRATED answer may omit a tool. Anything else — an
     // uncalibrated answer, a failure, a malformed table — keeps the full
     // offer, which is what the flow would have had with no backend.
@@ -2063,7 +2081,7 @@ fn resolve_offer_decide(
             result
                 .pointer("/answers/tool/probabilities")
                 .and_then(Value::as_object)
-                .and_then(|probs| narrow_offer(tools, probs))
+                .and_then(|probs| narrow_offer(tools, probs, top_k))
                 .filter(|keep| !keep.is_empty() && keep.len() < tools.len())
                 .map(|keep| {
                     let mut record = decide_provenance(result);

@@ -87,6 +87,9 @@ pub struct PinnedTool {
     /// pin, so existing manifests serialize byte-identically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decide: Option<serde_json::Value>,
+    /// Tool-offer narrowing configuration for an abstract node (#396).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub narrow: Option<areev_run_core::NarrowOffer>,
 }
 
 /// The `executor` a decision node (C3) pins as.
@@ -422,6 +425,7 @@ impl RunManifest {
                     read: Some(spec),
                     ask_kind: None,
                     decide: None,
+                    narrow: None,
                 });
                 continue;
             }
@@ -447,6 +451,7 @@ impl RunManifest {
                             read: None,
                             ask_kind: None,
                             decide: None,
+                            narrow: None,
                         }
                     } else {
                         pin_from_definition(node, &h, &g)?
@@ -481,18 +486,28 @@ impl RunManifest {
                                 ),
                             });
                         }
-                        None if llm_available => PinnedTool {
-                            node: node.clone(),
-                            tool_hash: String::new(),
-                            tool_name: node.clone(),
-                            executor: "abstract".into(),
-                            executor_uri: None,
-                            runtime: None,
-                            runtime_limits: None,
-                            capabilities: None,
-                            read: None,
-                            ask_kind: None,
-                            decide: None,
+                        None if llm_available => {
+                            let narrow = parse_narrow(
+                                node,
+                                fields
+                                    .and_then(|f| f.get("llm"))
+                                    .and_then(|l| l.get(node))
+                                    .and_then(|n| n.get("narrow")),
+                            )?;
+                            PinnedTool {
+                                node: node.clone(),
+                                tool_hash: String::new(),
+                                tool_name: node.clone(),
+                                executor: "abstract".into(),
+                                executor_uri: None,
+                                runtime: None,
+                                runtime_limits: None,
+                                capabilities: None,
+                                read: None,
+                                ask_kind: None,
+                                decide: None,
+                                narrow,
+                            }
                         },
                         None => return Err(RunError::NoToolLlm { node: node.clone() }),
                     }
@@ -673,6 +688,7 @@ impl RunManifest {
             .map(|p| areev_run_core::OfferedTool {
                 tool_name: p.tool_name.clone(),
                 tool_hash: p.tool_hash.clone(),
+                description: None,
             })
             .collect();
         self.pinned
@@ -695,7 +711,10 @@ impl RunManifest {
                         spec,
                     }
                 }
-                "abstract" => NodeExecutor::Abstract { tools: offered.clone() },
+                "abstract" => NodeExecutor::Abstract {
+                    tools: offered.clone(),
+                    narrow: p.narrow.clone(),
+                },
                 // Never Host, for the memory-read reason: a decision that
                 // fell through to `--tool-cmd` would let a tool answer it.
                 DECIDE_EXECUTOR => NodeExecutor::Decide {
@@ -1065,6 +1084,7 @@ pub fn pin_from_definition(
         read: None,
         ask_kind,
         decide,
+        narrow: None,
     })
 }
 
@@ -1112,6 +1132,43 @@ fn parse_decide(
         out["questions"] = areev_core::decide::questions_to_wire(&parsed);
     }
     Ok(out)
+}
+
+fn parse_narrow(
+    node: &str,
+    decl: Option<&serde_json::Value>,
+) -> std::result::Result<Option<areev_run_core::NarrowOffer>, RunError> {
+    let bad = |why: String| RunError::InvalidPlan {
+        why: format!("node '{node}' declares `llm.{node}.narrow`: {why}"),
+    };
+    match decl {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Bool(b)) => Ok(Some(areev_run_core::NarrowOffer::Enabled(*b))),
+        Some(serde_json::Value::Object(o)) => {
+            for k in o.keys() {
+                if k != "top_k" {
+                    return Err(bad(format!("unknown key {k:?} (accepted: top_k)")));
+                }
+            }
+            match o.get("top_k") {
+                Some(serde_json::Value::Number(n)) => {
+                    if let Some(k) = n.as_u64() {
+                        if k > 0 && k <= 255 {
+                            Ok(Some(areev_run_core::NarrowOffer::Limit {
+                                top_k: k as usize,
+                            }))
+                        } else {
+                            Err(bad(format!("top_k must be between 1 and 255, got {k}")))
+                        }
+                    } else {
+                        Err(bad("`top_k` must be a positive integer".into()))
+                    }
+                }
+                _ => Err(bad("`top_k` must be a positive integer".into())),
+            }
+        }
+        Some(other) => Err(bad(format!("must be a boolean or an object with `top_k`, got {other}"))),
+    }
 }
 
 /// A Client ask a SECOND person must answer — the default, and what every
@@ -1261,6 +1318,7 @@ mod tests {
             read: None,
             ask_kind: None,
             decide: None,
+            narrow: None,
         }
     }
 
@@ -1284,6 +1342,7 @@ mod tests {
                 read: None,
                 ask_kind: None,
                 decide: None,
+                narrow: None,
             },
             host_pin("reply_done", "reply_email"),
             host_pin("reply_rejected", "reply_email"),
@@ -1291,7 +1350,7 @@ mod tests {
         let executors = m.executors();
         assert_eq!(executors.len(), 4);
         match &executors[1] {
-            NodeExecutor::Abstract { tools } => {
+            NodeExecutor::Abstract { tools, .. } => {
                 let names: Vec<&str> = tools.iter().map(|t| t.tool_name.as_str()).collect();
                 assert_eq!(names, vec!["parse_attachments", "reply_email"]);
                 assert_eq!(tools[1].tool_hash, "hash-reply_email");
@@ -1329,6 +1388,7 @@ mod tests {
             read,
             ask_kind: None,
             decide: None,
+            narrow: None,
         };
         let mut m = bare();
         m.pinned = vec![
@@ -1338,7 +1398,7 @@ mod tests {
         ];
         let executors = m.executors();
         assert_eq!(executors[1], NodeExecutor::MemoryRead { op: "entity_at".into(), spec });
-        let NodeExecutor::Abstract { tools } = &executors[2] else { panic!("{executors:?}") };
+        let NodeExecutor::Abstract { tools, .. } = &executors[2] else { panic!("{executors:?}") };
         let offered: Vec<&str> = tools.iter().map(|t| t.tool_name.as_str()).collect();
         assert_eq!(offered, vec!["parse_attachments"], "a read is never offered to a model");
 

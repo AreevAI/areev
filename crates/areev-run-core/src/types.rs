@@ -212,6 +212,38 @@ pub enum EventIn {
 pub struct OfferedTool {
     pub tool_name: String,
     pub tool_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// Configuration for tool-offer narrowing (C1) on an abstract node (#396).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum NarrowOffer {
+    Enabled(bool),
+    Limit { top_k: usize },
+}
+
+impl Default for NarrowOffer {
+    fn default() -> Self {
+        Self::Enabled(true)
+    }
+}
+
+impl NarrowOffer {
+    pub fn is_enabled(&self) -> bool {
+        match self {
+            Self::Enabled(b) => *b,
+            Self::Limit { .. } => true,
+        }
+    }
+
+    pub fn top_k(&self) -> usize {
+        match self {
+            Self::Enabled(_) => crate::step::OFFER_TOP_K,
+            Self::Limit { top_k } => *top_k,
+        }
+    }
 }
 
 /// What executes a node (resolved by the driver's V7 freeze).
@@ -238,7 +270,11 @@ pub enum NodeExecutor {
     /// interprets, choosing among the workflow's pinned Host tools. The
     /// node runs as an LLM LOOP — turn, tool calls, results, next turn —
     /// each effect journaled under its own `effect_seq`.
-    Abstract { tools: Vec<OfferedTool> },
+    Abstract {
+        tools: Vec<OfferedTool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        narrow: Option<NarrowOffer>,
+    },
     /// A subgraph node (Wave 2): the binding resolves to another Workflow
     /// grain; the child runs as its own run (own run_id, own journal),
     /// linked by `parent_task_id`, and its final context becomes this

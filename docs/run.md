@@ -1939,6 +1939,17 @@ shown is unknown to it: calling one is the unknown-tool re-prompt. An
 uncalibrated answer, a failure or a table that does not cover every tool
 leaves the full offer.
 
+A node may opt out of narrowing with `llm.<node>.narrow: false`, keeping the full
+offer for that node (frozen in the manifest; default `true` preserves narrowing).
+A node may also customize the ranking cutoff with `llm.<node>.narrow: {top_k: n}`
+(where `n` is between 1 and 255), narrowing to the top `n` by probability plus
+any tool at `p ≥ 0.05`.
+
+When dynamic tools are offered (e.g. via `tools_from`), the narrowing request
+carries each dynamic tool's `description` (normalized to its first trimmed line)
+in the question `criteria` and the `state.tools` list, exactly as a pinned
+Definition's `tool_description` is carried.
+
 The narrowed set rides every turn's journaled input as `offer` —
 `{tools, seq, provider, model, calibrated, latency_ms}`. The driver offers
 exactly those Definitions, keyed off the journal the way the summarizer's

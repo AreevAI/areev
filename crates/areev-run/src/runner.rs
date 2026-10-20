@@ -2374,7 +2374,8 @@ impl Runner {
                         // (transcript translation + pinned Definitions from
                         // the store), then hand the pure job to the pool.
                         let llm_prepared = if key.kind == areev_run_core::EffectKind::Llm {
-                            let areev_run_core::NodeExecutor::Abstract { tools } = &executor
+                            let areev_run_core::NodeExecutor::Abstract { tools, .. } =
+                                &executor
                             else {
                                 return Err(RunError::Storage {
                                     detail: "llm effect on a non-abstract node".into(),

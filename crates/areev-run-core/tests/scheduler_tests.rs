@@ -1025,8 +1025,13 @@ fn abstract_exec(names: &[&str]) -> Vec<NodeExecutor> {
     vec![NodeExecutor::Abstract {
         tools: names
             .iter()
-            .map(|n| OfferedTool { tool_name: (*n).into(), tool_hash: "deadbeef".into() })
+            .map(|n| OfferedTool {
+                tool_name: (*n).into(),
+                tool_hash: "deadbeef".into(),
+                description: None,
+            })
             .collect(),
+        narrow: None,
     }]
 }
 
@@ -1706,6 +1711,136 @@ fn an_uncalibrated_or_failed_narrowing_offers_everything() {
         let turn = llm_input(&r.commands, 1);
         assert!(turn.get("offer").is_none(), "the full pinned set: {turn}");
     }
+}
+
+#[test]
+fn narrow_false_keeps_full_offer_and_skips_decide_ask() {
+    let names = twelve_tools();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let plan = PlanGraph::build(&wf(&["agent"])).unwrap();
+    let execs = vec![NodeExecutor::Abstract {
+        tools: refs
+            .iter()
+            .map(|n| OfferedTool {
+                tool_name: (*n).into(),
+                tool_hash: "deadbeef".into(),
+                description: None,
+            })
+            .collect(),
+        narrow: Some(areev_run_core::NarrowOffer::Enabled(false)),
+    }];
+    let descs: BTreeMap<String, String> =
+        names.iter().map(|n| (n.clone(), format!("does {n}"))).collect();
+    let behavior = scripted(vec![llm_text(r#"{"done": true}"#, 100)], &no_decision);
+    let r = run_with(decide_env(&plan, &execs, &descs, Some(true)), &behavior);
+    assert_eq!(r.state.outcome(), Some(&RunOutcome::Completed));
+    assert!(decide_dispatches(&r.commands).is_empty(), "no decide ask emitted");
+    let turn = llm_input(&r.commands, 0);
+    assert!(turn.get("offer").is_none(), "full offer kept without narrowing: {turn}");
+}
+
+#[test]
+fn narrow_limit_sets_top_k_per_node() {
+    let names = twelve_tools();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let plan = PlanGraph::build(&wf(&["agent"])).unwrap();
+    let execs = vec![NodeExecutor::Abstract {
+        tools: refs
+            .iter()
+            .map(|n| OfferedTool {
+                tool_name: (*n).into(),
+                tool_hash: "deadbeef".into(),
+                description: None,
+            })
+            .collect(),
+        narrow: Some(areev_run_core::NarrowOffer::Limit { top_k: 4 }),
+    }];
+    let descs = BTreeMap::new();
+    let probs = json!({
+        "t00": 0.40, "t01": 0.25, "t02": 0.15, "t03": 0.10,
+        "t04": 0.04, "t05": 0.02, "t06": 0.01, "t07": 0.01,
+        "t08": 0.01, "t09": 0.005, "t10": 0.003, "t11": 0.002,
+    });
+    let decide = |ask: &Value| {
+        assert_eq!(ask["purpose"], "offer");
+        ok(json!({
+            "model": "jev-test", "provider": "fake", "calibrated": true, "latency_ms": 3,
+            "answers": {"tool": {"type": "choice", "choice": "t00",
+                                 "probabilities": probs, "confidence": 0.2}},
+        }))
+    };
+    let behavior = scripted(vec![llm_text(r#"{"done": true}"#, 100)], &decide);
+    let r = run_with(decide_env(&plan, &execs, &descs, Some(true)), &behavior);
+    assert_eq!(r.state.outcome(), Some(&RunOutcome::Completed));
+    assert_eq!(decide_dispatches(&r.commands).len(), 1);
+    let turn = llm_input(&r.commands, 1);
+    let offered: Vec<&str> =
+        turn["offer"]["tools"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+    assert_eq!(offered, vec!["t00", "t01", "t02", "t03"]);
+
+    let four_tools: Vec<String> = (0..4).map(|i| format!("t{i:02}")).collect();
+    let four_refs: Vec<&str> = four_tools.iter().map(String::as_str).collect();
+    let execs_four = vec![NodeExecutor::Abstract {
+        tools: four_refs
+            .iter()
+            .map(|n| OfferedTool {
+                tool_name: (*n).into(),
+                tool_hash: "deadbeef".into(),
+                description: None,
+            })
+            .collect(),
+        narrow: Some(areev_run_core::NarrowOffer::Limit { top_k: 4 }),
+    }];
+    let behavior_no_ask = scripted(vec![llm_text(r#"{"done": true}"#, 100)], &no_decision);
+    let r_four = run_with(decide_env(&plan, &execs_four, &descs, Some(true)), &behavior_no_ask);
+    assert!(decide_dispatches(&r_four.commands).is_empty(), "<= top_k is never narrowed");
+}
+
+#[test]
+fn narrowing_request_carries_dynamic_tool_descriptions() {
+    let names = twelve_tools();
+    let plan = PlanGraph::build(&wf(&["agent"])).unwrap();
+    let tools: Vec<OfferedTool> = names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| OfferedTool {
+            tool_name: n.clone(),
+            tool_hash: "deadbeef".into(),
+            description: match i {
+                0 => Some("  First line of description \nSecond line ignored".into()),
+                1 => Some("Dynamic description for t01".into()),
+                _ => None,
+            },
+        })
+        .collect();
+    let execs = vec![NodeExecutor::Abstract { tools, narrow: None }];
+    let mut descs = BTreeMap::new();
+    descs.insert("t02".into(), "Pinned description for t02".into());
+
+    let decide = |ask: &Value| {
+        assert_eq!(ask["purpose"], "offer");
+        let criteria = &ask["questions"]["tool"]["criteria"];
+        assert_eq!(criteria["t00"], "First line of description");
+        assert_eq!(criteria["t01"], "Dynamic description for t01");
+        assert_eq!(criteria["t02"], "Pinned description for t02");
+        assert_eq!(criteria["t03"], "t03");
+
+        let state_tools = ask["state"]["tools"].as_array().expect("state.tools is array");
+        assert_eq!(state_tools[0], json!({"name": "t00", "description": "First line of description"}));
+        assert_eq!(state_tools[1], json!({"name": "t01", "description": "Dynamic description for t01"}));
+        assert_eq!(state_tools[2], json!({"name": "t02", "description": "Pinned description for t02"}));
+        assert_eq!(state_tools[3], json!({"name": "t03", "description": "t03"}));
+
+        ok(json!({
+            "model": "jev-test", "provider": "fake", "calibrated": true, "latency_ms": 3,
+            "answers": {"tool": {"type": "choice", "choice": "t00",
+                                 "probabilities": offer_probabilities(), "confidence": 0.2}},
+        }))
+    };
+    let behavior = scripted(vec![llm_text(r#"{"done": true}"#, 100)], &decide);
+    let r = run_with(decide_env(&plan, &execs, &descs, Some(true)), &behavior);
+    assert_eq!(r.state.outcome(), Some(&RunOutcome::Completed));
+    assert_eq!(decide_dispatches(&r.commands).len(), 1);
 }
 
 /// A decision node (C3) dispatches like a Host tool — intent, then dispatch —

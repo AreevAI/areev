@@ -47,6 +47,6 @@ pub use step::{
 };
 pub use types::{
     Ask, Budgets, Command, DecisionRecord, EdgeOutcome, EffectKind, EffectOutcome, EventIn,
-    FailCause, FoldRecord, JournalKey, NodeExecutor, OfferedTool, RunOutcome, DECIDE_TOOL,
-    DECIDE_URI, INBOX, PARKED_ASKS,
+    FailCause, FoldRecord, JournalKey, NarrowOffer, NodeExecutor, OfferedTool, RunOutcome,
+    DECIDE_TOOL, DECIDE_URI, INBOX, PARKED_ASKS,
 };
