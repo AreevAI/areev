@@ -1149,3 +1149,98 @@ fn a_response_schema_strict_mode_would_refuse_is_refused_at_start() {
         assert!(err.to_string().contains("strict mode") && err.to_string().contains(needle), "{err}");
     }
 }
+
+#[test]
+fn a_dispatch_pin_may_not_be_another_version_of_a_bound_definition() {
+    let rig = Rig::new();
+    let v1 = rig.def(Tool::new("lookup").input_schema(json!({"type": "object", "properties": {"q": {"type": "string"}}})));
+    let v2 = {
+        let t = Tool::new("lookup")
+            .kind(ToolKind::Definition)
+            .input_schema(json!({"type": "object", "properties": {"z": {"type": "string"}}}))
+            .created_at(900)
+            .namespace("ops");
+        rig.facade.with_store(|m| m.add(&t)).unwrap().to_hex()
+    };
+    let gate = rig.def(Tool::new("gate"));
+    let plan = rig.plan(
+        &["lookup", "agent", "gate"],
+        &[("lookup", "agent", None), ("agent", "gate", None)],
+        &[("lookup", &v1), ("gate", &gate)],
+        json!({"agent": {"dispatch": [v2.clone()]}}),
+    );
+    let runner = rig.runner(Arc::new(TestExec::default()), CapturingLlm::new(vec![]));
+    let err = runner.start(&plan, "bad", json!({}), &opts()).unwrap_err();
+    assert_eq!(err.code(), "RUN-E019", "{err}");
+    assert!(err.to_string().contains(&v2) && err.to_string().contains("'lookup'"), "{err}");
+}
+
+#[test]
+fn locked_params_on_a_client_tool_are_ignored_with_a_warning_not_refused() {
+    // 1.12 accepted this shape; a minor release must keep running it.
+    let rig = Rig::new();
+    let approve = rig.def(
+        Tool::new("approve")
+            .executor_kind(areev_core::types::ExecutorKind::Client)
+            .locked_params(json!({"level": "senior"})),
+    );
+    let plan = rig.plan(&["approve"], &[], &[("approve", &approve)], Value::Null);
+    let runner = rig.runner(Arc::new(TestExec::default()), CapturingLlm::new(vec![]));
+    let session = runner.start(&plan, "w1", json!({}), &opts()).unwrap();
+    assert!(matches!(session, RunSession::Parked { .. }));
+    let report = runner.inspect("w1").unwrap();
+    assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+    assert!(report.warnings[0].starts_with("RUN-W001") && report.warnings[0].contains("approve"));
+    let m = rig.facade.with_store(|m| areev_run::RunManifest::load(m, "w1")).unwrap();
+    assert!(m.pinned[0].locked_params.is_none());
+}
+
+#[test]
+fn shadow_rehearses_with_the_locks_the_incumbent_froze_not_the_definitions() {
+    // A run recorded WITHOUT locks (any 1.12 run): the strict Definition
+    // requires `url`, so the model's first call {body} was re-prompted and
+    // its second, with a url, dispatched. Rehearsing it with the Definition's
+    // locks would accept the first call and diverge on an unchanged plan.
+    let rig = Rig::new();
+    let approve = rig.def(Tool::new("approve").executor_kind(areev_core::types::ExecutorKind::Client));
+    let post = rig.def(
+        Tool::new("post")
+            .input_schema(json!({"type": "object",
+                "properties": {"url": {"type": "string"}, "body": {"type": "string"}},
+                "required": ["url", "body"]}))
+            .strict(true)
+            .locked_params(json!({"url": "https://a.example/x"})),
+    );
+    let done = rig.def(Tool::new("done"));
+    let plan = rig.plan(
+        &["approve", "agent", "done", "post"],
+        &[("approve", "agent", None), ("agent", "done", None), ("agent", "post", Some("never == true"))],
+        &[("approve", &approve), ("post", &post), ("done", &done)],
+        Value::Null,
+    );
+    let llm = CapturingLlm::new(vec![
+        calls(vec![("c1", "post", json!({"body": "hi"}))]),
+        calls(vec![("c2", "post", json!({"url": "https://b.example", "body": "hi"}))]),
+        answer("{}"),
+    ]);
+    let runner = rig.runner(Arc::new(TestExec::default()), Arc::clone(&llm));
+    let RunSession::Parked { envelope, .. } = runner.start(&plan, "old", json!({}), &opts()).unwrap() else {
+        panic!("parks on the approval")
+    };
+    // Make the frozen manifest the 1.12 shape: no locks.
+    let mut m = rig.facade.with_store(|m| areev_run::RunManifest::load(m, "old")).unwrap();
+    for p in &mut m.pinned {
+        p.locked_params = None;
+    }
+    rig.facade.with_store(|mm| m.persist_in_namespace(mm, "ops")).unwrap();
+    let ask = envelope["asks"][0]["tool_call_id"].as_str().unwrap().to_string();
+    runner.respond("old", &ask, json!({"ok": true}), false, "user:officer").unwrap();
+    finished(runner.resume("old", &opts()).unwrap());
+    assert_eq!(llm.sent().len(), 3, "recorded without locks: one re-prompt");
+
+    let report = runner.shadow_plan(&["old".to_string()], &areev_run::PlanCandidate::Hash(plan)).unwrap();
+    let run = &report.runs[0];
+    assert_eq!(run.verdict, "same", "{run:?}");
+    assert!(run.out_of_support.is_empty(), "{run:?}");
+    assert!(run.identity.as_ref().is_some_and(|i| i.consistent), "{run:?}");
+}

@@ -245,7 +245,13 @@ pub struct RunManifest {
     /// every manifest that declares none, so stored manifests keep their bytes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dispatch_pins: Vec<PinnedTool>,
+    /// Start-time warnings (`RUN-Wnnn …`), frozen with the run so `run
+    /// inspect` can say what the start accepted but did not act on. Empty —
+    /// and absent — on every run that raised none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
+
 
 /// The model configuration a run is pinned to (#287).
 ///
@@ -432,6 +438,7 @@ impl RunManifest {
         // here, at start — what the run reads, whatever the row says later.
         crate::memread::pin_queries(&mut reads, m)?;
         let mut pinned = Vec::with_capacity(plan.nodes.len());
+        let mut warnings: Vec<String> = Vec::new();
         for (i, node) in plan.nodes.iter().enumerate() {
             if let Some(spec) = reads.remove(node) {
                 let op = spec.get("op").and_then(|o| o.as_str()).unwrap_or_default();
@@ -478,7 +485,9 @@ impl RunManifest {
                             llm: None,
                         }
                     } else {
-                        pin_from_definition(node, &h, &g)?
+                        let pin = pin_from_definition(node, &h, &g)?;
+                        warnings.extend(locked_params_warning(&pin, &g));
+                        pin
                     }
                 }
                 None => {
@@ -487,7 +496,11 @@ impl RunManifest {
                     // instruction the model interprets — which needs the
                     // tool-calling seam configured.
                     match find_definition_by_name(m, ns, node) {
-                        Some((h, g)) => pin_from_definition(node, &h, &g)?,
+                        Some((h, g)) => {
+                            let pin = pin_from_definition(node, &h, &g)?;
+                            warnings.extend(locked_params_warning(&pin, &g));
+                            pin
+                        }
                         // The misroute FIRST, before either fallback (#230).
                         // A node whose name matches a real Definition sitting
                         // in the plan's own namespace is a run started in the
@@ -578,6 +591,24 @@ impl RunManifest {
             &input,
             &mut resolve_dispatch,
         )?;
+        // A dispatch pin may not be ANOTHER version of a Definition a node
+        // binds under the same name: the strict-argument table is keyed by
+        // `tool_name`, and the second would overwrite the first's schema.
+        for d in &dispatch_pins {
+            if let Some(b) = pinned
+                .iter()
+                .find(|p| p.executor == "host" && p.tool_name == d.tool_name && p.tool_hash != d.tool_hash)
+            {
+                return Err(RunError::InvalidPlan {
+                    why: format!(
+                        "node '{}' llm.dispatch pins {} ({}), but node '{}' binds a different \
+                         Definition of that name ({}) — dispatch through the bound one, or give \
+                         the other version its own tool_name",
+                        d.node, d.tool_name, d.tool_hash, b.node, b.tool_hash
+                    ),
+                });
+            }
+        }
         for (node, mut block) in blocks {
             // The dispatch Definition's own schema, frozen beside the entry:
             // the merged input is validated against it on every call.
@@ -642,6 +673,7 @@ impl RunManifest {
             allow_confirmation_asks: false,
             decider: None,
             dispatch_pins,
+            warnings,
         })
     }
 
@@ -1200,15 +1232,10 @@ pub fn pin_from_definition(
         None | Some(serde_json::Value::Null) => None,
         Some(serde_json::Value::Object(o)) if o.is_empty() => None,
         Some(v @ serde_json::Value::Object(_)) if executor == "host" && !decide_node => Some(v.clone()),
-        Some(serde_json::Value::Object(_)) => {
-            return Err(RunError::InvalidPlan {
-                why: format!(
-                    "node '{node}' binds a Definition declaring locked_params on a \
-                     {} tool — only a host tool a model calls takes locked parameters",
-                    if decide_node { "decision" } else { executor }
-                ),
-            })
-        }
+        // A client or decision tool: nothing a model calls, so nothing to
+        // lock. Ignored, as 1.12 ignored it; the start records RUN-W001
+        // (`locked_params_warning`).
+        Some(serde_json::Value::Object(_)) => None,
         Some(other) => {
             return Err(RunError::InvalidPlan {
                 why: format!("node '{node}' binds a Definition whose locked_params is not an object: {other}"),
@@ -1229,6 +1256,29 @@ pub fn pin_from_definition(
         decide,
         locked_params,
         llm: None,
+    })
+}
+
+/// The `RUN-W001` text for a pin whose Definition declares `locked_params`
+/// the runtime ignores (a client or decision tool), or `None`. No model calls
+/// such a tool, so the locks have nothing to apply to; 1.12 accepted them
+/// silently, and refusing them now would break a plan that ran yesterday, so
+/// they are ignored and the start says so.
+pub fn locked_params_warning(
+    pin: &PinnedTool,
+    g: &areev_core::format::deserialize::DeserializedGrain,
+) -> Option<String> {
+    let declared = g
+        .fields
+        .get("locked_params")
+        .and_then(|v| v.as_object())
+        .is_some_and(|o| !o.is_empty());
+    (declared && pin.locked_params.is_none() && pin.executor != "host").then(|| {
+        format!(
+            "RUN-W001: node '{}' binds {} ({}), a {} tool, which declares locked_params — no \
+             model calls it, so they are ignored",
+            pin.node, pin.tool_name, pin.tool_hash, pin.executor
+        )
     })
 }
 
@@ -1410,6 +1460,7 @@ mod tests {
             allow_confirmation_asks: false,
             decider: None,
             dispatch_pins: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 

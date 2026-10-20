@@ -164,6 +164,10 @@ pub struct InspectReport {
     /// Absent otherwise, so a report for a run nobody paused is unchanged.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pause: Option<serde_json::Value>,
+    /// Start-time warnings the run was started under (`RUN-W001` …), from
+    /// the manifest. Absent when there were none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// What `Runner::pause` answers (#344): the standing request, whether this

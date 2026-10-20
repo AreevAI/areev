@@ -3405,6 +3405,7 @@ impl Runner {
             phase,
             spent: scheduler.get("spent").cloned(),
             pending_asks: asks,
+            warnings: manifest.warnings.clone(),
             limits: json!({
                 "llm_max_tokens": manifest.llm_reserve_tokens(),
                 "max_effects_per_attempt": manifest.max_effects_per_attempt(),
