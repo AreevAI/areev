@@ -460,6 +460,18 @@ The shape of the rules, and why each one is load-bearing:
   offered schema, except for a dynamic entry with `args_into`, whose locks
   belong to the Definition's input and not to the model's schema. The merge
   itself is pure and happens in run-core (`OfferedTool::dispatch_input`).
+  `offered_definition` and run-core's validator share
+  `DynamicTool::model_schema`, so what the model is shown is what its
+  arguments are judged by.
+- **`shadow_plan` takes locks from the INCUMBENT's pins** (by hash), never
+  from re-reading the Definition: a 1.12 run froze none, and rehearsing it
+  with them diverges on an unchanged plan.
+- **Warnings ride the manifest** (`RunManifest.warnings`, `RUN-Wnnn …`), so
+  `run inspect` reports them. `RUN-W001` covers a client or decision
+  Definition carrying `locked_params`: ignored, as in 1.12, never refused.
+- **Pseudonymization:** `llm.system` is read off `to_model`, and a dynamic
+  tool's prose goes through `pseudonymize_tool_text`. Structural schema
+  strings are left alone.
   Tests: `tests/llm_node_tests.rs`.
 
 ## Telemetry (`stream.rs` + `otel.rs`)
