@@ -555,10 +555,45 @@ fn first_message(env: &StepEnv<'_>, i: usize, input: &Value) -> Result<Value, St
     };
     let mut content = serde_json::Map::new();
     content.insert("instruction".into(), Value::String(instruction));
+    // The tool list `tools_from` read is configuration, not state: under the
+    // whole-state default it would put every entry — and every value the host
+    // LOCKED away from the model — into the prompt. Removed from the copy the
+    // first message carries; a key list naming it is the plan's explicit ask.
+    let whole = cfg.and_then(|c| c.state.as_ref()).is_none_or(|s| s.as_str() == Some("all"));
+    let pruned;
+    let input = match cfg.and_then(|c| c.tools_from.as_deref()) {
+        Some(ptr) if whole && !ptr.is_empty() => {
+            let mut copy = input.clone();
+            remove_pointer(&mut copy, ptr);
+            pruned = copy;
+            &pruned
+        }
+        _ => input,
+    };
     if let Some(state) = select_state(cfg.and_then(|c| c.state.as_ref()), input) {
         content.insert("state".into(), state);
     }
     Ok(Value::Object(content))
+}
+
+/// Remove the value at a JSON pointer (RFC 6901, `~0`/`~1` unescaped), if any.
+fn remove_pointer(v: &mut Value, ptr: &str) {
+    let Some((parent, last)) = ptr.rsplit_once('/') else { return };
+    let last = last.replace("~1", "/").replace("~0", "~");
+    let target = if parent.is_empty() { Some(v) } else { v.pointer_mut(parent) };
+    match target {
+        Some(Value::Object(o)) => {
+            o.remove(&last);
+        }
+        Some(Value::Array(a)) => {
+            if let Ok(n) = last.parse::<usize>() {
+                if n < a.len() {
+                    a.remove(n);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The merged state a node's first message carries. `"all"` (or no block):
@@ -613,11 +648,21 @@ fn response_name(node: &str) -> String {
 /// schema nor `parallel_tool_calls`: it answers in prose and is offered no
 /// tools. `None` when nothing is set, so such a turn is byte-identical to one
 /// from a node with no block.
-fn request_block(env: &StepEnv<'_>, i: usize, fold: bool) -> Option<Value> {
+fn request_block(env: &StepEnv<'_>, i: usize, fold: bool, instruction: &str) -> Option<Value> {
     let c = llm_cfg(env, i)?;
     let mut b = serde_json::Map::new();
     if let Some(s) = &c.system {
-        b.insert("system".into(), Value::String(s.clone()));
+        // OpenAI's `json_object` mode refuses (HTTP 400) a request in which
+        // no message says "JSON". The built-in system prompt does; a node's
+        // own may not, and neither may its instruction — so say it once.
+        let wants_json_object = !fold && c.response.as_ref().is_some_and(|r| r.get("json").is_some());
+        let says_json = |t: &str| t.to_ascii_lowercase().contains("json");
+        let s = if wants_json_object && !says_json(s) && !says_json(instruction) {
+            format!("{s} Answer with a JSON object.")
+        } else {
+            s.clone()
+        };
+        b.insert("system".into(), Value::String(s));
     }
     if let Some(t) = &c.temperature {
         b.insert("temperature".into(), t.clone());
@@ -651,8 +696,22 @@ fn request_block(env: &StepEnv<'_>, i: usize, fold: bool) -> Option<Value> {
 /// object, conforming to the schema when one is declared. The runtime checks
 /// whatever the provider did with `response_format`, because a provider that
 /// ignored the field must not hand prose through as the schema's object.
+/// The answer inside a Markdown code fence, when the whole text is one —
+/// ```` ```json … ``` ```` or ```` ``` … ``` ````. Anthropic models wrap a JSON
+/// answer that way even when told not to. Anything else is returned trimmed.
+fn unfence(text: &str) -> &str {
+    let t = text.trim();
+    let Some(rest) = t.strip_prefix("```") else { return t };
+    let Some(body) = rest.strip_suffix("```") else { return t };
+    // The info string runs to the first newline (`json`, `JSON`, or nothing).
+    match body.split_once('\n') {
+        Some((info, inner)) if !info.contains('{') && !info.contains('[') => inner.trim(),
+        _ => body.trim(),
+    }
+}
+
 fn check_response(response: &Value, text: &str) -> Result<(), String> {
-    let value: Value = serde_json::from_str(text.trim())
+    let value: Value = serde_json::from_str(unfence(text))
         .map_err(|e| format!("the answer is not JSON ({e})"))?;
     if !value.is_object() {
         return Err(format!("the answer is a JSON {}, not an object", json_kind(&value)));
@@ -676,7 +735,30 @@ fn validated_dispatch_input(
     arguments: &Value,
 ) -> Result<Value, String> {
     if let Some(d) = &tool.dynamic {
-        areev_core::types::validate_instance(arguments, &d.input_schema)
+        // The entry's schema is CLOSED (#392 review): a key it does not name
+        // could otherwise set a Definition parameter the host never offered
+        // — `method: "DELETE"` on an http-shaped Definition that locks only
+        // the URL. A key the host LOCKED is refused outright rather than
+        // silently overridden, so the model learns it cannot choose it.
+        let schema = d.model_schema(tool.locked.as_ref());
+        if let Value::Object(args) = arguments {
+            if d.dispatch.args_into.is_none() {
+                if let Some(Value::Object(lock)) = &tool.locked {
+                    if let Some(k) = args.keys().find(|k| lock.contains_key(k.as_str())) {
+                        return Err(format!(
+                            "argument '{k}' is fixed by the host and may not be set"
+                        ));
+                    }
+                }
+            }
+            let named = schema.get("properties").and_then(Value::as_object);
+            if let Some(k) = args.keys().find(|k| !named.is_some_and(|p| p.contains_key(k.as_str()))) {
+                return Err(format!("argument '{k}' is not one of this tool's parameters"));
+            }
+        }
+        // Against what the model was SHOWN — locked keys stripped — so a
+        // locked key the entry also lists as required is not demanded of it.
+        areev_core::types::validate_instance(arguments, &schema)
             .map_err(|k| format!("schema violation: {}", k.as_str()))?;
     }
     let input = tool.dispatch_input(arguments);
@@ -1075,7 +1157,15 @@ fn handle_llm_outcome(
                         return;
                     }
                 }
-                let mut value = serde_json::from_str::<Value>(&final_text)
+                // A declared response was checked on the unfenced text, so it
+                // merges from the same text; a node with no declaration merges
+                // exactly what it always did.
+                let merge_text = if cfg.is_some_and(|c| c.response.is_some()) {
+                    unfence(&final_text).to_string()
+                } else {
+                    final_text.clone()
+                };
+                let mut value = serde_json::from_str::<Value>(&merge_text)
                     .ok()
                     .filter(|v| v.is_object())
                     .unwrap_or_else(|| {
@@ -1796,7 +1886,7 @@ fn emit_fold_turn(
         "messages": messages,
         "fold": { "from": from, "to": to, "seq": effect_seq, "prompt_v": FOLD_PROMPT_V },
     });
-    if let Some(block) = request_block(env, i, true) {
+    if let Some(block) = request_block(env, i, true, "") {
         input["llm"] = block;
     }
     emit_effect(env, st, i, path, key, input, out);
@@ -1916,7 +2006,12 @@ fn dispatch_llm_turn(
     // #391: the node's request fields ride the journaled input too, which is
     // how the driver builds the request from the journal alone — and how a
     // reader of the run sees the system text and response format as sent.
-    if let Some(block) = request_block(env, i, false) {
+    let instruction = messages
+        .first()
+        .and_then(|m| m.pointer("/content/instruction"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if let Some(block) = request_block(env, i, false, instruction) {
         input["llm"] = block;
     }
     emit_effect(env, st, i, path, key, input, out);

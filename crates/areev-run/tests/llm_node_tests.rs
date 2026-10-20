@@ -1089,3 +1089,63 @@ fn a_dynamic_schema_carrying_annotation_keywords_is_pinned_and_dispatched() {
     assert_eq!(input["arguments"], json!({"invoice": "4471"}));
     assert!(runner.verify("a1").unwrap().verified);
 }
+
+// ---- review fixes ------------------------------------------------------------
+
+#[test]
+fn a_flat_entry_with_a_required_locked_key_is_offered_and_dispatched_without_it() {
+    // Locks without `args_into`: the entry requires `url`, the host locks it.
+    let rig = Rig::new();
+    unbound_mcp(&rig, "ops");
+    let http = rig.def(Tool::new("http_get").input_schema(json!({"type": "object",
+        "properties": {"url": {"type": "string"}, "q": {"type": "string"}}, "required": ["url"]})));
+    let plan = agent_only_plan(&rig, "ops", json!({"agent": {"dispatch": [http.clone()], "tools": [], "tools_from": "/tools"}}));
+    let entry = json!({"name": "search", "input_schema": {"type": "object",
+        "properties": {"url": {"type": "string"}, "q": {"type": "string"}}, "required": ["url", "q"]},
+        "dispatch": {"definition": "http_get", "locked": {"url": "https://a.example/s"}}});
+    let exec = Arc::new(TestExec::default());
+    let llm = CapturingLlm::new(vec![calls(vec![("c1", "search", json!({"q": "x"}))]), answer("{}")]);
+    let runner = rig.runner(Arc::clone(&exec), Arc::clone(&llm));
+    finished(runner.start(&plan, "f1", json!({"tools": [entry]}), &opts()).unwrap());
+    let offered = llm.sent()[0].tools[0].1.clone().unwrap();
+    assert_eq!(offered["required"], json!(["q"]), "{offered}");
+    assert!(offered["properties"].get("url").is_none());
+    assert_eq!(llm.sent().len(), 2, "no re-prompt: the call the model was shown how to make is valid");
+    let (_, input, _) = exec.seen().into_iter().find(|(n, _, _)| n == "http_get").unwrap();
+    assert_eq!(input, json!({"q": "x", "url": "https://a.example/s"}));
+}
+
+#[test]
+fn a_lock_on_the_args_into_key_or_a_dotted_lock_is_refused_at_start() {
+    let rig = Rig::new();
+    unbound_mcp(&rig, "ops");
+    let plan = agent_only_plan(&rig, "ops", json!({"agent": {"dispatch": ["mcp_call"], "tools_from": "/tools"}}));
+    let mut on_args = bank_paid_to();
+    on_args["dispatch"]["locked"]["arguments"] = json!({});
+    let mut dotted = bank_paid_to();
+    dotted["dispatch"]["locked"]["arguments.invoice"] = json!("1");
+    for (entry, needle) in [(on_args, "`args_into` key"), (dotted, "dotted")] {
+        let runner = rig.runner(Arc::new(TestExec { allow_code: true, ..Default::default() }), CapturingLlm::new(vec![]));
+        let err = runner.start(&plan, "bad", json!({"tools": [entry]}), &opts()).unwrap_err();
+        assert_eq!(err.code(), "RUN-E019", "{err}");
+        assert!(err.to_string().contains(needle) && err.to_string().contains("bank.paid_to"), "{err}");
+    }
+}
+
+#[test]
+fn a_response_schema_strict_mode_would_refuse_is_refused_at_start() {
+    let rig = Rig::new();
+    for (schema, needle) in [
+        (json!({"type": "object", "properties": {"a": {"type": "string"}}, "required": ["a"]}), "additionalProperties"),
+        (json!({"type": "object", "properties": {"a": {"type": "string"}, "b": {"type": "string"}},
+                "required": ["a"], "additionalProperties": false}), "'b'"),
+        (json!({"type": "object", "properties": {"n": {"type": "object", "properties": {"x": {"type": "string"}},
+                "required": ["x"]}}, "required": ["n"], "additionalProperties": false}), "/properties/n"),
+    ] {
+        let plan = three_step(&rig, json!({"reply": {"response": {"json_schema": schema}}}));
+        let runner = rig.runner(Arc::new(TestExec::default()), CapturingLlm::new(vec![]));
+        let err = runner.start(&plan, "bad", json!({}), &opts()).unwrap_err();
+        assert_eq!(err.code(), "RUN-E019", "{err}");
+        assert!(err.to_string().contains("strict mode") && err.to_string().contains(needle), "{err}");
+    }
+}

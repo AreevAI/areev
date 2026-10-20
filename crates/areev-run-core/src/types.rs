@@ -273,6 +273,38 @@ impl OfferedTool {
     }
 }
 
+/// Remove `locked`'s keys from a schema's `properties` and `required` (#393):
+/// what the model is offered, and what its own arguments are checked against.
+/// Pure, so the scheduler and the driver strip the same way.
+pub fn strip_locked_keys(schema: &mut Value, locked: &Value) {
+    let Value::Object(lock) = locked else { return };
+    if let Some(Value::Object(props)) = schema.get_mut("properties") {
+        for k in lock.keys() {
+            props.remove(k);
+        }
+    }
+    if let Some(Value::Array(req)) = schema.get_mut("required") {
+        req.retain(|r| r.as_str().is_none_or(|r| !lock.contains_key(r)));
+    }
+}
+
+impl DynamicTool {
+    /// The schema the MODEL fills for this tool: the entry's `input_schema`,
+    /// minus the locked keys when the arguments land at the top level (with
+    /// `args_into` the locks belong to the Definition's input, one level up,
+    /// and say nothing about this schema). Offered to the model, and what its
+    /// arguments are validated against before the locks merge.
+    pub fn model_schema(&self, locked: Option<&Value>) -> Value {
+        let mut schema = self.input_schema.clone();
+        if self.dispatch.args_into.is_none() {
+            if let Some(lock) = locked {
+                strip_locked_keys(&mut schema, lock);
+            }
+        }
+        schema
+    }
+}
+
 /// A tool declared in the RUN INPUT and pinned at start (#392, `tools_from`).
 ///
 /// The host builds the list per run — the `tools/list` of an MCP server the

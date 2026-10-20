@@ -1793,7 +1793,8 @@ fn an_llm_block_shapes_the_first_message_and_rides_every_turn_input() {
     );
     assert_eq!(
         input["llm"],
-        json!({"system": "You are the AP assistant.", "temperature": "omit", "max_tokens": 512,
+        // json_object mode: the system text gains the word OpenAI requires.
+        json!({"system": "You are the AP assistant. Answer with a JSON object.", "temperature": "omit", "max_tokens": 512,
                "parallel_tool_calls": false, "response_format": {"type": "json_object"}}),
         "every request field the block sets is journaled as sent"
     );
@@ -2167,4 +2168,136 @@ fn a_narrowing_ask_describes_a_dynamic_tool_by_its_own_description() {
     assert_eq!(ask["questions"]["tool"]["criteria"]["t11"], "t11", "no description: the name");
     let listed = ask["state"]["tools"].as_array().unwrap();
     assert!(listed.contains(&json!({"name": "t10", "description": "Who an invoice was paid to"})));
+}
+
+// ---- review fixes (#392/#393/#391) ------------------------------------------
+
+/// An http-shaped dynamic entry with NO `args_into`: its arguments merge at
+/// the top level of the Definition's input, with only the URL locked.
+fn flat_entry() -> OfferedTool {
+    let lock = json!({"url": "https://a.example/x"});
+    OfferedTool {
+        tool_name: "fetch_x".into(),
+        tool_hash: "hhttp".into(),
+        locked: Some(lock.clone()),
+        dynamic: Some(Box::new(DynamicTool {
+            name: "fetch_x".into(),
+            description: String::new(),
+            // `url` is required by the entry AND locked: the model is shown a
+            // schema without it and must not be asked for it.
+            input_schema: json!({"type": "object",
+                "properties": {"url": {"type": "string"}, "q": {"type": "string"}},
+                "required": ["url", "q"]}),
+            dispatch: DynamicDispatch {
+                definition: "http.call".into(),
+                hash: "hhttp".into(),
+                locked: Some(lock),
+                args_into: None,
+                definition_schema: None,
+            },
+        })),
+    }
+}
+
+fn flat_run(first_args: Value) -> SimResult {
+    let plan = PlanGraph::build(&wf(&["agent"])).unwrap();
+    let execs = vec![NodeExecutor::Abstract { tools: vec![flat_entry()], llm: None }];
+    let behavior = move |k: &JournalKey, _i: &Value| match (k.kind, k.effect_seq) {
+        (EffectKind::Llm, 0) => tool_turn(json!([{"id": "c0", "name": "fetch_x", "arguments": first_args.clone()}])),
+        (EffectKind::Llm, 1) => tool_turn(json!([{"id": "c1", "name": "fetch_x", "arguments": {"q": "ok"}}])),
+        (EffectKind::Llm, _) => final_turn("{\"done\": true}"),
+        (EffectKind::Tool, _) => ok(json!({"status": 200})),
+    };
+    Sim { env: env(&plan, &execs, Budgets::default()), behavior: &behavior, seed: 1, clock: 1_000, respond: BTreeMap::new() }
+        .run()
+}
+
+#[test]
+fn a_flat_dynamic_entry_refuses_a_key_its_schema_does_not_name() {
+    let r = flat_run(json!({"q": "x", "method": "DELETE"}));
+    let reprompt = llm_input(&r.commands, 1);
+    let last = reprompt["messages"].as_array().unwrap().last().unwrap()["content"].as_str().unwrap().to_string();
+    assert!(last.contains("'method' is not one of this tool's parameters"), "{last}");
+    let dispatched: Vec<Value> =
+        dispatches(&r.commands).into_iter().filter(|(k, _, _)| k.kind == EffectKind::Tool).map(|(_, _, i)| i).collect();
+    assert_eq!(dispatched, vec![json!({"q": "ok", "url": "https://a.example/x"})], "DELETE never went out");
+}
+
+#[test]
+fn a_flat_dynamic_entry_refuses_a_locked_key_the_model_sends() {
+    let r = flat_run(json!({"q": "x", "url": "https://evil.example"}));
+    let reprompt = llm_input(&r.commands, 1);
+    let last = reprompt["messages"].as_array().unwrap().last().unwrap()["content"].as_str().unwrap().to_string();
+    assert!(last.contains("'url' is fixed by the host"), "{last}");
+}
+
+#[test]
+fn a_required_locked_key_is_not_demanded_of_the_model() {
+    // The first call omits `url` — exactly what the model was shown.
+    let r = flat_run(json!({"q": "first"}));
+    assert_eq!(r.state.outcome(), Some(&RunOutcome::Completed));
+    let first_tool = dispatches(&r.commands).into_iter().find(|(k, _, _)| k.kind == EffectKind::Tool).unwrap();
+    assert_eq!(first_tool.0.effect_seq, 1, "dispatched on the first turn, no re-prompt");
+    assert_eq!(first_tool.2, json!({"q": "first", "url": "https://a.example/x"}));
+}
+
+#[test]
+fn json_object_mode_says_json_when_neither_the_system_nor_the_instruction_does() {
+    let plan = PlanGraph::build(&wf(&["reply"])).unwrap();
+    let run = |cfg: LlmNodeConfig| {
+        let execs = llm_exec(vec![], cfg);
+        let behavior = |_k: &JournalKey, _i: &Value| final_turn("{\"a\": 1}");
+        let r = Sim { env: env(&plan, &execs, Budgets::default()), behavior: &behavior, seed: 1, clock: 1_000, respond: BTreeMap::new() }
+            .run();
+        llm_input(&r.commands, 0)["llm"]["system"].as_str().unwrap().to_string()
+    };
+    let json = || Some(json!({"json": true}));
+    assert_eq!(
+        run(LlmNodeConfig { system: Some("Be brief.".into()), response: json(), ..Default::default() }),
+        "Be brief. Answer with a JSON object."
+    );
+    assert_eq!(
+        run(LlmNodeConfig { system: Some("Reply in json.".into()), response: json(), ..Default::default() }),
+        "Reply in json.",
+        "already says it"
+    );
+    assert_eq!(
+        run(LlmNodeConfig {
+            system: Some("Be brief.".into()),
+            instruction: Some("Return a JSON summary".into()),
+            response: json(),
+            ..Default::default()
+        }),
+        "Be brief.",
+        "the instruction says it"
+    );
+}
+
+#[test]
+fn a_fenced_answer_satisfies_a_response_declaration_and_merges() {
+    let plan = PlanGraph::build(&wf(&["reply"])).unwrap();
+    let cfg = LlmNodeConfig {
+        response: Some(json!({"json_schema": {"type": "object", "properties": {"paid": {"type": "boolean"}},
+                                               "required": ["paid"], "additionalProperties": false}})),
+        ..Default::default()
+    };
+    let execs = llm_exec(vec![], cfg);
+    let behavior = |_k: &JournalKey, _i: &Value| final_turn("```json\n{\"paid\": true}\n```");
+    let r = Sim { env: env(&plan, &execs, Budgets::default()), behavior: &behavior, seed: 1, clock: 1_000, respond: BTreeMap::new() }
+        .run();
+    assert_eq!(r.state.outcome(), Some(&RunOutcome::Completed));
+    assert_eq!(r.state.context["paid"], json!(true));
+    assert_eq!(intents(&r.commands).len(), 1, "no re-prompt");
+}
+
+#[test]
+fn the_tools_from_list_stays_out_of_the_whole_state_prompt() {
+    let plan = PlanGraph::build(&wf(&["agent"])).unwrap();
+    let cfg = LlmNodeConfig { tools_from: Some("/conn/tools".into()), ..Default::default() };
+    let execs = llm_exec(vec![], cfg);
+    let behavior = |_k: &JournalKey, _i: &Value| final_turn("{}");
+    let r = Sim { env: env(&plan, &execs, Budgets::default()), behavior: &behavior, seed: 1, clock: 1_000, respond: BTreeMap::new() }
+        .run_from(json!({"ask": "q", "conn": {"tools": [{"locked": {"credential": "secret"}}], "org": "x"}}));
+    let first = &llm_input(&r.commands, 0)["messages"][0]["content"]["state"];
+    assert_eq!(first, &json!({"ask": "q", "conn": {"org": "x"}}));
 }

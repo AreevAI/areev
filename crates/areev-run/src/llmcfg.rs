@@ -239,6 +239,12 @@ fn parse_block(
             SchemaValidator::tool_schema().validate(&schema).map_err(|e| {
                 bad(format!("`response.json_schema` is not a usable schema: {e}"))
             })?;
+            if let Some(why) = strict_mode_violation(&schema, "") {
+                return Err(bad(format!(
+                    "`response.json_schema` is sent in strict mode, which needs every object \
+                     closed and every property required: {why}"
+                )));
+            }
             Some(serde_json::json!({"json_schema": schema}))
         }
         Some(other) => {
@@ -444,6 +450,29 @@ fn parse_dynamic(
                 )))
             }
         };
+        // Locks are TOP-LEVEL keys of the Definition's input. A dotted key
+        // would be inserted literally (`"a.b"`, not `a` → `b`), and a lock on
+        // the `args_into` key would replace the model's arguments wholesale —
+        // the Definition's own `locked_params` included, which merge last.
+        let lock_keys = locked
+            .iter()
+            .chain(def.locked_params.iter())
+            .filter_map(Value::as_object)
+            .flat_map(|o| o.keys());
+        for k in lock_keys {
+            if k.contains('.') {
+                return Err(ebad(format!(
+                    "lock key '{k}' is dotted — locks set top-level keys of the Definition's \
+                     input only"
+                )));
+            }
+            if args_into.as_deref() == Some(k.as_str()) {
+                return Err(ebad(format!(
+                    "lock key '{k}' is the `args_into` key, so it would replace the model's \
+                     arguments"
+                )));
+            }
+        }
         out.push(DynamicTool {
             name,
             description,
@@ -480,18 +509,47 @@ pub(crate) fn merge_locks(base: Option<&Value>, over: Option<&Value>) -> Option<
 }
 
 /// Remove locked keys from a schema the model is OFFERED (#393): from
-/// `properties` and from `required`. The model is not invited to set what it
-/// cannot choose, and a strict provider does not demand it.
+/// `properties` and from `required`. The pure rule lives in run-core, which
+/// validates the model's arguments against the same stripped form.
 pub(crate) fn strip_locked(schema: &mut Value, locked: &Value) {
-    let Value::Object(lock) = locked else { return };
-    if let Some(Value::Object(props)) = schema.get_mut("properties") {
-        for k in lock.keys() {
-            props.remove(k);
+    areev_run_core::types::strip_locked_keys(schema, locked);
+}
+
+/// OpenAI's strict structured output (`"strict": true`, which the runtime
+/// sends) accepts a schema only when every object closes itself
+/// (`additionalProperties: false`) and lists every property in `required`.
+/// Checked at start, naming the first violation by JSON pointer, rather than
+/// learnt from a 400 on the node's first turn.
+fn strict_mode_violation(schema: &Value, at: &str) -> Option<String> {
+    let Value::Object(o) = schema else { return None };
+    let is_object = o.get("type").and_then(Value::as_str) == Some("object") || o.contains_key("properties");
+    if is_object {
+        if o.get("additionalProperties") != Some(&Value::Bool(false)) {
+            return Some(format!("{} must set \"additionalProperties\": false", if at.is_empty() { "/" } else { at }));
+        }
+        let required: Vec<&str> = o
+            .get("required")
+            .and_then(Value::as_array)
+            .map(|r| r.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        if let Some(Value::Object(props)) = o.get("properties") {
+            for (k, sub) in props {
+                if !required.contains(&k.as_str()) {
+                    return Some(format!(
+                        "{}: property '{k}' must be listed in \"required\"",
+                        if at.is_empty() { "/" } else { at }
+                    ));
+                }
+                if let Some(v) = strict_mode_violation(sub, &format!("{at}/properties/{k}")) {
+                    return Some(v);
+                }
+            }
         }
     }
-    if let Some(Value::Array(req)) = schema.get_mut("required") {
-        req.retain(|r| r.as_str().is_none_or(|r| !lock.contains_key(r)));
+    if let Some(items) = o.get("items") {
+        return strict_mode_violation(items, &format!("{at}/items"));
     }
+    None
 }
 
 #[cfg(test)]

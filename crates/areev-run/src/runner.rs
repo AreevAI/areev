@@ -715,16 +715,9 @@ impl Runner {
             if !d.description.is_empty() {
                 def = def.tool_description(&d.description);
             }
-            let mut schema = d.input_schema.clone();
-            // A lock lands where the model's arguments land: at the top level
-            // unless the entry wraps them, in which case the locked keys are
-            // the dispatch Definition's and say nothing about this schema.
-            if d.dispatch.args_into.is_none() {
-                if let Some(lock) = &t.locked {
-                    crate::llmcfg::strip_locked(&mut schema, lock);
-                }
-            }
-            def.input_schema = Some(schema);
+            // The same stripped form the scheduler validates the model's
+            // arguments against (run-core `DynamicTool::model_schema`).
+            def.input_schema = Some(d.model_schema(t.locked.as_ref()));
             return Ok(def);
         }
         let h = Hash::from_hex(&t.tool_hash).map_err(err_run)?;
