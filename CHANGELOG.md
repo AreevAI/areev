@@ -71,8 +71,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   rehearses a run with the locks that run froze, so a 1.12 run still scores
   `same` on an unchanged plan.
 - **Hardening from a review of the 1.13 branch:**
-  - A dynamic tool's schema is closed. A key the entry does not name, or
-    (without `args_into`) a key the host locked, is an argument violation.
+  - Without `args_into`, a dynamic tool's schema is closed: a key the entry
+    does not name, or a key the host locked, is an argument violation. With
+    `args_into`, the entry's own schema decides, and only
+    `additionalProperties: false` closes it.
   - The model's arguments are checked against the schema it was shown, so a
     required key the host locks is never demanded.
   - A dotted lock key, a lock on the `args_into` key, a dispatch pin that is

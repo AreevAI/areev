@@ -1808,12 +1808,16 @@ names a list of entries:
   `run inspect` lists it among the pins with `"dispatch_only": true`. It may
   not be another version of a Definition a node binds under the same
   `tool_name` (`RUN-E019`, naming both hashes).
-- **The entry's schema is closed.** A key it does not name is refused, so a
-  model cannot set a Definition parameter the host never offered (such as a
-  `method` on an http-shaped Definition that locks only the URL). Without
-  `args_into`, a key the host **locked** is refused as well, rather than
-  silently overridden. Both refusals are an argument violation, and the model
-  is re-prompted. Locks set **top-level** keys of the Definition's input only:
+- **Without `args_into`, the entry's schema is closed.** The model's
+  arguments then land at the top level of the Definition's input. A key the
+  entry does not name is refused, so a model cannot set a Definition
+  parameter the host never offered (such as a `method` on an http-shaped
+  Definition that locks only the URL). A key the host **locked** is refused
+  too, rather than silently overridden. **With `args_into`**, the arguments
+  belong to the remote tool, and the entry's own schema decides: it is closed
+  only by `additionalProperties: false`. An MCP tool published as
+  `{"type": "object"}` takes any key. Every refusal is an argument violation,
+  and the model is re-prompted. Locks set **top-level** keys of the Definition's input only:
   a dotted lock key, or a lock key equal to `args_into` (which would replace
   the model's arguments), is refused at start with `RUN-E019`, naming the
   entry. That applies to the entry's `locked` and to the Definition's own

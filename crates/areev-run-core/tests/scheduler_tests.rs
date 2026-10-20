@@ -2301,3 +2301,26 @@ fn the_tools_from_list_stays_out_of_the_whole_state_prompt() {
     let first = &llm_input(&r.commands, 0)["messages"][0]["content"]["state"];
     assert_eq!(first, &json!({"ask": "q", "conn": {"org": "x"}}));
 }
+
+#[test]
+fn a_wrapped_entry_honours_its_own_schema_an_open_mcp_object_takes_any_key() {
+    // `args_into` set: the arguments are the MCP tool's, and its published
+    // `{"type": "object"}` names nothing and closes nothing.
+    let mut open = dynamic_paid_to();
+    if let Some(d) = open.dynamic.as_mut() {
+        d.input_schema = json!({"type": "object"});
+    }
+    let plan = PlanGraph::build(&wf(&["agent"])).unwrap();
+    let execs = vec![NodeExecutor::Abstract { tools: vec![open], llm: None }];
+    let behavior = |k: &JournalKey, _i: &Value| match (k.kind, k.effect_seq) {
+        (EffectKind::Llm, 0) => tool_turn(json!([{"id": "c0", "name": "paid_to",
+            "arguments": {"invoice": "4471", "year": 2026}}])),
+        (EffectKind::Llm, _) => final_turn("{}"),
+        (EffectKind::Tool, _) => ok(json!({"status": 200})),
+    };
+    let r = Sim { env: env(&plan, &execs, Budgets::default()), behavior: &behavior, seed: 1, clock: 1_000, respond: BTreeMap::new() }
+        .run();
+    let first_tool = dispatches(&r.commands).into_iter().find(|(k, _, _)| k.kind == EffectKind::Tool).unwrap();
+    assert_eq!(first_tool.0.effect_seq, 1, "dispatched on the first turn");
+    assert_eq!(first_tool.2["arguments"], json!({"invoice": "4471", "year": 2026}));
+}

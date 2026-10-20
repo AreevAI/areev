@@ -751,9 +751,19 @@ fn validated_dispatch_input(
                     }
                 }
             }
+            // Closed only where the arguments land at the Definition's TOP
+            // LEVEL (no `args_into`): there an unnamed key is a Definition
+            // parameter the host never offered. Wrapped under `args_into`,
+            // the arguments are the remote tool's own, and the entry's schema
+            // speaks for itself — an MCP tool's `{"type": "object"}` takes
+            // any key, and only `additionalProperties: false` closes it.
+            let closed = d.dispatch.args_into.is_none()
+                || schema.get("additionalProperties") == Some(&Value::Bool(false));
             let named = schema.get("properties").and_then(Value::as_object);
-            if let Some(k) = args.keys().find(|k| !named.is_some_and(|p| p.contains_key(k.as_str()))) {
-                return Err(format!("argument '{k}' is not one of this tool's parameters"));
+            if closed {
+                if let Some(k) = args.keys().find(|k| !named.is_some_and(|p| p.contains_key(k.as_str()))) {
+                    return Err(format!("argument '{k}' is not one of this tool's parameters"));
+                }
             }
         }
         // Against what the model was SHOWN — locked keys stripped — so a
