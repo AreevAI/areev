@@ -2083,3 +2083,88 @@ fn a_nodes_max_tokens_is_the_reservation_its_turns_must_fit() {
     assert_eq!(r.state.outcome(), Some(&RunOutcome::BudgetExhausted { axis: BudgetAxis::Tokens }));
     assert!(intents(&r.commands).is_empty());
 }
+
+// ---- #396: per-node narrowing, and dynamic tools described ----------------
+
+fn twelve_with(cfg: LlmNodeConfig) -> Vec<NodeExecutor> {
+    let tools = twelve_tools().into_iter().map(|n| OfferedTool::new(n, "deadbeef")).collect();
+    llm_exec(tools, cfg)
+}
+
+fn calibrated_offer(ask: &Value) -> EffectOutcome {
+    assert_eq!(ask["purpose"], "offer");
+    ok(json!({
+        "model": "jev-test", "provider": "fake", "calibrated": true, "latency_ms": 3,
+        "answers": {"tool": {"type": "choice", "choice": "t00",
+                             "probabilities": offer_probabilities(), "confidence": 0.2}},
+    }))
+}
+
+#[test]
+fn narrow_false_keeps_the_whole_offer_and_asks_nothing() {
+    let plan = PlanGraph::build(&wf(&["agent"])).unwrap();
+    let execs = twelve_with(LlmNodeConfig { narrow: Some(json!(false)), ..Default::default() });
+    let descs = BTreeMap::new();
+    let script = || vec![llm_text(r#"{"done": true}"#, 100)];
+    let with = scripted(script(), &no_decision);
+    let without = scripted(script(), &no_decision);
+    let a = run_with(decide_env(&plan, &execs, &descs, Some(true)), &with);
+    let b = run_with(decide_env(&plan, &execs, &descs, None), &without);
+    assert_eq!(a.state.outcome(), Some(&RunOutcome::Completed));
+    assert!(decide_dispatches(&a.commands).is_empty(), "no narrowing ask");
+    assert_eq!(
+        serde_json::to_string(&a.commands).unwrap(),
+        serde_json::to_string(&b.commands).unwrap(),
+        "the same run a host with no backend makes"
+    );
+}
+
+#[test]
+fn narrow_top_k_moves_the_k_per_node() {
+    let plan = PlanGraph::build(&wf(&["agent"])).unwrap();
+    let execs = twelve_with(LlmNodeConfig { narrow: Some(json!({"top_k": 3})), ..Default::default() });
+    let descs = BTreeMap::new();
+    let behavior = scripted(vec![llm_text(r#"{"done": true}"#, 100)], &calibrated_offer);
+    let r = run_with(decide_env(&plan, &execs, &descs, Some(true)), &behavior);
+    let turn = llm_input(&r.commands, 1);
+    let offered: Vec<&str> =
+        turn["offer"]["tools"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+    // Top 3, plus every tool at p ≥ 0.05 — the keep rule did not move.
+    assert_eq!(offered, vec!["t00", "t01", "t02", "t03", "t04", "t05", "t06", "t07", "t08"]);
+
+    // And a K at or above the offer's size asks nothing at all.
+    let execs = twelve_with(LlmNodeConfig { narrow: Some(json!({"top_k": 12})), ..Default::default() });
+    let behavior = scripted(vec![llm_text(r#"{"done": true}"#, 100)], &no_decision);
+    let r = run_with(decide_env(&plan, &execs, &descs, Some(true)), &behavior);
+    assert!(decide_dispatches(&r.commands).is_empty());
+}
+
+#[test]
+fn a_narrowing_ask_describes_a_dynamic_tool_by_its_own_description() {
+    let plan = PlanGraph::build(&wf(&["agent"])).unwrap();
+    let mut tools: Vec<OfferedTool> =
+        twelve_tools().into_iter().take(10).map(|n| OfferedTool::new(n, "deadbeef")).collect();
+    let mut dynamic = dynamic_paid_to();
+    dynamic.tool_name = "t10".into();
+    if let Some(d) = dynamic.dynamic.as_mut() {
+        d.name = "t10".into();
+        d.description = "Who an invoice was paid to\nsecond line is not context".into();
+    }
+    tools.push(dynamic);
+    tools.push(OfferedTool::new("t11", "deadbeef"));
+    let execs = llm_exec(tools, LlmNodeConfig::default());
+    let descs: BTreeMap<String, String> = [("t00".to_string(), "does t00".to_string())].into();
+    let seen: std::cell::RefCell<Option<Value>> = Default::default();
+    let decide = |ask: &Value| {
+        *seen.borrow_mut() = Some(ask.clone());
+        calibrated_offer(ask)
+    };
+    let behavior = scripted(vec![llm_text(r#"{"done": true}"#, 100)], &decide);
+    run_with(decide_env(&plan, &execs, &descs, Some(true)), &behavior);
+    let ask = seen.borrow().clone().expect("asked");
+    assert_eq!(ask["questions"]["tool"]["criteria"]["t10"], "Who an invoice was paid to");
+    assert_eq!(ask["questions"]["tool"]["criteria"]["t00"], "does t00", "a Definition's, as before");
+    assert_eq!(ask["questions"]["tool"]["criteria"]["t11"], "t11", "no description: the name");
+    let listed = ask["state"]["tools"].as_array().unwrap();
+    assert!(listed.contains(&json!({"name": "t10", "description": "Who an invoice was paid to"})));
+}

@@ -362,6 +362,7 @@ fn the_block_is_frozen_sent_journaled_and_replayed_without_the_model() {
     assert_eq!(row["llm"]["tools"], json!(["lookup"]));
     assert_eq!(row["llm"]["instruction_from"], "/prompt");
     assert_eq!(row["llm"]["max_tokens"], 300);
+    assert!(row["llm"].get("narrow").is_none(), "the default rule is stored as nothing");
 
     // verify replays byte-identically, never calling the model.
     let report = runner.verify("r1").unwrap();
@@ -438,6 +439,8 @@ fn a_malformed_block_is_refused_at_start_naming_the_node() {
         (json!({"reply": {"max_tokens": 0}}), "RUN-E019", "`max_tokens`"),
         (json!({"reply": {"parallel_tool_calls": "no"}}), "RUN-E019", "parallel_tool_calls"),
         (json!({"reply": {"tool_results_into": "$x"}}), "RUN-E019", "tool_results_into"),
+        (json!({"reply": {"narrow": {"top_k": 0}}}), "RUN-E019", "`narrow`"),
+        (json!({"reply": {"narrow": "no"}}), "RUN-E019", "`narrow`"),
     ];
     for (i, (block, code, needle)) in cases.into_iter().enumerate() {
         let plan = three_step(&rig, block.clone());

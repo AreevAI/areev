@@ -213,6 +213,11 @@ replays identically, which is exactly what the epoch is about.
   frozen `definition_schema`, then runs `validate_args` under
   `dispatch_name()`. Only the model's arguments stay in state and transcript.
   `dispatch_flow_tool` re-derives the merged input.
+- `narrow` (#396): `LlmNodeConfig::narrow_top_k` (`None` = never ask) gates
+  `emit_offer_decide` and sets the K `narrow_offer` keeps. `true` normalizes
+  to absent. A dynamic tool's question text is its own description's first
+  line, read off the OFFER (two nodes may share a dynamic name), not
+  `DecideEnv.tool_descriptions`.
 
 ## Decisions (C1–C3, `docs/decision-model-proposal.md`) — pinned
 

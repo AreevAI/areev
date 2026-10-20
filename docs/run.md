@@ -1669,7 +1669,8 @@ abstract node's pin in the run manifest. A resume, a fork of the same plan and
       "temperature": "omit",
       "max_tokens": 2048,
       "parallel_tool_calls": false,
-      "tool_results_into": "tool_results"
+      "tool_results_into": "tool_results",
+      "narrow": {"top_k": 12}
     }
   }
 }
@@ -1688,6 +1689,7 @@ abstract node's pin in the run manifest. A resume, a fork of the same plan and
 | `temperature` | number \| `"omit"` | Replaces the fixed 0. `"omit"` sends no temperature key at all, which the GPT-5 family needs: it answers HTTP 400 to any value. |
 | `max_tokens` | integer ≥ 1 | This node's output ceiling per call. Replaces `llm_max_tokens` and lands in the profile's token field (`max_tokens` or `max_completion_tokens`). It is also the turn's per-dispatch reservation against the token budget. |
 | `parallel_tool_calls` | boolean | Sent as `parallel_tool_calls` on OpenAI-compatible endpoints. Anthropic receives the inverse, `tool_choice.disable_parallel_tool_use`. Ollama ignores it. When absent, nothing is sent and the provider's default applies. |
+| `narrow` | `true` \| `false` \| `{"top_k": n}` | How a calibrated decision backend narrows this node's offer (see [Narrowing the tool offer](#narrowing-the-tool-offer)). `false` keeps every tool, `{"top_k": n}` keeps the top `n` (1–254) instead of 8, and `true` (the default) is the run-wide rule. |
 | `tool_results_into` | state key | Adds this key to the node's result when the node completes. It holds every tool call of the attempt, in `effect_seq` order: `[{name, tool_call_id, model_call_id, input, result, is_error, effect_seq}]`. `tool_call_id` is the journal key's digest (the grain's `tool_call_id`), `input` is the dispatched input with locks merged, and `result` is the whole journaled result, never the transcript's bounded excerpt. A gate bound below the node therefore sees what the model read. The list is built from the journaled outcomes, so `verify` rebuilds it byte for byte. If the model's answer has a key with the same name, the runtime's value wins. |
 
 **What is journaled.** The first message is `messages[0]` of every turn's
@@ -1721,8 +1723,8 @@ has one view-only, since a resave would drop the block.
 **Refused at start**, before the run exists, naming the node: an unknown key,
 a block on a node that is not abstract or not in the plan, both `instruction`
 and `instruction_from`, a pointer that does not start with `/`, a malformed
-`state`, `response`, `temperature`, `max_tokens`, `parallel_tool_calls` or
-`tool_results_into` (`RUN-E019`), and a `tools` or `dispatch` name the run
+`state`, `response`, `temperature`, `max_tokens`, `parallel_tool_calls`,
+`tool_results_into` or `narrow` (`RUN-E019`), and a `tools` or `dispatch` name the run
 cannot resolve (`RUN-E004`).
 
 #### Tools declared in the run input (`tools_from`)
@@ -2130,6 +2132,15 @@ universe, and narrowing only removes from it. A pinned tool the model was not
 shown is unknown to it: calling one is the unknown-tool re-prompt. An
 uncalibrated answer, a failure or a table that does not cover every tool
 leaves the full offer.
+
+A node's `llm` block can change this per node (#396). `"narrow": false` keeps
+that node's whole offer, and nothing is asked. `"narrow": {"top_k": n}` (1–254)
+narrows to the top `n` instead of 8, and is asked only when more than `n`
+tools are offered. The p ≥ 0.05 rule still applies. `"narrow": true`, or no
+key at all, is the rule above. The setting is frozen in the manifest with the
+rest of the block. A dynamic tool (`tools_from`) is described in the question
+by the first line of its own `description`, the same way a pinned
+Definition's `tool_description` is.
 
 The narrowed set rides every turn's journaled input as `offer` —
 `{tools, seq, provider, model, calibrated, latency_ms}`. The driver offers

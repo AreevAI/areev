@@ -2181,18 +2181,26 @@ fn emit_offer_decide(
 ) -> bool {
     let Some(d) = env.decide.as_ref().filter(|d| d.calibrated) else { return false };
     let NodeExecutor::Abstract { tools, .. } = &env.executors[i] else { return false };
+    // The node's own rule (#396): `narrow: false` keeps its whole offer,
+    // `narrow: {top_k}` moves the K.
+    let Some(top_k) = narrow_top_k(env, i) else { return false };
     // A choice carries 2..=255 options; past that the question cannot be
     // asked, and the full offer is the honest answer.
-    if tools.len() <= OFFER_TOP_K || tools.len() > 255 {
+    if tools.len() <= top_k || tools.len() > 255 {
         return false;
     }
     let Some(flow) = st.abstract_flows.get(&flow_key(i, path)) else { return false };
     let first = flow.messages.first().and_then(|m| m.get("content")).cloned().unwrap_or(Value::Null);
+    // A dynamic tool (#392) is described by its OWN pinned description, its
+    // first line — exactly what a Definition's `tool_description` gives
+    // (#396). Read off the offer rather than the run-wide table, because two
+    // nodes may each declare a dynamic tool of one name.
     let describe = |t: &OfferedTool| {
-        d.tool_descriptions
-            .get(&t.tool_name)
-            .filter(|s| !s.trim().is_empty())
-            .cloned()
+        t.dynamic
+            .as_ref()
+            .map(|dt| dt.description.lines().next().unwrap_or_default().trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(|| d.tool_descriptions.get(&t.tool_name).filter(|s| !s.trim().is_empty()).cloned())
             .unwrap_or_else(|| t.tool_name.clone())
     };
     let criteria: serde_json::Map<String, Value> =
@@ -2353,7 +2361,19 @@ fn handle_flow_decide(
 /// or above [`OFFER_KEEP_P`], returned in MANIFEST order. `None` when the
 /// table does not cover every pinned tool with a finite probability — a
 /// malformed answer narrows nothing.
-fn narrow_offer(tools: &[OfferedTool], probs: &serde_json::Map<String, Value>) -> Option<Vec<String>> {
+/// The K node `i` narrows to, or `None` when its block says `narrow: false`.
+fn narrow_top_k(env: &StepEnv<'_>, i: usize) -> Option<usize> {
+    match llm_cfg(env, i) {
+        Some(c) => c.narrow_top_k(OFFER_TOP_K),
+        None => Some(OFFER_TOP_K),
+    }
+}
+
+fn narrow_offer(
+    tools: &[OfferedTool],
+    probs: &serde_json::Map<String, Value>,
+    top_k: usize,
+) -> Option<Vec<String>> {
     let mut ranked: Vec<(usize, f64)> = Vec::with_capacity(tools.len());
     for (idx, t) in tools.iter().enumerate() {
         let p = probs.get(&t.tool_name).and_then(Value::as_f64).filter(|p| p.is_finite())?;
@@ -2363,7 +2383,7 @@ fn narrow_offer(tools: &[OfferedTool], probs: &serde_json::Map<String, Value>) -
     let keep: std::collections::BTreeSet<usize> = ranked
         .iter()
         .enumerate()
-        .filter(|(rank, (_, p))| *rank < OFFER_TOP_K || *p >= OFFER_KEEP_P)
+        .filter(|(rank, (_, p))| *rank < top_k || *p >= OFFER_KEEP_P)
         .map(|(_, (idx, _))| *idx)
         .collect();
     Some(keep.into_iter().map(|idx| tools[idx].tool_name.clone()).collect())
@@ -2388,7 +2408,7 @@ fn resolve_offer_decide(
             result
                 .pointer("/answers/tool/probabilities")
                 .and_then(Value::as_object)
-                .and_then(|probs| narrow_offer(tools, probs))
+                .and_then(|probs| narrow_offer(tools, probs, narrow_top_k(env, i).unwrap_or(OFFER_TOP_K)))
                 .filter(|keep| !keep.is_empty() && keep.len() < tools.len())
                 .map(|keep| {
                     let mut record = decide_provenance(result);

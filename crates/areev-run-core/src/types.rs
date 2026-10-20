@@ -375,6 +375,29 @@ pub struct LlmNodeConfig {
     /// the journaled outcomes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_results_into: Option<String>,
+    /// The tool-offer narrowing for this node (C1, #396), normalized:
+    /// `false` keeps the whole offer, `{"top_k": n}` narrows to the top `n`.
+    /// `None` (also what `narrow: true` normalizes to) is the run-wide rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub narrow: Option<Value>,
+}
+
+impl LlmNodeConfig {
+    /// `Some(k)` = narrow to the top `k` when more than `k` tools are offered;
+    /// `None` = never narrow this node.
+    pub fn narrow_top_k(&self, default: usize) -> Option<usize> {
+        match &self.narrow {
+            Some(Value::Bool(false)) => None,
+            Some(v) => Some(
+                v.get("top_k")
+                    .and_then(Value::as_u64)
+                    .map(|k| k as usize)
+                    .filter(|k| *k >= 1)
+                    .unwrap_or(default),
+            ),
+            None => Some(default),
+        }
+    }
 }
 
 /// What executes a node (resolved by the driver's V7 freeze).

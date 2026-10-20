@@ -49,6 +49,7 @@ const BLOCK_KEYS: &[&str] = &[
     "max_tokens",
     "parallel_tool_calls",
     "tool_results_into",
+    "narrow",
 ];
 
 const ENTRY_KEYS: &[&str] = &["name", "description", "input_schema", "dispatch"];
@@ -284,6 +285,24 @@ fn parse_block(
         Some(k) => {
             return Err(bad(format!(
                 "`tool_results_into` must be a non-empty state key not starting with '$', got {k:?}"
+            )))
+        }
+    };
+    // `narrow` (#396): whether, and to how many, a calibrated decision
+    // backend narrows this node's offer. `true` is the run-wide rule and is
+    // stored as nothing, so it changes no manifest's bytes.
+    cfg.narrow = match b.get("narrow") {
+        None | Some(Value::Null) | Some(Value::Bool(true)) => None,
+        Some(Value::Bool(false)) => Some(Value::Bool(false)),
+        Some(Value::Object(o))
+            if o.len() == 1
+                && o.get("top_k").and_then(Value::as_u64).is_some_and(|k| (1..=254).contains(&k)) =>
+        {
+            Some(serde_json::json!({"top_k": o["top_k"]}))
+        }
+        Some(other) => {
+            return Err(bad(format!(
+                "`narrow` must be true, false or {{\"top_k\": 1-254}}, not {other}"
             )))
         }
     };

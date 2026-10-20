@@ -38,6 +38,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   unbound node's Definition does and is never offered to the model by itself.
   A dispatch target that is not pinned, a duplicate name, or a name that
   collides with a pinned tool is refused at start, naming the entry.
+- **Per-node tool-offer narrowing** (#396). `llm.<node>.narrow: false` keeps
+  a node's whole offer when a calibrated decision backend is pinned, and
+  `narrow: {"top_k": n}` sets the K for that node. Both are frozen in the
+  manifest, and `true` (the default) keeps the run-wide top-8 rule. The
+  narrowing question now describes a `tools_from` tool by the first line of
+  its own `description`, as it describes a pinned Definition by its
+  `tool_description`. Before this change it listed a dynamic tool by name
+  only.
 - **`llm_profile` on the bindings** (#394). `runStart`/`runResume` (Node) and
   `run_start`/`run_resume` (Python) take a trailing JSON string,
   `{"temperature": "omit" | n, "token_field": …, "extra_body": {…}}`, so an
