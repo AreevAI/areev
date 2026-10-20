@@ -1327,3 +1327,35 @@ fn the_result_records_the_temperature_that_went_out_not_the_one_asked_for() {
     let areev_run_core::EffectOutcome::Completed { result, .. } = &e.result.as_ref().unwrap().1 else { panic!() };
     assert!(result.get("temperature_sent").is_none(), "{result}");
 }
+
+#[test]
+fn two_dispatch_pins_of_one_name_and_different_versions_are_refused() {
+    let rig = Rig::new();
+    let mk = |at: i64, prop: &str| {
+        let t = Tool::new("mcp_call")
+            .kind(ToolKind::Definition)
+            .input_schema(json!({"type": "object", "properties": {prop: {"type": "string"}}}))
+            .created_at(at)
+            .namespace("ops");
+        rig.facade.with_store(|m| m.add(&t)).unwrap().to_hex()
+    };
+    let (a, b) = (mk(500, "x"), mk(510, "y"));
+    for block in [
+        json!({"agent": {"dispatch": [a.clone(), b.clone()]}}),
+        json!({"agent": {"dispatch": [a.clone()]}, "agent2": {"dispatch": [b.clone()]}}),
+    ] {
+        let ctx = rig.def(Tool::new("context"));
+        let mut wf = Workflow::new(vec!["context".into(), "agent".into(), "agent2".into()])
+            .edge("context", "agent")
+            .edge("context", "agent2")
+            .bind("context", &ctx)
+            .created_at(600)
+            .namespace("ops");
+        wf.common.extra_fields.insert("llm".into(), block.clone());
+        let plan = rig.facade.with_store(|m| m.add(&wf)).unwrap();
+        let runner = rig.runner(Arc::new(TestExec::default()), CapturingLlm::new(vec![]));
+        let err = runner.start(&plan, "bad", json!({}), &opts()).unwrap_err();
+        assert_eq!(err.code(), "RUN-E019", "{block}: {err}");
+        assert!(err.to_string().contains(&a) && err.to_string().contains(&b), "{err}");
+    }
+}

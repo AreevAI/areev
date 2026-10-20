@@ -594,6 +594,22 @@ impl RunManifest {
         // A dispatch pin may not be ANOTHER version of a Definition a node
         // binds under the same name: the strict-argument table is keyed by
         // `tool_name`, and the second would overwrite the first's schema.
+        // Nor may two dispatch pins be different versions of one name, in one
+        // node or across nodes: the same table, the same overwrite.
+        for (n, d) in dispatch_pins.iter().enumerate() {
+            if let Some(o) = dispatch_pins[..n]
+                .iter()
+                .find(|o| o.tool_name == d.tool_name && o.tool_hash != d.tool_hash)
+            {
+                return Err(RunError::InvalidPlan {
+                    why: format!(
+                        "llm.dispatch pins two Definitions named {}: {} (node '{}') and {} \
+                         (node '{}') — one name, one version per run",
+                        d.tool_name, o.tool_hash, o.node, d.tool_hash, d.node
+                    ),
+                });
+            }
+        }
         for d in &dispatch_pins {
             if let Some(b) = pinned
                 .iter()
