@@ -208,3 +208,43 @@ def test_a_plan_declared_read_puts_db_entity_at_into_run_state(tmp_path):
     assert pinned["world_at_loss"]["executor"] == "memory"
     assert pinned["world_at_loss"]["read"]["axis"] == "world"
     assert json.loads(db.run_verify("claim-8801"))["verified"] is True
+
+
+def test_run_start_and_resume_take_an_llm_profile_and_refuse_a_malformed_one(db):
+    # #394: the request profile, as a JSON string — the CLI's --llm-* flags.
+    wf = _plan(db)
+    with pytest.raises(ValueError, match="temprature"):
+        db.run_start(wf, "py-p1", model="ollama:llama3.1", llm_profile='{"temprature": "omit"}')
+    with pytest.raises(ValueError, match="llm_profile"):
+        db.run_start(wf, "py-p2", model="ollama:llama3.1", llm_profile="not json")
+    # A profile the ollama transport cannot honour is refused, never ignored.
+    with pytest.raises(ValueError, match="no request profile"):
+        db.run_start(wf, "py-p3", model="ollama:llama3.1", llm_profile='{"temperature": "omit"}')
+    with pytest.raises(ValueError, match="pass `model`"):
+        db.run_start(wf, "py-p4", llm_profile='{"temperature": "omit"}')
+    with pytest.raises(ValueError, match="token_field"):
+        db.run_resume("py-p1", model="ollama:llama3.1", llm_profile='{"token_field": "tokens"}')
+    assert json.loads(db.run_list(10)) == [], "no run was journaled"
+
+
+def test_trigger_run_takes_llm_profile_and_the_env_twins_stand_in(db, monkeypatch):
+    # #394 review: the trigger path takes the profile; with none, the bindings
+    # read the CLI's $AREEV_RUN_LLM_* twins, and `off` means off.
+    with pytest.raises(ValueError, match="temprature"):
+        db.trigger_run(model="ollama:llama3.1", llm_profile='{"temprature": "omit"}')
+    wf = _plan(db)
+    monkeypatch.setenv("AREEV_RUN_LLM_NO_TEMPERATURE", "1")
+    with pytest.raises(ValueError, match="no request profile"):
+        db.run_start(wf, "py-env", model="ollama:llama3.1")
+    monkeypatch.setenv("AREEV_RUN_LLM_NO_TEMPERATURE", "off")
+    db.trigger_run(model="ollama:llama3.1")  # no profile, nothing to refuse
+
+
+def test_a_malformed_env_twin_cannot_fail_a_run_with_no_model(db, monkeypatch):
+    # Delta review 4: the twins are read only when a model is configured.
+    monkeypatch.setenv("AREEV_RUN_LLM_TOKEN_FIELD", "tokens")
+    wf = _plan(db)
+    session = json.loads(db.run_start(wf, "py-nomodel", tool_cmd='printf \'{"greeting": "hi"}\''))
+    assert "parked" in session or "finished" in session
+    with pytest.raises(ValueError, match="AREEV_RUN_LLM_TOKEN_FIELD"):
+        db.run_start(wf, "py-model", model="ollama:llama3.1")

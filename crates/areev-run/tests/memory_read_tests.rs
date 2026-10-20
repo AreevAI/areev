@@ -568,6 +568,7 @@ fn the_tool_pool_never_answers_a_memory_read() {
         idempotency_key: "k".into(),
         llm: None,
         code: None,
+        exec_name: None,
     });
     let done = pool.done_rx.recv().unwrap();
     let EffectOutcome::Failed { cause, detail, .. } = done.outcome else {

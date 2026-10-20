@@ -208,6 +208,54 @@ fn strip_vendor_extensions_at(schema: &mut Value, depth: usize) {
     }
 }
 
+/// JSON Schema annotation keywords that change no validation outcome and are
+/// not in [`ALLOWED_KEYWORDS`] (#397). MCP servers publish tool schemas
+/// carrying them routinely (`$schema` above all), and refusing a schema for an
+/// annotation refuses a tool for its paperwork. [`strip_annotations`] removes
+/// them; `title`, `description`, `examples` and `default` are annotations
+/// too, but already in the portable subset, so they stay.
+pub const ANNOTATION_KEYWORDS: &[&str] =
+    &["$schema", "$id", "$comment", "deprecated", "readOnly", "writeOnly"];
+
+/// Remove [`ANNOTATION_KEYWORDS`] and vendor extensions (`x-*`) at every
+/// level of a schema, in place — accept and ignore them, rather than refuse
+/// the schema (#397). Structure-aware exactly as
+/// [`strip_vendor_extensions`]: only keyword positions are touched, so a
+/// PROPERTY named `title` or `$id` survives. Run before
+/// [`SchemaValidator::validate`]; the structural subset rule (no `$ref`,
+/// `oneOf`, `anyOf`, `allOf`, `patternProperties`, …) is unchanged.
+pub fn strip_annotations(schema: &mut Value) {
+    strip_keywords_at(schema, 0, &|k: &str| k.starts_with("x-") || ANNOTATION_KEYWORDS.contains(&k));
+}
+
+fn strip_keywords_at(schema: &mut Value, depth: usize, drop: &dyn Fn(&str) -> bool) {
+    if depth > MAX_SCHEMA_DEPTH {
+        return;
+    }
+    match schema {
+        Value::Object(map) => {
+            map.retain(|k, _| !drop(k));
+            if let Some(Value::Object(props)) = map.get_mut("properties") {
+                for sub in props.values_mut() {
+                    strip_keywords_at(sub, depth + 1, drop);
+                }
+            }
+            if let Some(items) = map.get_mut("items") {
+                strip_keywords_at(items, depth + 1, drop);
+            }
+            if let Some(addl) = map.get_mut("additionalProperties") {
+                strip_keywords_at(addl, depth + 1, drop);
+            }
+        }
+        Value::Array(items) => {
+            for v in items.iter_mut() {
+                strip_keywords_at(v, depth + 1, drop);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Validator for the tool-schema subset. Stateless; cheap to construct.
 pub struct SchemaValidator {
     allowed_keywords: &'static [&'static str],
@@ -809,6 +857,35 @@ mod tests {
         let inst = json!({"channel": "general", "count": 1, "oops": "extra"});
         let err = validate_instance(&inst, &sch_sample()).unwrap_err();
         assert_eq!(err, InstanceErrorKind::Shape);
+    }
+
+    // ── strip_annotations (#397) ──
+
+    #[test]
+    fn annotation_keywords_are_stripped_at_every_level_and_property_names_survive() {
+        let mut s = json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "urn:t", "$comment": "c", "title": "T", "description": "d",
+            "type": "object",
+            "properties": {
+                "$id": {"type": "string", "readOnly": true, "deprecated": true},
+                "list": {"type": "array", "items": {"type": "string", "writeOnly": true,
+                         "examples": ["a"], "default": "a"}},
+                "map": {"type": "object", "additionalProperties": {"type": "integer", "$comment": "n"}}
+            }
+        });
+        strip_annotations(&mut s);
+        assert!(SchemaValidator::tool_schema().validate(&s).is_ok(), "{s}");
+        assert!(s.get("$schema").is_none() && s.get("$id").is_none() && s.get("$comment").is_none());
+        assert_eq!(s["title"], "T", "already portable: kept");
+        assert!(s["properties"].get("$id").is_some(), "a property NAMED $id survives");
+        assert!(s["properties"]["$id"].get("readOnly").is_none());
+        assert!(s["properties"]["list"]["items"].get("writeOnly").is_none());
+        assert!(s["properties"]["map"]["additionalProperties"].get("$comment").is_none());
+        // The structural rule did not move.
+        let mut banned = json!({"type": "object", "$schema": "x", "anyOf": []});
+        strip_annotations(&mut banned);
+        assert!(SchemaValidator::tool_schema().validate(&banned).is_err());
     }
 
     // ── strip_vendor_extensions ──

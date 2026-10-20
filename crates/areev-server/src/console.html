@@ -4163,7 +4163,8 @@ const Graph = (() => {
    one through the console would silently unbound its loop. A plan that
    declares memory `reads` (#255) opens view-only for the same reason: CAL
    has no syntax for them, and a resave would turn each read step into an
-   abstract LLM step. */
+   abstract LLM step. A per-node `llm` block (#391) likewise: a resave would
+   drop it, and with it the node's prompt, tool subset and schema. */
 function workflowGrains() { return wfRows().filter(g => g.type === 'workflow' && isCurrent(g)); }
 function toolDefs() { return wfRows().filter(g => g.type === 'tool' && (g.fields || {}).kind === 'definition' && isCurrent(g)); }
 function wfLabel(g) {
@@ -4178,6 +4179,7 @@ function wfIsCalEditable(g) {
   if (edges.some(e => e.max_cycles != null)) return false;
   if (f.retries && Object.keys(f.retries).length) return false;
   if (f.reads && Object.keys(f.reads).length) return false;
+  if (f.llm && Object.keys(f.llm).length) return false;
   return true;
 }
 /* `reads` wins over `bindings`: the runtime refuses a node that declares both,

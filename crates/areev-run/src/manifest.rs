@@ -87,6 +87,22 @@ pub struct PinnedTool {
     /// pin, so existing manifests serialize byte-identically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decide: Option<serde_json::Value>,
+    /// The Definition's `locked_params` (#393): keys merged OVER a model's
+    /// arguments when an abstract node calls this tool, the lock winning, and
+    /// stripped from the schema the model is offered. Frozen here with the
+    /// rest of the resolution, so a run whose Definition locked nothing when
+    /// it started — every run before 1.13 — never starts locking mid-flight.
+    /// Absent for every Definition without locks, so existing manifests
+    /// serialize byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locked_params: Option<serde_json::Value>,
+    /// An abstract node's frozen `llm` block (#391, #392): the plan's
+    /// declaration for this node, validated and normalized at start, with any
+    /// `tools_from` list resolved against the run input and pinned. Present
+    /// only on an abstract pin whose plan configured it, so existing manifests
+    /// serialize byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm: Option<areev_run_core::LlmNodeConfig>,
 }
 
 /// The `executor` a decision node (C3) pins as.
@@ -220,7 +236,22 @@ pub struct RunManifest {
     /// one: the scheduler then asks nothing, byte-for-byte as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decider: Option<DeciderPin>,
+    /// Definitions an abstract node's `llm.dispatch` pinned (#392): what its
+    /// dynamic tools dispatch through when no node binds it — resolved and
+    /// frozen like a bound Definition (code address, runtime, capabilities,
+    /// locks; `node` names the abstract node), checked at start like one, and
+    /// NEVER offered to a model as a tool of its own. Kept apart from
+    /// `pinned`, which is one entry per plan node. Empty — and absent — on
+    /// every manifest that declares none, so stored manifests keep their bytes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dispatch_pins: Vec<PinnedTool>,
+    /// Start-time warnings (`RUN-Wnnn …`), frozen with the run so `run
+    /// inspect` can say what the start accepted but did not act on. Empty —
+    /// and absent — on every run that raised none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
+
 
 /// The model configuration a run is pinned to (#287).
 ///
@@ -407,6 +438,7 @@ impl RunManifest {
         // here, at start — what the run reads, whatever the row says later.
         crate::memread::pin_queries(&mut reads, m)?;
         let mut pinned = Vec::with_capacity(plan.nodes.len());
+        let mut warnings: Vec<String> = Vec::new();
         for (i, node) in plan.nodes.iter().enumerate() {
             if let Some(spec) = reads.remove(node) {
                 let op = spec.get("op").and_then(|o| o.as_str()).unwrap_or_default();
@@ -422,6 +454,8 @@ impl RunManifest {
                     read: Some(spec),
                     ask_kind: None,
                     decide: None,
+                    locked_params: None,
+                    llm: None,
                 });
                 continue;
             }
@@ -447,9 +481,13 @@ impl RunManifest {
                             read: None,
                             ask_kind: None,
                             decide: None,
+                            locked_params: None,
+                            llm: None,
                         }
                     } else {
-                        pin_from_definition(node, &h, &g)?
+                        let pin = pin_from_definition(node, &h, &g)?;
+                        warnings.extend(locked_params_warning(&pin, &g));
+                        pin
                     }
                 }
                 None => {
@@ -458,7 +496,11 @@ impl RunManifest {
                     // instruction the model interprets — which needs the
                     // tool-calling seam configured.
                     match find_definition_by_name(m, ns, node) {
-                        Some((h, g)) => pin_from_definition(node, &h, &g)?,
+                        Some((h, g)) => {
+                            let pin = pin_from_definition(node, &h, &g)?;
+                            warnings.extend(locked_params_warning(&pin, &g));
+                            pin
+                        }
                         // The misroute FIRST, before either fallback (#230).
                         // A node whose name matches a real Definition sitting
                         // in the plan's own namespace is a run started in the
@@ -493,12 +535,112 @@ impl RunManifest {
                             read: None,
                             ask_kind: None,
                             decide: None,
+                            locked_params: None,
+                            llm: None,
                         },
                         None => return Err(RunError::NoToolLlm { node: node.clone() }),
                     }
                 }
             };
             pinned.push(resolved);
+        }
+        // The per-node `llm` blocks (#391, #392), validated against the pins
+        // just resolved — a `tools` subset or a dynamic tool's dispatch may
+        // only name what the plan pinned — and FROZEN onto each abstract pin.
+        // `tools_from` resolves against the run input here, once.
+        // A `dispatch` entry resolves exactly as an unbound node's same-named
+        // Definition does — the run's namespace, then the plan grain's — or by
+        // content address, and pins like a binding.
+        let mut resolve_dispatch = |node: &str, entry: &str| -> std::result::Result<PinnedTool, RunError> {
+            let by_hash = entry.len() == 64 && entry.chars().all(|c| c.is_ascii_hexdigit());
+            let found = if by_hash {
+                Hash::from_hex(entry).ok().and_then(|h| m.get_stored(&h).ok().map(|g| (h, g)))
+            } else {
+                find_definition_by_name(m, ns, entry).or_else(|| match plan_ns.as_deref() {
+                    Some(p) if p != ns => find_definition_by_name(m, p, entry),
+                    _ => None,
+                })
+            };
+            let Some((h, g)) = found else {
+                return Err(RunError::UnresolvedRef {
+                    what: format!(
+                        "node '{node}' llm.dispatch names '{entry}', which resolves to no Tool \
+                         Definition — not in namespace '{ns}', where this run reads, nor in the \
+                         plan's own namespace{}",
+                        plan_ns.as_deref().map(|p| format!(" '{p}'")).unwrap_or_default()
+                    ),
+                });
+            };
+            let mut pin = pin_from_definition(node, &h, &g)?;
+            if pin.executor != "host" {
+                return Err(RunError::InvalidPlan {
+                    why: format!(
+                        "node '{node}' llm.dispatch names '{entry}', a {} tool — a dynamic tool \
+                         dispatches through a host tool only",
+                        pin.executor
+                    ),
+                });
+            }
+            pin.node = node.to_string();
+            Ok(pin)
+        };
+        let (blocks, dispatch_pins) = crate::llmcfg::parse_llm(
+            fields.and_then(|f| f.get(crate::llmcfg::LLM_FIELD)),
+            plan,
+            &pinned,
+            &input,
+            &mut resolve_dispatch,
+        )?;
+        // A dispatch pin may not be ANOTHER version of a Definition a node
+        // binds under the same name: the strict-argument table is keyed by
+        // `tool_name`, and the second would overwrite the first's schema.
+        // Nor may two dispatch pins be different versions of one name, in one
+        // node or across nodes: the same table, the same overwrite.
+        for (n, d) in dispatch_pins.iter().enumerate() {
+            if let Some(o) = dispatch_pins[..n]
+                .iter()
+                .find(|o| o.tool_name == d.tool_name && o.tool_hash != d.tool_hash)
+            {
+                return Err(RunError::InvalidPlan {
+                    why: format!(
+                        "llm.dispatch pins two Definitions named {}: {} (node '{}') and {} \
+                         (node '{}') — one name, one version per run",
+                        d.tool_name, o.tool_hash, o.node, d.tool_hash, d.node
+                    ),
+                });
+            }
+        }
+        for d in &dispatch_pins {
+            if let Some(b) = pinned
+                .iter()
+                .find(|p| p.executor == "host" && p.tool_name == d.tool_name && p.tool_hash != d.tool_hash)
+            {
+                return Err(RunError::InvalidPlan {
+                    why: format!(
+                        "node '{}' llm.dispatch pins {} ({}), but node '{}' binds a different \
+                         Definition of that name ({}) — dispatch through the bound one, or give \
+                         the other version its own tool_name",
+                        d.node, d.tool_name, d.tool_hash, b.node, b.tool_hash
+                    ),
+                });
+            }
+        }
+        for (node, mut block) in blocks {
+            // The dispatch Definition's own schema, frozen beside the entry:
+            // the merged input is validated against it on every call.
+            for d in &mut block.dynamic_tools {
+                let h = Hash::from_hex(&d.dispatch.hash).map_err(|_| RunError::UnresolvedRef {
+                    what: format!("dispatch hash {} is not a content address", d.dispatch.hash),
+                })?;
+                d.dispatch.definition_schema = m
+                    .get_stored(&h)
+                    .ok()
+                    .and_then(|g| g.to_tool().ok())
+                    .and_then(|t| t.input_schema);
+            }
+            if let Some(p) = pinned.iter_mut().find(|p| p.node == node) {
+                p.llm = Some(block);
+            }
         }
         // Reducer table (§6.5): declared on the Workflow grain, validated
         // here — an unknown name fails at run start, not at first merge.
@@ -546,6 +688,8 @@ impl RunManifest {
             harness_ns: None,
             allow_confirmation_asks: false,
             decider: None,
+            dispatch_pins,
+            warnings,
         })
     }
 
@@ -653,6 +797,22 @@ impl RunManifest {
             .unwrap_or(areev_run_core::DEFAULT_MAX_EFFECTS_PER_ATTEMPT)
     }
 
+    /// The host Definition pinned at `hash` — a node's binding or an
+    /// `llm.dispatch` pin (#392). How a model-issued call finds what it
+    /// executes as.
+    pub fn host_pin_by_hash(&self, hash: &str) -> Option<&PinnedTool> {
+        self.pinned
+            .iter()
+            .chain(&self.dispatch_pins)
+            .find(|p| p.executor == "host" && p.tool_hash == hash)
+    }
+
+    /// Every pin that names code this run may execute: the nodes' and the
+    /// `llm.dispatch` pins'. What start checks against the host's pins.
+    pub fn code_pins(&self) -> impl Iterator<Item = &PinnedTool> {
+        self.pinned.iter().chain(&self.dispatch_pins)
+    }
+
     /// The executor vector the scheduler env consumes, in node order. An
     /// abstract node's offered tools are the manifest's HOST-pinned tools —
     /// derived, not stored, so the manifest stays minimal and the offer is
@@ -670,11 +830,35 @@ impl RunManifest {
             .iter()
             .filter(|p| p.executor == "host")
             .filter(|p| seen.insert(p.tool_name.clone()))
-            .map(|p| areev_run_core::OfferedTool {
-                tool_name: p.tool_name.clone(),
-                tool_hash: p.tool_hash.clone(),
+            .map(|p| {
+                let mut t = areev_run_core::OfferedTool::new(p.tool_name.clone(), p.tool_hash.clone());
+                t.locked = p.locked_params.clone();
+                t
             })
             .collect();
+        // A node's own offer (#391, #392): its `tools` subset of the pinned
+        // set — manifest order, narrowing only — then the dynamic tools its
+        // block pinned from the run input, each locked by its entry and, over
+        // that, by the Definition it dispatches.
+        let offer_for = |p: &PinnedTool| -> Vec<areev_run_core::OfferedTool> {
+            let Some(cfg) = &p.llm else { return offered.clone() };
+            let mut tools: Vec<areev_run_core::OfferedTool> = match &cfg.tools {
+                Some(names) => offered.iter().filter(|t| names.contains(&t.tool_name)).cloned().collect(),
+                None => offered.clone(),
+            };
+            for d in &cfg.dynamic_tools {
+                let def_lock = self
+                    .host_pin_by_hash(&d.dispatch.hash)
+                    .and_then(|q| q.locked_params.as_ref());
+                tools.push(areev_run_core::OfferedTool {
+                    tool_name: d.name.clone(),
+                    tool_hash: d.dispatch.hash.clone(),
+                    locked: crate::llmcfg::merge_locks(d.dispatch.locked.as_ref(), def_lock),
+                    dynamic: Some(Box::new(d.clone())),
+                });
+            }
+            tools
+        };
         self.pinned
             .iter()
             .map(|p| match p.executor.as_str() {
@@ -695,7 +879,10 @@ impl RunManifest {
                         spec,
                     }
                 }
-                "abstract" => NodeExecutor::Abstract { tools: offered.clone() },
+                "abstract" => NodeExecutor::Abstract {
+                    tools: offer_for(p),
+                    llm: p.llm.clone().map(Box::new),
+                },
                 // Never Host, for the memory-read reason: a decision that
                 // fell through to `--tool-cmd` would let a tool answer it.
                 DECIDE_EXECUTOR => NodeExecutor::Decide {
@@ -1053,6 +1240,24 @@ pub fn pin_from_definition(
         }
     };
     let decide = if decide_node { Some(parse_decide(node, g.fields.get("decide"))?) } else { None };
+    // `locked_params` (#393): an object, or refused — the write path checks
+    // it, but a grain can arrive by sync or in a pack from an implementation
+    // we do not vouch for, and a lock that silently failed to apply is a
+    // parameter the model was trusted with by mistake.
+    let locked_params = match g.fields.get("locked_params") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::Object(o)) if o.is_empty() => None,
+        Some(v @ serde_json::Value::Object(_)) if executor == "host" && !decide_node => Some(v.clone()),
+        // A client or decision tool: nothing a model calls, so nothing to
+        // lock. Ignored, as 1.12 ignored it; the start records RUN-W001
+        // (`locked_params_warning`).
+        Some(serde_json::Value::Object(_)) => None,
+        Some(other) => {
+            return Err(RunError::InvalidPlan {
+                why: format!("node '{node}' binds a Definition whose locked_params is not an object: {other}"),
+            })
+        }
+    };
     Ok(PinnedTool {
         node: node.to_string(),
         tool_hash: h.to_hex(),
@@ -1065,6 +1270,31 @@ pub fn pin_from_definition(
         read: None,
         ask_kind,
         decide,
+        locked_params,
+        llm: None,
+    })
+}
+
+/// The `RUN-W001` text for a pin whose Definition declares `locked_params`
+/// the runtime ignores (a client or decision tool), or `None`. No model calls
+/// such a tool, so the locks have nothing to apply to; 1.12 accepted them
+/// silently, and refusing them now would break a plan that ran yesterday, so
+/// they are ignored and the start says so.
+pub fn locked_params_warning(
+    pin: &PinnedTool,
+    g: &areev_core::format::deserialize::DeserializedGrain,
+) -> Option<String> {
+    let declared = g
+        .fields
+        .get("locked_params")
+        .and_then(|v| v.as_object())
+        .is_some_and(|o| !o.is_empty());
+    (declared && pin.locked_params.is_none() && pin.executor != "host").then(|| {
+        format!(
+            "RUN-W001: node '{}' binds {} ({}), a {} tool, which declares locked_params — no \
+             model calls it, so they are ignored",
+            pin.node, pin.tool_name, pin.tool_hash, pin.executor
+        )
     })
 }
 
@@ -1245,6 +1475,8 @@ mod tests {
             harness_ns: None,
             allow_confirmation_asks: false,
             decider: None,
+            dispatch_pins: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 
@@ -1261,6 +1493,8 @@ mod tests {
             read: None,
             ask_kind: None,
             decide: None,
+            locked_params: None,
+            llm: None,
         }
     }
 
@@ -1284,6 +1518,8 @@ mod tests {
                 read: None,
                 ask_kind: None,
                 decide: None,
+                locked_params: None,
+                llm: None,
             },
             host_pin("reply_done", "reply_email"),
             host_pin("reply_rejected", "reply_email"),
@@ -1291,7 +1527,7 @@ mod tests {
         let executors = m.executors();
         assert_eq!(executors.len(), 4);
         match &executors[1] {
-            NodeExecutor::Abstract { tools } => {
+            NodeExecutor::Abstract { tools, .. } => {
                 let names: Vec<&str> = tools.iter().map(|t| t.tool_name.as_str()).collect();
                 assert_eq!(names, vec!["parse_attachments", "reply_email"]);
                 assert_eq!(tools[1].tool_hash, "hash-reply_email");
@@ -1329,6 +1565,8 @@ mod tests {
             read,
             ask_kind: None,
             decide: None,
+            locked_params: None,
+            llm: None,
         };
         let mut m = bare();
         m.pinned = vec![
@@ -1338,7 +1576,7 @@ mod tests {
         ];
         let executors = m.executors();
         assert_eq!(executors[1], NodeExecutor::MemoryRead { op: "entity_at".into(), spec });
-        let NodeExecutor::Abstract { tools } = &executors[2] else { panic!("{executors:?}") };
+        let NodeExecutor::Abstract { tools, .. } = &executors[2] else { panic!("{executors:?}") };
         let offered: Vec<&str> = tools.iter().map(|t| t.tool_name.as_str()).collect();
         assert_eq!(offered, vec!["parse_attachments"], "a read is never offered to a model");
 
@@ -1390,5 +1628,56 @@ mod tests {
         assert_eq!(m.max_effects_per_attempt(), 40);
         let json = serde_json::to_string(&m).unwrap();
         assert!(json.contains(r#""max_effects_per_attempt":40"#), "{json}");
+    }
+    /// #391/#393: a pin without a lock or a block serializes as it always did,
+    /// so every stored manifest keeps its address.
+    #[test]
+    fn a_pin_without_a_lock_or_a_block_keeps_its_bytes() {
+        let json = serde_json::to_string(&host_pin("parse", "parse")).unwrap();
+        assert!(!json.contains("locked_params") && !json.contains("\"llm\""), "{json}");
+    }
+
+    /// A node's offer is its `tools` subset in manifest order, then its pinned
+    /// dynamic tools — each locked by its entry and, over that, by the
+    /// Definition it dispatches; every other abstract node keeps the full set.
+    #[test]
+    fn a_nodes_offer_is_its_subset_then_its_dynamic_tools() {
+        let mut m = bare();
+        let mut mcp = host_pin("mcp", "mcp.call");
+        mcp.locked_params = Some(json!({"credential": "gateway"}));
+        let cfg = areev_run_core::LlmNodeConfig {
+            tools: Some(vec!["lookup".into()]),
+            dynamic_tools: vec![areev_run_core::DynamicTool {
+                name: "paid_to".into(),
+                description: String::new(),
+                input_schema: json!({"type": "object"}),
+                dispatch: areev_run_core::DynamicDispatch {
+                    definition: "mcp.call".into(),
+                    hash: "hash-mcp.call".into(),
+                    locked: Some(json!({"url": "u", "credential": "loses"})),
+                    args_into: Some("arguments".into()),
+                    definition_schema: None,
+                },
+            }],
+            ..Default::default()
+        };
+        m.pinned = vec![
+            host_pin("lookup", "lookup"),
+            mcp,
+            PinnedTool { executor: "abstract".into(), llm: Some(cfg), ..host_pin("agent", "agent") },
+            PinnedTool { executor: "abstract".into(), ..host_pin("other", "other") },
+        ];
+        let ex = m.executors();
+        let NodeExecutor::Abstract { tools, llm } = &ex[2] else { panic!("{ex:?}") };
+        let names: Vec<&str> = tools.iter().map(|t| t.tool_name.as_str()).collect();
+        assert_eq!(names, vec!["lookup", "paid_to"]);
+        assert_eq!(tools[1].tool_hash, "hash-mcp.call");
+        assert_eq!(tools[1].locked, Some(json!({"url": "u", "credential": "gateway"})));
+        assert!(llm.is_some());
+        let NodeExecutor::Abstract { tools, llm } = &ex[3] else { panic!("{ex:?}") };
+        let names: Vec<&str> = tools.iter().map(|t| t.tool_name.as_str()).collect();
+        assert_eq!(names, vec!["lookup", "mcp.call"]);
+        assert_eq!(tools[1].locked, Some(json!({"credential": "gateway"})));
+        assert!(llm.is_none());
     }
 }

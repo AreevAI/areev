@@ -145,6 +145,7 @@ fn req<'a>(tools: &'a [Tool]) -> ToolCallRequest<'a> {
         tool_choice: ToolChoice::Auto,
         max_tokens: 256,
         temperature: 0.0,
+        ..Default::default()
     }
 }
 
@@ -326,6 +327,7 @@ fn anthropic_tool_use_blocks_round_trip_with_history() {
         tool_choice: ToolChoice::Required,
         max_tokens: 512,
         temperature: 0.0,
+        ..Default::default()
     };
     let resp = llm.call(&request).unwrap();
 
@@ -581,6 +583,7 @@ fn a_replayed_assistant_turn_sends_the_provider_content_byte_identically() {
         tool_choice: ToolChoice::Auto,
         max_tokens: 256,
         temperature: 0.0,
+        ..Default::default()
     };
     llm.call(&request).unwrap();
     let sent = rx.recv().unwrap();
@@ -800,4 +803,133 @@ fn a_default_credential_still_uses_the_adapters_own_header() {
         .authorize(&areev_llm::cred::AuthRequest { method: "POST", url: "u", body: b"" })
         .unwrap()
         .is_none());
+}
+
+// ── #391/#394: per-request structured output, temperature, parallel calls ──
+
+fn openai_ok() -> Value {
+    json!({
+        "choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+    })
+}
+
+#[test]
+fn openai_sends_the_requested_schema_parallel_flag_and_no_temperature() {
+    use areev_llm::toolcall::ResponseFormat;
+    let (base, rx) = one_shot_server(200, openai_ok());
+    let llm = OpenAiCompat::new(&base, "k", "gpt-5-mini");
+    let tools = [weather_tool()];
+    let schema = json!({"type": "object", "properties": {"a": {"type": "string"}}, "required": ["a"]});
+    let mut r = req(&tools);
+    r.response_format = Some(ResponseFormat::json_schema("reply.node", schema.clone()));
+    r.parallel_tool_calls = Some(false);
+    r.omit_temperature = true;
+    llm.call(&r).unwrap();
+    let sent = rx.recv().unwrap();
+    assert_eq!(sent["response_format"]["type"], "json_schema");
+    assert_eq!(sent["response_format"]["json_schema"]["name"], "reply_node", "sanitized");
+    assert_eq!(sent["response_format"]["json_schema"]["strict"], true);
+    assert_eq!(sent["response_format"]["json_schema"]["schema"], schema);
+    assert_eq!(sent["parallel_tool_calls"], false);
+    assert!(sent.get("temperature").is_none(), "omit sends no key at all: {sent}");
+
+    // json:true is json_object; no tools means no parallel_tool_calls key
+    // (OpenAI refuses the field on a request that offers none).
+    let (base, rx) = one_shot_server(200, openai_ok());
+    let llm = OpenAiCompat::new(&base, "k", "m");
+    let mut r = req(&[]);
+    r.response_format = Some(ResponseFormat::JsonObject);
+    r.parallel_tool_calls = Some(true);
+    r.temperature = 0.3;
+    llm.call(&r).unwrap();
+    let sent = rx.recv().unwrap();
+    assert_eq!(sent["response_format"], json!({"type": "json_object"}));
+    assert!(sent.get("parallel_tool_calls").is_none());
+    assert_eq!(sent["temperature"], 0.3);
+}
+
+#[test]
+fn a_request_field_wins_over_a_profile_extra_body_carrying_the_same_key() {
+    use areev_llm::profile::RequestProfile;
+    let (base, rx) = one_shot_server(200, openai_ok());
+    let profile = RequestProfile::new()
+        .extra_body_json(r#"{"parallel_tool_calls":true}"#)
+        .unwrap();
+    let llm = OpenAiCompat::new(&base, "k", "m").with_request_profile(profile);
+    let tools = [weather_tool()];
+    let mut r = req(&tools);
+    r.parallel_tool_calls = Some(false);
+    llm.call(&r).unwrap();
+    assert_eq!(rx.recv().unwrap()["parallel_tool_calls"], false);
+}
+
+#[test]
+fn a_profile_temperature_value_is_sent_and_either_omission_wins() {
+    use areev_llm::profile::{RequestProfile, TemperatureMode};
+    let (base, rx) = one_shot_server(200, openai_ok());
+    let llm = OpenAiCompat::new(&base, "k", "m")
+        .with_request_profile(RequestProfile::new().temperature_value(0.7));
+    let tools = [weather_tool()];
+    llm.call(&req(&tools)).unwrap();
+    assert_eq!(rx.recv().unwrap()["temperature"], 0.7);
+
+    let (base, rx) = one_shot_server(200, openai_ok());
+    let llm = OpenAiCompat::new(&base, "k", "m")
+        .with_request_profile(RequestProfile::new().temperature_value(0.7));
+    let mut r = req(&tools);
+    r.omit_temperature = true;
+    llm.call(&r).unwrap();
+    assert!(rx.recv().unwrap().get("temperature").is_none());
+
+    let (base, rx) = one_shot_server(200, openai_ok());
+    let llm = OpenAiCompat::new(&base, "k", "m")
+        .with_request_profile(RequestProfile::new().temperature(TemperatureMode::Omit));
+    let mut r = req(&tools);
+    r.temperature = 0.4;
+    llm.call(&r).unwrap();
+    assert!(rx.recv().unwrap().get("temperature").is_none());
+}
+
+#[test]
+fn anthropic_states_the_schema_in_the_system_text_and_disables_parallel_use() {
+    use areev_llm::toolcall::ResponseFormat;
+    let (base, rx) = one_shot_server(200, anthropic_ok_body());
+    let llm = Anthropic::new("k", "claude-sonnet-4-5").with_base_url(&base);
+    let tools = [weather_tool()];
+    let mut r = req(&tools);
+    r.system = Some("You are the AP assistant.".into());
+    r.response_format = Some(ResponseFormat::json_schema(
+        "reply",
+        json!({"type": "object", "properties": {"answer": {"type": "string"}}}),
+    ));
+    r.parallel_tool_calls = Some(false);
+    r.omit_temperature = true;
+    llm.call(&r).unwrap();
+    let sent = rx.recv().unwrap();
+    let system = sent["system"][0]["text"].as_str().unwrap();
+    assert!(system.starts_with("You are the AP assistant."), "{system}");
+    assert!(system.contains("\"answer\""), "the schema rides the system text: {system}");
+    assert!(sent.get("response_format").is_none(), "no such field on this wire");
+    assert_eq!(sent["tool_choice"]["disable_parallel_tool_use"], true);
+    assert!(sent.get("temperature").is_none(), "a legacy model still omits on request");
+}
+
+#[test]
+fn ollama_takes_the_schema_as_format_and_omits_the_temperature_option() {
+    use areev_llm::toolcall::ResponseFormat;
+    let (base, rx) = one_shot_server(
+        200,
+        json!({"message": {"content": "{}"}, "done_reason": "stop",
+               "prompt_eval_count": 1, "eval_count": 1}),
+    );
+    let llm = Ollama::new(&base, "local-model");
+    let schema = json!({"type": "object", "properties": {}});
+    let mut r = req(&[]);
+    r.response_format = Some(ResponseFormat::json_schema("n", schema.clone()));
+    r.omit_temperature = true;
+    llm.call(&r).unwrap();
+    let sent = rx.recv().unwrap();
+    assert_eq!(sent["format"], schema);
+    assert!(sent["options"].get("temperature").is_none());
 }

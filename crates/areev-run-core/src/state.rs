@@ -255,6 +255,20 @@ pub struct AbstractFlow {
     /// filters the offered Definitions by. `None` = the full pinned set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offer: Option<Value>,
+    /// Corrective re-prompts issued for a final answer that failed the node's
+    /// `response` schema (#391): ONE, then the node fails
+    /// `SchemaValidationFailed`. Zero — and absent — on every flow whose node
+    /// asks for no structured output.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub response_strikes: u32,
+    /// Every settled tool call of this attempt, in `effect_seq` order (never
+    /// arrival order — results of one round land in any order), for a
+    /// node whose `llm` block names `tool_results_into` (#391):
+    /// `{name, tool_call_id, model_call_id, input, result, is_error,
+    /// effect_seq}`. Built from the journaled outcomes as they resolve, so
+    /// `verify` rebuilds it byte for byte. Empty — and absent — otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_log: Vec<Value>,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -421,6 +435,8 @@ mod tests {
             deciding: None,
             decide_fold_tried: false,
             offer: None,
+            response_strikes: 0,
+            tool_log: Vec::new(),
         }
     }
 

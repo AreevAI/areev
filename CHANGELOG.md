@@ -6,6 +6,118 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.13.0] — 2026-10-20
+
+### Added
+
+- **A plan configures each LLM node (`llm`)** (#391). A Workflow's new `llm`
+  field sets, per abstract node: `system` (replaces the built-in prompt);
+  `instruction` or `instruction_from`, a JSON pointer into the node's input
+  that may be nested, such as `/prompt/text`; `state` (`"all"`, `"none"` or a
+  list of keys); `tools` (a subset of the pinned host tools); `response`
+  (`{"json_schema": …}` or `{"json": true}`); `temperature` (a number, or
+  `"omit"` to send none, for the GPT-5 family); `max_tokens` (the node's
+  ceiling and reservation); `parallel_tool_calls`; and `tool_results_into`,
+  which hands every tool call of the attempt, built from the journal, to the
+  nodes below. The block is validated at start (`RUN-E019` for a shape error,
+  `RUN-E004` for an unpinned tool name) and frozen into the manifest, so
+  `run inspect` shows it and resume and `verify` use it. Each `mg:llm` intent
+  journals the request fields as sent under `input.llm`. The runtime checks a
+  structured answer whatever the provider did, with one corrective re-prompt
+  before the node fails `schema_validation_failed`. A node with no block
+  journals byte-identically, so the scheduler epoch did not move.
+- **Tools declared in the run input (`tools_from`)** (#392). An abstract
+  node's `llm.tools_from` points at a list in the run input:
+  `{name, description, input_schema, dispatch: {definition, locked,
+  args_into}}`. The list is pinned at start and offered under its own names
+  and schemas. A call is validated against the entry's schema, wrapped under
+  `args_into`, locked, validated against the dispatch Definition's
+  `input_schema`, executed as that Definition (same pin, sandbox and broker
+  grants) and journaled under the entry's name. `llm.dispatch: [name | hash]`
+  pins a Definition that no node binds, such as `mcp.call`. It resolves as an
+  unbound node's Definition does and is never offered to the model by itself.
+  A dispatch target that is not pinned, a duplicate name, or a name that
+  collides with a pinned tool is refused at start, naming the entry.
+- **Per-node tool-offer narrowing** (#396). `llm.<node>.narrow: false` keeps
+  a node's whole offer when a calibrated decision backend is pinned, and
+  `narrow: {"top_k": n}` sets the K for that node. Both are frozen in the
+  manifest, and `true` (the default) keeps the run-wide top-8 rule. The
+  narrowing question now describes a `tools_from` tool by the first line of
+  its own `description`, as it describes a pinned Definition by its
+  `tool_description`. Before this change it listed a dynamic tool by name
+  only.
+- **`llm_profile` on the bindings** (#394). `runStart`/`runResume` (Node) and
+  `run_start`/`run_resume` (Python) take a trailing JSON string,
+  `{"temperature": "omit" | n, "token_field": …, "extra_body": {…}}`, so an
+  embedding host can run a model that refuses a temperature.
+  `ToolCallRequest` gains `response_format`, `parallel_tool_calls` and
+  `omit_temperature`, and now derives `Default`. `RequestProfile::from_json`
+  and `resolve_toolcall_with_profile` are new.
+
+### Fixed
+
+- **`locked_params` is applied** (#393). A Definition's locked parameters
+  were stored, validated and displayed, and never used: a model-issued call
+  was dispatched with whatever the model sent. Locks are now merged over the
+  model's arguments (the lock wins), stripped from the offered schema
+  (`properties` and `required`), checked by a strict Definition on the merged
+  input, journaled merged, and frozen with the pin. They are applied by run
+  dispatch (`areev-run`), the one place a model's tool call is executed. They
+  are not applied by `areev-loop`, `areev-server` or `areev-mcp`, which
+  dispatch no model-issued calls, nor to a bound host node. The issue's
+  acceptance read "merged at invoke", and invoke is run dispatch. A client or
+  decision Definition carrying `locked_params` still starts: the locks are
+  ignored, as in 1.12, with a `RUN-W001` warning in the manifest. `shadow`
+  rehearses a run with the locks that run froze, so a 1.12 run still scores
+  `same` on an unchanged plan.
+- **Hardening from a review of the 1.13 branch:**
+  - Without `args_into`, a dynamic tool's schema is closed: a key the entry
+    does not name, or a key the host locked, is an argument violation. With
+    `args_into`, the entry's own schema decides, and only
+    `additionalProperties: false` closes it.
+  - The model's arguments are checked against the schema it was shown, so a
+    required key the host locks is never demanded.
+  - A dotted lock key, a lock on the `args_into` key, a dispatch pin that is
+    another version of a bound Definition's name, and a `json_schema` that
+    OpenAI's strict mode would refuse are all refused at start (`RUN-E019`).
+  - `{"json": true}` adds "Answer with a JSON object." to a node system text
+    that never says JSON.
+  - A fenced (```` ```json ````) final answer is accepted.
+  - The `tools_from` list is left out of the whole-state prompt.
+  - A node's `system` text, and a dynamic tool's description and schema
+    prose, are pseudonymized under an `egress` policy.
+  - Transports report the temperature they actually send, and a result
+    records it as `temperature_sent`.
+  - Request profiles reach `triggerRun`/`trigger_run`, `triggerDeliver`/
+    `trigger_deliver` and `areev eval`. The bindings read the
+    `$AREEV_RUN_LLM_*` variables when given no profile, and only when a model
+    is configured, so a stale variable cannot fail a model-less run. `off`
+    and `no` mean off, and a bare `--llm-no-temperature` no longer swallows
+    the next argument. **Behaviour change:** the space form
+    `--llm-no-temperature false` therefore no longer means off. `false` is
+    now a positional argument; write `--llm-no-temperature=false`.
+- **Schema annotations no longer refuse a tool** (#397). A `tools_from`
+  entry's `input_schema` (or a `response.json_schema`, or a Definition's
+  `input_schema`/`output_schema` at write time) that carried `$schema`,
+  `$id`, `$comment`, `deprecated`, `readOnly`, `writeOnly` or `x-*` was
+  refused (`RUN-E019`, "unsupported keyword $schema"). MCP servers publish
+  these routinely. They are now accepted and dropped at every level
+  (`json_schema_subset::strip_annotations`). `title`, `description`,
+  `examples` and `default` were already accepted and are kept, and the
+  structural subset rule is unchanged.
+- **A streamed turn records `served_model`** (#394). The OpenAI-compatible,
+  Anthropic and Ollama stream accumulators now read the served model as the
+  whole-response parsers do. A run observed through `onEvent`, which streams,
+  no longer journals less provenance than the same run unobserved.
+- **An abstract node's call to a code-carrying Definition runs its blob.** The
+  driver looked up a model-issued call's code by node, found the abstract
+  node's own pin, and sent the call to `--tool-cmd`. It now finds the
+  Definition by its frozen content address.
+- **The CLI's `--llm-token-field`, `--llm-no-temperature` and
+  `--llm-extra-body` take effect.** `areev run`'s usage text has listed them
+  since #285, but nothing read them. They now build the request profile
+  (`$AREEV_RUN_LLM_*` twins).
+
 ## [1.12.2] — 2026-10-06
 
 ### Fixed
@@ -4794,7 +4906,8 @@ ecosystem adapters, and the enterprise plane.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.12.2...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.13.0...HEAD
+[1.13.0]: https://github.com/AreevAI/areev/compare/v1.12.2...v1.13.0
 [1.12.2]: https://github.com/AreevAI/areev/compare/v1.12.1...v1.12.2
 [1.12.1]: https://github.com/AreevAI/areev/compare/v1.12.0...v1.12.1
 [1.12.0]: https://github.com/AreevAI/areev/compare/v1.11.1...v1.12.0

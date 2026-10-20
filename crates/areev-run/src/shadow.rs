@@ -774,6 +774,15 @@ impl ShadowCtx<'_> {
                 true,
             ),
         })?;
+        // Locks come from what the INCUMBENT froze, never from re-reading
+        // the Definition: a run started before locks were applied (any 1.12
+        // run) froze none, and rehearsing it with the Definition's locks
+        // would replay a different validation and diverge on an unchanged
+        // plan. A Definition the incumbent never pinned locks nothing here.
+        for p in manifest.pinned.iter_mut().chain(manifest.dispatch_pins.iter_mut()) {
+            p.locked_params =
+                incumbent.host_pin_by_hash(&p.tool_hash).and_then(|q| q.locked_params.clone());
+        }
         manifest.llm_max_tokens = incumbent.llm_max_tokens;
         manifest.max_effects_per_attempt = incumbent.max_effects_per_attempt;
         manifest.llm_tool_result_chars = incumbent.llm_tool_result_chars;
@@ -1072,7 +1081,9 @@ pub(crate) fn arg_schemas_for(
     manifest: &RunManifest,
 ) -> Result<std::collections::BTreeMap<String, Value>, RunError> {
     let mut schemas = std::collections::BTreeMap::new();
-    for p in &manifest.pinned {
+    // `llm.dispatch` pins (#392) included: a dynamic tool's merged input is
+    // judged under the Definition it dispatches, strict like any other.
+    for p in manifest.code_pins() {
         // A decision node's strict schema applies to the `{state, questions}`
         // the driver builds for it (C3), as a strict host tool's applies to
         // a model's call.

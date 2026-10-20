@@ -212,6 +212,224 @@ pub enum EventIn {
 pub struct OfferedTool {
     pub tool_name: String,
     pub tool_hash: String,
+    /// Keys merged OVER the model's arguments at dispatch, the lock winning
+    /// (#393): the Definition's `locked_params`, and for a dynamic tool its
+    /// entry's `dispatch.locked` beneath them. What the intent journals and
+    /// the executor receives is the merged object; the transcript keeps what
+    /// the model said. `None` for every tool that locks nothing, so an offer
+    /// without locks serializes as it always did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locked: Option<Value>,
+    /// Present exactly when this is a tool declared in the run input (#392,
+    /// `tools_from`): the model sees `tool_name` and `dynamic.input_schema`,
+    /// and a call dispatches the pinned Definition `dynamic.dispatch` names —
+    /// whose address `tool_hash` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dynamic: Option<Box<DynamicTool>>,
+}
+
+impl OfferedTool {
+    /// An offered pinned Definition with nothing locked — the pre-1.13 shape.
+    pub fn new(tool_name: impl Into<String>, tool_hash: impl Into<String>) -> Self {
+        OfferedTool {
+            tool_name: tool_name.into(),
+            tool_hash: tool_hash.into(),
+            locked: None,
+            dynamic: None,
+        }
+    }
+
+    /// The Definition a call to this tool actually dispatches: its own name,
+    /// or — for a dynamic tool — the pinned Definition behind it. This is the
+    /// name the strict-argument table is keyed by.
+    pub fn dispatch_name(&self) -> &str {
+        match &self.dynamic {
+            Some(d) => &d.dispatch.definition,
+            None => &self.tool_name,
+        }
+    }
+
+    /// The input a model-issued call dispatches with (#392, #393): the
+    /// model's arguments — under `dispatch.args_into` for a dynamic tool
+    /// that names one — with every locked key merged over them. Shallow, top
+    /// level, the lock always winning. Pure and total, so replay rebuilds the
+    /// same object; a non-object argument payload (refused before dispatch
+    /// anyway) passes through unlocked.
+    pub fn dispatch_input(&self, arguments: &Value) -> Value {
+        let mut input = match self.dynamic.as_ref().and_then(|d| d.dispatch.args_into.as_deref()) {
+            Some(key) => {
+                let mut o = serde_json::Map::new();
+                o.insert(key.to_string(), arguments.clone());
+                Value::Object(o)
+            }
+            None => arguments.clone(),
+        };
+        if let (Some(Value::Object(lock)), Value::Object(obj)) = (&self.locked, &mut input) {
+            for (k, v) in lock {
+                obj.insert(k.clone(), v.clone());
+            }
+        }
+        input
+    }
+}
+
+/// Remove `locked`'s keys from a schema's `properties` and `required` (#393):
+/// what the model is offered, and what its own arguments are checked against.
+/// Pure, so the scheduler and the driver strip the same way.
+pub fn strip_locked_keys(schema: &mut Value, locked: &Value) {
+    let Value::Object(lock) = locked else { return };
+    if let Some(Value::Object(props)) = schema.get_mut("properties") {
+        for k in lock.keys() {
+            props.remove(k);
+        }
+    }
+    if let Some(Value::Array(req)) = schema.get_mut("required") {
+        req.retain(|r| r.as_str().is_none_or(|r| !lock.contains_key(r)));
+    }
+}
+
+impl DynamicTool {
+    /// The schema the MODEL fills for this tool: the entry's `input_schema`,
+    /// minus the locked keys when the arguments land at the top level (with
+    /// `args_into` the locks belong to the Definition's input, one level up,
+    /// and say nothing about this schema). Offered to the model, and what its
+    /// arguments are validated against before the locks merge.
+    pub fn model_schema(&self, locked: Option<&Value>) -> Value {
+        let mut schema = self.input_schema.clone();
+        if self.dispatch.args_into.is_none() {
+            if let Some(lock) = locked {
+                strip_locked_keys(&mut schema, lock);
+            }
+        }
+        schema
+    }
+}
+
+/// A tool declared in the RUN INPUT and pinned at start (#392, `tools_from`).
+///
+/// The host builds the list per run — the `tools/list` of an MCP server the
+/// tenant connected, say — and the manifest freezes it, so a resume and
+/// `verify` offer exactly the set the run started with.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DynamicTool {
+    /// What the model is offered and calls (normalized for providers like a
+    /// Definition's name: dots become underscores on the wire).
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// The arguments the model may fill; a call is validated against it,
+    /// always — it is the contract the host declared.
+    pub input_schema: Value,
+    pub dispatch: DynamicDispatch,
+}
+
+/// Which pinned Definition a [`DynamicTool`] call reaches, and how.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DynamicDispatch {
+    /// The pinned host Definition's `tool_name` (canonical).
+    pub definition: String,
+    /// Its content address, frozen at start.
+    pub hash: String,
+    /// Keys merged over the model's arguments, the lock winning — the server
+    /// URL, the MCP tool name, the credential. The Definition's own
+    /// `locked_params` are merged over these in turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locked: Option<Value>,
+    /// When set, the model's arguments are placed under this key before the
+    /// lock is merged — `"arguments"` for `mcp.call`, whose input carries the
+    /// MCP tool's arguments one level down. Absent = merged at the top level.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args_into: Option<String>,
+    /// The dispatch Definition's own `input_schema`, frozen at start. The
+    /// MERGED input — locks plus the wrapped arguments — is validated against
+    /// it whether or not the Definition is `strict`: the host promised the
+    /// model's arguments fit inside it, and a call that does not is a
+    /// correction for the model, not a request the Definition refuses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub definition_schema: Option<Value>,
+}
+
+/// A plan's per-node LLM configuration (#391, #392) — the `llm` block for one
+/// abstract node, validated and normalized at start and FROZEN in the run
+/// manifest, so a resume and `verify` run the block the run started with.
+///
+/// Every field is optional and absent means "what an abstract node did before
+/// the block existed": the built-in system prompt, the node name as the
+/// instruction, the whole state, every pinned host tool, no structured output,
+/// temperature 0, the run's `llm_max_tokens`.
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+pub struct LlmNodeConfig {
+    /// The Definitions this node's dynamic tools may dispatch through that no
+    /// node binds (#392), by canonical name — pinned at start into the
+    /// manifest's `dispatch_pins`, never offered to the model themselves.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dispatch: Vec<String>,
+    /// Replaces the built-in system prompt for this node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system: Option<String>,
+    /// The literal instruction placed in `messages[0]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instruction: Option<String>,
+    /// A JSON pointer into the node's input whose STRING is the instruction.
+    /// Resolving to nothing, or to a non-string, fails the node
+    /// `SchemaValidationFailed` (not retried — the same state fails the same
+    /// way), as a `reads` pointer does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instruction_from: Option<String>,
+    /// Which merged-state keys `messages[0]` carries: `"all"` (the default),
+    /// `"none"`, or a list of keys. A steering `$inbox` is carried whatever
+    /// the selection says: an operator's message must reach the model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<Value>,
+    /// The subset of pinned host Definitions offered (by `tool_name`), in
+    /// manifest order. `None` = all of them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<String>>,
+    /// The JSON pointer the dynamic tools were read from, kept for the record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools_from: Option<String>,
+    /// The tools `tools_from` resolved to at start, in input order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dynamic_tools: Vec<DynamicTool>,
+    /// `{"json_schema": {…}}` or `{"json": true}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<Value>,
+    /// A number, or `"omit"` to send none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<Value>,
+    /// This node's output ceiling per call, in place of the run's
+    /// `llm_max_tokens` — and its per-dispatch reservation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parallel_tool_calls: Option<bool>,
+    /// The node's result gains this key: every tool call of the attempt, from
+    /// the journaled outcomes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_results_into: Option<String>,
+    /// The tool-offer narrowing for this node (C1, #396), normalized:
+    /// `false` keeps the whole offer, `{"top_k": n}` narrows to the top `n`.
+    /// `None` (also what `narrow: true` normalizes to) is the run-wide rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub narrow: Option<Value>,
+}
+
+impl LlmNodeConfig {
+    /// `Some(k)` = narrow to the top `k` when more than `k` tools are offered;
+    /// `None` = never narrow this node.
+    pub fn narrow_top_k(&self, default: usize) -> Option<usize> {
+        match &self.narrow {
+            Some(Value::Bool(false)) => None,
+            Some(v) => Some(
+                v.get("top_k")
+                    .and_then(Value::as_u64)
+                    .map(|k| k as usize)
+                    .filter(|k| *k >= 1)
+                    .unwrap_or(default),
+            ),
+            None => Some(default),
+        }
+    }
 }
 
 /// What executes a node (resolved by the driver's V7 freeze).
@@ -238,7 +456,13 @@ pub enum NodeExecutor {
     /// interprets, choosing among the workflow's pinned Host tools. The
     /// node runs as an LLM LOOP — turn, tool calls, results, next turn —
     /// each effect journaled under its own `effect_seq`.
-    Abstract { tools: Vec<OfferedTool> },
+    Abstract {
+        tools: Vec<OfferedTool>,
+        /// The plan's frozen `llm` block for this node (#391), or `None` —
+        /// every abstract node before the block existed, byte for byte.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        llm: Option<Box<LlmNodeConfig>>,
+    },
     /// A subgraph node (Wave 2): the binding resolves to another Workflow
     /// grain; the child runs as its own run (own run_id, own journal),
     /// linked by `parent_task_id`, and its final context becomes this

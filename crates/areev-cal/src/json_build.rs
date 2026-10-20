@@ -1112,11 +1112,17 @@ pub fn build_grain_from_json<S: GrainSink>(
                 if let Some(p) = strict_str("parent_task_id")? {
                     tool = tool.parent_task_id(&p);
                 }
+                // Annotation keywords (`$schema`, `$id`, `$comment`,
+                // `deprecated`, `readOnly`, `writeOnly`, `x-*`) are accepted
+                // and dropped before the subset check (#397): they change no
+                // validation, and the stored schema is the clean form.
                 if let Some(schema) = fields.get("output_schema").filter(|v| !v.is_null()) {
-                    SchemaValidator::tool_schema().validate(schema).map_err(|e| {
+                    let mut schema = schema.clone();
+                    areev_core::types::json_schema_subset::strip_annotations(&mut schema);
+                    SchemaValidator::tool_schema().validate(&schema).map_err(|e| {
                         AreevError::Validation(format!("tool 'output_schema' rejected: {e}"))
                     })?;
-                    tool = tool.output_schema(schema.clone());
+                    tool = tool.output_schema(schema);
                 }
                 // ── Definition vocabulary + async lifecycle (see the
                 // `type_known_fields` comment). Enum strings parse strictly:
@@ -1136,10 +1142,12 @@ pub fn build_grain_from_json<S: GrainSink>(
                     tool = tool.tool_description(&d);
                 }
                 if let Some(schema) = fields.get("input_schema").filter(|v| !v.is_null()) {
-                    SchemaValidator::tool_schema().validate(schema).map_err(|e| {
+                    let mut schema = schema.clone();
+                    areev_core::types::json_schema_subset::strip_annotations(&mut schema);
+                    SchemaValidator::tool_schema().validate(&schema).map_err(|e| {
                         AreevError::Validation(format!("tool 'input_schema' rejected: {e}"))
                     })?;
-                    tool = tool.input_schema(schema.clone());
+                    tool = tool.input_schema(schema);
                 }
                 if let Some(s) = strict_bool("strict")? {
                     tool = tool.strict(s);
@@ -1647,6 +1655,43 @@ mod tests {
             build_grain_from_json("tool", &fields, Capture).unwrap(),
             Some("call_abc".to_string()),
         );
+    }
+
+    /// #397: a Definition's schema carrying the annotations MCP servers
+    /// publish is accepted, stored without them; the subset rule holds.
+    #[test]
+    fn a_definitions_schema_annotations_are_accepted_and_dropped() {
+        struct Capture;
+        impl GrainSink for Capture {
+            type Out = Option<serde_json::Value>;
+            fn consume<G: Grain + Clone + 'static>(self, grain: &G) -> Result<Self::Out> {
+                let any = grain as &dyn std::any::Any;
+                Ok(any.downcast_ref::<areev_core::types::Tool>().and_then(|t| t.input_schema.clone()))
+            }
+        }
+        let fields = |schema: serde_json::Value| {
+            let mut f = serde_json::Map::new();
+            f.insert("tool_name".into(), json!("lookup"));
+            f.insert("kind".into(), json!("definition"));
+            f.insert("input_schema".into(), schema);
+            f
+        };
+        let stored = build_grain_from_json(
+            "tool",
+            &fields(json!({"$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "urn:l",
+                           "type": "object", "deprecated": false,
+                           "properties": {"q": {"type": "string", "readOnly": true}}})),
+            Capture,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(stored, json!({"type": "object", "properties": {"q": {"type": "string"}}}));
+        assert!(build_grain_from_json(
+            "tool",
+            &fields(json!({"$schema": "x", "type": "object", "oneOf": []})),
+            NullSink
+        )
+        .is_err());
     }
 
     #[test]
