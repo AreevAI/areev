@@ -705,26 +705,71 @@ fn a_dynamic_tools_own_schema_is_enforced_with_a_reprompt() {
 
 #[test]
 fn a_resume_uses_the_pinned_block_not_the_live_input() {
-    // The block and the dynamic list are frozen at start: the manifest — not
-    // the plan, not the input a host hands a later call — decides.
+    // Park on an approval BEFORE the agent runs, then change everything a
+    // re-resolution would read — supersede the plan with a different block,
+    // and publish a newer `mcp_call` under the same name — and resume. The
+    // agent must run the block, the tool list and the Definition frozen at
+    // start.
     let rig = Rig::new();
-    let (plan, _) = mcp_plan(&rig, json!({"agent": {"tools_from": "/tools", "system": "S1"}}));
-    let runner = rig.runner(Arc::new(TestExec { allow_code: true, ..Default::default() }), CapturingLlm::new(vec![answer("{}")]));
-    finished(runner.start(&plan, "r1", json!({"tools": [paid_to("mcp.call")]}), &opts()).unwrap());
-    let m = rig.facade.with_store(|m| areev_run::RunManifest::load(m, "r1")).unwrap();
-    let agent = m.pinned.iter().find(|p| p.node == "agent").unwrap();
-    let cfg = agent.llm.as_ref().unwrap();
-    assert_eq!(cfg.system.as_deref(), Some("S1"));
-    assert_eq!(cfg.dynamic_tools.len(), 1);
-    assert_eq!(cfg.dynamic_tools[0].dispatch.definition, "mcp.call");
-    let exec = m.executors();
-    let areev_run_core::NodeExecutor::Abstract { tools, llm } = &exec[0] else { panic!() };
-    assert_eq!(llm.as_ref().unwrap().system.as_deref(), Some("S1"));
-    assert_eq!(tools.last().unwrap().tool_name, "paid_to");
-    assert_eq!(
-        tools.last().unwrap().locked,
-        Some(json!({"url": "https://mcp.example/mcp", "tool": "paid_to", "credential": "gateway"}))
-    );
+    let v1_uri = rig.blob(b"\0asm-v1");
+    let v1 = Tool::new("mcp_call")
+        .kind(ToolKind::Definition)
+        .input_schema(json!({"type": "object", "properties": {"url": {"type": "string"},
+            "credential": {"type": "string"}, "tool": {"type": "string"}, "arguments": {"type": "object"}}}))
+        .executor_uri(&v1_uri)
+        .created_at(500)
+        .namespace("ops");
+    rig.facade.with_store(|m| m.add(&v1)).unwrap();
+    let approve = rig.def(Tool::new("approve").executor_kind(areev_core::types::ExecutorKind::Client));
+    let block = |system: &str| json!({"agent": {"system": system, "dispatch": ["mcp_call"], "tools": [], "tools_from": "/tools"}});
+    let mut wf = Workflow::new(vec!["approve".into(), "agent".into()])
+        .edge("approve", "agent")
+        .bind("approve", &approve)
+        .created_at(600)
+        .namespace("ops");
+    wf.common.extra_fields.insert("llm".into(), block("S1"));
+    let plan = rig.facade.with_store(|m| m.add(&wf)).unwrap();
+
+    let exec = Arc::new(TestExec { allow_code: true, ..Default::default() });
+    let llm = CapturingLlm::new(vec![
+        calls(vec![("c1", "bank_paid_to", json!({"invoice": "4471"}))]),
+        answer("{}"),
+    ]);
+    let runner = rig.runner(Arc::clone(&exec), Arc::clone(&llm));
+    let RunSession::Parked { envelope, .. } =
+        runner.start(&plan, "pr1", json!({"tools": [bank_paid_to()]}), &opts()).unwrap()
+    else {
+        panic!("parks on the approval")
+    };
+    assert!(llm.sent().is_empty(), "the agent has not run yet");
+
+    // The live world moves on.
+    let mut wf2 = Workflow::new(vec!["approve".into(), "agent".into()])
+        .edge("approve", "agent")
+        .bind("approve", &approve)
+        .created_at(700)
+        .namespace("ops");
+    wf2.common.extra_fields.insert("llm".into(), block("S2"));
+    rig.facade.with_store(|m| m.supersede(&plan, &mut wf2)).unwrap();
+    let v2_uri = rig.blob(b"\0asm-v2");
+    let v2 = Tool::new("mcp_call")
+        .kind(ToolKind::Definition)
+        .executor_uri(&v2_uri)
+        .created_at(900)
+        .namespace("ops");
+    rig.facade.with_store(|m| m.add(&v2)).unwrap();
+
+    let ask = envelope["asks"][0]["tool_call_id"].as_str().unwrap().to_string();
+    runner.respond("pr1", &ask, json!({"ok": true}), false, "user:officer").unwrap();
+    finished(runner.resume("pr1", &opts()).unwrap());
+
+    let sent = llm.sent();
+    assert_eq!(sent[0].system.as_deref(), Some("S1"), "the frozen block, not the superseding plan's");
+    assert_eq!(sent[0].tools[0].0, "bank.paid_to", "the frozen tool list");
+    let (_, input, code) = exec.seen().into_iter().find(|(n, _, _)| n == "mcp_call").unwrap();
+    assert_eq!(code.as_deref(), Some(v1_uri.as_str()), "the Definition pinned at start, not the newer one");
+    assert_eq!(input["arguments"], json!({"invoice": "4471"}));
+    assert!(runner.verify("pr1").unwrap().verified);
 }
 
 #[test]

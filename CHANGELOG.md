@@ -61,7 +61,36 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   was dispatched with whatever the model sent. Locks are now merged over the
   model's arguments (the lock wins), stripped from the offered schema
   (`properties` and `required`), checked by a strict Definition on the merged
-  input, journaled merged, and frozen with the pin.
+  input, journaled merged, and frozen with the pin. They are applied by run
+  dispatch (`areev-run`), the one place a model's tool call is executed. They
+  are not applied by `areev-loop`, `areev-server` or `areev-mcp`, which
+  dispatch no model-issued calls, nor to a bound host node. The issue's
+  acceptance read "merged at invoke", and invoke is run dispatch. A client or
+  decision Definition carrying `locked_params` still starts: the locks are
+  ignored, as in 1.12, with a `RUN-W001` warning in the manifest. `shadow`
+  rehearses a run with the locks that run froze, so a 1.12 run still scores
+  `same` on an unchanged plan.
+- **Hardening from a review of the 1.13 branch:**
+  - A dynamic tool's schema is closed. A key the entry does not name, or
+    (without `args_into`) a key the host locked, is an argument violation.
+  - The model's arguments are checked against the schema it was shown, so a
+    required key the host locks is never demanded.
+  - A dotted lock key, a lock on the `args_into` key, a dispatch pin that is
+    another version of a bound Definition's name, and a `json_schema` that
+    OpenAI's strict mode would refuse are all refused at start (`RUN-E019`).
+  - `{"json": true}` adds "Answer with a JSON object." to a node system text
+    that never says JSON.
+  - A fenced (```` ```json ````) final answer is accepted.
+  - The `tools_from` list is left out of the whole-state prompt.
+  - A node's `system` text, and a dynamic tool's description and schema
+    prose, are pseudonymized under an `egress` policy.
+  - Transports report the temperature they actually send, and a result
+    records it as `temperature_sent`.
+  - Request profiles reach `triggerRun`/`trigger_run`, `triggerDeliver`/
+    `trigger_deliver` and `areev eval`. The bindings read the
+    `$AREEV_RUN_LLM_*` variables when given no profile. `off` and `no` mean
+    off, and a bare `--llm-no-temperature` no longer swallows the next
+    argument.
 - **Schema annotations no longer refuse a tool** (#397). A `tools_from`
   entry's `input_schema` (or a `response.json_schema`, or a Definition's
   `input_schema`/`output_schema` at write time) that carried `$schema`,

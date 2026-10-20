@@ -1623,7 +1623,16 @@ areev run start --workflow <WF> --run-id r1 --input '{}' \
   locked is never reported missing. The locks are frozen into the run manifest
   with the rest of the pin (`run inspect` shows them as `locked_params`). A run
   that started before its Definition locked anything never starts locking
-  mid-run.
+  mid-run, and `shadow` rehearses a run with the locks that run froze, not
+  the Definition's.
+  **Where locks apply:** only in run dispatch (`areev-run`), when an
+  abstract node's model calls a tool. `areev-loop`, `areev-server` (the
+  console) and `areev-mcp` do not dispatch model-issued tool calls, so they do
+  not apply locks. Neither does a bound host node, whose input is the run's
+  state and not a model's choice. A client or decision Definition that
+  declares `locked_params` is not refused: no model calls it, so the locks are
+  ignored, and the start records `RUN-W001` in the manifest's `warnings`
+  (shown by `run inspect`).
 - **From Python and Node**, `run_start`/`runStart` and `run_resume`/`runResume`
   also take `llm_profile`/`llmProfile` as their **last** argument (#394). It is
   a JSON string that shapes every request the transport sends:
@@ -1631,7 +1640,12 @@ areev run start --workflow <WF> --run-id r1 --input '{}' \
   "max_completion_tokens", "extra_body": {…}}`, with every key optional. It is
   the bindings' form of the CLI's `--llm-no-temperature`, `--llm-token-field`
   and `--llm-extra-body` (`$AREEV_RUN_LLM_NO_TEMPERATURE`,
-  `$AREEV_RUN_LLM_TOKEN_FIELD`, `$AREEV_RUN_LLM_EXTRA_BODY`). An unknown key,
+  `$AREEV_RUN_LLM_TOKEN_FIELD`, `$AREEV_RUN_LLM_EXTRA_BODY`). `triggerRun`/
+  `triggerDeliver` and `trigger_run`/`trigger_deliver` take it last too, and
+  `areev eval --model` reads the CLI flags. When a binding is given no
+  `llm_profile`, it reads those three variables, as the CLI does.
+  `false`, `0`, `off` and `no` all mean off, and a bare
+  `--llm-no-temperature` takes no value. An unknown key,
   a profile with no `model`, and a profile on the Ollama transport (whose body
   takes none of it) are refused before a run exists. The run pins the
   profile's digest (#287), so a resume passes the same profile or is refused
@@ -1681,7 +1695,7 @@ abstract node's pin in the run manifest. A resume, a fork of the same plan and
 | `system` | string | Replaces the built-in system prompt for this node's turns, its fold summaries included. |
 | `instruction` | string | The `instruction` of `messages[0]`. Default: the node name. |
 | `instruction_from` | JSON pointer | Takes the instruction from the node's input. The pointer may be nested: an `op: query` read with `FORMAT markdown` lands `{"type": "formatted", "text": …}`, so `/prompt/text` reaches the text. If the pointer resolves to nothing, or to something that is not a string, the node fails `schema_validation_failed` before any model call. It is not retried, because the same state fails the same way. Exclusive with `instruction`. |
-| `state` | `"all"` \| `"none"` \| `[keys]` | Which merged-state keys `messages[0].state` carries. Default `"all"`. A steering `$inbox` (`run input`) is always carried, because an operator's message must reach the model. |
+| `state` | `"all"` \| `"none"` \| `[keys]` | Which merged-state keys `messages[0].state` carries. Default `"all"`. A steering `$inbox` (`run input`) is always carried, because an operator's message must reach the model. Under `"all"`, the value `tools_from` points at is left out, along with the locks inside it: it is configuration, not state. |
 | `tools` | `[names]` | The subset of the plan's pinned host Definitions offered, in manifest order. Default: all. Accepts the canonical or the provider-safe spelling (`a.b` or `a_b`). A name the plan does not pin is refused at start with `RUN-E004`, naming the node and the name. A pinned tool the node was not offered is unknown to the model: calling it gets the unknown-tool re-prompt. `[]` offers nothing. |
 | `dispatch` | `[name \| hash]` | Definitions this node's dynamic tools dispatch through that no node binds (see `tools_from`). |
 | `tools_from` | JSON pointer | Tools declared in the run input (see below). |
@@ -1692,23 +1706,42 @@ abstract node's pin in the run manifest. A resume, a fork of the same plan and
 | `narrow` | `true` \| `false` \| `{"top_k": n}` | How a calibrated decision backend narrows this node's offer (see [Narrowing the tool offer](#narrowing-the-tool-offer)). `false` keeps every tool, `{"top_k": n}` keeps the top `n` (1–254) instead of 8, and `true` (the default) is the run-wide rule. |
 | `tool_results_into` | state key | Adds this key to the node's result when the node completes. It holds every tool call of the attempt, in `effect_seq` order: `[{name, tool_call_id, model_call_id, input, result, is_error, effect_seq}]`. `tool_call_id` is the journal key's digest (the grain's `tool_call_id`), `input` is the dispatched input with locks merged, and `result` is the whole journaled result, never the transcript's bounded excerpt. A gate bound below the node therefore sees what the model read. The list is built from the journaled outcomes, so `verify` rebuilds it byte for byte. If the model's answer has a key with the same name, the runtime's value wins. |
 
+**`system` and the model boundary.** Under an `egress` anonymization policy,
+the node's `system` text is pseudonymized as its messages are. So are a
+dynamic tool's description and the prose of its schema (`description`,
+`title`, `default`, `examples`). Structural schema strings and the response
+schema go out as declared, because arguments and answers are checked against
+them as declared.
+
 **What is journaled.** The first message is `messages[0]` of every turn's
 intent. The request fields the block sets go into each `mg:llm` intent's
 `input.llm`, as sent: `{system, temperature, max_tokens, parallel_tool_calls,
 response_format}`. `response_format` is always in the OpenAI-compatible wire
 shape (`{"type": "json_schema", "json_schema": {"name": "<node>", "schema": …,
 "strict": true}}` or `{"type": "json_object"}`). The driver builds each request
-from that journaled input alone. A node with no block, or with an empty one,
-journals exactly what it did before 1.13.
+from that journaled input alone. The plan's `temperature` is a request, and
+a transport's request profile may pin or drop it. So whenever a turn carries
+a block or the transport a non-default profile, the result grain records
+`temperature_sent`, the value that actually went out (`null` for none).
+`gen_ai.request.temperature` reports the same value. A node with no block, or
+with an empty one, on a transport with no profile, journals exactly what it
+did before 1.13.
 
 **Structured output.** On OpenAI-compatible endpoints `response` is sent as
 `response_format`. The wire `name` is the node id with characters outside
 `[a-zA-Z0-9_-]` replaced by `_`. Because OpenAI's strict mode applies, the
-schema must satisfy it (every property listed in `required`,
-`additionalProperties: false`). Ollama receives the schema as `format`.
+schema must satisfy it: every object sets `additionalProperties: false` and
+lists every property in `required`. A schema that does not is refused at
+start with `RUN-E019`, naming the first violation by JSON pointer.
+`{"json": true}` is sent as `json_object`, which OpenAI refuses unless a
+message says "JSON". When the node's own `system` text and its instruction
+both lack the word, the runtime appends "Answer with a JSON object." to the
+system text, and the journaled `llm.system` includes that sentence. Ollama receives the schema as `format`.
 Anthropic has no such field, so the schema is appended to the system text. On
 every provider the runtime then checks the final answer itself: it must be a
-JSON object and, with `json_schema`, conform to it. The schema must be in the
+JSON object and, with `json_schema`, conform to it. An answer wrapped in a
+Markdown code fence (```` ```json … ``` ````, as Anthropic models often send)
+is unwrapped first, and it merges unwrapped. The schema must be in the
 subset a Tool's `input_schema` is held to (an object root with no
 `oneOf`/`$ref`), or the plan is refused at start. A violation gets **one**
 corrective re-prompt. The model's own answer stays in the transcript so it can
@@ -1772,13 +1805,28 @@ names a list of entries:
   capabilities and locks, and the start refuses an unpinned code address
   (`RUN-E018`) as it does for a node. It is **never offered to the model by
   itself**. Only the dynamic tools that dispatch through it are offered.
-  `run inspect` lists it among the pins with `"dispatch_only": true`.
+  `run inspect` lists it among the pins with `"dispatch_only": true`. It may
+  not be another version of a Definition a node binds under the same
+  `tool_name` (`RUN-E019`, naming both hashes).
+- **The entry's schema is closed.** A key it does not name is refused, so a
+  model cannot set a Definition parameter the host never offered (such as a
+  `method` on an http-shaped Definition that locks only the URL). Without
+  `args_into`, a key the host **locked** is refused as well, rather than
+  silently overridden. Both refusals are an argument violation, and the model
+  is re-prompted. Locks set **top-level** keys of the Definition's input only:
+  a dotted lock key, or a lock key equal to `args_into` (which would replace
+  the model's arguments), is refused at start with `RUN-E019`, naming the
+  entry. That applies to the entry's `locked` and to the Definition's own
+  `locked_params`.
 - **A call** is validated against the entry's `input_schema`, always. The
   model's arguments are then placed under `args_into` when the entry names
   one (`mcp.call` takes the MCP tool's arguments one level down, under
   `arguments`), or at the top level when it does not. Then `locked` is merged
   over them, then the Definition's own `locked_params` over that, and the lock
-  wins each time. The merged input `{...locked, [args_into]: <arguments>}` is
+  wins each time. Without `args_into`, the model's arguments are checked
+  against the schema it was shown, with locked keys stripped from
+  `properties` and `required`, so a required key the host locks is never
+  demanded of it. The merged input `{...locked, [args_into]: <arguments>}` is
   validated against the dispatch Definition's `input_schema`, whether or not
   the Definition is `strict`. A violation at either step is a corrective
   re-prompt, as for any tool. The merged input is what the intent journals and
