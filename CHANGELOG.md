@@ -90,9 +90,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     records it as `temperature_sent`.
   - Request profiles reach `triggerRun`/`trigger_run`, `triggerDeliver`/
     `trigger_deliver` and `areev eval`. The bindings read the
-    `$AREEV_RUN_LLM_*` variables when given no profile. `off` and `no` mean
-    off, and a bare `--llm-no-temperature` no longer swallows the next
-    argument.
+    `$AREEV_RUN_LLM_*` variables when given no profile, and only when a model
+    is configured, so a stale variable cannot fail a model-less run. `off`
+    and `no` mean off, and a bare `--llm-no-temperature` no longer swallows
+    the next argument. **Behaviour change:** the space form
+    `--llm-no-temperature false` therefore no longer means off. `false` is
+    now a positional argument; write `--llm-no-temperature=false`.
 - **Schema annotations no longer refuse a tool** (#397). A `tools_from`
   entry's `input_schema` (or a `response.json_schema`, or a Definition's
   `input_schema`/`output_schema` at write time) that carried `$schema`,
