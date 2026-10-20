@@ -2590,6 +2590,11 @@ impl Runner {
                                 temperature: req.temperature,
                                 response_format: req.response_format,
                                 parallel_tool_calls: req.parallel_tool_calls,
+                                record_sent: input.get("llm").is_some()
+                                    || self
+                                        .llm
+                                        .as_ref()
+                                        .is_some_and(|l| l.request_profile_digest().is_some()),
                             })
                         } else {
                             None

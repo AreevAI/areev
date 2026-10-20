@@ -1244,3 +1244,41 @@ fn shadow_rehearses_with_the_locks_the_incumbent_froze_not_the_definitions() {
     assert!(run.out_of_support.is_empty(), "{run:?}");
     assert!(run.identity.as_ref().is_some_and(|i| i.consistent), "{run:?}");
 }
+
+#[test]
+fn the_result_records_the_temperature_that_went_out_not_the_one_asked_for() {
+    // A transport whose profile pins 0.7, under a node asking 0.2.
+    struct Pinned(Arc<CapturingLlm>);
+    impl ToolCallLlm for Pinned {
+        fn model(&self) -> &str {
+            "m"
+        }
+        fn effective_temperature(&self, _requested: f64) -> Option<f64> {
+            Some(0.7)
+        }
+        fn request_profile_digest(&self) -> Option<String> {
+            Some("pinned".into())
+        }
+        fn call(&self, req: &ToolCallRequest<'_>) -> Result<ToolCallResponse, ToolCallError> {
+            self.0.call(req)
+        }
+    }
+    let rig = Rig::new();
+    let plan = three_step(&rig, json!({"reply": {"temperature": 0.2}}));
+    let inner = CapturingLlm::new(vec![answer("{}")]);
+    let runner = Runner { llm: Some(Arc::new(Pinned(inner)) as Arc<dyn ToolCallLlm>), ..rig.runner(Arc::new(TestExec::default()), CapturingLlm::new(vec![])) };
+    finished(runner.start(&plan, "t1", json!({}), &opts()).unwrap());
+    let view = rig.facade.with_store(|m| areev_run::journal::load(m, "ops", "t1")).unwrap();
+    let e = view.entries.values().find(|e| e.key.node == "reply").unwrap();
+    let areev_run_core::EffectOutcome::Completed { result, .. } = &e.result.as_ref().unwrap().1 else { panic!() };
+    assert_eq!(result["temperature_sent"], json!(0.7));
+
+    // No block and no profile: nothing new on the result.
+    let plan = three_step(&rig, Value::Null);
+    let llm = CapturingLlm::new(vec![answer("{}")]);
+    finished(rig.runner(Arc::new(TestExec::default()), llm).start(&plan, "t2", json!({}), &opts()).unwrap());
+    let view = rig.facade.with_store(|m| areev_run::journal::load(m, "ops", "t2")).unwrap();
+    let e = view.entries.values().find(|e| e.key.node == "reply").unwrap();
+    let areev_run_core::EffectOutcome::Completed { result, .. } = &e.result.as_ref().unwrap().1 else { panic!() };
+    assert!(result.get("temperature_sent").is_none(), "{result}");
+}

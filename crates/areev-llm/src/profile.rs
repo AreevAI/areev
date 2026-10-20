@@ -108,6 +108,14 @@ impl RequestProfile {
         Some(self.temperature_value.unwrap_or(req.temperature))
     }
 
+    /// The temperature this profile puts on the wire for a request asking
+    /// for `requested`: none under [`TemperatureMode::Omit`], else the pinned
+    /// value, else the request's. What a transport reports through
+    /// `ToolCallLlm::effective_temperature`.
+    pub fn effective_temperature(&self, requested: f64) -> Option<f64> {
+        self.sends_temperature().then(|| self.temperature_value.unwrap_or(requested))
+    }
+
     /// Parse the bindings' `llm_profile` JSON (#394):
     /// `{"temperature": "omit" | <number>, "token_field": "max_tokens" |
     /// "max_completion_tokens", "extra_body": {…}}`, every key optional.

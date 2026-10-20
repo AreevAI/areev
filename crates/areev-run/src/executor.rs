@@ -974,6 +974,11 @@ pub struct PreparedLlm {
     pub temperature: Option<f64>,
     pub response_format: Option<areev_llm::ResponseFormat>,
     pub parallel_tool_calls: Option<bool>,
+    /// Record the temperature that actually went out on the result grain
+    /// (`temperature_sent`) — set when the turn's intent claims one (a node
+    /// `llm` block) or the transport's profile may change it. Unset for every
+    /// other turn, whose result stays byte-identical to 1.12's.
+    pub record_sent: bool,
 }
 
 /// The system prompt an abstract node runs under when its plan sets none.
@@ -1214,6 +1219,8 @@ fn run_llm_effect(
             journal_bytes: 0,
         };
     };
+    let record_sent = prepared.record_sent;
+    let sent_temperature = prepared.temperature.and_then(|t| llm.effective_temperature(t));
     let request = areev_llm::ToolCallRequest {
         system: Some(prepared.system.unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string())),
         messages: prepared.messages,
@@ -1266,6 +1273,12 @@ fn run_llm_effect(
             }
             if let Some(r) = &resp.served_region {
                 result["served_region"] = serde_json::json!(r);
+            }
+            // What went out, not what was asked (#394 review): the intent's
+            // `llm.temperature` is the plan's request, and a profile may have
+            // pinned or dropped it on the wire.
+            if record_sent {
+                result["temperature_sent"] = serde_json::json!(sent_temperature);
             }
             // #291: the transport prices its own usage, or says it cannot.
             // `None` is UNPRICED, not free — `priced` is what keeps the two

@@ -761,6 +761,11 @@ impl ToolCallLlm for crate::OpenAiCompat {
     fn request_profile_digest(&self) -> Option<String> {
         self.profile.digest()
     }
+    /// What the profile actually sends (#394 review): none when it omits,
+    /// its pinned value when it pins one.
+    fn effective_temperature(&self, requested: f64) -> Option<f64> {
+        self.profile.effective_temperature(requested)
+    }
     fn call(&self, req: &ToolCallRequest<'_>) -> ToolCallResult<ToolCallResponse> {
         let body = openai_body(req, &self.model, &self.profile)?;
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
@@ -1045,7 +1050,10 @@ impl ToolCallLlm for crate::Anthropic {
         self.model.starts_with("claude-").then_some(CLAUDE_CONTEXT_FLOOR)
     }
     fn effective_temperature(&self, requested: f64) -> Option<f64> {
-        anthropic_accepts_temperature(&self.model).then_some(requested)
+        if !anthropic_accepts_temperature(&self.model) {
+            return None;
+        }
+        self.profile.effective_temperature(requested)
     }
     fn request_profile_digest(&self) -> Option<String> {
         self.profile.digest()
@@ -1312,6 +1320,23 @@ mod tests {
     /// The floor is claimed for `claude-*` and nothing else: this transport
     /// also fronts Bedrock and Vertex model names it was never checked
     /// against, and a wrong-high window is the failure it exists to prevent.
+    #[test]
+    fn effective_temperature_reports_what_the_profile_sends() {
+        use crate::profile::{RequestProfile, TemperatureMode};
+        let o = crate::OpenAiCompat::new("http://x", "k", "m");
+        assert_eq!(o.effective_temperature(0.2), Some(0.2));
+        let o = crate::OpenAiCompat::new("http://x", "k", "m")
+            .with_request_profile(RequestProfile::new().temperature(TemperatureMode::Omit));
+        assert_eq!(o.effective_temperature(0.2), None);
+        let o = crate::OpenAiCompat::new("http://x", "k", "m")
+            .with_request_profile(RequestProfile::new().temperature_value(0.7));
+        assert_eq!(o.effective_temperature(0.2), Some(0.7));
+        let a = crate::Anthropic::new("k", "claude-sonnet-4-5")
+            .with_request_profile(RequestProfile::new().temperature_value(0.7));
+        assert_eq!(a.effective_temperature(0.2), Some(0.7));
+        assert_eq!(crate::Anthropic::new("k", "claude-opus-5").effective_temperature(0.2), None);
+    }
+
     #[test]
     fn the_context_floor_is_claimed_only_for_claude_models() {
         let claude = crate::Anthropic::new("k", "claude-sonnet-5");
