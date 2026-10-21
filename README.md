@@ -1,19 +1,88 @@
 # Areev
 
-**Build agents that improve from experience. Keep control of what changes.**
+**Build AI products for a specific business workflow. Keep humans in control as they improve.**
 
-Areev is an open-source runtime for **governed, self-improving AI agents**.
-Run workflows, assemble context with CAL, and turn execution history into
-proposed improvements you can evaluate, approve, and reverse.
+Areev Core is the **open-source engine behind every product in the
+[Areev Store](https://areev.ai/store)**. Use the same engine to build your own
+micro-vertical AI products: software that handles a focused job for a specific
+industry or team, such as invoice processing, reconciliation, or document review.
 
-Persistent memory supplies the evidence. **Pseudonymization controls what
-sensitive data reaches models.** Optional Jev decision models and integrations
-with your model-training pipeline extend the same improvement lifecycle.
+You bring the domain rules, integrations, and customer experience. Areev supplies
+**persistent memory, workflows, human approvals, and an improvement loop** whose
+proposed changes you can inspect, evaluate, approve, and reverse where supported.
+Embed it in Python, TypeScript/Node, or Rust, or connect through MCP.
+The engine is MIT/Apache-2.0 licensed and runs locally without an Areev account.
 
 [![CI](https://github.com/AreevAI/areev/actions/workflows/ci.yml/badge.svg)](https://github.com/AreevAI/areev/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-[Quickstart](#try-it) · [Examples](#build-a-complete-agent) · [Documentation](#documentation) · [Benchmarks](crates/areev-bench/RESULTS.md) · [Discussions](https://github.com/AreevAI/areev/discussions)
+[Run the example](#build-a-complete-agent) · [Products built with Areev](https://areev.ai/store) · [Quickstart](#try-it) · [Documentation](#documentation) · [Discussions](https://github.com/AreevAI/areev/discussions)
+
+## One engine, focused products
+
+The store shows what we build with Areev Core. Its catalogue includes
+**Bank Statement to Ledger**, **GST Reconciliation**, and **Invoice to Ledger**.
+Each listing describes its scope and current availability; some are by invitation
+and others are coming soon.
+
+This repository gives you the engine and runnable reference agents to build
+your own products. Your application supplies its domain logic, user interface,
+and integrations. Store offerings have their own product packaging and access
+terms; the open-source examples below demonstrate the building blocks.
+
+## Build a complete agent
+
+Start with the **invoice-to-accounting reference agent**, available in Python,
+TypeScript, and Rust. It processes invoices, routes approvals, accepts corrections,
+and carries the approved knowledge into later runs.
+
+In the example, a misspelled vendor first needs a person's correction. When the
+same spelling appears on a later invoice, the agent uses the saved alias to
+resolve it. The improvement loop also finds recurring failures and records a
+person's decision on a proposed fix.
+
+Run the Python example on macOS or Linux with Python 3.9+:
+
+```bash
+git clone https://github.com/AreevAI/areev.git
+cd areev
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install areev
+
+examples/agents/invoice-to-accounting/python/smoke.sh
+examples/agents/invoice-to-accounting/python/improve.sh
+```
+
+Expected completion messages:
+
+```text
+OK -- 3 posted, 1 refused, 1 correction round-tripped, 2 approvals signed by name.
+OK -- 1 correction became memory, 1 pattern found in 9 runs, 1 decision signed by name.
+```
+
+Both scripts use **synthetic fixtures and mock integrations**: no model key,
+live mailbox, or Areev account is required. They exercise the real engine;
+the example writes to a local mock sheet. See the
+[example walkthrough](examples/agents/invoice-to-accounting/) for the approval
+rules, recorded evidence, and optional live connectors.
+
+| Build in this domain | Start from this reference agent |
+|---|---|
+| Accounts payable | [Invoice processing](examples/agents/invoice-to-accounting/) — approvals, corrections, and memory |
+| Healthcare operations | [Clinical referrals](examples/agents/clinical-referrals/) — pseudonymized model requests and local rehydration |
+| IT operations | [Incident response](examples/agents/incident-response/) — prior incident knowledge in the next response |
+| Revenue-cycle operations | [Revenue-cycle optimization](examples/agents/rcm-optimization/) — proposed query changes, review, and rollback |
+| Privacy operations | [Data-subject requests](examples/agents/data-subject-requests/) — disclosure and erasure with the same selector |
+
+[All reference agents](examples/agents/) ·
+[How to build your own](examples/how-to-create-an-areev-agent.md) ·
+[Package an agent](docs/pack.md)
+
+**Building a product with Areev? [Share it in Discussions](https://github.com/AreevAI/areev/discussions).
+Star the repository to bookmark the engine and help other builders find it.**
+
+## How a product improves
 
 ```text
 Run → Record experience → Propose a change → Evaluate → Approve → Apply
@@ -201,41 +270,6 @@ corpus and governance; training runs in your chosen training stack.
 [Tuning walkthrough](docs/cookbook.md#then-tune-a-small-model-on-it-the-tuning-seam) ·
 [Adapter governance](docs/loop.md#the-tuning-seam--adapter_revision)
 
-## Build a complete agent
-
-Start with the **invoice-to-accounting agent**: process invoices, route
-approvals, accept corrections by email reply, and use recorded experience
-in later runs. The same agent ships in Python, TypeScript, and Rust.
-
-Run its Python example on macOS or Linux:
-
-```bash
-git clone https://github.com/AreevAI/areev.git
-cd areev
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install areev
-
-examples/agents/invoice-to-accounting/python/smoke.sh
-examples/agents/invoice-to-accounting/python/improve.sh
-```
-
-The first script runs the desk through invoices, approvals, and corrections.
-The second shows a correction helping the next invoice, analyzes run history,
-and records a person's decision on a proposed fix. Both use synthetic fixtures
-and mock integrations, with no model key or live mailbox required.
-
-| Example | What to explore |
-|---|---|
-| [Invoice processing](examples/agents/invoice-to-accounting/) | Execution, approvals, corrections, and improvement from history |
-| [Clinical referrals](examples/agents/clinical-referrals/) | Pseudonymized model requests and locally rehydrated results |
-| [Incident response](examples/agents/incident-response/) | Prior incident knowledge informing the next response |
-| [Revenue-cycle optimization](examples/agents/rcm-optimization/) | A proposed CAL query revision, human approval, and rollback |
-| [Data-subject requests](examples/agents/data-subject-requests/) | Disclosure and erasure using the same identity selector |
-
-[All agent examples](examples/agents/) ·
-[How to build an Areev agent](examples/how-to-create-an-areev-agent.md)
-
 ## Use Areev in your stack
 
 | Surface | Install |
@@ -299,8 +333,8 @@ see [third-party notices](THIRD-PARTY-NOTICES.md).
 
 ## Community and contributing
 
-Share what you're building in [Discussions](https://github.com/AreevAI/areev/discussions)
-or [r/Areev](https://www.reddit.com/r/Areev/). Contributions use the
+Share what you're building in [Discussions](https://github.com/AreevAI/areev/discussions).
+Contributions use the
 [DCO](https://developercertificate.org/); start with [CONTRIBUTING.md](CONTRIBUTING.md)
 and the [Code of Conduct](CODE_OF_CONDUCT.md). Report security issues through
 [SECURITY.md](SECURITY.md).
