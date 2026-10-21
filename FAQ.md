@@ -8,16 +8,37 @@ recipes see the [Cookbook](docs/cookbook.md); for the design see
 
 ### What is Areev?
 
-Areev is an **embedded memory engine for AI agents**. You embed it in your
-process (like SQLite, not like a database server), store memories as immutable
-content-addressed **grains** in a per-memory file, query them with **CAL**, and
-hand the results straight to your model — no network hop in the recall path. It
-is the reference implementation of the [Open Memory Spec (OMS)](https://github.com/openmemoryspec/oms).
+Areev Core is the **open-source engine for building micro-vertical AI products**:
+applications for a focused business workflow, such as invoice processing or
+document review. It combines persistent memory, workflow execution, human
+approvals, and governed improvement from execution history.
+
+Its embedded memory engine stores immutable content-addressed **grains**, queries
+them with **CAL**, and hands context to your model without a network hop in the
+local recall path. It is the reference implementation of the
+[Open Memory Spec (OMS)](https://github.com/openmemoryspec/oms).
+
+### How does the open-source engine relate to the Areev Store?
+
+Every product listed in the [Areev Store](https://areev.ai/store) is built using
+Areev Core. The store packages the engine with domain logic, integrations, and a
+customer-facing experience for specific business jobs. Each listing states its
+scope, availability, and commercial terms.
+
+You can use the open-source engine to build your own products under the MIT or
+Apache-2.0 license, without an Areev account. The
+[reference agents](examples/agents/) are runnable starting points; they do not
+imply that every store product's application code is included in this repository.
 
 ### Who is Areev for?
 
-Anyone building an agent, assistant, or LLM app that needs durable, inspectable
-memory: chat assistants that should remember users across sessions, voice agents
+Developers and teams building focused AI products that need reliable execution,
+inspectable memory, approval steps, and controlled improvement. Start with the
+[invoice-to-accounting example](examples/agents/invoice-to-accounting/) to see
+those pieces work together.
+
+You can also use individual components in an existing agent: chat assistants
+that should remember users across sessions, voice agents
 that can't afford a network round-trip per turn, coding agents that accumulate
 project knowledge, and fleets that need to distribute shared knowledge to many
 edges.

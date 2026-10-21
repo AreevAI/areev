@@ -8,6 +8,24 @@ project, and the storage story.
 
 ## The problem
 
+A useful AI product handles a specific job for a specific customer: processing
+invoices for an accounts-payable team, reviewing referral documents, or preparing
+evidence for an incident responder. Beyond the model call, that product needs
+memory, execution history, approval rules, and a way to learn from corrections.
+
+**Areev Core supplies that shared engine.** Every product in the
+[Areev Store](https://areev.ai/store) is built using it. Developers can use the
+same open-source engine to build their own micro-vertical products, adding their
+domain rules, integrations, and user experience. Store listings describe their
+own scope and availability; the [reference agents](../examples/agents/) show
+runnable patterns for building with the engine.
+
+Start with [invoice-to-accounting](../examples/agents/invoice-to-accounting/):
+an approved vendor correction becomes memory that resolves a later invoice,
+and recurring failures become evidence for a proposed improvement. Its default
+run uses synthetic fixtures and mock integrations, so you can inspect the whole
+sequence without an account or model key.
+
 Agent memory today is a vector store plus an extraction pipeline. Audited
 deployments keep finding the same failures, and none of them announce
 themselves — the agent just gets quietly worse.
