@@ -887,6 +887,7 @@ What is enforced, and where:
 | host / path / method / credential / header outside the declaration | broker, per call **and per redirect hop** | 403 + a journaled refusal |
 | a request header the broker owns (`Authorization`, `Cookie`, `Host`, `Proxy-Authorization`, or one carrying a configured credential) | broker, per call — before the call budget is spent | 403 + a journaled refusal; the answer is the same for every caller, so it costs nothing to ask |
 | a malformed header name, or a value containing CR/LF | broker, per call | 400 — header injection is refused as malformed, not merely denied |
+| a `response_headers` name outside `content-type` / `mcp-session-id` (#395) | broker, per call — before any I/O | 400 — the closed list is the broker's, the same for every caller |
 | an evasive path (`..`, `%2e`/`%2f`/`%5c`, `\\`) against declared `path_prefixes` | broker, per call | 403 — refused rather than normalized |
 | anything outside the host grant | broker, per call | 403 + a journaled refusal |
 | a private/loopback destination (`127.0.0.0/8`, `10/8`, `169.254/16`, `::1`, `fc00::/7`, …) under an **unrestricted** policy | broker, per call and per hop | 403 — a declaration alone cannot authorize local reach; name it in `--allow-host` |
@@ -902,6 +903,12 @@ CAS and returns `ref`, `sha256`, `bytes`, and bounded `mime`; `body_ref` plus
 using `POST_ARTIFACT`, `PUT_ARTIFACT`, or `PATCH_ARTIFACT` as the method. These
 markers map to the real granted methods here; older brokers reject them
 before dispatch instead of sending an empty upload.
+`response_headers: ["Mcp-Session-Id", "Content-Type"]` asks for those response
+headers back (#395): the answer gains a `headers` object (lowercased names,
+final response only, scrubbed like the body) and the `egress_call` record a
+`response_headers` field. Only those two names are admitted; without the field
+the answer is `{status, body}` exactly as before. `mcp.call` uses it for the
+MCP session handshake ([blessed-tools.md](blessed-tools.md#mcpcall)).
 Upload requires a declared blob read and `Content-Type` header permission.
 Binary responses and requests are bounded before storage or dispatch (#339):
 `runtime_limits.max_response_bytes` bounds the stored response and

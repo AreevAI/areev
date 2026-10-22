@@ -13,7 +13,7 @@ addresses `dist/blessed.json` records and
 | Crate | Ships as | Does |
 |---|---|---|
 | `http-call` | `http.call` | forwards one request to the broker and the answer back — verbatim, both ways |
-| `mcp-call` | `mcp.call` | JSON-RPC `tools/call` around the caller's `arguments`, `result` unwrapped |
+| `mcp-call` | `mcp.call` | MCP Streamable HTTP: `initialize` + session, JSON-RPC `tools/call` around the caller's `arguments`, SSE or JSON reply, `result` unwrapped |
 | `a2a-call` | `a2a.call` | JSON-RPC `message/send` around a message or a line of text |
 | `mailbox-poll` | `mailbox.poll` | the trigger-connector example: reads a filed feed by content address |
 | `rest-poll` | `rest.poll` | polls a paginated REST source; the Definition's `config` maps items, id, cursor and pages |

@@ -537,9 +537,11 @@ any of them gets a journaled refusal rather than a quiet fallback:
 7. **Where that credential comes from** — `resolve_credential`: a static env
    value, or one minted per TTL window by a command or Vault (#113). Fails
    closed.
-8. **What comes back** — response headers never cross the boundary, the body is
-   scrubbed of any reflected credential, the read is bounded, and the call is
-   journaled by credential NAME and body DIGEST, never by value.
+8. **What comes back** — response headers cross only when the caller names
+   them and only from the closed `EXPOSABLE_RESPONSE_HEADERS` list (#395), the
+   body and those headers are scrubbed of any reflected credential, the read
+   is bounded, and the call is journaled by credential NAME and body DIGEST,
+   never by value.
 
 Securing this with a vault is step 7 and only step 7: a vault changes where a
 secret is *issued*, and steps 1–6 are what still decide where it may be *sent*.
@@ -678,6 +680,21 @@ Neither replaces the other — see `docs/security-model.md` and
   gates both), which is why `EgressCall.headers` can be journaled under
   `credential_sent` — if that ever becomes two flags, this becomes two too.
   Values ARE journaled, unlike the credential: the caller chose them.
+- **Response headers by name** (#395) — `EgressRequest.response_headers`.
+  `mcp.call` needs the `Mcp-Session-Id` an MCP server returns ONLY as a
+  response header, so the "headers never cross" rule became "only by name,
+  from a closed list". Rules: (1) `EXPOSABLE_RESPONSE_HEADERS` is a broker
+  CONSTANT (`content-type`, `mcp-session-id`), not a declaration key — what may
+  cross back is the boundary's property, and a constant cannot be widened by a
+  synced memory; an unlisted name is a free `400` before I/O; (2) values come
+  from the FINAL response only, ≤ `MAX_EXPOSED_HEADER_VALUE` visible ASCII,
+  dropped (never truncated) otherwise; (3) they go through `scrub_reflected`
+  with the body — one function, so the channels cannot drift; (4) the answer's
+  `headers` key and `EgressCall.response_headers` are present only when asked
+  for, so a pre-#395 caller's answer and audit grain are byte-identical; the
+  discarded 401-retry record carries none (the caller never saw it). The
+  broker stays protocol-agnostic: it does not cache sessions — `mcp.call`'s
+  caller threads `session` explicitly (`docs/blessed-tools.md`).
 - **The vocabulary lives in `areev_core::types::capability`**, not here:
   `areev-cal`'s write path sits below this crate and must reach the same parser,
   or a tool becomes writable and then unrunnable. `egress::AllowedHost` is a

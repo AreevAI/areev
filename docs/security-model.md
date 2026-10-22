@@ -1038,11 +1038,25 @@ Each of the following is worth stating because it closes a specific hole:
   and `curl --location` apply). The success audit records the credential name
   only when it actually rode the final request. Chains are bounded at ten hops
   and the bound is auditable.
-- **A reflected credential is scrubbed.** Response *headers* never cross the
-  broker — it answers with `{status, body}` and nothing else — so the body is
-  the only channel, and an echo or verbose-error endpoint that bounces the
-  injected `Authorization` back in it has the value replaced before it reaches
-  the caller or the audit trail.
+- **A reflected credential is scrubbed.** An echo or verbose-error endpoint
+  that bounces the injected `Authorization` back in the body has the value
+  replaced before it reaches the caller or the audit trail.
+- **Response headers cross only by name, from a closed list** (#395). By
+  default the broker answers `{status, body}` and nothing else. A caller may
+  ask for specific response headers (`"response_headers": [...]`), and the
+  broker hands back only names in `EXPOSABLE_RESPONSE_HEADERS` —
+  `content-type` and `mcp-session-id`, which MCP's Streamable HTTP transport
+  needs and which carry no operator secret. Any other name (`Set-Cookie`,
+  `WWW-Authenticate`, `Location`, …) is a `400` before any upstream I/O,
+  answered free because the answer is the same for every caller. The list is
+  a broker constant, not a declaration key, so a synced memory cannot widen
+  it. Exposed values come from the final response only, must be ≤ 1 KiB of
+  visible ASCII (else dropped, never truncated), go through the same
+  reflected-credential scrub as the body, and are journaled with values under
+  `egress_call.response_headers`. A caller that names none gets the pre-#395
+  answer byte for byte. An MCP session id handed to a guest is usable only
+  through the broker — the guest has no socket — so every request carrying it
+  is still gated by the credential, the declaration and the grant.
 - **The response ceiling bounds the read, not just the answer.** For a
   capability caller the broker abandons the body at `max_response_bytes`
   rather than buffering an upstream's whole answer and then measuring it, and
@@ -1094,7 +1108,7 @@ loses at most one superstep of evidence:
 | `observation_kind` | Records | Dedup |
 |---|---|---|
 | `egress_refusal` | caller, destination, reason | per distinct `(caller, destination, reason)` |
-| `egress_call` | caller, method, final URL, status, redirect count, request/response **digests**, response size, credential **name**, caller-set request headers **with values** | none |
+| `egress_call` | caller, method, final URL, status, redirect count, request/response **digests**, response size, credential **name**, caller-set request headers **with values**, response headers the caller asked for (#395) **with values** | none |
 | `blob_read` | caller, `cas://` address, byte count | none |
 
 The dedup difference is deliberate: a refusal is a policy fact and forty

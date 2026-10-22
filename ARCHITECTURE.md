@@ -1401,6 +1401,35 @@ And the resolver's own authentication is **carved out of every other child**
 because leaving a vault token ambient would reopen #100's leak one level up,
 with a secret that is strictly more powerful than the one it fetches.
 
+### Response headers cross the broker by name, from a closed list; the broker stays protocol-agnostic
+
+**Decision (2026-10-22, issue #395):** a brokered request may name response
+headers to be handed back (`response_headers`), and the broker admits only
+the names in a constant list — `content-type` and `mcp-session-id`. The MCP
+session handshake lives in the `mcp.call` blob; session reuse across
+invocations is explicit (`session` out, `session` in), not cached by the host.
+
+Until #395 the broker answered `{status, body}` and nothing else, which made
+MCP's Streamable HTTP transport unreachable: its session id exists only as a
+response header on `initialize`. Three shapes were weighed. *Expose every
+header* hands a guest `Set-Cookie` and `WWW-Authenticate` — what the
+credential channel exists to keep from it. *A declaration key naming
+exposable headers* puts the list in data a synced memory controls, and
+widening what crosses the boundary is exactly what a synced memory must not
+be able to do. *A closed broker constant* costs a code change per new name,
+which is the right price: the list is the boundary. Values are bounded, come
+from the final response only, and go through the body's reflected-credential
+scrub; a caller naming none gets the pre-#395 answer byte for byte.
+
+Caching the session per `(url, credential)` in the broker was rejected for
+the same reason the credential resolver lives there and the MCP client does
+not: the broker is the trusted, protocol-agnostic party. Teaching it MCP puts
+protocol state in the process holding every credential, keyed by values the
+guest chooses. A guest has no state between invocations, so reuse is the
+caller's — the output's `session` threads through plan state like any other
+value, and the journal records it. A reused session answered `404` is
+re-initialized once by the blob.
+
 ### LIMIT bounds the answer, not the search for it
 
 **Decision (2026-08-19, issue #43):** any post-retrieval pipeline stage that

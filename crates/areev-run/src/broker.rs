@@ -915,7 +915,42 @@ pub struct EgressCall {
     /// and "it sent these four requests with these headers" is strictly more
     /// evidence than "it sent these four requests".
     pub headers: BTreeMap<String, String>,
+    /// Response headers handed back to the caller because it asked for them
+    /// by name (#395), name (lowercased) AND value — only names in
+    /// [`EXPOSABLE_RESPONSE_HEADERS`], each scrubbed of any reflected
+    /// credential exactly as the body is. Empty for every caller that asked
+    /// for none, which is every caller before #395, so their audit records
+    /// are unchanged.
+    ///
+    /// Recorded with values because the caller RECEIVED them: a record of
+    /// what crossed the boundary that left out what crossed it would be the
+    /// false record this trail exists to avoid. An MCP session id is a
+    /// server-issued handle, not an operator secret — the credential still
+    /// gates every request that carries it.
+    pub response_headers: BTreeMap<String, String>,
 }
+
+/// The response headers a caller may ask the broker to hand back (#395),
+/// lowercased. A closed list, enforced here, not a declaration key: what may
+/// cross back is a property of the BROKER's boundary, the same for every
+/// caller, so it is a constant rather than a grant — and a constant cannot be
+/// widened by a synced memory.
+///
+/// * `content-type` — so a guest can tell a `text/event-stream` (SSE) reply
+///   from a JSON one without sniffing the body;
+/// * `mcp-session-id` — the MCP "Streamable HTTP" session handle, which the
+///   server returns ONLY as a response header on `initialize` and requires on
+///   every later request.
+///
+/// Never `set-cookie`, `www-authenticate`, `authorization`, `location` or any
+/// other header that can carry a credential or steer the broker: asking for a
+/// name outside this list is a `400`, before any upstream I/O.
+pub const EXPOSABLE_RESPONSE_HEADERS: &[&str] = &["content-type", "mcp-session-id"];
+
+/// Longest exposed response-header value handed back. An MCP session id is
+/// a UUID or a JWT-sized token at most; a value past this is dropped rather
+/// than truncated (a truncated session id is a wrong one).
+const MAX_EXPOSED_HEADER_VALUE: usize = 1024;
 
 /// One CAS blob a capability tool READ, kept for the audit trail (#106).
 ///
@@ -1311,6 +1346,11 @@ struct EgressRequest {
     /// is deterministic and a caller cannot smuggle a second `X-Foo` past a
     /// check that looked at the first.
     headers: BTreeMap<String, String>,
+    /// Response headers the caller wants handed back, by name (#395). Only
+    /// names in [`EXPOSABLE_RESPONSE_HEADERS`] are admitted. Absent or empty
+    /// means the answer carries no `headers` key at all — byte-identical to
+    /// the pre-#395 answer — so every existing caller is unaffected.
+    response_headers: Vec<String>,
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -1639,6 +1679,33 @@ fn serve_one(
                 })
                 .to_string(),
             );
+        }
+    }
+    // Response headers the caller asked for (#395). A name outside the closed
+    // list is refused free and before any I/O, for the reason a broker-owned
+    // request header is: the answer is the same for every caller, so it leaks
+    // no policy, and a guest that could read `Set-Cookie` or
+    // `WWW-Authenticate` would be reading what the credential channel exists
+    // to keep from it.
+    let mut expose: Vec<String> = Vec::new();
+    for name in &req.response_headers {
+        let lower = name.trim().to_ascii_lowercase();
+        if !EXPOSABLE_RESPONSE_HEADERS.contains(&lower.as_str()) {
+            return respond(
+                &mut stream,
+                400,
+                &serde_json::json!({
+                    "error": format!(
+                        "response header '{name}' cannot be handed back — the broker exposes \
+                         only {}",
+                        EXPOSABLE_RESPONSE_HEADERS.join(", ")
+                    )
+                })
+                .to_string(),
+            );
+        }
+        if !expose.contains(&lower) {
+            expose.push(lower);
         }
     }
     if req.response_mode.as_deref().is_some_and(|m| m != "artifact") {
@@ -2133,6 +2200,7 @@ fn serve_one(
         capability.as_ref().map(|(_, d)| d),
         response_cap,
         artifact_mode,
+        &expose,
         &caller,
         refusals,
     );
@@ -2212,6 +2280,9 @@ fn serve_one(
                                 } else {
                                     BTreeMap::new()
                                 },
+                                // Discarded: the caller never sees this
+                                // response, so nothing of it crossed back.
+                                response_headers: BTreeMap::new(),
                             },
                         );
                     }
@@ -2232,6 +2303,7 @@ fn serve_one(
                         capability.as_ref().map(|(_, d)| d),
                         response_cap,
                         artifact_mode,
+                        &expose,
                         &caller,
                         refusals,
                     );
@@ -2245,16 +2317,27 @@ fn serve_one(
     }
 
     match outcome {
-        Dispatched::Answered { status, body, mime, final_url, redirects, credential_sent } => {
+        Dispatched::Answered { status, body, mime, final_url, redirects, credential_sent, exposed } => {
             if headers.iter().any(|(_, value)| value.len() >= 8 && mime.contains(value)) {
                 return respond(&mut stream, 502, r#"{"error":"upstream reflected a credential in media type"}"#);
             }
+            // An exposed response header (#395) is scrubbed under the SAME
+            // rule as the body — `scrub_reflected`, one function, so the two
+            // channels cannot drift apart. A session id the upstream built
+            // out of our bearer token reaches neither the guest nor the
+            // journal.
+            let exposed: BTreeMap<String, String> = exposed
+                .into_iter()
+                .map(|(k, v)| (k, scrub_reflected(v, &headers)))
+                .collect();
             // Credential reflection: an echo or a verbose error endpoint can
             // bounce the injected `Authorization` back in its BODY, and that
             // body goes to the guest and (as a digest) into the audit trail.
-            // Response HEADERS never cross this boundary at all — the broker
-            // answers with `{status, body}` and nothing else — so the body is
-            // the only channel, and it is scrubbed rather than trusted.
+            // Response HEADERS cross this boundary only when the caller named
+            // them and only from the closed `EXPOSABLE_RESPONSE_HEADERS` list
+            // (#395), scrubbed just above; otherwise the broker answers with
+            // `{status, body}` and nothing else. The body is scrubbed rather
+            // than trusted.
             // Text is scrubbed; binary must remain byte-exact, so refuse a
             // reflected credential instead of silently changing the artifact.
             let body = if req.response_mode.as_deref() == Some("artifact") {
@@ -2304,9 +2387,10 @@ fn serve_one(
                     } else {
                         BTreeMap::new()
                     },
+                    response_headers: exposed.clone(),
                 },
             );
-            let answer = if req.response_mode.as_deref() == Some("artifact") {
+            let mut answer = if req.response_mode.as_deref() == Some("artifact") {
                 serde_json::json!({ "status": status,
                     "ref": artifact_ref,
                     "sha256": digest_bytes(&body), "bytes": body.len(), "mime": mime })
@@ -2314,6 +2398,12 @@ fn serve_one(
                 serde_json::json!({ "status": status,
                     "body": String::from_utf8(body).expect("text decoded at dispatch") })
             };
+            // Present iff asked for (#395): a caller that named no response
+            // header gets the pre-#395 answer byte for byte. A header the
+            // upstream did not send is simply absent from the object.
+            if !expose.is_empty() {
+                answer["headers"] = serde_json::json!(exposed);
+            }
             respond(&mut stream, 200, &answer.to_string())
         }
         Dispatched::Refused { detail } => respond(
@@ -2392,9 +2482,10 @@ fn serve_one(
 ///
 /// An echo or a verbose error endpoint can bounce the injected `Authorization`
 /// back in its BODY, and that body goes to the guest and (as a digest) into
-/// the audit trail. Response HEADERS never cross this boundary at all — the
-/// broker answers with `{status, body}` and nothing else — so the body is the
-/// only channel, and it is scrubbed rather than trusted.
+/// the audit trail. Response HEADERS cross this boundary only by name from
+/// the closed [`EXPOSABLE_RESPONSE_HEADERS`] list (#395), and those values go
+/// through this same function — so every channel back to the caller is
+/// scrubbed under one rule rather than trusted.
 ///
 /// A free function rather than inline, so that every path which digests or
 /// returns a body scrubs it under the same rule. The 401-retry path journals a
@@ -2458,7 +2549,19 @@ enum Dispatched {
     /// the same fact. If they ever stop being the same fact, this needs to
     /// become two flags — journaling a header that did not travel is the same
     /// false record as journaling a credential that did not.
-    Answered { status: u16, body: Vec<u8>, mime: String, final_url: String, redirects: u32, credential_sent: bool },
+    ///
+    /// `exposed` holds the final response's headers the caller asked for by
+    /// name (#395), already filtered to [`EXPOSABLE_RESPONSE_HEADERS`] and
+    /// bounded — not yet scrubbed, which `serve_one` does with the body.
+    Answered {
+        status: u16,
+        body: Vec<u8>,
+        mime: String,
+        final_url: String,
+        redirects: u32,
+        credential_sent: bool,
+        exposed: BTreeMap<String, String>,
+    },
     /// A hop was refused by policy; already recorded in `refusals`.
     Refused { detail: String },
     /// The final response exceeded the caller's `max_response_bytes` — the
@@ -2565,6 +2668,7 @@ fn dispatch(
     declaration: Option<&Declaration>,
     max_response_bytes: Option<usize>,
     binary: bool,
+    expose: &[String],
     caller: &str,
     refusals: &Arc<std::sync::Mutex<Vec<EgressRefusal>>>,
 ) -> Dispatched {
@@ -2670,6 +2774,21 @@ fn dispatch(
         } else {
             "application/octet-stream".to_string()
         };
+        // Only from the response the caller actually receives (an
+        // intermediate 3xx's headers are never handed back), only the names it
+        // asked for, and only values that are short, visible ASCII — the MCP
+        // spec's own shape for a session id. Anything else is dropped rather
+        // than truncated or escaped: a mangled session id is a wrong one.
+        let exposed: BTreeMap<String, String> = expose
+            .iter()
+            .filter_map(|name| {
+                let v = resp.headers().get(name.as_str())?.to_str().ok()?.trim();
+                (!v.is_empty()
+                    && v.len() <= MAX_EXPOSED_HEADER_VALUE
+                    && v.bytes().all(|b| (0x20..0x7f).contains(&b)))
+                .then(|| (name.clone(), v.to_string()))
+            })
+            .collect();
 
         let Some(next_method) = redirect_method(status, &method) else {
             // Not a redirect, or one we deliberately do not follow. Either way
@@ -2682,6 +2801,7 @@ fn dispatch(
                     final_url: url,
                     redirects: hops,
                     credential_sent: send_credential,
+                    exposed: exposed.clone(),
                 },
                 Err(BodyErr::TooLarge) => Dispatched::TooLarge { final_url: url },
                 Err(BodyErr::NotText(detail)) => {
@@ -2704,6 +2824,7 @@ fn dispatch(
                     final_url: url,
                     redirects: hops,
                     credential_sent: send_credential,
+                    exposed: exposed.clone(),
                 },
                 Err(BodyErr::TooLarge) => Dispatched::TooLarge { final_url: url },
                 Err(BodyErr::NotText(detail)) => {
@@ -3811,5 +3932,101 @@ mod tests {
         let b = Broker::start(EgressPolicy::unrestricted(), BTreeMap::new(), grants(&[]), "TRG-E009").unwrap();
         let (status, _) = call(&b, serde_json::json!({ "url": "https://anywhere.example/" }));
         assert_ne!(status, 403, "an absent allowlist does not refuse");
+    }
+
+    // ---- #395: response headers a caller names, from a closed list --------
+
+    /// An MCP-shaped upstream answer: a session id, an SSE media type, and the
+    /// headers that must NEVER cross back.
+    fn mcp_answer(session: &'static str) -> impl FnOnce(&mut TcpStream) + Send + 'static {
+        move |s: &mut TcpStream| {
+            let body = "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n";
+            let _ = write!(
+                s,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nMcp-Session-Id: {session}\r\n\
+                 Set-Cookie: sid=cookie-secret\r\nWWW-Authenticate: Bearer realm=x\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = s.flush();
+        }
+    }
+
+    #[test]
+    fn response_headers_are_absent_unless_named_so_old_answers_are_byte_identical() {
+        let (origin, server) = upstream(mcp_answer("sess-1"));
+        let b = Broker::start(policy(&[&origin]), BTreeMap::new(), grants(&[]), "RUN-E022").unwrap();
+        let (status, answer) =
+            call(&b, serde_json::json!({ "url": format!("{origin}/mcp"), "method": "POST", "body": "{}" }));
+        server.join().unwrap();
+        assert_eq!(status, 200, "{answer}");
+        let keys: Vec<&String> = answer.as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["body", "status"], "the pre-#395 answer shape: {answer}");
+        assert!(b.calls()[0].response_headers.is_empty());
+    }
+
+    #[test]
+    fn named_response_headers_cross_back_and_are_journaled() {
+        let (origin, server) = upstream(mcp_answer("sess-1"));
+        let b = Broker::start(policy(&[&origin]), BTreeMap::new(), grants(&[]), "RUN-E022").unwrap();
+        let (status, answer) = call(
+            &b,
+            serde_json::json!({ "url": format!("{origin}/mcp"), "method": "POST", "body": "{}",
+                                "response_headers": ["Mcp-Session-Id", "content-type", "MCP-SESSION-ID"] }),
+        );
+        server.join().unwrap();
+        assert_eq!(status, 200, "{answer}");
+        assert_eq!(
+            answer["headers"],
+            serde_json::json!({ "mcp-session-id": "sess-1", "content-type": "text/event-stream" }),
+            "exactly the names asked for, lowercased, deduplicated — never Set-Cookie"
+        );
+        let calls = b.calls();
+        assert_eq!(calls[0].response_headers.get("mcp-session-id").map(String::as_str), Some("sess-1"));
+
+        // And the audit grain carries them, so the session a run used is on
+        // the record.
+        let (_dir, store) = kept_store();
+        store.with_store(|m| {
+            let h = crate::journal::write_egress_call(m, "r395", &calls[0], 1_788_134_400_000,
+                "user:test", None).unwrap();
+            let g = m.get(&h).unwrap();
+            assert!(format!("{g:?}").contains("sess-1"), "{g:?}");
+        });
+    }
+
+    #[test]
+    fn a_response_header_outside_the_closed_list_is_refused_before_any_io() {
+        // Port 1: if the broker dispatched, this would be a 502, not a 400.
+        let b = Broker::start(policy(&["http://127.0.0.1:1"]), BTreeMap::new(), grants(&[]), "RUN-E022").unwrap();
+        for name in ["Set-Cookie", "WWW-Authenticate", "Authorization", "Location", "X-Anything"] {
+            let (status, answer) = call(
+                &b,
+                serde_json::json!({ "url": "http://127.0.0.1:1/mcp", "response_headers": [name] }),
+            );
+            assert_eq!(status, 400, "{name}: {answer}");
+            assert!(answer["error"].as_str().unwrap().contains("mcp-session-id"), "{answer}");
+        }
+        assert!(b.calls().is_empty() && b.refusals().is_empty());
+    }
+
+    #[test]
+    fn an_exposed_header_reflecting_the_credential_is_scrubbed_like_the_body() {
+        let (origin, server) = upstream(mcp_answer("sk-live-395-reflected-token"));
+        let creds: BTreeMap<String, CredentialSource> = [(
+            "mcp".to_string(),
+            Credential::Bearer("sk-live-395-reflected-token".into()).into(),
+        )]
+        .into();
+        let b = Broker::start(policy(&[&origin]), creds, grants(&["mcp"]), "RUN-E022").unwrap();
+        let (status, answer) = call(
+            &b,
+            serde_json::json!({ "url": format!("{origin}/mcp"), "method": "POST", "body": "{}",
+                                "credential": "mcp", "response_headers": ["Mcp-Session-Id"] }),
+        );
+        server.join().unwrap();
+        assert_eq!(status, 200, "{answer}");
+        assert_eq!(answer["headers"]["mcp-session-id"], "[redacted-credential]");
+        assert!(!format!("{:?}", b.calls()).contains("sk-live-395"), "nor in the audit record");
     }
 }

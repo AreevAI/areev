@@ -6,6 +6,36 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **`mcp.call` speaks MCP Streamable HTTP** (#395). The blessed blob now sends
+  `Accept: application/json, text/event-stream`, does `initialize` +
+  `notifications/initialized` before the call, carries the server's
+  `Mcp-Session-Id` and the negotiated `MCP-Protocol-Version` on later
+  requests, and reads a `text/event-stream` (SSE) reply down to the event
+  whose JSON-RPC `id` is the request's. The output adds `session: {id,
+  protocol_version}`; passing it back as the input's `session` skips the
+  handshake, and a reused session answered `404` is re-initialized once. A
+  server that refuses `initialize` is called without a session, and
+  `"transport": "json"` keeps the pre-#395 single POST byte for byte. New
+  address `cas://sha256:0df8bb02ac32393002747a4ebc3dda34cc75d14d4e2a86835afebd9c0d8d2ce3`
+  (was `e52f19ff…`; packs pinning the old address keep running it). A
+  re-pointed Definition must declare `Accept`, `Mcp-Session-Id` and
+  `MCP-Protocol-Version` beside `Content-Type`, and spends 3 `max_calls`
+  units per handshaking invocation. Not done: an implicit per-`(url,
+  credential)` session cache — reuse is explicit (`docs/blessed-tools.md`).
+
+### Added
+
+- **The broker hands back response headers by name, from a closed list**
+  (#395). A brokered request may carry `"response_headers": [...]`; the
+  answer then has a `headers` object holding those names (lowercased) from
+  the final response. Only `content-type` and `mcp-session-id` may be named —
+  anything else is a `400` before any I/O. Values are bounded, scrubbed of a
+  reflected credential like the body, and journaled under
+  `egress_call.response_headers`. A request naming none gets the pre-#395
+  answer and audit grain byte for byte (`docs/security-model.md`).
+
 ## [1.13.0] — 2026-10-20
 
 ### Added
