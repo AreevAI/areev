@@ -1352,18 +1352,27 @@ pub enum Condition {
         span: Option<Span>,
     },
 
-    /// `field CONTAINS "text"`
+    /// `field CONTAINS "text"` or `field CONTAINS $param` (#402).
     Contains {
         field: String,
         value: String,
+        /// A `$param` written in place of the literal. A saved query's
+        /// parameters are substituted into its TEXT before it is parsed, so
+        /// one still present at execution is unbound (`CAL-E008`). Absent
+        /// from the wire form unless set, so JSON-CAL is unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        param: Option<String>,
         #[serde(skip)]
         span: Option<Span>,
     },
 
-    /// `field STARTS WITH "text"`
+    /// `field STARTS WITH "text"` or `field STARTS WITH $param` (#402).
     StartsWith {
         field: String,
         value: String,
+        /// See [`Condition::Contains`]'s `param`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        param: Option<String>,
         #[serde(skip)]
         span: Option<Span>,
     },

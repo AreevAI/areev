@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **CAL: `CONTAINS` and `STARTS WITH` take a parameter reference (#402).**
+  `object.counterparty_canonical CONTAINS $name` in a `DEFINE QUERY` body
+  used to be refused at definition (`CAL-E059`, "expected string literal,
+  found $name"). The DEFINE-time shape check stood every parameter in as the
+  number `1`, which a text operator rejects. The text operators now accept
+  `$param` beside the literal, `RUN` binds it with the literal's
+  case-sensitive semantics, a non-string binding is a typed refusal
+  (`CAL-E002`), and a text parameter still unbound at execution is `CAL-E008`
+  on every path (push-down, residual, under `OR`/`NOT`). The JSON-CAL wire
+  form gains an optional `param` key on `contains`/`starts_with`, omitted
+  when unset, so existing ASTs are unchanged.
+
 ## [1.13.0] — 2026-10-20
 
 ### Added
