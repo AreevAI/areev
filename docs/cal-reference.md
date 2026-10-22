@@ -729,12 +729,32 @@ is what loses it.
 | Comparison | `confidence >= 0.8`, `subject = "john"`, `role != "system"` |
 | Membership | `relation IN ("prefers", "likes")`, `subject NOT IN (...)` |
 | Null checks | `deadline IS NULL`, `object IS NOT NULL` |
-| Text | `object CONTAINS "seat"`, `subject STARTS WITH "caller:"` |
+| Text | `object CONTAINS "seat"`, `subject STARTS WITH "caller:"`, `object.counterparty CONTAINS $name` |
 | Boolean logic | `subject = "john" AND (relation = "prefers" OR relation = "likes")` |
 
 Comparators: `=`, `!=`, `>`, `>=`, `<`, `<=`. Values are strings (`"..."`),
 numbers, booleans, arrays (`["a", "b"]`), content hashes (`sha256:abcdef...`), or
 parameter references (`$name`). Membership sets are capped at 100 values.
+
+`CONTAINS` and `STARTS WITH` take a string literal or a parameter reference
+(#402). Matching is case-sensitive either way. In a saved query, `RUN`
+binds the parameter exactly as the literal would be written, so a tolerant
+counterparty match can live in the query body:
+
+```sql
+DEFINE QUERY "by_name"($name, $limit) AS {
+  RECALL facts WHERE namespace = "statements.transactions"
+    AND object.counterparty_canonical CONTAINS $name
+  ORDER BY valid_from DESC LIMIT $limit FORMAT json
+}
+```
+
+`RUN "by_name"($name = "MALABAR CARDAMOM", $limit = 100)` returns every row
+whose canonical name contains that text. A binding that is not a string
+(`$name = 42`) is refused (`CAL-E002`, "expected string literal") instead of
+silently matching nothing. A text parameter that is still unbound when the
+query runs (an ad-hoc `RECALL`, or a name the query does not declare) is
+`CAL-E008`, as for every other parameter reference.
 
 `IN` fails **closed** in both directions, which matters because these filters
 usually scope a recall to a tenant, a session, or a user:
