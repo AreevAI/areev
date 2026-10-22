@@ -300,6 +300,43 @@ impl Obj {
     }
 }
 
+/// Every member of a top-level JSON object, in order, as `(name, raw value)`.
+/// Empty when the input is not an object; stops at the first malformed point,
+/// the same "no such member" honesty [`member`] has.
+///
+/// For a tool that has to MERGE a caller's object with its own entries
+/// (`mcp.call`'s request headers, #395) — slicing one member at a time cannot
+/// enumerate the names it would be overriding.
+pub fn members(obj: &[u8]) -> alloc::vec::Vec<(String, &[u8])> {
+    let mut out = alloc::vec::Vec::new();
+    let mut i = skip_ws(obj, 0);
+    if obj.get(i) != Some(&b'{') {
+        return out;
+    }
+    i += 1;
+    loop {
+        i = skip_ws(obj, i);
+        match obj.get(i) {
+            Some(b',') => {
+                i += 1;
+                continue;
+            }
+            Some(b'"') => {}
+            _ => return out,
+        }
+        let Some((name, next)) = string_at(obj, i) else { return out };
+        i = skip_ws(obj, next);
+        if obj.get(i) != Some(&b':') {
+            return out;
+        }
+        i = skip_ws(obj, i + 1);
+        let start = i;
+        let Some(end) = skip_value(obj, i) else { return out };
+        out.push((name, &obj[start..end]));
+        i = end;
+    }
+}
+
 /// Bytes of a value, or `null` when it is absent.
 pub fn raw_or_null<'a>(obj: &'a [u8], key: &str) -> &'a [u8] {
     match member(obj, key) {

@@ -100,7 +100,7 @@ fn unwrap_reply(reply: &[u8]) -> String {
 
 /// The broker's own answer, passed through. Not UTF-8 is not a thing the
 /// broker produces, so it becomes an error rather than a lossy guess.
-fn lossy(bytes: &[u8]) -> String {
+pub fn lossy(bytes: &[u8]) -> String {
     match core::str::from_utf8(bytes) {
         Ok(s) => String::from(s),
         Err(_) => abi::error_json("the broker's answer was not UTF-8"),

@@ -23,3 +23,4 @@ extern crate alloc;
 pub mod abi;
 pub mod json;
 pub mod jsonrpc;
+pub mod sse;

@@ -402,6 +402,12 @@ pub fn write_egress_call(
     if !call.headers.is_empty() {
         ex.insert("headers".into(), json!(call.headers));
     }
+    // What crossed BACK, by the caller's own request (#395) — an MCP session
+    // id, a reply's media type. Omitted when empty, so a caller that asked
+    // for none writes the pre-#395 grain byte for byte.
+    if !call.response_headers.is_empty() {
+        ex.insert("response_headers".into(), json!(call.response_headers));
+    }
     m.add(&obs)
 }
 

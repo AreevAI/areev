@@ -60,10 +60,25 @@ struct Seen {
 /// A one-shot loopback broker stand-in. `reply` is the body it answers with,
 /// under `status`.
 fn broker(status: u16, reply: Vec<u8>) -> (String, std::thread::JoinHandle<Seen>) {
-    use std::io::{BufRead, BufReader, Read, Write};
+    let (url, handle) = broker_script(vec![(status, reply)]);
+    (url, std::thread::spawn(move || handle.join().unwrap().pop().unwrap()))
+}
+
+/// A loopback broker stand-in answering one connection per scripted reply, in
+/// order — what a tool that makes several brokered calls (`mcp.call`'s
+/// handshake, #395) needs. Returns every request it saw.
+fn broker_script(replies: Vec<(u16, Vec<u8>)>) -> (String, std::thread::JoinHandle<Vec<Seen>>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
     let handle = std::thread::spawn(move || {
+        replies.into_iter().map(|(status, reply)| serve(&listener, status, &reply)).collect()
+    });
+    (url, handle)
+}
+
+fn serve(listener: &std::net::TcpListener, status: u16, reply: &[u8]) -> Seen {
+    use std::io::{BufRead, BufReader, Read, Write};
+    {
         let (stream, _) = listener.accept().unwrap();
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         let mut request_line = String::new();
@@ -95,11 +110,10 @@ fn broker(status: u16, reply: Vec<u8>) -> (String, std::thread::JoinHandle<Seen>
                 .as_bytes(),
             )
             .unwrap();
-        stream.write_all(&reply).unwrap();
+        stream.write_all(reply).unwrap();
         stream.flush().unwrap();
         Seen { path, token, body: String::from_utf8_lossy(&body).to_string() }
-    });
-    (url, handle)
+    }
 }
 
 /// Run one blessed blob against a stand-in broker, returning the guest's
@@ -114,6 +128,29 @@ fn call(name: &str, input: Value, limits: Limits, status: u16, reply: &str) -> (
     std::env::remove_var("AREEV_EGRESS_TOKEN");
     let seen = handle.join().unwrap();
     (out.expect("the module ran").output, seen)
+}
+
+/// Run one blessed blob against a scripted stand-in broker: one reply per
+/// brokered call, in order. Every scripted reply must be consumed.
+fn call_script(name: &str, input: Value, replies: Vec<Value>) -> (Value, Vec<Value>) {
+    let n = replies.len();
+    let (url, handle) =
+        broker_script(replies.into_iter().map(|r| (200, r.to_string().into_bytes())).collect());
+    let _guard = env_lock();
+    std::env::set_var("AREEV_EGRESS_URL", &url);
+    std::env::set_var("AREEV_EGRESS_TOKEN", "tok-blessed");
+    let out = run(&blob(name), &input, &io());
+    std::env::remove_var("AREEV_EGRESS_URL");
+    std::env::remove_var("AREEV_EGRESS_TOKEN");
+    let out = out.expect("the module ran");
+    assert_eq!(out.fetches as usize, n, "every scripted reply is one brokered call: {}", out.output);
+    let seen = handle.join().unwrap();
+    (out.output, seen.iter().map(|s| serde_json::from_str(&s.body).unwrap()).collect())
+}
+
+/// The JSON-RPC envelope inside a brokered request.
+fn envelope(req: &Value) -> Value {
+    serde_json::from_str(req["body"].as_str().unwrap()).unwrap()
 }
 
 fn io() -> Limits {
@@ -188,6 +225,8 @@ fn http_call_hands_back_a_refusal_with_its_code() {
 
 #[test]
 fn mcp_call_builds_tools_call_and_unwraps_the_result() {
+    // `"transport": "json"` is the pre-#395 single POST, byte for byte: one
+    // request, `Content-Type` only, no handshake, no `response_headers`.
     let (out, seen) = call(
         "mcp.call",
         json!({
@@ -195,7 +234,8 @@ fn mcp_call_builds_tools_call_and_unwraps_the_result() {
             "credential": "mcp",
             "tool": "search_docs",
             "arguments": { "q": "invoice 4471", "limit": 3 },
-            "id": 7
+            "id": 7,
+            "transport": "json"
         }),
         io(),
         200,
@@ -206,9 +246,10 @@ fn mcp_call_builds_tools_call_and_unwraps_the_result() {
     assert_eq!(req["method"], "POST");
     assert_eq!(req["credential"], "mcp");
     assert_eq!(
-        req["headers"]["Content-Type"], "application/json",
+        req["headers"], json!({ "Content-Type": "application/json" }),
         "a JSON-RPC endpoint receiving text/plain answers 415"
     );
+    assert!(req.get("response_headers").is_none(), "the v1 request asks for no headers: {req}");
     let envelope: Value = serde_json::from_str(req["body"].as_str().unwrap()).unwrap();
     assert_eq!(
         envelope,
@@ -230,7 +271,8 @@ fn mcp_call_builds_tools_call_and_unwraps_the_result() {
 fn mcp_call_surfaces_a_jsonrpc_error_as_an_error() {
     let (out, _) = call(
         "mcp.call",
-        json!({ "url": "https://mcp.example.com/mcp", "tool": "nope" }),
+        json!({ "url": "https://mcp.example.com/mcp", "tool": "nope",
+                "session": { "id": "s-1", "protocol_version": "2025-06-18" } }),
         io(),
         200,
         r#"{"status":200,"body":"{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}"}"#,
@@ -243,10 +285,12 @@ fn mcp_call_surfaces_a_jsonrpc_error_as_an_error() {
 #[test]
 fn mcp_call_lets_a_caller_own_the_whole_envelope() {
     // `method` + `params` verbatim is how every MCP method beyond `tools/call`
-    // is reachable without this blob carrying a table of them.
+    // is reachable without this blob carrying a table of them. (A supplied
+    // `session` skips the handshake, so this is one call.)
     let (_, seen) = call(
         "mcp.call",
-        json!({ "url": "https://mcp.example.com/mcp", "method": "tools/list", "params": {} }),
+        json!({ "url": "https://mcp.example.com/mcp", "method": "tools/list", "params": {},
+                "session": { "id": "s-1" } }),
         io(),
         200,
         r#"{"status":200,"body":"{\"result\":{}}"}"#,
@@ -255,6 +299,163 @@ fn mcp_call_lets_a_caller_own_the_whole_envelope() {
     let envelope: Value = serde_json::from_str(req["body"].as_str().unwrap()).unwrap();
     assert_eq!(envelope["method"], "tools/list");
     assert_eq!(envelope["params"], json!({}));
+}
+
+// ---- #395: the MCP Streamable HTTP transport --------------------------------
+
+/// What the broker hands back for an `initialize` the server accepted.
+fn init_reply(session: Option<&str>) -> Value {
+    let mut headers = json!({ "content-type": "application/json" });
+    if let Some(s) = session {
+        headers["mcp-session-id"] = json!(s);
+    }
+    json!({
+        "status": 200,
+        "body": json!({ "jsonrpc": "2.0", "id": "areev-init",
+                        "result": { "protocolVersion": "2025-06-18", "capabilities": {},
+                                    "serverInfo": { "name": "fake", "version": "0" } } }).to_string(),
+        "headers": headers
+    })
+}
+
+fn accepted() -> Value {
+    json!({ "status": 202, "body": "", "headers": {} })
+}
+
+#[test]
+fn mcp_call_initializes_carries_the_session_and_reads_an_sse_reply() {
+    // A server notification first, then the response split over two `data:`
+    // lines with CRLF endings — the event the blob must pick is the one whose
+    // JSON-RPC id is the request's.
+    let sse = "event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\
+               \"params\":{\"progress\":1}}\r\n\r\n: keep-alive\r\n\r\nevent: message\r\n\
+               data: {\"jsonrpc\":\"2.0\",\"id\":7,\r\ndata: \"result\":{\"content\":\
+               [{\"type\":\"text\",\"text\":\"found\"}]}}\r\n\r\n";
+    let (out, reqs) = call_script(
+        "mcp.call",
+        json!({ "url": "https://mcp.example.com/mcp", "credential": "mcp",
+                "tool": "search_docs", "arguments": { "q": "invoice 4471" }, "id": 7,
+                "headers": { "X-Tenant": "acme" } }),
+        vec![
+            init_reply(Some("sess-1")),
+            accepted(),
+            json!({ "status": 200, "body": sse,
+                    "headers": { "content-type": "text/event-stream; charset=utf-8" } }),
+        ],
+    );
+    assert_eq!(
+        out,
+        json!({ "status": 200,
+                "result": { "content": [ { "type": "text", "text": "found" } ] },
+                "session": { "id": "sess-1", "protocol_version": "2025-06-18" } }),
+        "the response event is unwrapped and the session is reported for the journal"
+    );
+
+    for r in &reqs {
+        assert_eq!(r["method"], "POST");
+        assert_eq!(r["credential"], "mcp", "every leg spends the same credential, by name");
+        assert_eq!(r["headers"]["Accept"], "application/json, text/event-stream");
+        assert_eq!(r["headers"]["Content-Type"], "application/json");
+        assert_eq!(r["headers"]["X-Tenant"], "acme", "the caller's own headers ride every leg");
+        assert_eq!(r["response_headers"], json!(["Content-Type", "Mcp-Session-Id"]));
+    }
+    let init = envelope(&reqs[0]);
+    assert_eq!(init["method"], "initialize");
+    assert_eq!(init["id"], "areev-init");
+    assert_eq!(init["params"]["protocolVersion"], "2025-06-18");
+    assert!(reqs[0]["headers"].get("Mcp-Session-Id").is_none(), "no session before one exists");
+
+    let note = envelope(&reqs[1]);
+    assert_eq!(note, json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+    for r in &reqs[1..] {
+        assert_eq!(r["headers"]["Mcp-Session-Id"], "sess-1");
+        assert_eq!(r["headers"]["MCP-Protocol-Version"], "2025-06-18");
+    }
+    let call = envelope(&reqs[2]);
+    assert_eq!(call["method"], "tools/call");
+    assert_eq!(call["id"], 7);
+    assert_eq!(call["params"], json!({ "name": "search_docs", "arguments": { "q": "invoice 4471" } }));
+}
+
+#[test]
+fn mcp_call_against_a_stateless_json_server_still_works() {
+    // A plain JSON-RPC endpoint that knows only `tools/call`, behind a broker
+    // that predates #395 (no `headers` in its answers): `initialize` is
+    // refused with -32601, so there is no session and no notification — the
+    // call goes out next and is unwrapped as before.
+    let (out, reqs) = call_script(
+        "mcp.call",
+        json!({ "url": "https://mcp.example.com/mcp", "tool": "search_docs",
+                "arguments": { "q": "x" }, "id": 3 }),
+        vec![
+            json!({ "status": 200, "body": "{\"jsonrpc\":\"2.0\",\"id\":\"areev-init\",\
+                     \"error\":{\"code\":-32601,\"message\":\"Method not found\"}}" }),
+            json!({ "status": 200, "body": "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"ok\":true}}" }),
+        ],
+    );
+    assert_eq!(out, json!({ "status": 200, "result": { "ok": true } }), "no session to report");
+    assert_eq!(envelope(&reqs[1])["method"], "tools/call");
+    assert!(reqs[1]["headers"].get("Mcp-Session-Id").is_none());
+    assert!(reqs[1]["headers"].get("MCP-Protocol-Version").is_none());
+}
+
+#[test]
+fn mcp_call_against_a_sessionless_server_that_initializes() {
+    // Answers `initialize` but issues no session id: the negotiated version
+    // rides, no `Mcp-Session-Id` does.
+    let (out, reqs) = call_script(
+        "mcp.call",
+        json!({ "url": "https://mcp.example.com/mcp", "tool": "t", "id": 1 }),
+        vec![
+            init_reply(None),
+            accepted(),
+            json!({ "status": 200, "body": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}",
+                    "headers": { "content-type": "application/json" } }),
+        ],
+    );
+    assert_eq!(out["session"], json!({ "protocol_version": "2025-06-18" }));
+    assert!(reqs[2]["headers"].get("Mcp-Session-Id").is_none());
+    assert_eq!(reqs[2]["headers"]["MCP-Protocol-Version"], "2025-06-18");
+}
+
+#[test]
+fn mcp_call_reuses_a_session_and_reinitializes_once_when_it_expired() {
+    // The session a previous call reported, passed back: no handshake — and
+    // when the server says 404 (session gone), exactly one fresh handshake
+    // and one retry.
+    let (out, reqs) = call_script(
+        "mcp.call",
+        json!({ "url": "https://mcp.example.com/mcp", "tool": "t", "id": 9,
+                "session": { "id": "old", "protocol_version": "2025-03-26" } }),
+        vec![
+            json!({ "status": 404, "body": "", "headers": {} }),
+            init_reply(Some("new")),
+            accepted(),
+            json!({ "status": 200, "body": "data: {\"jsonrpc\":\"2.0\",\"id\":9,\"result\":{\"n\":1}}\n\n",
+                    "headers": { "content-type": "text/event-stream" } }),
+        ],
+    );
+    assert_eq!(reqs[0]["headers"]["Mcp-Session-Id"], "old");
+    assert_eq!(reqs[0]["headers"]["MCP-Protocol-Version"], "2025-03-26");
+    assert_eq!(envelope(&reqs[1])["method"], "initialize");
+    assert_eq!(reqs[3]["headers"]["Mcp-Session-Id"], "new");
+    assert_eq!(
+        out,
+        json!({ "status": 200, "result": { "n": 1 },
+                "session": { "id": "new", "protocol_version": "2025-06-18" } })
+    );
+}
+
+#[test]
+fn mcp_call_returns_a_broker_refusal_from_the_handshake_verbatim() {
+    // The refusal is policy; the blob does not try the call anyway.
+    let (out, reqs) = call_script(
+        "mcp.call",
+        json!({ "url": "https://mcp.example.com/mcp", "tool": "t" }),
+        vec![json!({ "error": "caller 'mcp.call' undeclared header 'accept'", "code": "RUN-E022" })],
+    );
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(out["code"], "RUN-E022", "{out}");
 }
 
 #[test]

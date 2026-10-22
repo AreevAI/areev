@@ -10,7 +10,7 @@ own**.
 | Tool | Address (`cas://sha256:`) | Bytes | Imports |
 |---|---|---|---|
 | `http.call` | `6c088ed0161d1254bdf669b978391d0403de5878233e3bd3f13b026be47c98a2` | 2,598 | `areev::emit`, `areev::fetch` |
-| `mcp.call` | `e52f19ff68e9ab2184886f36790e8838cd864fd38f31a36ffdff6fc2d9aca428` | 7,748 | `areev::emit`, `areev::fetch` |
+| `mcp.call` | `0df8bb02ac32393002747a4ebc3dda34cc75d14d4e2a86835afebd9c0d8d2ce3` | 15,986 | `areev::emit`, `areev::fetch` |
 | `a2a.call` | `d6fe7e471c8f43999346781370ce711272eba578a01cfd6324be3996e26d25e3` | 11,067 | `areev::emit`, `areev::fetch` |
 | `mailbox.poll` | `2a8f2d40014a9f3d9dea4ee6a17d80fea74b541a6d70db6ba714146ec6dd668d` | 9,268 | `areev::emit`, `areev::blob_get` |
 | `rest.poll` | `e53d60bdddfb7b496952e4901fdfa6578a3d4ccdcba4ff6b2f40cd1b00869f79` | 21,321 | `areev::emit`, `areev::fetch` |
@@ -25,7 +25,15 @@ and it stays the keyless, network-free floor, unaffected by `rest.poll`.
 different rustc emits different bytes, so a rebuild is a deliberate commit that
 moves the blob, this table and `dist/blessed.json` together — and re-points
 every pack that pinned the old address. That is not a wart: it is the same
-property that makes `expected_hash` meaningful.
+property that makes `expected_hash` meaningful. It also means a change to one
+blob's source ships only that blob: the #395 transport moved `mcp.call` (from
+`e52f19ff…`) and left the other four committed bytes, and their addresses,
+alone.
+
+A pack that pinned the pre-#395 `mcp.call` (`e52f19ff…`) keeps running it
+unchanged — the address is the code. Re-pointing to `0df8bb02…` is a
+deliberate act, and it comes with the declaration change described under
+[`mcp.call`](#mcpcall).
 
 ## The idea: the gateway becomes configuration
 
@@ -115,7 +123,13 @@ ever returned. Nothing in this blob or the sandbox imposes a cap of its own on
 the artifact path: the guest sends and receives only the `cas://` address.
 
 Require `ref` and verify its digest before using it: older text-only peers may
-ignore the download mode field. With no run-bound writable memory, artifact
+ignore the download mode field.
+
+`"response_headers": ["Mcp-Session-Id", "Content-Type"]` asks the broker for
+those response headers (#395); the reply then carries `"headers": {…}` with
+the ones the upstream sent, lowercased. Those two are the only names the
+broker will hand back — any other is a `400` — and they are scrubbed of a
+reflected credential like the body. `mcp.call` is built on it. With no run-bound writable memory, artifact
 mode fails explicitly.
 
 An input that is not a request is refused by the broker, which was going to
@@ -124,7 +138,9 @@ drift.
 
 ### `mcp.call`
 
-One envelope and one unwrap over `http.call`.
+The MCP **Streamable HTTP** transport (spec rev 2025-06-18,
+[#395](https://github.com/AreevAI/areev/issues/395)), one envelope and one
+unwrap.
 
 ```json
 { "url": "https://mcp.example.com/mcp", "credential": "mcp",
@@ -132,8 +148,10 @@ One envelope and one unwrap over `http.call`.
 ```
 
 builds `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":…,"arguments":…}}`
-and returns `{"status": 200, "result": {…}}` — or `{"status": …, "error": {…}}`
-for a JSON-RPC error, or the broker's refusal verbatim.
+and returns `{"status": 200, "result": {…}, "session": {…}}` — or
+`{"status": …, "error": {…}}` for a JSON-RPC error, `{"status": …, "body":
+"…"}` for a reply that held no JSON-RPC response (a proxy's HTML error page),
+or the broker's refusal verbatim.
 
 `arguments` is **sliced out of the input and copied byte for byte**, never
 reparsed and reserialized, so a server that cares about key order or number
@@ -141,9 +159,85 @@ formatting sees exactly what the caller wrote. `method` + `params` passed
 explicitly reach any other MCP method without this blob carrying a table of
 them.
 
-`headers` defaults to `{"Content-Type": "application/json"}` — a JSON-RPC
-endpoint receiving `text/plain` answers 415 — and a declaration must name every
-header it sets. Not supported in v1: the SSE/streamable transport.
+**What goes over the wire.** Each invocation is, by default, three brokered
+POSTs to `url`, all carrying the caller's credential (by name) and
+`Accept: application/json, text/event-stream`:
+
+1. `initialize` (JSON-RPC id `"areev-init"`, `protocolVersion: "2025-06-18"`,
+   or the input's `protocol_version`). The server answers with the version it
+   will speak and — in a **response header** — its `Mcp-Session-Id`.
+2. `notifications/initialized`, carrying `Mcp-Session-Id` and
+   `MCP-Protocol-Version` (the negotiated version). Its `202` is not read.
+3. The call itself, carrying the same two headers.
+
+A reply may be `application/json` or `text/event-stream`. An SSE reply is
+parsed in the blob (comments skipped, multi-line `data:` reassembled, CRLF or
+LF), and the answer is the event whose JSON-RPC `id` is the request's — a
+server may send progress notifications or its own requests first. The broker
+reads the whole bounded body before it answers, so a stream is consumed to its
+end (or to `max_response_bytes`) and nothing is left open.
+
+**Reusing a session.** A wasm guest keeps nothing between invocations, and the
+broker does not learn MCP, so the session is carried by the **caller**: the
+output's `session: {"id", "protocol_version"}` passed back as the next input's
+`session` skips steps 1–2 and makes the call one POST. A reused session the
+server answers `404` for has expired: the blob re-initializes once and retries
+(four POSTs). There is no implicit per-`(url, credential)` cache — see
+"Deviation" below.
+
+**Stateless servers.** An `initialize` not answered with a 2xx JSON-RPC
+`result` (a plain JSON-RPC endpoint that knows only `tools/call` answers
+`-32601`) is not an error: no session, no notification, and the call goes out
+next — two POSTs. A server that answers `initialize` but issues no session id
+gets the version header and no `Mcp-Session-Id`. `"transport": "json"` skips
+the transport entirely and sends the one pre-#395 POST, byte for byte
+(`Content-Type` only, no `Accept`, no handshake).
+
+**Headers, and what to declare.** The caller's `headers` ride every leg. The
+blob adds `Content-Type: application/json` and the `Accept` above unless the
+caller set them, and owns `Mcp-Session-Id` / `MCP-Protocol-Version` outright
+(a caller's copy is dropped). A declaration must name every header that rides,
+so a Definition re-pointed to this blob declares all four:
+
+```json
+"capabilities": [{ "http": { "hosts": ["https://mcp.example.com"], "methods": ["POST"],
+  "credentials": ["mcp"],
+  "headers": ["Content-Type", "Accept", "Mcp-Session-Id", "MCP-Protocol-Version"] } }]
+```
+
+A pre-#395 declaration (`Content-Type` only) is refused at the first leg with
+`RUN-E022` naming the undeclared header; `"transport": "json"` is the way to
+keep it.
+
+**What crosses back from the broker.** The session id exists only as a
+response header, and before #395 no response header crossed the broker. Each
+POST now asks for two by name — `"response_headers": ["Content-Type",
+"Mcp-Session-Id"]` — and the broker hands back exactly those, from a closed
+list it enforces (`content-type`, `mcp-session-id`; anything else is a `400`
+before any I/O), scrubbed of any reflected credential like the body. A broker
+that predates #395 ignores the field: the blob then recognises SSE from the
+body and runs sessionless. See
+[`security-model.md`](security-model.md#credentials-a-host-command-never-holds).
+
+**The audit trail.** The tool's result grain carries `session` (id and
+negotiated version), and each leg's `egress_call` Observation records the
+headers that crossed back under `response_headers` — so which session a run
+used is on the record.
+
+**Cost.** Every POST is one brokered call and spends one `max_calls` unit:
+**3** per invocation with a fresh handshake, **2** against a server that
+refuses `initialize`, **1** with a reused session, **4** when a reused
+session had expired, **1** under `"transport": "json"`. Set `runtime_limits`
+`max_calls` accordingly (the default is 64).
+
+**Deviation from #395's acceptance list, stated.** The issue asked for the
+session id to be cached per `(url, credential)` within a run. This blob does
+not cache implicitly: a guest has no state between invocations, and a
+host-side cache would make the broker an MCP client — protocol logic and
+cross-invocation state in the trusted process, keyed by data the guest
+supplies. Reuse is explicit instead (`session` in, `session` out), which a
+plan threads through state like any other value, and which the journal
+records. The `404` re-initialization applies to that reused session.
 
 **Behind `tools_from` (#392).** Offered directly to a model, `mcp.call` is one
 opaque tool. The model picks the server URL and the MCP tool name, and the
@@ -174,7 +268,8 @@ then built and validated against `mcp.call`'s own `input_schema`, and that
 input is what this blob receives. It runs as `mcp.call`, under the same
 `--allow-executor` pin and the same broker grants (`--tool-egress
 'mcp.call:mcp@mcp.example.com:POST'`), and it is journaled under
-`bank.paid_to`. Without `args_into`, the model's arguments would land at the
+`bank.paid_to`. Each dispatch handshakes (three `max_calls` units) unless the
+locked input carries a `session`. Without `args_into`, the model's arguments would land at the
 top level, beside `url`, and the blob would send `arguments: {}`. See
 [`docs/run.md`](run.md#tools-declared-in-the-run-input-tools_from).
 

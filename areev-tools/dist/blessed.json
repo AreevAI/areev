@@ -15,9 +15,9 @@
     },
     "mcp.call": {
       "summary": "Call a tool on an MCP server (JSON-RPC 2.0 `tools/call`) and unwrap `result`.",
-      "address": "cas://sha256:e52f19ff68e9ab2184886f36790e8838cd864fd38f31a36ffdff6fc2d9aca428",
-      "sha256": "e52f19ff68e9ab2184886f36790e8838cd864fd38f31a36ffdff6fc2d9aca428",
-      "bytes": 7748,
+      "address": "cas://sha256:0df8bb02ac32393002747a4ebc3dda34cc75d14d4e2a86835afebd9c0d8d2ce3",
+      "sha256": "0df8bb02ac32393002747a4ebc3dda34cc75d14d4e2a86835afebd9c0d8d2ce3",
+      "bytes": 15986,
       "runtime": "wasm32-areev-io",
       "imports": [
         "areev::emit",
