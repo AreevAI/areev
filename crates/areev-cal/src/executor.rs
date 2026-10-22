@@ -3065,7 +3065,12 @@ impl CalExecutor {
                 Ok(())
             }
 
-            Condition::Contains { field, value, .. } => {
+            Condition::Contains { field, value, param, span } => {
+                // A saved query's parameters are bound into its text before
+                // the parse, so a `$param` still here was never bound (#402).
+                if let Some(name) = param {
+                    return Err(CalError::UnboundParameter { name: name.clone(), span: *span });
+                }
                 // Map CONTAINS to substring search for subject/object,
                 // or to BM25 text query for other searchable fields.
                 match field.as_str() {
@@ -7618,6 +7623,12 @@ fn validate_residual_leaf(
         } => (field, *span, format!("with comparator {comparator}")),
         Condition::In { field, span, .. } => (field, *span, "with IN".to_string()),
         Condition::NotIn { field, span, .. } => (field, *span, "with NOT IN".to_string()),
+        // Every text-operator leaf passes here or through the push-down,
+        // so this is where an unbound `$param` (#402) is refused.
+        Condition::Contains { param: Some(name), span, .. }
+        | Condition::StartsWith { param: Some(name), span, .. } => {
+            return Err(CalError::UnboundParameter { name: name.clone(), span: *span })
+        }
         Condition::Contains { field, span, .. } => (field, *span, "with CONTAINS".to_string()),
         Condition::StartsWith { field, span, .. } => {
             (field, *span, "with STARTS WITH".to_string())
@@ -7993,6 +8004,10 @@ fn grain_condition_truth(grain: &CalGrainResult, condition: &Condition) -> Optio
         // The two operators that ask about absence always answer definitely.
         Condition::IsNull { field, .. } => Some(!grain_carries_field(grain, field)),
         Condition::IsNotNull { field, .. } => Some(grain_carries_field(grain, field)),
+        // An unbound `$param` (#402) compares against nothing: UNKNOWN, so
+        // a consumer that skipped validation still fails closed.
+        Condition::Contains { param: Some(_), .. }
+        | Condition::StartsWith { param: Some(_), .. } => None,
         Condition::Contains { field, value, .. } => {
             // Through the ONE resolver, so a dotted path (#211) and the
             // envelope properties behave the same here as under `=`.

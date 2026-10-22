@@ -187,7 +187,14 @@ fn params_as_literals(body: &str) -> String {
     let mut out = String::with_capacity(body.len());
     let mut chars = body.chars().peekable();
     let mut quote: Option<char> = None;
+    // The last two words outside literals, upper-cased: enough to tell that a
+    // parameter is the operand of `CONTAINS` or `STARTS WITH`.
+    let mut words: [String; 2] = [String::new(), String::new()];
+    let mut word = String::new();
     while let Some(c) = chars.next() {
+        if quote.is_none() && !(c.is_ascii_alphanumeric() || c == '_') && !word.is_empty() {
+            words = [std::mem::take(&mut words[1]), std::mem::take(&mut word)];
+        }
         match quote {
             Some(q) => {
                 out.push(c);
@@ -205,15 +212,32 @@ fn params_as_literals(body: &str) -> String {
                 out.push(c);
             }
             None if c == '$' => {
-                while chars.peek().is_some_and(|n| n.is_ascii_alphanumeric() || *n == '_') {
-                    chars.next();
+                let mut name = String::new();
+                while let Some(n) = chars.next_if(|n| n.is_ascii_alphanumeric() || *n == '_') {
+                    name.push(n);
                 }
-                // `1` parses in both a numeric and a value position; the type
-                // mismatch it can imply (CAL-E020) belongs to the executor, so
-                // a shape check never sees it.
-                out.push('1');
+                // The text operators take a parameter as written (#402), so
+                // it stays: a placeholder there would be a number, which they
+                // refuse.
+                let text_operand = words[1] == "CONTAINS"
+                    || (words[0] == "STARTS" && words[1] == "WITH");
+                if text_operand {
+                    out.push('$');
+                    out.push_str(&name);
+                } else {
+                    // `1` parses in both a numeric and a value position; the
+                    // type mismatch it can imply (CAL-E020) belongs to the
+                    // executor, so a shape check never sees it.
+                    out.push('1');
+                }
+                words = [std::mem::take(&mut words[1]), String::from("$")];
             }
-            None => out.push(c),
+            None => {
+                if c.is_ascii_alphanumeric() || c == '_' {
+                    word.push(c.to_ascii_uppercase());
+                }
+                out.push(c);
+            }
         }
     }
     out
@@ -578,6 +602,17 @@ impl Parser {
                 suggestion: None,
             }),
         }
+    }
+
+    /// The operand of `CONTAINS` / `STARTS WITH`: a string literal, or a
+    /// `$param` (#402) — `(value, None)` or `(String::new(), Some(name))`.
+    /// Anything else stays the string-literal error, so a number bound into a
+    /// saved query's text operand is a typed refusal, not a silent non-match.
+    fn parse_text_operand(&mut self) -> CalResult<(String, Option<String>)> {
+        if matches!(self.peek(), Some(SpannedToken { token: Token::Parameter(_), .. })) {
+            return Ok((String::new(), Some(self.parse_parameter()?)));
+        }
+        Ok((self.parse_string_literal()?, None))
     }
 
     /// Parse a `$parameter` token and return its name.
@@ -2239,11 +2274,12 @@ impl Parser {
                 ..
             }) if id.eq_ignore_ascii_case("CONTAINS") => {
                 self.advance();
-                let value = self.parse_string_literal()?;
+                let (value, param) = self.parse_text_operand()?;
                 let span_end = self.prev_span();
                 Ok(Condition::Contains {
                     field,
                     value,
+                    param,
                     span: Some(Span::new(
                         span_start.start,
                         span_end.end,
@@ -2265,11 +2301,12 @@ impl Parser {
                 if has_with_keyword {
                     self.advance();
                 }
-                let value = self.parse_string_literal()?;
+                let (value, param) = self.parse_text_operand()?;
                 let span_end = self.prev_span();
                 Ok(Condition::StartsWith {
                     field,
                     value,
+                    param,
                     span: Some(Span::new(
                         span_start.start,
                         span_end.end,
@@ -7458,6 +7495,35 @@ mod tests {
 
     fn pe(input: &str) -> CalError {
         parse(input).expect_err(input)
+    }
+
+    #[test]
+    fn text_operators_take_a_parameter_operand() {
+        // #402: a `$param` beside the literal, carried as `param`.
+        let q = p(r#"RECALL facts WHERE object.cp CONTAINS $name"#);
+        let CalStatement::Recall(r) = &q.statement else { panic!() };
+        assert!(matches!(
+            &r.where_clause.as_ref().unwrap().condition,
+            Condition::Contains { param: Some(n), .. } if n == "name"
+        ));
+        let q = p(r#"RECALL facts WHERE subject STARTS WITH $p"#);
+        let CalStatement::Recall(r) = &q.statement else { panic!() };
+        assert!(matches!(
+            &r.where_clause.as_ref().unwrap().condition,
+            Condition::StartsWith { param: Some(n), .. } if n == "p"
+        ));
+        // Still not a number.
+        pe(r#"RECALL facts WHERE subject CONTAINS 42"#);
+    }
+
+    #[test]
+    fn the_define_probe_keeps_a_text_operand_parameter_as_written() {
+        assert_eq!(
+            params_as_literals(r#"x CONTAINS $name AND y STARTS WITH $p AND z = $v LIMIT $limit"#),
+            r#"x CONTAINS $name AND y STARTS WITH $p AND z = 1 LIMIT 1"#
+        );
+        // A `CONTAINS` inside a literal is data, not an operator.
+        assert_eq!(params_as_literals(r#"x = "CONTAINS" LIMIT $n"#), r#"x = "CONTAINS" LIMIT 1"#);
     }
 
     /// Shorthand to build an `AliasedFormat` without an alias.

@@ -2870,3 +2870,27 @@ test('date-ordered filtered recall fills its result page', async () => {
     await m.close()
   }
 })
+
+// #402: CONTAINS takes a parameter in a saved query, so a person's words for a
+// counterparty can match the canonical name a classifier stored.
+test('a saved query binds a CONTAINS parameter on a dotted object field', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'areev-js-402-'))
+  const ns = 'statements.transactions'
+  const m = new Areev(join(dir, 'test.db'), ns, null, null, 'off')
+  try {
+    const names = ['MALABAR CARDAMOM TRADERS INV MCT', 'MALABAR CARDAMOM ESTATES', 'GUNTUR CHILLI MART']
+    for (const [i, cp] of names.entries()) {
+      await m.add('fact', JSON.stringify({
+        subject: `txn-${i}`, relation: 'transaction',
+        object: JSON.stringify({ counterparty_canonical: cp }),
+        valid_from: 1_700_000_000_000 + i,
+      }), ns)
+    }
+    await m.cal(`DEFINE QUERY "by_name"($name, $limit) AS { RECALL facts WHERE namespace = "${ns}" AND object.counterparty_canonical CONTAINS $name ORDER BY valid_from DESC LIMIT $limit FORMAT json }`)
+    const res = JSON.parse(await m.cal('RUN "by_name"($name = "MALABAR CARDAMOM", $limit = 100)'))
+    // Both Malabar rows, newest first, and not the chilli row.
+    assert.deepEqual(res.grains.map(g => g.fields.subject), ['txn-1', 'txn-0'])
+  } finally {
+    await m.close()
+  }
+})

@@ -36,6 +36,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `egress_call.response_headers`. A request naming none gets the pre-#395
   answer and audit grain byte for byte (`docs/security-model.md`).
 
+### Fixed
+
+- **CAL: `CONTAINS` and `STARTS WITH` take a parameter reference (#402).**
+  `object.counterparty_canonical CONTAINS $name` in a `DEFINE QUERY` body
+  used to be refused at definition (`CAL-E059`, "expected string literal,
+  found $name"). The DEFINE-time shape check stood every parameter in as the
+  number `1`, which a text operator rejects. The text operators now accept
+  `$param` beside the literal, `RUN` binds it with the literal's
+  case-sensitive semantics, a non-string binding is a typed refusal
+  (`CAL-E002`), and a text parameter still unbound at execution is `CAL-E008`
+  on every path (push-down, residual, under `OR`/`NOT`). The JSON-CAL wire
+  form gains an optional `param` key on `contains`/`starts_with`, omitted
+  when unset, so existing ASTs are unchanged.
+
 ## [1.13.0] — 2026-10-20
 
 ### Added
@@ -1585,7 +1599,6 @@ have found.
   does not. A reference substrate more permissive than production does not just
   miss bugs, it certifies them.
 
-
 ## [1.8.1] — 2026-09-11
 
 ### Added
@@ -1693,7 +1706,6 @@ have found.
   memories served in turn by one pool share nothing), and the whole suite
   through `?pool=2`, the chaos hook and PgBouncer. The deployment profile's
   "keep an LRU of handles" advice is withdrawn.
-
 
 - **`$send` can fan out to an abstract node** (#187). A spawn target had to
   be a host tool node, so a plan that wanted N documents classified by an
@@ -1841,7 +1853,6 @@ have found.
   seeder now pins `created_at` like every other grain it writes. Pinning it
   surfaced a second bug, fixed below rather than worked around: a dated evalset
   is exactly what `cold_grains` was mis-flagging as a retire candidate.
-
 
 - **The benchmark harnesses can run against a Postgres memory** (#200).
   `AREEV_BENCH_DB` (or `receipts/run.py --db`) names the memory — a file path
@@ -2555,7 +2566,6 @@ have found.
   analyzer + target + action, so the second draft was dropped as a
   duplicate. `revert_dedup_key` adds the reverted recommendation's hash.
 
-
 - **A revert the Verify gate caused puts the finding on cooldown.** A
   rollback normally lets a finding re-propose ("the situation returned"),
   which is right for an operator's own rollback and wrong after a measured
@@ -2730,7 +2740,6 @@ have found.
   each parsed the field independently and disagreed — the non-OMS value
   `"rejected"` was excluded by one and ignored by the other. It now maps to
   `retracted` consistently.
-
 
 ## [1.7.1] — 2026-09-01
 

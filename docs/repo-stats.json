@@ -2,25 +2,25 @@
   "version": "1.13.0",
   "crates": 17,
   "rust": {
-    "files": 359,
-    "physical_lines": 258313,
-    "source_code": 118536,
-    "test_code": 76802,
-    "unit_test_code": 30467,
-    "integration_test_code": 46335,
+    "files": 360,
+    "physical_lines": 258556,
+    "source_code": 118576,
+    "test_code": 76946,
+    "unit_test_code": 30491,
+    "integration_test_code": 46455,
     "example_code": 669,
-    "test_functions": 3443,
+    "test_functions": 3451,
     "test_ratio": 0.65,
-    "test_share": 39.3
+    "test_share": 39.4
   },
   "per_crate": [
     {
       "name": "areev-cal",
-      "files": 50,
-      "physical": 62862,
-      "source_code": 26772,
-      "test_code": 21553,
-      "tests": 1107
+      "files": 51,
+      "physical": 63105,
+      "source_code": 26812,
+      "test_code": 21697,
+      "tests": 1115
     },
     {
       "name": "areev-run",
@@ -153,7 +153,7 @@
   ],
   "docs": {
     "files": 54,
-    "lines": 27248
+    "lines": 27268
   },
   "error_codes": 128,
   "bindings": {
