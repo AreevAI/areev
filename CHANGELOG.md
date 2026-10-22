@@ -8,6 +8,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [1.13.1] — 2026-10-22
 
+### Security
+
+- **TLS dependency bumps (lockfiles only).** `rustls-webpki` 0.103.15 →
+  0.103.16 (RUSTSEC-2026-0382, certificate paths through distrusted emSign
+  intermediates) and `webpki-roots` 1.0.9 → 1.0.10 (RUSTSEC-2026-0381, the
+  same intermediates in the bundled roots). No source change; the root and
+  `areev-js` lockfiles carry both, `areev-sandbox` neither.
+
 ### Changed
 
 - **`mcp.call` speaks MCP Streamable HTTP** (#395). The blessed blob now sends
