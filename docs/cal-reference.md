@@ -1415,6 +1415,14 @@ grain's SML is byte-identical whether it came from CAL or from
 - **stripe_refund** failed: rate_limited 429
 ```
 
+A conversation turn names its speaker (#411): the event's `role` (how
+`REMEMBER … WITH role("user")` stores it; `speaker` and a CAL result's
+`relation` read the same), so a prompt built from a thread can tell the
+person's words from the assistant's. That holds in a plain `RECALL`, inside
+`ASSEMBLE`, and for the shortened line a budget squeezes a turn down to — the
+words shorten, the `**role**:` prefix stays. An event with no role renders
+without one, and `FORMAT sml` carries it as `<event role="…">`.
+
 The trailing italics carry only what changes how much weight to give the line —
 confidence when it is below 1.0, the date, and `superseded`. Storage
 bookkeeping (namespace, grain type, raw epochs, the content address) is left

@@ -127,3 +127,48 @@ fn remember_requires_the_write_grant() {
     assert_eq!(v["type"], "unsupported", "{v}");
     assert!(v["message"].as_str().unwrap().contains("AUT-E001"), "{v}");
 }
+
+/// #411: `FORMAT markdown` names who said a turn, for an event stored with a
+/// role — in a plain RECALL and inside ASSEMBLE, full and under a budget that
+/// cannot hold everything.
+#[test]
+fn markdown_names_the_speaker_of_a_remembered_turn() {
+    let dir = TempDir::new().unwrap();
+    let m = Areev::open(dir.path().join("m.db").to_str().unwrap()).unwrap();
+    let f = AreevFacade::with_session(m, Some("caller".to_string()), None);
+    let ex = CalExecutor::new(CalExecutorConfig::default());
+    for (text, role) in [
+        ("We paid Sahyadri Packaging 42,500 on 14 Oct.", "user"),
+        ("Noted, I will use it.", "assistant"),
+        ("And Malabar Cardamom 12,000?", "user"),
+    ] {
+        ex.execute(
+            &format!(r#"REMEMBER "{text}" WITH session("thr_TEST"), role("{role}"), run("r1")"#),
+            &f,
+        )
+        .unwrap();
+    }
+    let md = |q: &str| -> String {
+        let res = ex.execute(q, &f).unwrap_or_else(|e| panic!("{q}: {e}"));
+        let v = serde_json::to_value(res.payload_json().unwrap()).unwrap();
+        v["text"].as_str().or(v["content"].as_str()).map(String::from).unwrap_or_else(|| v.to_string())
+    };
+
+    let recall = md(r#"RECALL events WHERE session_id = "thr_TEST" RECENT 5 FORMAT markdown"#);
+    assert!(recall.contains("- **user**: We paid Sahyadri Packaging 42,500 on 14 Oct."), "{recall}");
+    assert!(recall.contains("- **assistant**: Noted, I will use it."), "{recall}");
+    assert!(recall.contains("- **user**: And Malabar Cardamom 12,000?"), "{recall}");
+
+    let assembled = md(
+        r#"ASSEMBLE "ask" FOR "areev-ask" FROM rules: PIN LITERAL "rules", turns: (RECALL events WHERE session_id = "thr_TEST" RECENT 20) BUDGET 6000 tokens FORMAT markdown"#,
+    );
+    assert!(assembled.contains("- rules"), "a literal stays unadorned: {assembled}");
+    assert!(assembled.contains("- **user**: We paid Sahyadri Packaging"), "{assembled}");
+    assert!(assembled.contains("- **assistant**: Noted, I will use it."), "{assembled}");
+
+    // A turn with no role renders as before.
+    ex.execute(r#"REMEMBER "a bare note" WITH session("thr_BARE")"#, &f).unwrap();
+    let bare = md(r#"RECALL events WHERE session_id = "thr_BARE" RECENT 5 FORMAT markdown"#);
+    assert!(bare.contains("- a bare note"), "{bare}");
+    assert!(!bare.contains("**"), "{bare}");
+}

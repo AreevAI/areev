@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.13.2] — 2026-10-23
+
 ### Added
 
 - **CAL: `CONTAINS NOCASE` / `STARTS WITH NOCASE` (#405).** A
@@ -36,6 +38,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`FORMAT markdown` named no speaker for an event stored with a `role`
+  (#411).** The renderer read only `relation`, but `REMEMBER … WITH role(…)`
+  stores `role`, so a conversation rendered as `- <words>` and a prompt built
+  from it could not tell the person from the assistant (`FORMAT sml` kept it).
+  A turn now renders `- **user**: <words>` in a plain `RECALL`, inside
+  `ASSEMBLE`, and in the shortened line under budget pressure
+  (`areev-context`); the plain-text line gains the same prefix. `relation`
+  still wins when both are present, `speaker` reads like `role`, an event with
+  no speaker is unchanged, and only events are read this way.
 - **CAL: `subject CONTAINS` / `object CONTAINS` filtered nothing.** Both
   leaves were consumed by push-down into `RecallParams::subject_contains` /
   `object_contains`, which the store never reads, so the filter was dropped
@@ -5004,7 +5015,8 @@ ecosystem adapters, and the enterprise plane.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.13.1...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.13.2...HEAD
+[1.13.2]: https://github.com/AreevAI/areev/compare/v1.13.1...v1.13.2
 [1.13.1]: https://github.com/AreevAI/areev/compare/v1.13.0...v1.13.1
 [1.13.0]: https://github.com/AreevAI/areev/compare/v1.12.2...v1.13.0
 [1.12.2]: https://github.com/AreevAI/areev/compare/v1.12.1...v1.12.2

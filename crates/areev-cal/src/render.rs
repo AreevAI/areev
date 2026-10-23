@@ -669,6 +669,31 @@ fn recommendation_summary(view: &GrainView) -> String {
 
 /// Compact one-line summary of a grain — what survives when a budget squeezes
 /// the render below full disclosure (`ELEMENT_SUMMARY`, `Allocation::Summary`).
+/// Who said an event: `relation` (how CAL results carry it), else `role` /
+/// `speaker` (how an event stored by `REMEMBER … WITH role(…)` carries it).
+/// `None` for any other grain type, whose `role` (if any) is not a speaker,
+/// and for an event with no speaker at all.
+fn event_speaker<'a>(view: &GrainView<'a>) -> Option<&'a str> {
+    if view.grain_type != "event" {
+        return None;
+    }
+    ["relation", "role", "speaker"]
+        .into_iter()
+        .filter_map(|k| view.get_str(k))
+        .find(|s| !s.is_empty())
+}
+
+/// [`render_grain_summary`] as a markdown list item. An event keeps its
+/// `**speaker**:` prefix under budget pressure — a summary shortens the words,
+/// never loses who said them (#411).
+pub fn render_grain_summary_markdown(view: &GrainView) -> String {
+    let summary = render_grain_summary(view);
+    match event_speaker(view) {
+        Some(who) => format!("- **{who}**: {summary}"),
+        None => format!("- {summary}"),
+    }
+}
+
 pub fn render_grain_summary(view: &GrainView) -> String {
     known_type_summary(view).unwrap_or_else(|| render_grain_text_line(view, None))
 }
@@ -858,7 +883,10 @@ pub fn render_grain_markdown_at(view: &GrainView, disclosure: Option<Disclosure>
         }
         _ => {
             // Field-shape cascade — the strongest shape available.
-            let (subject, relation, object) = (get("subject"), get("relation"), get("object"));
+            let (subject, object) = (get("subject"), get("object"));
+            // The speaker of a conversation turn: `relation` on CAL results,
+            // `role`/`speaker` on events stored through REMEMBER (#411).
+            let relation = event_speaker(view).unwrap_or_else(|| get("relation"));
             let content = get("content");
             let text = [content, get("body"), get("tool_content"), get("description")]
                 .into_iter()
@@ -998,10 +1026,8 @@ pub fn render_grain_text_line(view: &GrainView, line_num: Option<usize>) -> Stri
         if !subject.is_empty() || !relation.is_empty() || !object.is_empty() {
             out.push_str(&format!("{}{} {} {}", prefix, subject, relation, object));
         } else if let Some(content) = map.get("content").and_then(|v| v.as_str()) {
-            let role_prefix = map
-                .get("relation")
-                .and_then(|v| v.as_str())
-                .filter(|r| !r.is_empty())
+            let role_prefix = event_speaker(view)
+                .or_else(|| map.get("relation").and_then(|v| v.as_str()).filter(|r| !r.is_empty()))
                 .map_or(String::new(), |r| format!("{}: ", r));
             out.push_str(&format!("{}{}{}", prefix, role_prefix, content));
         } else if let Some(summary) = known_type_summary(view) {
@@ -1588,6 +1614,42 @@ mod tests {
             render_grain_markdown(&v),
             "- **user**: what's the refund window?"
         );
+    }
+
+    #[test]
+    fn markdown_event_names_the_role_it_was_stored_with() {
+        // #411: REMEMBER stores `role`, not `relation`.
+        for key in ["role", "speaker"] {
+            let fields = serde_json::json!({ key: "assistant", "content": "Noted." });
+            let mut v = view("event", &fields);
+            v.created_at_sec = 0;
+            assert_eq!(render_grain_markdown(&v), "- **assistant**: Noted.", "{key}");
+            assert_eq!(render_grain_summary_markdown(&v), "- **assistant**: Noted.", "{key}");
+            assert_eq!(render_grain_text_line(&v, None), "assistant: Noted.", "{key}");
+        }
+        // `relation` wins when both are present; the date note is unchanged.
+        let fields = serde_json::json!({ "relation": "user", "role": "assistant", "content": "hi" });
+        assert_eq!(render_grain_markdown(&view("event", &fields)), "- **user**: hi *(2025-02-19)*");
+        // No speaker: as before.
+        let fields = serde_json::json!({ "content": "hi" });
+        let mut v = view("event", &fields);
+        v.created_at_sec = 0;
+        assert_eq!(render_grain_markdown(&v), "- hi");
+        assert_eq!(render_grain_summary_markdown(&v), "- hi");
+        // A `role` on any other grain type is not a speaker.
+        let fields = serde_json::json!({ "role": "admin", "content": "hi" });
+        let mut v = view("observation", &fields);
+        v.created_at_sec = 0;
+        assert_eq!(render_grain_markdown(&v), "- hi");
+    }
+
+    #[test]
+    fn markdown_summary_shortens_the_words_and_keeps_the_speaker() {
+        let long = "word ".repeat(60);
+        let fields = serde_json::json!({ "role": "user", "content": long });
+        let line = render_grain_summary_markdown(&view("event", &fields));
+        assert!(line.starts_with("- **user**: word "), "{line}");
+        assert!(line.len() < long.len(), "{line}");
     }
 
     #[test]
