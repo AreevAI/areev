@@ -6,18 +6,18 @@ v1.13.1 · 17 crates · 363 Rust files
 
 | | |
 |---|---|
-| Source code | **118,956** lines |
-| Test code | **77,436** lines (39.4% of all code) |
-| Test functions | **3,472** |
+| Source code | **118,971** lines |
+| Test code | **77,521** lines (39.5% of all code) |
+| Test functions | **3,476** |
 | Line coverage | **83.6%** of 76,211 instrumented source lines |
 | Stable error codes | **129** |
-| Reference docs | 66 files, 37,759 lines |
+| Reference docs | 66 files, 37,776 lines |
 
 ## By crate
 
 | Crate | Files | Source | Test | Tests |
 |---|---:|---:|---:|---:|
-| `areev-cal` | 54 | 27,109 | 22,187 | 1,136 |
+| `areev-cal` | 54 | 27,124 | 22,254 | 1,139 |
 | `areev-run` | 35 | 10,716 | 13,299 | 367 |
 | `areev-store` | 45 | 13,482 | 7,475 | 372 |
 | `areev-cli` | 25 | 9,166 | 9,257 | 257 |
@@ -28,7 +28,7 @@ v1.13.1 · 17 crates · 363 Rust files
 | `areev-llm` | 11 | 3,185 | 2,482 | 117 |
 | `areev-trigger` | 13 | 2,140 | 2,720 | 141 |
 | `areev-conformance` | 29 | 3,261 | 1,568 | 35 |
-| `areev-context` | 9 | 2,135 | 2,995 | 113 |
+| `areev-context` | 9 | 2,135 | 3,013 | 114 |
 | `areev-server` | 3 | 2,310 | 1,726 | 83 |
 | `areev-js` | 2 | 3,554 | 0 | 0 |
 | `areev-py` | 2 | 3,038 | 0 | 0 |
@@ -39,12 +39,12 @@ v1.13.1 · 17 crates · 363 Rust files
 
 | | |
 |---|---:|
-| Physical lines (all Rust) | 259,643 |
-| Source code (no blanks or comments) | 118,956 |
-| Unit test code (`#[cfg(test)]` blocks) | 30,567 |
-| Integration test code (`tests/`, `benches/`) | 46,869 |
+| Physical lines (all Rust) | 259,770 |
+| Source code (no blanks or comments) | 118,971 |
+| Unit test code (`#[cfg(test)]` blocks) | 30,615 |
+| Integration test code (`tests/`, `benches/`) | 46,906 |
 | Example code (`examples/`) | 669 |
-| Test functions | 3,472 |
+| Test functions | 3,476 |
 
 ## Coverage
 

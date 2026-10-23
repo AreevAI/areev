@@ -2963,3 +2963,31 @@ test('a grouped aggregate orders by key and keeps the newest groups', async () =
     await m.close()
   }
 })
+
+// #411: FORMAT markdown names who said a remembered turn, in a plain RECALL
+// and inside ASSEMBLE; a turn with no role renders as before.
+test('FORMAT markdown names the role of a remembered turn', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'areev-js-411-'))
+  const m = new Areev(join(dir, 'test.db'), 'ask', null, null, 'off')
+  try {
+    await m.cal('REMEMBER "We paid Sahyadri Packaging 42,500 on 14 Oct." WITH session("thr_TEST"), role("user"), run("r1")')
+    await m.cal('REMEMBER "Noted, I will use it." WITH session("thr_TEST"), role("assistant"), run("r1")')
+    await m.cal('REMEMBER "a bare note" WITH session("thr_BARE")')
+    const text = (r) => { const v = JSON.parse(r); return v.text ?? v.content ?? JSON.stringify(v) }
+
+    const recall = text(await m.cal('RECALL events WHERE session_id = "thr_TEST" RECENT 5 FORMAT markdown'))
+    assert.match(recall, /- \*\*user\*\*: We paid Sahyadri Packaging 42,500 on 14 Oct\./)
+    assert.match(recall, /- \*\*assistant\*\*: Noted, I will use it\./)
+
+    const assembled = text(await m.cal('ASSEMBLE "ask" FOR "areev-ask" FROM rules: PIN LITERAL "rules", turns: (RECALL events WHERE session_id = "thr_TEST" RECENT 20) BUDGET 6000 tokens FORMAT markdown'))
+    assert.match(assembled, /- rules\n/)
+    assert.match(assembled, /- \*\*user\*\*: We paid Sahyadri Packaging/)
+    assert.match(assembled, /- \*\*assistant\*\*: Noted, I will use it\./)
+
+    const bare = text(await m.cal('RECALL events WHERE session_id = "thr_BARE" RECENT 5 FORMAT markdown'))
+    assert.match(bare, /^- a bare note/)
+    assert.doesNotMatch(bare, /\*\*/)
+  } finally {
+    await m.close()
+  }
+})

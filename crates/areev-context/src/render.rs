@@ -171,7 +171,7 @@ impl GrainRenderer for SharedRenderer {
                     format!("<{tag}>{}</{tag}>", shared::sml_escape(&summary))
                 }
                 // A summary is still a list item.
-                OutputFormat::Markdown => format!("- {summary}"),
+                OutputFormat::Markdown => shared::render_grain_summary_markdown(view),
                 // Structured formats never receive summaries (the assembler
                 // degrades Summary to Omit for them); prose text gets the
                 // bare line.
@@ -343,6 +343,26 @@ mod tests {
             .unwrap()
             .render_summary(&fact(), &policy);
         assert_eq!(result, "john likes coffee");
+    }
+
+    #[test]
+    fn markdown_event_summary_keeps_the_speaker() {
+        // #411: under budget pressure a turn is shortened, not anonymised.
+        let policy = FormatPolicy::new(OutputFormat::Markdown);
+        let registry = RendererRegistry::new();
+        let grain = test_grain(
+            GrainType::Event,
+            vec![
+                ("role", serde_json::json!("user")),
+                ("content", serde_json::json!("We paid Sahyadri Packaging 42,500 on 14 Oct.")),
+            ],
+        );
+        let r = registry.get(GrainType::Event).unwrap();
+        assert_eq!(
+            r.render_summary(&grain, &policy),
+            "- **user**: We paid Sahyadri Packaging 42,500 on 14 Oct."
+        );
+        assert!(r.render(&grain, &policy).starts_with("- **user**: We paid"));
     }
 
     #[test]
