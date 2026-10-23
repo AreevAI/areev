@@ -623,7 +623,9 @@ refused inside saved-query bodies and capped by `allow_destructive_ops`.
 | `DESCRIBE facts` / `DESCRIBE SCHEMA` | Describe a grain type (`purpose`, `required_fields`, `specific_fields`, `common_fields`) or the whole schema |
 | `DESCRIBE CAPABILITIES` | Report the CAL conformance level and supported features |
 | `DESCRIBE FIELDS [type]` | List filterable/sortable fields |
-| `DESCRIBE TEMPLATES` / `DESCRIBE QUERIES` | List registered templates / saved queries |
+| `DESCRIBE TEMPLATES` / `DESCRIBE QUERIES` | List registered templates / saved queries (`name`, `description`, `param_count`, `body_size`, `builtin`, `updated_at`, `last_run_at`) |
+| `DESCRIBE QUERIES WITH BODIES` | The same listing, each entry also carrying its stored `body` and `params: [{name}]` |
+| `DESCRIBE QUERY "name"` | One saved query's stored definition: `{name, description, params: [{name, required, default}], body, body_size, builtin, updated_at, last_run_at}`; an unregistered name is `CAL-E051`, the code `RUN` gives |
 | `EXPLAIN <query>` | Return a query plan for a statement |
 | `BATCH { stmt1 ; stmt2 ; ... }` | Run several statements as one batch (up to 10 entries; optional labels) |
 | `DEFINE TEMPLATE <name> AS "<source>"` | Register a reusable output template (ELEMENT shorthand) |
@@ -650,6 +652,18 @@ AS {
 }
 
 RUN "session_prompt"($user = "john", $session = "call-42")
+```
+
+**Reading a definition back** (#406). `DESCRIBE QUERY "name"` answers the
+body exactly as `DEFINE` stored it (the text between the braces, trimmed —
+not a re-rendering) and the declared parameter names, so a host that answers
+a derived read — the same filter with one operator loosened, one stage
+appended — composes it from the stored definition instead of carrying a second
+copy of every body. It is a read: a read-only handle may describe.
+
+```sql
+DESCRIBE QUERY "session_prompt"
+DESCRIBE QUERIES WITH BODIES
 ```
 
 Saved-query limits: 100 per namespace, 8 KiB body, 10 parameters. Saved-query
@@ -729,7 +743,7 @@ is what loses it.
 | Comparison | `confidence >= 0.8`, `subject = "john"`, `role != "system"` |
 | Membership | `relation IN ("prefers", "likes")`, `subject NOT IN (...)` |
 | Null checks | `deadline IS NULL`, `object IS NOT NULL` |
-| Text | `object CONTAINS "seat"`, `subject STARTS WITH "caller:"`, `object.counterparty CONTAINS $name` |
+| Text | `object CONTAINS "seat"`, `subject STARTS WITH "caller:"`, `object.counterparty CONTAINS $name`, `object.supplier_name CONTAINS NOCASE $name` |
 | Boolean logic | `subject = "john" AND (relation = "prefers" OR relation = "likes")` |
 
 Comparators: `=`, `!=`, `>`, `>=`, `<`, `<=`. Values are strings (`"..."`),
@@ -755,6 +769,37 @@ whose canonical name contains that text. A binding that is not a string
 silently matching nothing. A text parameter that is still unbound when the
 query runs (an ad-hoc `RECALL`, or a name the query does not declare) is
 `CAL-E008`, as for every other parameter reference.
+
+**Ignoring case: `NOCASE`** (#405). Records keep a name as their source spelt
+it — upper-case from a bank narration, mixed case from an invoice — and a
+person types neither. `CONTAINS NOCASE` and `STARTS WITH NOCASE` compare both
+sides after **Unicode simple case folding**, with a literal or a parameter, on
+a top-level field or a dotted path, under `AND`/`OR`/`NOT`:
+
+```sql
+DEFINE QUERY "by_supplier"($name) AS {
+  RECALL facts WHERE namespace = "statements.transactions"
+    AND object.supplier_name CONTAINS NOCASE $name
+  LIMIT 100 FORMAT json
+}
+```
+
+```sql
+RECALL facts WHERE subject STARTS WITH NOCASE "caller:"
+```
+
+`RUN "by_supplier"($name = "malabar cardamom")` matches "Malabar Cardamom
+Traders" and "MALABAR CARDAMOM TRADERS INV MCT". Folding is per code point
+(CaseFolding.txt statuses C and S): ASCII, Latin, Greek (final `ς` folds with
+`σ`) and Cyrillic fold as expected; the *full* foldings are not applied, so
+`ß` matches `ß`/`ẞ` but not `ss`, and the Turkic dotted `İ` matches only
+itself. A folded match is always evaluated per grain — never pushed into the
+engine's byte-exact legs — so it means the same on both backends.
+
+`CONTAINS` on `subject` and `object` is evaluated per grain too (case-
+sensitively, without `NOCASE`). Through 1.13.1 those two leaves were handed to
+an engine parameter nothing read, so the filter was dropped and every row
+matched. `CONTAINS` on `content`/`summary` still rides the BM25 leg.
 
 `IN` fails **closed** in both directions, which matters because these filters
 usually scope a recall to a tenant, a session, or a user:
@@ -966,7 +1011,7 @@ Pipeline stages post-process a statement's result set, chained with `|` (up to
 |---|---|
 | `\| SELECT f1, f2` | Keep only these fields |
 | `\| PROJECT f1 AS a, f2` | Select with renaming |
-| `\| ORDER BY field [ASC\|DESC]` | Sort — `field` may be a dotted path (`object.amount_minor`) |
+| `\| ORDER BY field [ASC\|DESC]` | Sort — `field` may be a dotted path (`object.amount_minor`); after `GROUP BY … COUNT`/an aggregate, orders the group rows by `key`, `count`, `value` or a grouped field |
 | `\| LIMIT n` / `\| OFFSET n` | Paginate (limit ≤ 1000) |
 | `\| COUNT` | Return the count instead of the rows |
 | `\| FIRST` | Return only the first result |
@@ -1076,6 +1121,54 @@ After a `GROUP BY` it answers one row per group, grain-shaped like a
 first** — the largest value for `SUM`/`MAX`/`AVG`, the smallest for `MIN` — a
 group with no numeric value last, ties by key ascending. `LIMIT`/`OFFSET`/
 `FIRST` then bound the ranking and `total_available` keeps the group count.
+
+#### Ordering grouped rows: `ORDER BY key | count | value | <grouped field>`
+
+The default ranking (most frequent / extreme first) answers "which matters
+most". "The newest six months" is a different question: order the rows by
+their key, then bound them (#409):
+
+```sql
+RECALL facts WHERE namespace = "statements.summaries" GROUP BY object.month, object.statement_id SUM object.transaction_count ORDER BY key DESC LIMIT 6
+RECALL facts WHERE namespace = "statements.summaries" GROUP BY object.month SUM object.transaction_count ORDER BY object.month DESC LIMIT 6
+RECALL facts WHERE namespace = "ledger.transactions" GROUP BY object.counterparty SUM object.amount_minor ORDER BY value ASC LIMIT 3
+RECALL tools WHERE is_error = true GROUP BY tool_name COUNT ORDER BY count DESC
+```
+
+In a pipeline where `GROUP BY` is followed by `COUNT` or an aggregate, every
+`ORDER BY` after the `GROUP BY` orders the **rows**, never the grains — written
+after the aggregate, or between the `GROUP BY` and it (where it used to sort
+the grains and split the groups the projection counts). It names a row column:
+
+| `ORDER BY` | Orders by |
+|---|---|
+| `key` | the whole key, part by part |
+| a grouped field (`object.month`) | that part of the key |
+| `count` | the group's size |
+| `value` | the aggregate (not on `COUNT`) |
+
+Key parts compare as numbers when both are numeric and as text otherwise —
+which is chronological for ISO dates and months. Ties fall back to the key
+ascending, and a group with no numeric `value` sorts last in either
+direction. `key` and `count` are sort columns only in this position: `KEY`
+stays a blocked word everywhere else.
+
+**An order the rows cannot carry is refused (`CAL-E124`)**, rather than
+ignored: a grain field such as `valid_from` after the `GROUP BY`, `value` on a
+grouped `COUNT`, or an `ORDER BY` written **before** the `GROUP BY` with no
+`LIMIT`/`OFFSET`/`FIRST` between them (the grouping discards the order of the
+grains it groups). With a bound between, it picks the window the grouping sees
+and is honoured:
+
+```sql
+RECALL facts ORDER BY created_at DESC LIMIT 100 GROUP BY object.month COUNT ORDER BY key DESC
+```
+
+**`RECENT n` / an inline `LIMIT n` is the window an aggregate sees.**
+`RECALL facts RECENT 6 GROUP BY object.month COUNT` groups the six newest
+grains. A `COUNT` or aggregate otherwise widens the scan to see the whole
+matching set, and through 1.13.1 that widening silently replaced the
+statement's own bound.
 
 - **Integers stay integers.** `SUM`, `MIN` and `MAX` over integer inputs
   answer an exact integer — a sum of minor currency units is not a float that

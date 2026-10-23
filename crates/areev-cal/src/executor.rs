@@ -2518,12 +2518,16 @@ impl CalExecutor {
         // pushed down properly (see `RecallParams::order_by`); everything else
         // is ranked here, over a scan widened to `max_limit`, and says so via
         // CAL-W015 when even that scan comes back full.
-        let order_by: Option<(String, bool)> = query.pipeline.iter().find_map(|st| match st {
-            PipelineStage::OrderBy {
-                field, descending, ..
-            } => Some((field.clone(), *descending)),
-            _ => None,
-        });
+        // An ORDER BY that orders grouped rows (#409) sorts the projection,
+        // not the scan — it neither widens nor sorts the grains.
+        let group_orders = grouped_order_stages(&query.pipeline)?;
+        let order_by: Option<(String, bool)> =
+            query.pipeline.iter().enumerate().find_map(|(i, st)| match st {
+                PipelineStage::OrderBy {
+                    field, descending, ..
+                } if !group_orders[i] => Some((field.clone(), *descending)),
+                _ => None,
+            });
         let has_count = query
             .pipeline
             .iter()
@@ -2563,10 +2567,18 @@ impl CalExecutor {
                 || params.confidence_threshold.is_some()
                 || params.conflict_resolution == Some(true)
         );
+        // `RECENT n` / an inline `LIMIT n` is the statement's own window. A
+        // COUNT or aggregate over it must see those n grains, not the widened
+        // scan (#409: `RECENT 6 … GROUP BY month SUM x` answered every month).
+        let windowed_aggregate = (recall.recent.is_some() || recall.limit.is_some())
+            && (has_count || aggregate.is_some());
         let wide_reason: Option<String> = if recall.contradictions.is_some() {
             None
         } else if let Some((f, _)) = order_by.as_ref().filter(|_| !pushed_down_sort) {
             Some(format!("ORDER BY {f}"))
+        } else if windowed_aggregate && !has_post_filter && !filtered_sort {
+            // The scan IS the window; nothing after it narrows.
+            None
         } else if has_count {
             Some("COUNT".to_string())
         } else if let Some(agg) = aggregate {
@@ -2702,6 +2714,13 @@ impl CalExecutor {
                     }
                     .to_string(),
                 );
+            }
+            // The window of a windowed aggregate is taken in scan order (newest
+            // first), after the filters the widening was for, before any sort.
+            if windowed_aggregate {
+                if let Some(limit) = widened_limit {
+                    grains.truncate(limit);
+                }
             }
             if let Some((ref field, descending)) = order_by {
                 grains = sort_grains_by(grains, field, descending);
@@ -3065,21 +3084,22 @@ impl CalExecutor {
                 Ok(())
             }
 
-            Condition::Contains { field, value, param, span } => {
+            Condition::Contains { field, value, param, nocase, span } => {
                 // A saved query's parameters are bound into its text before
                 // the parse, so a `$param` still here was never bound (#402).
                 if let Some(name) = param {
                     return Err(CalError::UnboundParameter { name: name.clone(), span: *span });
                 }
-                // Map CONTAINS to substring search for subject/object,
-                // or to BM25 text query for other searchable fields.
+                // A folded match (#405) is the residual evaluator's — the one
+                // place `fold_case` runs, on both backends alike.
+                if *nocase {
+                    return Ok(());
+                }
+                // CONTAINS on `content`/`summary` rides the BM25 leg. On
+                // `subject`/`object` it is evaluated per grain: it used to set
+                // `subject_contains`/`object_contains`, which nothing in the
+                // store reads, so the filter was dropped and every row matched.
                 match field.as_str() {
-                    "subject" => {
-                        params.subject_contains = Some(value.clone());
-                    }
-                    "object" => {
-                        params.object_contains = Some(value.clone());
-                    }
                     "content" | "summary" if params.query.is_none() => {
                         params.query = Some(value.clone());
                     }
@@ -4159,6 +4179,27 @@ impl CalExecutor {
                     "queries": queries,
                 })
             }
+            // The listing's own rows, each extended with the stored body and
+            // the parameter names, so a listing stays cheap unless asked.
+            DescribeTarget::QueriesWithBodies => {
+                let queries: Vec<serde_json::Value> = store
+                    .list_queries()
+                    .into_iter()
+                    .map(|entry| {
+                        let mut row = serde_json::to_value(&entry).unwrap_or_default();
+                        if let Some(q) = store.get_query(&entry.name) {
+                            row["body"] = serde_json::json!(q.body);
+                            row["params"] = serde_json::json!(q
+                                .params
+                                .iter()
+                                .map(|p| serde_json::json!({ "name": p.name }))
+                                .collect::<Vec<_>>());
+                        }
+                        row
+                    })
+                    .collect();
+                serde_json::json!({ "queries": queries })
+            }
             DescribeTarget::Query(name) => {
                 let entry = store
                     .get_query(name)
@@ -4184,6 +4225,8 @@ impl CalExecutor {
                     }).collect::<Vec<_>>(),
                     "body": entry.body,
                     "body_size": entry.body.len(),
+                    "updated_at": entry.updated_at,
+                    "last_run_at": entry.last_run_at,
                 })
             }
             // The self-discovery read (CAL 1.3 §8.15): what may this
@@ -5332,13 +5375,18 @@ impl CalExecutor {
             })
         };
 
-        for stage in stages {
+        // An ORDER BY over grouped rows names a row column (`key`, `count`,
+        // `value`, a grouped field), not a grain field: the planner resolves
+        // it, or refuses it with CAL-E124 (#409).
+        let group_orders = grouped_order_stages(stages)?;
+        for (i, stage) in stages.iter().enumerate() {
             match stage {
                 PipelineStage::Select { fields, span } => {
                     for f in fields {
                         check(f, *span)?;
                     }
                 }
+                PipelineStage::OrderBy { .. } if group_orders[i] => {}
                 PipelineStage::OrderBy { field, span, .. } => check(field, *span)?,
                 PipelineStage::Aggregate { field, span, .. } => check(field, *span)?,
                 PipelineStage::GroupBy { fields, span } => {
@@ -5368,8 +5416,24 @@ impl CalExecutor {
     ) -> std::result::Result<(CalResultPayload, Option<Vec<String>>), CalError> {
         let mut current = payload;
         let mut grouped_by: Option<Vec<String>> = None;
+        // #409: an ORDER BY between `GROUP BY` and its COUNT/aggregate is
+        // held until the rows exist; one after them sorts the rows.
+        let group_orders = grouped_order_stages(stages)?;
+        let mut pending_group_order: Option<(&str, bool, Option<Span>)> = None;
 
-        for stage in stages {
+        for (stage_idx, stage) in stages.iter().enumerate() {
+            if group_orders[stage_idx] {
+                if let PipelineStage::OrderBy { field, descending, span } = stage {
+                    current = match current {
+                        CalResultPayload::Grains { .. } => {
+                            pending_group_order = Some((field, *descending, *span));
+                            current
+                        }
+                        rows => sort_grouped_payload(rows, field, *descending, *span)?,
+                    };
+                    continue;
+                }
+            }
             current = match (current, stage) {
                 // LIMIT
                 (CalResultPayload::Grains { grains, .. }, PipelineStage::Limit { value, .. }) => {
@@ -5735,6 +5799,15 @@ impl CalExecutor {
                     }
                 }
 
+                // Grouped rows reached by a pass that did not see the GROUP BY
+                // (a RUN's call-site stages after its body's): the rows say
+                // what they are grouped by, so the order resolves the same.
+                (
+                    rows @ (CalResultPayload::GroupCounts { .. }
+                    | CalResultPayload::GroupAggregates { .. }),
+                    PipelineStage::OrderBy { field, descending, span },
+                ) => sort_grouped_payload(rows, field, *descending, *span)?,
+
                 // A stage attached to a payload it cannot act on.
                 //
                 // This used to be a bare passthrough, so `ORDER BY` on a
@@ -5758,6 +5831,15 @@ impl CalExecutor {
                     other
                 }
             };
+            if let Some((field, descending, span)) = pending_group_order {
+                if matches!(
+                    current,
+                    CalResultPayload::GroupCounts { .. } | CalResultPayload::GroupAggregates { .. }
+                ) {
+                    pending_group_order = None;
+                    current = sort_grouped_payload(current, field, descending, span)?;
+                }
+            }
         }
 
         Ok((current, grouped_by))
@@ -7517,8 +7599,8 @@ fn leaf_pushdown_consumed(condition: &Condition) -> bool {
             "subject" | "relation" | "object" | "tags" | "namespace"
         ),
         Condition::NotIn { field, .. } => field == "tags",
-        Condition::Contains { field, .. } => {
-            matches!(field.as_str(), "subject" | "object" | "content" | "summary")
+        Condition::Contains { field, nocase, .. } => {
+            !*nocase && matches!(field.as_str(), "content" | "summary")
         }
         // IS CATEGORY on `relation` desugars to relation_in; on any other
         // field it is warned (CAL-W008) and ignored — both are "handled" by
@@ -8008,25 +8090,23 @@ fn grain_condition_truth(grain: &CalGrainResult, condition: &Condition) -> Optio
         // a consumer that skipped validation still fails closed.
         Condition::Contains { param: Some(_), .. }
         | Condition::StartsWith { param: Some(_), .. } => None,
-        Condition::Contains { field, value, .. } => {
+        Condition::Contains { field, value, nocase, .. } => {
             // Through the ONE resolver, so a dotted path (#211) and the
             // envelope properties behave the same here as under `=`.
             let v = resolve_grain_field(grain, field)?;
-            Some(
-                v.as_str()
-                    .map(|s| s.contains(value.as_str()))
-                    .unwrap_or(false),
-            )
+            Some(v.as_str().is_some_and(|s| match nocase {
+                true => fold_case(s).contains(&fold_case(value)),
+                false => s.contains(value.as_str()),
+            }))
         }
-        Condition::StartsWith { field, value, .. } => {
+        Condition::StartsWith { field, value, nocase, .. } => {
             // Through the ONE resolver, so a dotted path (#211) and the
             // envelope properties behave the same here as under `=`.
             let v = resolve_grain_field(grain, field)?;
-            Some(
-                v.as_str()
-                    .map(|s| s.starts_with(value.as_str()))
-                    .unwrap_or(false),
-            )
+            Some(v.as_str().is_some_and(|s| match nocase {
+                true => fold_case(s).starts_with(&fold_case(value)),
+                false => s.starts_with(value.as_str()),
+            }))
         }
         Condition::IsCategory {
             field, category, ..
@@ -8039,6 +8119,45 @@ fn grain_condition_truth(grain: &CalGrainResult, condition: &Condition) -> Optio
             )
         }
     }
+}
+
+/// Unicode simple case folding (`CONTAINS NOCASE` / `STARTS WITH NOCASE`,
+/// #405), one code point at a time so the folded text never changes length
+/// in code points and a prefix stays a prefix.
+///
+/// A code point whose lowercase mapping is a single code point maps to it;
+/// on top of that come the simple foldings lowercase does not perform (final
+/// sigma, long s, micro sign, the Greek symbol variants, capital sharp s).
+/// Full foldings (`ß` → `ss`) and the Turkic dotted/dotless i are not
+/// applied — simple folding leaves them as written, so `ß` matches only `ß`
+/// and `İ` only `İ`. ASCII is exact.
+fn fold_case(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '\u{03C2}' => '\u{03C3}',                // ς → σ
+            '\u{017F}' => 's',                        // ſ → s
+            '\u{00B5}' => '\u{03BC}',                // µ → μ
+            '\u{0345}' | '\u{1FBE}' => '\u{03B9}',   // ypogegrammeni, prosgegrammeni → ι
+            '\u{03D0}' => '\u{03B2}',                // ϐ → β
+            '\u{03D1}' => '\u{03B8}',                // ϑ → θ
+            '\u{03D5}' => '\u{03C6}',                // ϕ → φ
+            '\u{03D6}' => '\u{03C0}',                // ϖ → π
+            '\u{03F0}' => '\u{03BA}',                // ϰ → κ
+            '\u{03F1}' => '\u{03C1}',                // ϱ → ρ
+            '\u{03F5}' => '\u{03B5}',                // ϵ → ε
+            '\u{1E9B}' => '\u{1E61}',                // ẛ → ṡ
+            '\u{1E9E}' => '\u{00DF}',                // ẞ → ß
+            c => {
+                let mut lower = c.to_lowercase();
+                match (lower.next(), lower.next()) {
+                    (Some(l), None) => l,
+                    // Only İ (U+0130) lowercases to two code points; it has no
+                    // simple folding.
+                    _ => c,
+                }
+            }
+        })
+        .collect()
 }
 
 /// Collect field names referenced in a condition (for EXPLAIN plans).
@@ -8299,6 +8418,186 @@ impl Aggregator {
                 }
             }
         }
+    }
+}
+
+/// Which `ORDER BY` stages order grouped ROWS rather than grains (#409).
+///
+/// A pipeline is grouped when a `GROUP BY` is followed by `COUNT` or an
+/// aggregate. Every `ORDER BY` after its `GROUP BY` then orders the projected
+/// rows: one written before the COUNT/aggregate is held until the rows exist
+/// (sorting the grains there would split the contiguous runs the grouping
+/// counts). Each is resolved against the row's columns here, before the
+/// scan, so an order the rows cannot carry is `CAL-E124` instead of a no-op.
+///
+/// An `ORDER BY` BEFORE the `GROUP BY` orders grains, which is meaningful
+/// only when a bound (`LIMIT`/`OFFSET`/`FIRST`) between the two picks the
+/// window the grouping sees; without one the grouping discards it, and it
+/// is refused for the same reason.
+fn grouped_order_stages(stages: &[PipelineStage]) -> std::result::Result<Vec<bool>, CalError> {
+    let mut flags = vec![false; stages.len()];
+    let Some(group_at) = stages.iter().position(|s| matches!(s, PipelineStage::GroupBy { .. }))
+    else {
+        return Ok(flags);
+    };
+    let Some(terminal) = stages[group_at..]
+        .iter()
+        .position(|s| matches!(s, PipelineStage::Count { .. } | PipelineStage::Aggregate { .. }))
+        .map(|i| group_at + i)
+    else {
+        // A grouped render (no projection): ORDER BY keeps its grain meaning.
+        return Ok(flags);
+    };
+    let PipelineStage::GroupBy { fields, .. } = &stages[group_at] else { unreachable!() };
+    let has_value = matches!(stages[terminal], PipelineStage::Aggregate { .. });
+    for (i, stage) in stages.iter().enumerate() {
+        let PipelineStage::OrderBy { field, span, .. } = stage else { continue };
+        if i > group_at {
+            group_sort_column(field, fields, has_value, *span)?;
+            flags[i] = true;
+        } else if !stages[i..group_at].iter().any(|s| {
+            matches!(
+                s,
+                PipelineStage::Limit { .. } | PipelineStage::Offset { .. } | PipelineStage::First { .. }
+            )
+        }) {
+            return Err(CalError::GroupOrderUnsupported {
+                field: field.clone(),
+                why: "it comes before GROUP BY, which discards the order of the grains it \
+                      groups; write ORDER BY key, count, value or a grouped field after \
+                      the GROUP BY"
+                    .into(),
+                span: *span,
+            });
+        }
+    }
+    Ok(flags)
+}
+
+/// The column of a grouped row an `ORDER BY` sorts on (#409).
+#[derive(Clone, Copy)]
+enum GroupSortColumn {
+    /// The whole key, part by part.
+    Key,
+    /// One part of the key — `ORDER BY` named a grouped field.
+    Part(usize),
+    Count,
+    Value,
+}
+
+/// Resolve an `ORDER BY` field against a grouped row: a grouped field (its
+/// part of the key), then `key`, `count`, and — on an aggregate — `value`.
+fn group_sort_column(
+    field: &str,
+    group_fields: &[String],
+    has_value: bool,
+    span: Option<Span>,
+) -> std::result::Result<GroupSortColumn, CalError> {
+    if let Some(i) = group_fields.iter().position(|f| f == field) {
+        return Ok(GroupSortColumn::Part(i));
+    }
+    match field {
+        "key" => Ok(GroupSortColumn::Key),
+        "count" => Ok(GroupSortColumn::Count),
+        "value" if has_value => Ok(GroupSortColumn::Value),
+        "value" => Err(CalError::GroupOrderUnsupported {
+            field: field.to_string(),
+            why: "a grouped COUNT has no value column; order by count or key".into(),
+            span,
+        }),
+        _ => Err(CalError::GroupOrderUnsupported {
+            field: field.to_string(),
+            why: format!(
+                "a grouped row carries key, count{}, and the grouped field(s) {}",
+                if has_value { ", value" } else { "" },
+                group_fields.join(", ")
+            ),
+            span,
+        }),
+    }
+}
+
+/// Order the rows of a grouped projection by one column (#409). Ties fall
+/// back to the key ascending, the projection's own tiebreak, so the order is
+/// reproducible across backends; a group with no numeric `value` sorts last
+/// in either direction.
+fn sort_grouped_payload(
+    payload: CalResultPayload,
+    field: &str,
+    descending: bool,
+    span: Option<Span>,
+) -> std::result::Result<CalResultPayload, CalError> {
+    let (group_field, has_value) = match &payload {
+        CalResultPayload::GroupCounts { field, .. } => (field.clone(), false),
+        CalResultPayload::GroupAggregates { field, .. } => (field.clone(), true),
+        _ => return Ok(payload),
+    };
+    let fields: Vec<String> = group_field.split(", ").map(str::to_string).collect();
+    let column = group_sort_column(field, &fields, has_value, span)?;
+    let sort = |groups: &mut Vec<CalGrainResult>| {
+        groups.sort_by(|a, b| {
+            let primary = match column {
+                GroupSortColumn::Key => compare_key_parts(&group_row_parts(a), &group_row_parts(b)),
+                GroupSortColumn::Part(i) => compare_key_part(
+                    group_row_parts(a).get(i).map(String::as_str).unwrap_or(""),
+                    group_row_parts(b).get(i).map(String::as_str).unwrap_or(""),
+                ),
+                GroupSortColumn::Count => {
+                    let c = |g: &CalGrainResult| g.fields.get("count").and_then(|v| v.as_u64());
+                    c(a).cmp(&c(b))
+                }
+                GroupSortColumn::Value => {
+                    let v = |g: &CalGrainResult| g.fields.get("value").and_then(AggNum::of);
+                    match (v(a), v(b)) {
+                        // Absent last whichever way the rows run.
+                        (None, None) => Ordering::Equal,
+                        (None, Some(_)) => return Ordering::Greater,
+                        (Some(_), None) => return Ordering::Less,
+                        (Some(x), Some(y)) => x.cmp(y),
+                    }
+                }
+            };
+            let primary = if descending { primary.reverse() } else { primary };
+            primary.then_with(|| compare_key_parts(&group_row_parts(a), &group_row_parts(b)))
+        })
+    };
+    Ok(match payload {
+        CalResultPayload::GroupCounts { field, mut groups, total_available } => {
+            sort(&mut groups);
+            CalResultPayload::GroupCounts { field, groups, total_available }
+        }
+        CalResultPayload::GroupAggregates { field, function, path, mut groups, total_available } => {
+            sort(&mut groups);
+            CalResultPayload::GroupAggregates { field, function, path, groups, total_available }
+        }
+        other => other,
+    })
+}
+
+/// A grouped row's key parts: `keys` on a composite key, else `[key]`.
+fn group_row_parts(row: &CalGrainResult) -> Vec<String> {
+    let str_of = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
+    match row.fields.get("keys").and_then(|v| v.as_array()) {
+        Some(parts) => parts.iter().map(str_of).collect(),
+        None => vec![row.fields.get("key").map(str_of).unwrap_or_default()],
+    }
+}
+
+fn compare_key_parts(a: &[String], b: &[String]) -> Ordering {
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| compare_key_part(x, y))
+        .find(|o| o.is_ne())
+        .unwrap_or_else(|| a.len().cmp(&b.len()))
+}
+
+/// Key parts are strings (a number key is its JSON text), so `9` and `10`
+/// compare as numbers when both parse as one; otherwise as text, which is
+/// already chronological for ISO dates and months.
+fn compare_key_part(a: &str, b: &str) -> Ordering {
+    match (a.parse::<f64>(), b.parse::<f64>()) {
+        (Ok(x), Ok(y)) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
+        _ => a.cmp(b),
     }
 }
 
@@ -11435,6 +11734,23 @@ mod tests {
             span: None,
         };
         assert!(super::leaf_pushdown_consumed(&not_in_tags));
+
+        // Text: only the BM25-backed fields are consumed, and never a folded
+        // match (#405) — the engine's legs compare bytes.
+        let contains = |field: &str, nocase: bool| Condition::Contains {
+            field: field.into(),
+            value: "v".into(),
+            param: None,
+            nocase,
+            span: None,
+        };
+        for f in ["content", "summary"] {
+            assert!(super::leaf_pushdown_consumed(&contains(f, false)), "{f} CONTAINS");
+            assert!(!super::leaf_pushdown_consumed(&contains(f, true)), "{f} CONTAINS NOCASE");
+        }
+        for f in ["subject", "object", "object.name"] {
+            assert!(!super::leaf_pushdown_consumed(&contains(f, false)), "{f} CONTAINS");
+        }
     }
 
     #[test]

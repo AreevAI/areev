@@ -964,9 +964,10 @@ pub struct RecallParams {
     /// Whether to include a human-readable explanation in each SearchHit.
     /// Default: None (false). When Some(true), SearchHit::explanation is populated.
     pub explanation: Option<bool>,
-    /// Only return grains whose `subject` field contains this substring (case-insensitive).
+    /// Not read by the Areev store. CAL evaluates `subject CONTAINS …` per
+    /// grain instead (#405); kept so existing struct literals still compile.
     pub subject_contains: Option<String>,
-    /// Only return grains whose `object` field contains this substring (case-insensitive).
+    /// Not read by the Areev store — see `subject_contains`.
     pub object_contains: Option<String>,
     /// Per-query recency weight [0.0–1.0] for temporal freshness scoring.
     /// When set, applies: final = (1 - w) * relevance + w * freshness
@@ -1367,11 +1368,13 @@ impl RecallParams {
         self
     }
 
+    #[deprecated(note = "not read by the Areev store; filter with CAL `subject CONTAINS`")]
     pub fn subject_contains(mut self, pattern: impl Into<String>) -> Self {
         self.subject_contains = Some(pattern.into());
         self
     }
 
+    #[deprecated(note = "not read by the Areev store; filter with CAL `object CONTAINS`")]
     pub fn object_contains(mut self, pattern: impl Into<String>) -> Self {
         self.object_contains = Some(pattern.into());
         self

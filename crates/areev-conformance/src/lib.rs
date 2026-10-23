@@ -352,6 +352,8 @@ macro_rules! for_each_conformance_case {
         $per_case!(mount_by_locator_reads_and_refuses_writes);
         $per_case!(run_query_reads_the_body_pinned_at_start);
         $per_case!(run_applies_the_saved_body_stages);
+        // #405 NOCASE, #409 grouped ORDER BY / RECENT window, #406 DESCRIBE QUERY
+        $per_case!(cal_nocase_grouped_order_and_describe_query);
         // dictionary values are unbounded by their index (#160)
         $per_case!(incompressible_values_of_any_size_are_stored);
         // namespace prefix scoping ("org.*") + the ns registry
