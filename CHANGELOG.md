@@ -6,6 +6,50 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **CAL: `CONTAINS NOCASE` / `STARTS WITH NOCASE` (#405).** A
+  case-insensitive form of both text operators, with a literal or a
+  parameter, on a top-level field or a dotted path, under `AND`/`OR`/`NOT`,
+  ad hoc and in a `DEFINE QUERY` body:
+  `object.supplier_name CONTAINS NOCASE $name` finds "Malabar Cardamom
+  Traders" and "MALABAR CARDAMOM TRADERS INV MCT" for `"malabar cardamom"`.
+  Folding is Unicode simple case folding per code point (final sigma, long
+  s, micro sign and the Greek symbol variants included; `ß` → `ss` and the
+  Turkic `İ` not), evaluated per grain on both backends. The JSON-CAL wire
+  form gains an optional `nocase` key on `contains`/`starts_with`, omitted
+  when unset.
+- **CAL: `DESCRIBE QUERY "name"` reads a saved query back (#406)** —
+  `{name, description, params: [{name, required, default}], body, body_size,
+  builtin, updated_at, last_run_at}`, the body exactly as `DEFINE` stored
+  it; an unregistered name is `CAL-E051`, the code `RUN` gives. `DESCRIBE
+  QUERIES WITH BODIES` adds `body` and `params: [{name}]` to each listing
+  row; plain `DESCRIBE QUERIES` keeps its shape. A read-only handle may
+  describe.
+- **CAL: `ORDER BY` orders grouped rows (#409).** After `GROUP BY … COUNT`
+  or an aggregate, `ORDER BY key | count | value | <grouped field> [ASC|DESC]`
+  sorts the rows, so `… GROUP BY object.month SUM object.transaction_count
+  ORDER BY key DESC LIMIT 7` is the newest seven months. An order the rows
+  cannot carry — a grain field, `value` on a `COUNT`, or an `ORDER BY` before
+  the `GROUP BY` with no bound between — is the new **`CAL-E124`** instead of
+  being accepted and ignored.
+
+### Fixed
+
+- **CAL: `subject CONTAINS` / `object CONTAINS` filtered nothing.** Both
+  leaves were consumed by push-down into `RecallParams::subject_contains` /
+  `object_contains`, which the store never reads, so the filter was dropped
+  and every row matched. They are now evaluated per grain (case-sensitively,
+  as documented); the two builder methods are deprecated. `CONTAINS` on
+  `content`/`summary` still rides the BM25 leg.
+- **CAL: an `ORDER BY` between `GROUP BY` and `COUNT`/an aggregate split the
+  groups** (the sort broke the contiguous runs the projection counts); it now
+  orders the rows (#409).
+- **CAL: `RECENT n` (or an inline `LIMIT n`) before a `COUNT` or aggregate is
+  the window it sees** (#409). The aggregate's scan widening used to replace
+  the statement's own bound, so `RECENT 6 … GROUP BY month SUM x` answered
+  every month.
+
 ## [1.13.1] — 2026-10-22
 
 ### Security

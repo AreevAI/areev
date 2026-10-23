@@ -92,6 +92,22 @@ at `HARD_MAX_LIMIT`, by `effective_max_limit`; the facade's recall clamp
 applies the same rule to the store serving the recall. `CAL-W015` names the
 effective limit.
 
+**Grouped rows, folded text, saved bodies (#405/#406/#409).**
+`grouped_order_stages` is the ONE answer to "does this ORDER BY sort grains or
+group rows": in a `GROUP BY … COUNT|<aggregate>` pipeline every ORDER BY after
+the GROUP BY sorts rows (`sort_grouped_payload`, by `key`/`count`/`value`/a
+grouped field — one between GROUP BY and the projection is held until the rows
+exist), and anything else is `CAL-E124`; validation, `execute_recall`'s scan
+planning and `apply_pipeline` all read it. `key`/`count` parse only via
+`parse_sort_column` — `KEY` stays blocked in every other position. `RECENT n`
+/ inline `LIMIT n` under a COUNT/aggregate is the aggregate's window
+(`windowed_aggregate`), not widened away. `CONTAINS NOCASE` / `STARTS WITH
+NOCASE` fold with `fold_case` and are NEVER pushed down; `subject`/`object
+CONTAINS` are residual too — they used to set `RecallParams` fields the store
+never read, i.e. the parses-and-does-nothing failure, failing open.
+`DESCRIBE QUERY` / `DESCRIBE QUERIES WITH BODIES` return the stored body
+verbatim.
+
 **Saved-query parameters bind in ONE pass** (`bind_query_body` →
 `substitute_params`), shared by `RUN` and `execute_query_body` (the run's
 pinned-body read, #370). The old per-name `str::replace` re-scanned earlier

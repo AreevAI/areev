@@ -164,6 +164,19 @@ pub enum CalError {
         span: Option<Span>,
     },
 
+    /// CAL-E124 — An `ORDER BY` in a grouped pipeline (`GROUP BY …` then
+    /// `COUNT` or an aggregate) that the grouped rows cannot be ordered by
+    /// (#409). Grouped rows carry `key`, `count`, `value` (aggregates only)
+    /// and the grouped fields; anything else — or an `ORDER BY` written
+    /// before the `GROUP BY` with no bound between them, whose order the
+    /// grouping discards — is refused rather than ignored.
+    #[error("CAL-E124: ORDER BY \"{field}\" cannot order grouped rows: {why}")]
+    GroupOrderUnsupported {
+        field: String,
+        why: String,
+        span: Option<Span>,
+    },
+
     /// CAL-E013 — A set operation (UNION / INTERSECT / EXCEPT) has more
     /// operands than allowed.
     #[error("CAL-E013: Too many set operands ({count}, max {max})")]
@@ -715,6 +728,7 @@ impl CalError {
             Self::InSetTooLarge { .. } => "CAL-E011",
             Self::TooManyPipelineStages { .. } => "CAL-E012",
             Self::TooManyGroupKeys { .. } => "CAL-E123",
+            Self::GroupOrderUnsupported { .. } => "CAL-E124",
             Self::TooManySetOperands { .. } => "CAL-E013",
             Self::EmptyQuery { .. } => "CAL-E014",
             Self::InvalidHash { .. } => "CAL-E015",
@@ -802,6 +816,7 @@ impl CalError {
             | Self::InSetTooLarge { span, .. }
             | Self::TooManyPipelineStages { span, .. }
             | Self::TooManyGroupKeys { span, .. }
+            | Self::GroupOrderUnsupported { span, .. }
             | Self::TooManySetOperands { span, .. }
             | Self::EmptyQuery { span, .. }
             | Self::InvalidHash { span, .. }
@@ -1023,6 +1038,9 @@ impl CalError {
                 max,
                 span: s,
             },
+            Self::GroupOrderUnsupported { field, why, .. } => {
+                Self::GroupOrderUnsupported { field, why, span: s }
+            }
             Self::TooManySetOperands { count, max, .. } => Self::TooManySetOperands {
                 count,
                 max,
@@ -2225,6 +2243,14 @@ mod tests {
                 "CAL-E121",
             ),
             (
+                CalError::GroupOrderUnsupported {
+                    field: "valid_from".into(),
+                    why: "not a column of a grouped row".into(),
+                    span: None,
+                },
+                "CAL-E124",
+            ),
+            (
                 CalError::AssembleTimeout {
                     elapsed_ms: 6000,
                     limit_ms: 5000,
@@ -2292,6 +2318,11 @@ mod tests {
                 suggestion: None,
             },
             CalError::UnterminatedString { span: None },
+            CalError::GroupOrderUnsupported {
+                field: "".into(),
+                why: "".into(),
+                span: None,
+            },
             CalError::InvalidNumber {
                 found: "".into(),
                 span: None,

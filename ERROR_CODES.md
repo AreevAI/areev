@@ -255,6 +255,7 @@ and are the source of truth. Ranges:
 | `CAL-E121` | Not authorized — the session's grants don't cover this statement (carries the `AUT-Ennn` detail; the code itself is `CalError::store_code()`, #331) |
 | `CAL-E122` | `PIN`ned `ASSEMBLE` sources do not fit the `BUDGET` — a pin is never summarised or dropped, so the statement fails instead of degrading it |
 | `CAL-E123` | A `GROUP BY` names more fields than one composite key may have (max 4) |
+| `CAL-E124` | An `ORDER BY` in a grouped pipeline (`GROUP BY` then `COUNT`/an aggregate) the group rows cannot be ordered by — not `key`/`count`/`value`/a grouped field, or written before the `GROUP BY` with no bound between (#409) |
 | `CAL-W001`–`W012` | Warnings (unknown relation, deprecated operator, `{{#each}}` cap, bounded `CONTRADICTIONS` scan, …) |
 | `CAL-W013` | `WITH auto_relate` accepted but not implemented — no relations are inferred |
 | `CAL-W014` | A `WITH` option parsed and ran but cannot change the result on this statement (e.g. `score_breakdown` on `RECALL`) |

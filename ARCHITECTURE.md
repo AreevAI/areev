@@ -2407,6 +2407,42 @@ executor and by the facade's recall clamp): a scan that wide is an analysis
 read, and a handle that can never write is the one a host declares for it.
 `CAL-W015` names the window that applied.
 
+### Grouped rows are ordered by their own columns; a text match may fold case (#405, #406, #409)
+
+**Decision (2026-10-23, #405/#406/#409, OMS CAL amendment):** three small
+additions, recorded here, in `docs/cal-reference.md` (§3.3, §3.4, §4) and in
+the conformance suite (`cal_nocase_grouped_order_and_describe_query`, both
+backends and the paired Postgres layout).
+
+- **`CONTAINS NOCASE` / `STARTS WITH NOCASE`** — a modifier between the text
+  operator and its operand. Folding is Unicode *simple* case folding, per code
+  point (`fold_case`), so a prefix stays a prefix and the answer does not depend
+  on a locale; the full foldings (`ß` → `ss`) and the Turkic `İ` are left as
+  written. A folded leaf is never pushed down — the engine's legs compare
+  bytes — so the residual evaluator is the one place it runs, on both
+  backends. The same audit found `subject`/`object CONTAINS` marked consumed
+  by push-down into `RecallParams` fields nothing in the store reads, so the
+  filter was dropped and every row matched; those leaves are now residual too.
+- **`DESCRIBE QUERY "name"` answers the stored definition**, timestamps
+  included, and `DESCRIBE QUERIES WITH BODIES` extends the listing's rows. The
+  listing stays cheap by default; the body is the text `DEFINE` stored, not a
+  re-rendering, so a host composes a derived read from what `RUN` will execute.
+- **`ORDER BY` after `GROUP BY … COUNT|<aggregate>` orders the rows**, by
+  `key`, `count`, `value` or a grouped field, and anything else is refused
+  (`CAL-E124`) rather than ignored. `key` is a lexer-blocked word and `count` a
+  stage token, so both are admitted as *sort columns only* — a read-only
+  position — and `KEY` stays blocked everywhere else. An `ORDER BY` before the
+  `GROUP BY` is honoured only with a bound between them (it then picks the
+  window the grouping sees); without one the grouping discards it, so it is
+  refused. `RECENT n` / an inline `LIMIT n` stays the window an aggregate
+  sees instead of being widened away.
+
+No ordering expression, no `HAVING`, no general case-insensitive comparator
+(`ILIKE`, `lower()`): each addition is the smallest closed form that removes a
+host-side workaround — Areev Cloud's Gateway re-sorting groups itself, hosts
+upper-casing both sides of a match, packs carrying a second copy of every
+saved body.
+
 ### A mount is a host capability on every surface, and never a write target (#369)
 
 **Decision (2026-09-30, #369):** the Node and Python handles take

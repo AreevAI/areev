@@ -71,6 +71,98 @@ pub fn cal_aggregates_over_dotted_paths(b: &dyn Backend) {
     assert_eq!(subjects, vec!["txn-2", "txn-0"], "[{}] numeric, largest first", b.name());
 }
 
+/// #405/#406/#409: the CAL reads a statements host needs, on both backends —
+/// a case-insensitive text match (residual, so no backend's byte-exact legs
+/// are involved), the newest N groups of a grouped sum, a `RECENT` window
+/// under an aggregate, and a saved query read back verbatim.
+pub fn cal_nocase_grouped_order_and_describe_query(b: &dyn Backend) {
+    let mut m = b.open_named("cal_nocase_group_order");
+    for (i, name) in ["Malabar Cardamom Traders", "MALABAR CARDAMOM TRADERS INV MCT", "Coorg Pepper Works"]
+        .into_iter()
+        .enumerate()
+    {
+        let object = json!({"supplier_name": name}).to_string();
+        let subject = if i == 2 { "coorg-2".to_string() } else { format!("Malabar-{i}") };
+        m.add(&Fact::new(&subject, "supplied", &object).namespace(LEDGER).created_at(1_000 + i as i64))
+            .unwrap();
+    }
+    // Fourteen months, 2026-09 … 2027-10, written oldest first.
+    for i in 0..14i64 {
+        let n = 8 + i;
+        let month = format!("{}-{:02}", 2026 + n / 12, n % 12 + 1);
+        let object = json!({"month": month, "statement_id": "stmt-1", "transaction_count": 10}).to_string();
+        m.add(
+            &Fact::new(&format!("summary-{month}"), "summarises", &object)
+                .namespace("ledger.summaries")
+                .created_at(2_000 + i),
+        )
+        .unwrap();
+    }
+    let facade = AreevFacade::with_session(m, Some(LEDGER.into()), None);
+    let subjects = |q: &str| -> Vec<String> {
+        let CalResultPayload::Grains { grains, .. } = cal(&facade, q).result else {
+            panic!("[{}] expected Grains for {q}", b.name());
+        };
+        let mut out: Vec<String> =
+            grains.iter().map(|g| g.fields["subject"].as_str().unwrap().to_string()).collect();
+        out.sort();
+        out
+    };
+
+    let base = format!(r#"RECALL facts WHERE namespace = "{LEDGER}""#);
+    assert_eq!(
+        subjects(&format!(r#"{base} AND object.supplier_name CONTAINS NOCASE "malabar cardamom""#)),
+        vec!["Malabar-0", "Malabar-1"],
+        "[{}]",
+        b.name()
+    );
+    assert_eq!(
+        subjects(&format!(r#"{base} AND subject STARTS WITH NOCASE "MALABAR""#)),
+        vec!["Malabar-0", "Malabar-1"],
+        "[{}]",
+        b.name()
+    );
+    // Without the modifier, case-sensitive — and a top-level CONTAINS filters.
+    assert!(subjects(&format!(r#"{base} AND subject CONTAINS "malabar""#)).is_empty(), "[{}]", b.name());
+
+    let months = |q: &str| -> Vec<String> {
+        let CalResultPayload::GroupAggregates { groups, .. } = cal(&facade, q).result else {
+            panic!("[{}] expected GroupAggregates for {q}", b.name());
+        };
+        groups
+            .iter()
+            .map(|g| match g.fields.get("keys") {
+                Some(k) => k[0].as_str().unwrap().to_string(),
+                None => g.fields["key"].as_str().unwrap().to_string(),
+            })
+            .collect()
+    };
+    let summaries = r#"RECALL facts WHERE namespace = "ledger.summaries""#;
+    assert_eq!(
+        months(&format!(
+            "{summaries} GROUP BY object.month, object.statement_id SUM object.transaction_count ORDER BY key DESC LIMIT 7"
+        )),
+        vec!["2027-10", "2027-09", "2027-08", "2027-07", "2027-06", "2027-05", "2027-04"],
+        "[{}]",
+        b.name()
+    );
+    assert_eq!(
+        months(&format!("{summaries} RECENT 3 GROUP BY object.month SUM object.transaction_count ORDER BY key ASC")),
+        vec!["2027-08", "2027-09", "2027-10"],
+        "[{}] RECENT is the aggregate's window",
+        b.name()
+    );
+
+    let body = format!(r#"{summaries} AND object.month STARTS WITH NOCASE $year LIMIT $n"#);
+    cal(&facade, &format!(r#"DEFINE QUERY "months"($year, $n) AS {{ {body} }}"#));
+    let CalResultPayload::Describe { info } = cal(&facade, r#"DESCRIBE QUERY "months""#).result else {
+        panic!("[{}] expected Describe", b.name());
+    };
+    assert_eq!(info["body"], json!(body), "[{}] the stored body, verbatim", b.name());
+    assert_eq!(info["params"][0]["name"], "year", "[{}]", b.name());
+    assert_eq!(info["params"][1]["name"], "n", "[{}]", b.name());
+}
+
 /// #368: a scan window above 1,000 is honoured only on a read-only handle,
 /// and `CAL-W015` names the window that applied.
 pub fn max_limit_above_default_applies_only_read_only(b: &dyn Backend) {

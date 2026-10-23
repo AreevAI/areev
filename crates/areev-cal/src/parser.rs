@@ -187,13 +187,18 @@ fn params_as_literals(body: &str) -> String {
     let mut out = String::with_capacity(body.len());
     let mut chars = body.chars().peekable();
     let mut quote: Option<char> = None;
-    // The last two words outside literals, upper-cased: enough to tell that a
-    // parameter is the operand of `CONTAINS` or `STARTS WITH`.
-    let mut words: [String; 2] = [String::new(), String::new()];
+    // The last three words outside literals, upper-cased: enough to tell that
+    // a parameter is the operand of `CONTAINS` or `STARTS WITH`, with or
+    // without the `NOCASE` modifier (#405).
+    let mut words: [String; 3] = [String::new(), String::new(), String::new()];
     let mut word = String::new();
     while let Some(c) = chars.next() {
         if quote.is_none() && !(c.is_ascii_alphanumeric() || c == '_') && !word.is_empty() {
-            words = [std::mem::take(&mut words[1]), std::mem::take(&mut word)];
+            words = [
+                std::mem::take(&mut words[1]),
+                std::mem::take(&mut words[2]),
+                std::mem::take(&mut word),
+            ];
         }
         match quote {
             Some(q) => {
@@ -219,8 +224,12 @@ fn params_as_literals(body: &str) -> String {
                 // The text operators take a parameter as written (#402), so
                 // it stays: a placeholder there would be a number, which they
                 // refuse.
-                let text_operand = words[1] == "CONTAINS"
-                    || (words[0] == "STARTS" && words[1] == "WITH");
+                let op = match words[2].as_str() {
+                    "NOCASE" => &words[..2],
+                    _ => &words[..],
+                };
+                let text_operand = matches!(op.last().map(String::as_str), Some("CONTAINS" | "STARTS"))
+                    || matches!(op, [.., a, b] if a == "STARTS" && b == "WITH");
                 if text_operand {
                     out.push('$');
                     out.push_str(&name);
@@ -230,7 +239,11 @@ fn params_as_literals(body: &str) -> String {
                     // executor, so a shape check never sees it.
                     out.push('1');
                 }
-                words = [std::mem::take(&mut words[1]), String::from("$")];
+                words = [
+                    std::mem::take(&mut words[1]),
+                    std::mem::take(&mut words[2]),
+                    String::from("$"),
+                ];
             }
             None => {
                 if c.is_ascii_alphanumeric() || c == '_' {
@@ -608,6 +621,21 @@ impl Parser {
     /// `$param` (#402) — `(value, None)` or `(String::new(), Some(name))`.
     /// Anything else stays the string-literal error, so a number bound into a
     /// saved query's text operand is a typed refusal, not a silent non-match.
+    /// Consume the `NOCASE` modifier of a text operator (#405), if present.
+    /// It sits between the operator and its operand, where a string or a
+    /// `$param` is the only other legal token, so the word stays free for
+    /// use as a field name everywhere else.
+    fn eat_nocase(&mut self) -> bool {
+        let is_nocase = matches!(
+            self.peek(),
+            Some(SpannedToken { token: Token::Ident(id), .. }) if id.eq_ignore_ascii_case("NOCASE")
+        );
+        if is_nocase {
+            self.advance();
+        }
+        is_nocase
+    }
+
     fn parse_text_operand(&mut self) -> CalResult<(String, Option<String>)> {
         if matches!(self.peek(), Some(SpannedToken { token: Token::Parameter(_), .. })) {
             return Ok((String::new(), Some(self.parse_parameter()?)));
@@ -2274,12 +2302,14 @@ impl Parser {
                 ..
             }) if id.eq_ignore_ascii_case("CONTAINS") => {
                 self.advance();
+                let nocase = self.eat_nocase();
                 let (value, param) = self.parse_text_operand()?;
                 let span_end = self.prev_span();
                 Ok(Condition::Contains {
                     field,
                     value,
                     param,
+                    nocase,
                     span: Some(Span::new(
                         span_start.start,
                         span_end.end,
@@ -2301,12 +2331,14 @@ impl Parser {
                 if has_with_keyword {
                     self.advance();
                 }
+                let nocase = self.eat_nocase();
                 let (value, param) = self.parse_text_operand()?;
                 let span_end = self.prev_span();
                 Ok(Condition::StartsWith {
                     field,
                     value,
                     param,
+                    nocase,
                     span: Some(Span::new(
                         span_start.start,
                         span_end.end,
@@ -2429,6 +2461,27 @@ impl Parser {
     /// no predicates, no arithmetic. The executor resolves the path against
     /// the field's JSON, and a segment that does not resolve is UNKNOWN, so
     /// navigation inherits the fails-closed rule rather than adding one.
+    /// The operand of `ORDER BY` / `SORT`: a field path, or one of the two
+    /// grouped-row columns whose names are not otherwise identifiers (#409).
+    /// `count` is the COUNT stage's token and `key` a lexer-blocked word, so
+    /// both are admitted HERE only — a sort column reads, it cannot write, and
+    /// `key` stays refused in every other position. The executor resolves
+    /// them against the grouped rows, or refuses them (CAL-E060) on grains.
+    fn parse_sort_column(&mut self) -> CalResult<String> {
+        let column = match self.peek() {
+            Some(SpannedToken { token: Token::Count, .. }) => "count",
+            Some(SpannedToken { token: Token::Ident(id), .. })
+                if id.eq_ignore_ascii_case("key")
+                    && !matches!(self.peek_ahead(1), Some(SpannedToken { token: Token::Dot, .. })) =>
+            {
+                "key"
+            }
+            _ => return self.parse_field_name(),
+        };
+        self.advance();
+        Ok(column.to_string())
+    }
+
     fn parse_field_name(&mut self) -> CalResult<String> {
         let mut path = self.parse_identifier()?;
         let mut segments = 1usize;
@@ -2564,7 +2617,7 @@ impl Parser {
                 self.expect_exact(&Token::By)?;
                 // A dotted path orders by a value inside a structured field
                 // (`object.amount_minor`, #368).
-                let field = self.parse_field_name()?;
+                let field = self.parse_sort_column()?;
                 let descending = if self.at_exact(&Token::Desc) {
                     self.advance();
                     true
@@ -2716,7 +2769,7 @@ impl Parser {
                 ..
             }) if id.eq_ignore_ascii_case("SORT") => {
                 self.advance(); // consume SORT
-                let field = self.parse_field_name()?;
+                let field = self.parse_sort_column()?;
                 let descending = if self.at_exact(&Token::Desc) {
                     self.advance();
                     true
@@ -4405,7 +4458,20 @@ impl Parser {
                     DescribeTarget::Grammar
                 } else if s.eq_ignore_ascii_case("queries") {
                     self.advance();
-                    DescribeTarget::Queries
+                    // `WITH BODIES` (#406) is claimed only when the word
+                    // follows, so a bare `WITH` keeps its usual meaning.
+                    let bodies = self.at_exact(&Token::With)
+                        && matches!(
+                            self.peek_ahead(1),
+                            Some(SpannedToken { token: Token::Ident(w), .. }) if w.eq_ignore_ascii_case("bodies")
+                        );
+                    if bodies {
+                        self.advance();
+                        self.advance();
+                        DescribeTarget::QueriesWithBodies
+                    } else {
+                        DescribeTarget::Queries
+                    }
                 } else if s.eq_ignore_ascii_case("principal") {
                     self.advance();
                     let name = self.parse_string_literal()?;
@@ -7514,6 +7580,65 @@ mod tests {
         ));
         // Still not a number.
         pe(r#"RECALL facts WHERE subject CONTAINS 42"#);
+    }
+
+    #[test]
+    fn text_operators_take_the_nocase_modifier() {
+        // #405: between the operator and its operand, literal or `$param`.
+        for (src, want) in [
+            (r#"RECALL facts WHERE object.n CONTAINS NOCASE "a""#, true),
+            (r#"RECALL facts WHERE object.n contains nocase $p"#, true),
+            (r#"RECALL facts WHERE subject STARTS WITH NOCASE "a""#, true),
+            (r#"RECALL facts WHERE subject STARTS NOCASE $p"#, true),
+            (r#"RECALL facts WHERE subject CONTAINS "a""#, false),
+        ] {
+            let q = p(src);
+            let CalStatement::Recall(r) = &q.statement else { panic!() };
+            let nocase = match &r.where_clause.as_ref().unwrap().condition {
+                Condition::Contains { nocase, .. } | Condition::StartsWith { nocase, .. } => *nocase,
+                other => panic!("{src}: {other:?}"),
+            };
+            assert_eq!(nocase, want, "{src}");
+        }
+        // The modifier takes no operand of its own.
+        pe(r#"RECALL facts WHERE subject CONTAINS NOCASE"#);
+        // And it is still a usable field name elsewhere.
+        p(r#"RECALL facts WHERE nocase = "x""#);
+        // The DEFINE probe leaves the parameter after NOCASE as written.
+        assert_eq!(
+            params_as_literals(r#"x CONTAINS NOCASE $a AND y STARTS WITH NOCASE $b LIMIT $n"#),
+            r#"x CONTAINS NOCASE $a AND y STARTS WITH NOCASE $b LIMIT 1"#
+        );
+    }
+
+    #[test]
+    fn key_and_count_are_sort_columns_only() {
+        // #409: the grouped-row columns parse after ORDER BY / SORT…
+        for src in [
+            "RECALL facts GROUP BY subject COUNT ORDER BY key DESC",
+            "RECALL facts GROUP BY subject COUNT ORDER BY count",
+            "RECALL facts GROUP BY subject COUNT SORT key ASC",
+        ] {
+            p(src);
+        }
+        // …and `key` stays a blocked word in every other position.
+        pe(r#"RECALL facts WHERE key = "x""#);
+        pe("RECALL facts SELECT key");
+        pe("RECALL facts GROUP BY key COUNT");
+    }
+
+    #[test]
+    fn describe_queries_with_bodies() {
+        // #406.
+        let q = p("DESCRIBE QUERIES WITH BODIES");
+        let CalStatement::Describe(d) = &q.statement else { panic!() };
+        assert_eq!(d.target, DescribeTarget::QueriesWithBodies);
+        let q = p("DESCRIBE QUERIES");
+        let CalStatement::Describe(d) = &q.statement else { panic!() };
+        assert_eq!(d.target, DescribeTarget::Queries);
+        let q = p(r#"DESCRIBE QUERY "x""#);
+        let CalStatement::Describe(d) = &q.statement else { panic!() };
+        assert_eq!(d.target, DescribeTarget::Query("x".into()));
     }
 
     #[test]

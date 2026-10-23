@@ -556,6 +556,9 @@ pub enum DescribeTarget {
     Grammar,
     /// `DESCRIBE QUERIES` — list registered saved queries.
     Queries,
+    /// `DESCRIBE QUERIES WITH BODIES` — the listing plus each query's
+    /// stored body and parameter names (#406).
+    QueriesWithBodies,
     /// `DESCRIBE QUERY "name"` — details of a specific saved query.
     Query(String),
 
@@ -1362,6 +1365,11 @@ pub enum Condition {
         /// from the wire form unless set, so JSON-CAL is unchanged.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         param: Option<String>,
+        /// `CONTAINS NOCASE …` (#405): compare after Unicode simple case
+        /// folding of both sides (`fold_case`). Absent from the wire form
+        /// unless set, so JSON-CAL is unchanged.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        nocase: bool,
         #[serde(skip)]
         span: Option<Span>,
     },
@@ -1373,6 +1381,9 @@ pub enum Condition {
         /// See [`Condition::Contains`]'s `param`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         param: Option<String>,
+        /// See [`Condition::Contains`]'s `nocase`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        nocase: bool,
         #[serde(skip)]
         span: Option<Span>,
     },

@@ -2894,3 +2894,72 @@ test('a saved query binds a CONTAINS parameter on a dotted object field', async 
     await m.close()
   }
 })
+
+// #405: CONTAINS NOCASE matches a person's words against a stored name
+// whatever its case, in a saved query, through a parameter.
+test('a saved query matches CONTAINS NOCASE on a dotted object field', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'areev-js-405-'))
+  const ns = 'statements.transactions'
+  const m = new Areev(join(dir, 'test.db'), ns, null, null, 'off')
+  try {
+    const names = ['Malabar Cardamom Traders', 'MALABAR CARDAMOM TRADERS INV MCT', 'Coorg Pepper Works']
+    for (const [i, name] of names.entries()) {
+      await m.add('fact', JSON.stringify({
+        subject: `txn-${i}`, relation: 'supplied',
+        object: JSON.stringify({ supplier_name: name }),
+        valid_from: 1_700_000_000_000 + i,
+      }), ns)
+    }
+    await m.cal(`DEFINE QUERY "by_supplier"($name) AS { RECALL facts WHERE namespace = "${ns}" AND object.supplier_name CONTAINS NOCASE $name ORDER BY valid_from ASC LIMIT 100 FORMAT json }`)
+    const res = JSON.parse(await m.cal('RUN "by_supplier"($name = "malabar cardamom")'))
+    // The first two rows, and not the pepper row.
+    assert.deepEqual(res.grains.map(g => g.fields.subject), ['txn-0', 'txn-1'])
+  } finally {
+    await m.close()
+  }
+})
+
+// #406: DESCRIBE QUERY returns the stored body and the parameter names.
+test('DESCRIBE QUERY returns a saved query body and its parameter names', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'areev-js-406-'))
+  const m = new Areev(join(dir, 'test.db'), 'ledger', null, null, 'off')
+  try {
+    const body = 'RECALL facts WHERE namespace = "ledger" AND object.cp CONTAINS $name LIMIT $limit'
+    await m.cal(`DEFINE QUERY "by_cp"($name, $limit) AS { ${body} }`)
+    const { info } = JSON.parse(await m.cal('DESCRIBE QUERY "by_cp"'))
+    assert.equal(info.body, body)
+    assert.deepEqual(info.params.map(p => p.name), ['name', 'limit'])
+    assert.equal(info.builtin, false)
+    assert.ok(Number.isInteger(info.updated_at))
+    const listed = JSON.parse(await m.cal('DESCRIBE QUERIES WITH BODIES')).info.queries.find(q => q.name === 'by_cp')
+    assert.equal(listed.body, body)
+    await assert.rejects(m.cal('DESCRIBE QUERY "nope"'), /CAL-E051/)
+  } finally {
+    await m.close()
+  }
+})
+
+// #409: ORDER BY key DESC LIMIT n on a grouped aggregate is the newest n groups.
+test('a grouped aggregate orders by key and keeps the newest groups', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'areev-js-409-'))
+  const ns = 'statements.summaries'
+  const m = new Areev(join(dir, 'test.db'), ns, null, null, 'off')
+  try {
+    const months = Array.from({ length: 14 }, (_, i) => {
+      const n = 8 + i // 2026-09 … 2027-10
+      return `${2026 + Math.floor(n / 12)}-${String(n % 12 + 1).padStart(2, '0')}`
+    })
+    for (const [i, month] of months.entries()) {
+      await m.add('fact', JSON.stringify({
+        subject: `summary-${month}`, relation: 'summarises',
+        object: JSON.stringify({ month, statement_id: 'stmt-1', transaction_count: 10 }),
+      }), ns)
+    }
+    const res = JSON.parse(await m.cal(`RECALL facts WHERE namespace = "${ns}" GROUP BY object.month, object.statement_id SUM object.transaction_count ORDER BY key DESC LIMIT 7`))
+    assert.deepEqual(res.groups.map(g => g.fields.keys[0]),
+      ['2027-10', '2027-09', '2027-08', '2027-07', '2027-06', '2027-05', '2027-04'])
+    await assert.rejects(m.cal(`RECALL facts GROUP BY object.month SUM object.transaction_count ORDER BY valid_from DESC`), /CAL-E124/)
+  } finally {
+    await m.close()
+  }
+})
