@@ -248,3 +248,40 @@ def test_a_malformed_env_twin_cannot_fail_a_run_with_no_model(db, monkeypatch):
     assert "parked" in session or "finished" in session
     with pytest.raises(ValueError, match="AREEV_RUN_LLM_TOKEN_FIELD"):
         db.run_start(wf, "py-model", model="ollama:llama3.1")
+
+
+def test_an_initiator_is_frozen_and_refused_as_approver(db):
+    # #422: a service runs every case under ONE principal; the initiator is how
+    # the approval check still refuses the person behind the work — the
+    # volunteer who reported a case. The CLI's `--initiator`, in library form.
+    wf = _plan(db)
+    tool = 'printf \'{"greeting": "hello"}\''
+    volunteer = "volunteer:20931"
+
+    session = json.loads(db.run_start(wf, "py-ini", tool_cmd=tool, initiator=volunteer))
+    ask = session["parked"]["asks"][0]["tool_call_id"]
+    with pytest.raises(ValueError, match="RUN-E012") as refused:
+        db.run_respond("py-ini", ask, '{"approved": true}', responder=volunteer)
+    assert volunteer in str(refused.value)
+    db.run_respond("py-ini", ask, '{"approved": true}', responder="user:officer")
+    assert json.loads(db.run_resume("py-ini"))["finished"] == "Completed"
+
+    # Without an initiator the same responder is accepted — so the refusal
+    # above is the initiator's, not something else's.
+    plain = json.loads(db.run_start(wf, "py-plain", tool_cmd=tool))
+    db.run_respond("py-plain", plain["parked"]["asks"][0]["tool_call_id"],
+                   '{"approved": true}', responder=volunteer)
+
+    # The trigger path freezes it too: a firing starts the run on the
+    # volunteer's behalf.
+    db.trigger_add(json.dumps({"kind": "interval", "workflow": wf, "interval_secs": 60}),
+                   because="intake")
+    before = set(json.loads(db.run_list()))
+    report = json.loads(db.trigger_run(tool_cmd=tool, initiator=volunteer))
+    assert report["runs_started"] == 1, report
+    fired = [r for r in json.loads(db.run_list()) if r not in before]
+    assert len(fired) == 1
+    pending = json.loads(db.run_inspect(fired[0]))["pending_asks"]
+    call_id = next(iter(pending))
+    with pytest.raises(ValueError, match="RUN-E012"):
+        db.run_respond(fired[0], call_id, '{"approved": true}', responder=volunteer)

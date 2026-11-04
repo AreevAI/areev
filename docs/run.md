@@ -1172,9 +1172,15 @@ reproduce the boundary instead of guessing at it.
   it. (The check runs after the known-ask and expiry checks, so an unknown or
   expired ask is reported as such rather than as a separation-of-duties
   refusal.)
-- **`--initiator`** (`$AREEV_RUN_INITIATOR`, a trailing parameter on the
-  bindings) names who or what a run was started ON BEHALF OF, frozen into the
-  manifest. Event, poll and schedule runs execute under an agent's SERVICE
+- **`--initiator`** (`$AREEV_RUN_INITIATOR`) names who or what a run was
+  started ON BEHALF OF, frozen into the manifest. The bindings take it as a
+  trailing parameter since #422 — `initiator` / `allowConfirmationAsks` after
+  `llmProfile` on Node's `runStart`, `triggerRun` and `triggerDeliver`, and
+  `initiator=` / `allow_confirmation_asks=` on Python's `run_start`,
+  `trigger_run` and `trigger_deliver` — set through the same
+  `RunOptions::on_behalf_of` the CLI uses. They read no environment variable:
+  a library host passes the value per run, which is the point when one
+  service principal runs every case. Event, poll and schedule runs execute under an agent's SERVICE
   principal, so `principal` alone could not name the person behind the work
   and the approval check could not refuse them. The field is free-form
   attribution: a value that names no principal — a trigger occurrence id —

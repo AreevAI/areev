@@ -762,3 +762,168 @@ fn an_edited_plan_is_reported_and_re_pointed_in_one_command() {
     assert!(!ok, "a no-op retarget must be refused");
     assert!(err.contains("already points at the current plan"), "{err}");
 }
+
+/// A process that holds `db` open — and with it the embedded file's OS lock —
+/// until the returned child's stdin is closed. `serve --mcp` opens the memory
+/// at startup and then blocks reading stdin, which is exactly a long-lived
+/// holder. Returns once another process is provably refused (`STO-E012`), so
+/// the caller never races the holder's open.
+fn hold_lock(db: &str) -> std::process::Child {
+    use std::process::Stdio;
+    let spawn = || {
+        Command::new(env!("CARGO_BIN_EXE_areev"))
+            .args(["serve", "--mcp", "--db", db, "--ns", "ops"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn holder")
+    };
+    let mut child = spawn();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        // The probe itself opens the file for an instant, so the holder can
+        // lose ITS open to the probe and exit — respawn it when it does.
+        if child.try_wait().expect("poll holder").is_some() {
+            child = spawn();
+        }
+        // A read verb is NOT a trigger pass, so contention must still fail it
+        // — which doubles as the "is the lock held yet" probe.
+        let (ok, _out, err) = areev(&["trigger", "status", "--db", db, "--ns", "ops"]);
+        if !ok && err.contains("STO-E012") && child.try_wait().expect("poll holder").is_none() {
+            return child;
+        }
+        assert!(std::time::Instant::now() < deadline, "holder never took the lock: {err}");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+fn release(mut child: std::process::Child) {
+    drop(child.stdin.take()); // EOF → the MCP server exits and releases the file
+    let _ = child.wait();
+}
+
+/// #419: a `trigger run` that cannot open the embedded file because another
+/// process holds it reports a skipped pass and exits 0 — the documented
+/// steady state of overlapping heartbeat ticks — instead of exiting 1 with
+/// `STO-E001`. Other verbs, and other open failures, still fail.
+#[test]
+fn a_trigger_pass_that_loses_the_file_lock_is_a_skip_not_a_fault() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("lock.db");
+    let db = db.to_str().unwrap();
+    let (ok, _out, err) = areev(&[
+        "trigger", "add", "--db", db, "--ns", "ops", "--type", "interval",
+        "--interval", "900", "--workflow", WF, "--because", "heartbeat",
+    ]);
+    assert!(ok, "{err}");
+
+    let holder = hold_lock(db);
+
+    let (ok, out, err) = areev(&["trigger", "run", "--db", db, "--ns", "ops"]);
+    assert!(ok, "contention must exit 0, got: {out}{err}");
+    assert!(out.contains("skipped_locked"), "{out}");
+    assert!(out.contains("STO-E012"), "the reason is named: {out}");
+
+    let (ok, out, err) =
+        areev(&["trigger", "run", "--db", db, "--ns", "ops", "--format", "json"]);
+    assert!(ok, "{err}");
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("json report");
+    assert_eq!(v["pass_skipped_locked"], true, "{v}");
+    assert_eq!(v["claimed"], 0, "no trigger was examined: {v}");
+
+    // A bounded wait that runs out is still a skip, and reports the wait.
+    let started = std::time::Instant::now();
+    let (ok, out, err) =
+        areev(&["trigger", "run", "--db", db, "--ns", "ops", "--lock-wait", "0.5"]);
+    assert!(ok, "{err}");
+    assert!(out.contains("skipped_locked") && out.contains("after waiting"), "{out}");
+    assert!(started.elapsed() >= std::time::Duration::from_millis(500), "it must wait");
+
+    // A bounded wait that outlasts the holder runs the pass for real.
+    let releaser = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        release(holder);
+    });
+    let (ok, out, err) = areev(&[
+        "trigger", "run", "--db", db, "--ns", "ops", "--lock-wait", "60", "--format", "json",
+    ]);
+    releaser.join().unwrap();
+    let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap_or_else(|e| {
+        panic!("{e}: {out}{err}")
+    });
+    assert!(v.get("pass_skipped_locked").is_none(), "the wait outlasted the holder: {v}");
+    assert_eq!(v["claimed"], 1, "the interval trigger is due on its first pass: {v}");
+    // No runner is wired (no --tool-cmd), so the firing ingests: a clean pass.
+    assert!(ok, "{out}{err}");
+
+    // --lock-wait means nothing to any other verb, and saying so beats
+    // silently ignoring it.
+    let (ok, _out, err) =
+        areev(&["trigger", "status", "--db", db, "--ns", "ops", "--lock-wait", "5"]);
+    assert!(!ok && err.contains("--lock-wait"), "{err}");
+}
+
+/// The other half of #419: only CONTENTION is a skip. A file that is not a
+/// memory at all fails the pass non-zero, as before.
+#[test]
+fn a_trigger_pass_over_a_broken_file_still_fails() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("garbage.db");
+    std::fs::write(&db, vec![0x5au8; 8192]).unwrap();
+    let db = db.to_str().unwrap();
+    let (ok, out, err) = areev(&["trigger", "run", "--db", db, "--ns", "ops"]);
+    assert!(!ok, "a corrupt file is a fault, not contention: {out}");
+    assert!(!out.contains("skipped_locked"), "{out}");
+    assert!(err.contains("STO-E001"), "{err}");
+}
+
+/// #421: `show` and `status` say WHEN a clocked trigger next fires, in its
+/// declared zone and in UTC — including a fresh declaration that has never
+/// been evaluated, whose state row does not carry the instant yet.
+#[test]
+fn show_and_status_print_the_next_due_instant() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("due.db");
+    let db = db.to_str().unwrap();
+
+    let (ok, out, err) = areev(&[
+        "trigger", "add", "--db", db, "--ns", "ops", "--type", "schedule", "--workflow", WF,
+        "--cron", "0 * * * *", "--timezone", "Asia/Kolkata", "--because", "hourly",
+    ]);
+    assert!(ok, "{err}");
+    let sched = out.trim().rsplit(' ').next().unwrap().to_string();
+    let (ok, out, err) = areev(&[
+        "trigger", "add", "--db", db, "--ns", "ops", "--type", "once", "--workflow", WF,
+        "--at", "4070908800000", "--because", "far future (2099-01-01T00:00:00Z)",
+    ]);
+    assert!(ok, "{out}{err}");
+    let (ok, _out, err) = areev(&[
+        "trigger", "add", "--db", db, "--ns", "ops", "--type", "interval", "--workflow", WF,
+        "--interval", "900", "--because", "quarter hour",
+    ]);
+    assert!(ok, "{err}");
+
+    let (ok, out, err) = areev(&["trigger", "show", &sched, "--db", db, "--ns", "ops"]);
+    assert!(ok, "{err}");
+    let line = out.lines().find(|l| l.starts_with("next due")).unwrap_or_else(|| {
+        panic!("show must print the next due instant:\n{out}")
+    });
+    // `…T<hh>:30:00+05:30 Asia/Kolkata (…T<hh>:00:00Z)`: Kolkata is UTC+5:30,
+    // so the top of a local hour is half past a UTC one.
+    assert!(line.contains(":00:00+05:30 Asia/Kolkata ("), "{line}");
+    assert!(line.contains(":30:00Z)"), "{line}");
+
+    let (ok, out, err) = areev(&["trigger", "status", "--db", db, "--ns", "ops"]);
+    assert!(ok, "{err}");
+    assert!(out.contains("next due: 2099-01-01T00:00:00Z"), "the one-shot's instant:\n{out}");
+    assert!(out.contains("next due: now"), "a never-fired interval is due now:\n{out}");
+    assert_eq!(out.matches("next due:").count(), 3, "{out}");
+
+    let (ok, out, err) =
+        areev(&["trigger", "show", &sched, "--db", db, "--ns", "ops", "--format", "json"]);
+    assert!(ok, "{err}");
+    let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    assert!(v["next_due_at"].is_i64(), "{v}");
+    assert!(v["next_due_utc"].as_str().unwrap().ends_with(":30:00Z"), "{v}");
+}

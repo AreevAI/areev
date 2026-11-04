@@ -127,7 +127,15 @@ absolute path in a process-wide `OPEN_FILES` registry and a second open fails
 with **`STO-E002`** (`OpenFileGuard`, released on drop; `None` on Postgres,
 which is genuinely multi-writer). The cross-process OS lock never caught this
 because within one process that lock is already held. Node has no
-deterministic drop, so its binding exposes `close()`.
+deterministic drop, so its binding exposes `close()`. The cross-process half
+is typed too (#419): `TursoDb::open` classifies turso's lock-contention
+failure (`Locking error: … locked by another process`, the only place the
+type survives is that text — turso folds `LimboError::LockingError` into a
+string) as **`STO-E012` `FileLocked`** via `db::open_err`; any other lock
+failure stays `STO-E001`. `locked_text_is_classified` pins the match against
+turso's exact wording, so a turso bump that rewords it fails a test. It is
+what lets `areev trigger run` treat a held file as a skipped pass. Embedded
+only — no conformance case, since Postgres has no file lock to contend.
 
 `add` is **idempotent on the content address**: `add_batch_inner` probes `has`
 before reserving counters and skips grains already stored (and duplicates

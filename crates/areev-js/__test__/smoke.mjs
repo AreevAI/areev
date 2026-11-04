@@ -3027,3 +3027,58 @@ test('runTick resumes a due wait and reports one not yet due (#416)', async () =
   assert.equal(JSON.parse(await m.runVerify('due')).verified, true)
   m.close()
 })
+
+test('runStart / triggerRun freeze an initiator, and the approval ask refuses it (#422)', async () => {
+  // A service runs every case under ONE principal; the initiator is how the
+  // approval check still refuses the person behind the work — here, the
+  // volunteer who reported the case. The CLI's `--initiator`, in library form.
+  const m = makeDb('ops')
+  const greet = await m.add('tool', JSON.stringify({
+    tool_name: 'greet', kind: 'definition', tool_description: 'greets', created_at: 600,
+  }), 'ops')
+  const approve = await m.add('tool', JSON.stringify({
+    tool_name: 'approve', kind: 'definition', tool_description: 'human approves',
+    executor_kind: 'client', created_at: 601,
+  }), 'ops')
+  const wf = await m.add('workflow', JSON.stringify({
+    nodes: ['greet', 'approve'], edges: [{ src: 'greet', dst: 'approve' }],
+    bindings: { greet, approve }, created_at: 602,
+  }), 'ops')
+  const tool = `printf '{"greeting":"hello"}'`
+  const volunteer = 'volunteer:20931'
+
+  // `initiator` sits after `llmProfile`: 23 knobs between `toolCmd` and it.
+  const session = JSON.parse(await m.runStart(
+    wf, 'js-ini', '{}', tool, ...Array(23).fill(undefined), volunteer))
+  assert.ok(session.parked, 'the client-gated node parks the run')
+  const ask = session.parked.asks[0].tool_call_id
+  await assert.rejects(
+    m.runRespond('js-ini', ask, '{"ok":true}', volunteer),
+    (e) => /RUN-E012/.test(e.message) && e.message.includes(volunteer),
+  )
+  await m.runRespond('js-ini', ask, '{"ok":true}', 'user:officer')
+  assert.equal(JSON.parse(await m.runResume('js-ini')).finished, 'Completed')
+
+  // Without an initiator the same responder is accepted — so the refusal
+  // above is the initiator's, not something else's.
+  const plain = JSON.parse(await m.runStart(wf, 'js-plain', '{}', tool))
+  await m.runRespond('js-plain', plain.parked.asks[0].tool_call_id, '{"ok":true}', volunteer)
+
+  // The trigger path freezes it too: a firing starts the run on the
+  // volunteer's behalf. `initiator` is triggerRun's 31st argument.
+  await m.triggerAdd(JSON.stringify({ kind: 'interval', workflow: wf, interval_secs: 60 }), 'intake')
+  const before = new Set(JSON.parse(await m.runList()))
+  const report = JSON.parse(await m.triggerRun(
+    null, false, null, null, null, tool, ...Array(24).fill(undefined), volunteer))
+  assert.equal(report.runs_started, 1, JSON.stringify(report))
+  const fired = JSON.parse(await m.runList()).filter((r) => !before.has(r))
+  assert.equal(fired.length, 1)
+  const inspected = JSON.parse(await m.runInspect(fired[0]))
+  const [pending] = Object.keys(inspected.pending_asks)
+  assert.ok(pending, JSON.stringify(inspected))
+  await assert.rejects(
+    m.runRespond(fired[0], pending, '{"ok":true}', volunteer),
+    /RUN-E012/,
+  )
+  m.close()
+})

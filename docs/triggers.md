@@ -725,9 +725,30 @@ Declared per trigger, using the vocabulary these systems settled on:
 
 ## Concurrency across hosts
 
-`trigger run` is safe to invoke from several nodes against one memory. A claim
-is a conditional write on the state row; exactly one caller wins, and the losers
-report `skipped_locked` and exit 0 — that is the steady state, not a fault.
+`trigger run` is safe to invoke concurrently against one memory, but what
+"concurrently" buys depends on the backend:
+
+- **Postgres** — several evaluators, on several nodes, share one schema. A
+  claim is a conditional write on the trigger's state row; exactly one caller
+  wins each trigger, and the losers count it in `skipped_locked` and exit 0 —
+  that is the steady state, not a fault.
+- **Embedded file** — **one evaluator per file at a time.** The file's OS lock
+  is exclusive, so a second `trigger run` overlapping the first (two heartbeat
+  ticks, a manual run during a cron one) cannot open the memory at all. Since
+  #419 that is reported as a **skipped pass**, not an error: the
+  loser prints `skipped_locked · pass skipped … (STO-E012)` (with
+  `--format json`, the ordinary report with every counter zero plus
+  `"pass_skipped_locked": true`) and **exits 0**; the next tick picks up
+  whatever was due. Before, it exited 1 with `STO-E001`, so two overlapping
+  ticks paged someone for normal behaviour. `--lock-wait SECS` retries the
+  open until the deadline first, then reports the skip. Only genuine
+  contention qualifies — `STO-E012` is raised only when the lock is held by
+  another process; a corrupt file, a missing directory or a lock that fails
+  for any other reason still exits non-zero, as does any other verb
+  (`trigger status`, `trigger deliver`) that cannot open a held file. A
+  host embedding the bindings opens the memory in its constructor, so there
+  the contention surfaces at `new Areev(…)` / `Areev(…)` as `STO-E012`, and
+  `triggerRun` / `trigger_run` itself never meets it.
 
 The fence lives inside the compared value, so a node that stalls past its lease
 cannot write back behind whoever took over: its release matches no row and is
@@ -772,6 +793,21 @@ content-addressed declaration is due.
 
 An **unknown zone name is refused in every build**. A typo must never fall
 back to UTC and fire at the wrong hour while looking correct.
+
+**`trigger show` and `trigger status` print the next due instant** (#421)
+for every clocked kind — `schedule`, `interval`, `polling`, `once` — in the
+declared zone and in UTC:
+
+```text
+next due     2026-11-04T02:00:00+05:30 Asia/Kolkata (2026-11-03T20:30:00Z)
+```
+
+A UTC trigger prints the UTC instant alone; a trigger due at once (an
+interval never fired) prints `now`. A declaration that has never been
+evaluated has no `next_due_at` in its state row yet — the first pass seeds
+it — so the read computes the same value from the declaration without
+writing anything. JSON carries it as `next_due_at` (epoch ms),
+`next_due_utc` and, for a non-UTC zone, `next_due_local`.
 
 ## Outbound control and credentials
 

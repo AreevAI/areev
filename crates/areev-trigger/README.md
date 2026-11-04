@@ -18,8 +18,10 @@ The first poll seeds the cursor and fires nothing, so declaring a mailbox trigge
 does not replay history. Connectors reuse the `--tool-cmd` subprocess contract,
 inheriting its timeout, output cap and secret scrub; outbound requests pass
 through the credential broker and host allowlist, so a connector is handed a
-brokered URL rather than a token. Cron is UTC only — a non-UTC timezone is
-refused with `TRG-E006` rather than mishandled across a DST boundary.
+brokered URL rather than a token. Cron evaluates in the trigger's declared
+IANA zone (the `tz` feature, with a declared DST gap/fold policy); an unknown
+zone is refused rather than falling back to UTC, and a build without `tz`
+refuses any non-UTC zone with `TRG-E006` naming the feature.
 
 Part of [Areev](https://github.com/AreevAI/areev) — an embedded memory engine for AI agents. See the [trigger reference](https://github.com/AreevAI/areev/blob/main/docs/triggers.md) and the [architecture overview](https://github.com/AreevAI/areev/blob/main/ARCHITECTURE.md).
 
