@@ -27,8 +27,11 @@ pub(crate) fn db_err<E: std::fmt::Display>(e: E) -> AreevError {
 /// `turso` crate's `From<LimboError>` folds it into the catch-all
 /// `Error::Error(String)`. turso is pinned exactly (`=0.7.2`), and both
 /// halves of the match are its own text — the variant's `Locking error:`
-/// prefix and the `WouldBlock` arm's "locked by another process" (unix and
-/// windows alike). A locking failure for any OTHER reason (permissions, an
+/// prefix and the `WouldBlock` arm's "locked by another process" (unix).
+/// Windows reports the same contention from `LockFileEx` as
+/// `ERROR_LOCK_VIOLATION` (os error 33), which std does not map to
+/// `WouldBlock`, so turso renders it through its generic arm — matched by the
+/// OS code, since the message text is localized. A locking failure for any OTHER reason (permissions, an
 /// unsupported filesystem) deliberately stays `STO-E001`: only contention is
 /// the expected, skippable outcome, and `locked_text_is_classified` pins the
 /// match so a turso bump that rewords it fails a test instead of silently
@@ -43,7 +46,8 @@ pub(crate) fn open_err(e: turso::Error) -> AreevError {
 }
 
 fn is_lock_contention(msg: &str) -> bool {
-    msg.starts_with("Locking error:") && msg.contains("locked by another process")
+    msg.starts_with("Locking error:")
+        && (msg.contains("locked by another process") || msg.contains("(os error 33)"))
 }
 
 /// One materialized result row; columns are positional per the SELECT list.
@@ -513,6 +517,9 @@ mod tests {
         for contended in [
             "Locking error: Failed locking file 'wtl.db'. File is locked by another process",
             "Locking error: Failed locking file. File is locked by another process",
+            // Windows: ERROR_LOCK_VIOLATION through turso's generic arm (seen on CI).
+            "Locking error: Failed locking file, The process cannot access the file because \
+             another process has locked a portion of the file. (os error 33)",
         ] {
             let e = open_err(turso::Error::Error(contended.into()));
             assert!(matches!(e, AreevError::FileLocked(_)), "{contended}: {e}");
@@ -520,6 +527,7 @@ mod tests {
         }
         for fault in [
             "Locking error: Failed locking file 'x.db', Permission denied (os error 13)",
+            "Locking error: Failed locking file, Access is denied. (os error 5)",
             "file is not a database",
         ] {
             let e = open_err(turso::Error::Error(fault.into()));
