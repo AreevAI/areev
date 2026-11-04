@@ -194,6 +194,13 @@ pub enum AreevError {
     /// A presented bearer token matched no credential. Deliberately carries
     /// no payload: a refused secret must never reach a log line.
     AuthzTokenUnrecognized,
+    /// A re-identification the namespace's dual-control reveal policy does
+    /// not admit (#417): a direct reveal under `reveal.mode = "dual"`, a
+    /// self-approval, an expired / unapproved / already-used request, or a
+    /// redemption by someone other than the requester. Its own code because
+    /// "the second person has not signed" is an expected, reportable outcome
+    /// a host must branch on, distinct from a missing grant (`AUT-E001`).
+    RevealRefused(String),
 }
 
 impl AreevError {
@@ -235,6 +242,7 @@ impl AreevError {
             Self::AuthzUnknownPrincipal(_) => "AUT-E002",
             Self::AuthzConfigInvalid(_) => "AUT-E003",
             Self::AuthzTokenUnrecognized => "AUT-E004",
+            Self::RevealRefused(_) => "AUT-E005",
         }
     }
 }
@@ -279,6 +287,7 @@ impl std::fmt::Display for AreevError {
             Self::AuthzUnknownPrincipal(p) => write!(f, "AUT-E002: unknown principal: {p}"),
             Self::AuthzConfigInvalid(m) => write!(f, "AUT-E003: {m}"),
             Self::AuthzTokenUnrecognized => write!(f, "AUT-E004: token not recognized"),
+            Self::RevealRefused(m) => write!(f, "AUT-E005: reveal refused: {m}"),
         }
     }
 }
@@ -324,6 +333,7 @@ mod error_code_tests {
             AreevError::AuthzUnknownPrincipal("x".into()),
             AreevError::AuthzConfigInvalid("x".into()),
             AreevError::AuthzTokenUnrecognized,
+            AreevError::RevealRefused("x".into()),
         ]
     }
 

@@ -544,7 +544,22 @@ COMMANDS:
                                       process's live pseudonym mappings, and
                                       `reveal --ns NS --token T` reverse-looks
                                       one up (admin verb; Tier-2 audited by
-                                      fingerprint). Add --anonymize-egress to
+                                      fingerprint). A policy with
+                                      \"reveal\": {\"mode\": \"dual\", \"ttl_secs\": N}
+                                      refuses that direct form (AUT-E005) and
+                                      takes two principals instead:
+                                        reveal-request --ns NS --token T[,T2]
+                                          --because \"why\" --as A  → request id
+                                        reveal-approve --request ID --as B
+                                          (B != A; admin; within the TTL)
+                                        reveal --request ID --as A
+                                          (once, within ttl_secs of approval)
+                                      each step (and each refusal) a Tier-2
+                                      record in `audit export`. The policy
+                                      may also declare regex detectors:
+                                      \"detectors\": [{\"category\": C,
+                                      \"pattern\": RE, \"cue\": [W, ...]}],
+                                      validated at `set`. Add --anonymize-egress to
                                       any verb to force egress on as a host
                                       floor, and --anonymize-cmd 'CMD' to
                                       install a Tier-1 NER detector (JSON
@@ -4510,14 +4525,60 @@ fn run_anonymize(
             Ok(())
         }
         "reveal" => {
-            let ns = flag(flags, "ns").ok_or("anonymize reveal requires --ns")?;
+            // `--request ID` redeems an approved dual-control request (#417);
+            // otherwise the direct form, which a dual-control namespace
+            // refuses (AUT-E005).
+            if let Some(request) = flag(flags, "request") {
+                let facade = apply_principal(
+                    areev_cal::AreevFacade::with_session(m, None, None),
+                    flags,
+                )?;
+                let out = facade.reveal_redeem(&request).map_err(|e| e.to_string())?;
+                println!("{out}");
+                return Ok(());
+            }
+            let ns = flag(flags, "ns").ok_or("anonymize reveal requires --ns (or --request ID)")?;
             let token = flag(flags, "token").ok_or("anonymize reveal requires --token")?;
             // Facade path: admin-gated + Tier-2 audited (fingerprints only).
-            let facade =
-                areev_cal::AreevFacade::with_session(m, Some(ns.clone()), None);
+            // `--as` binds the principal, so the audit names who revealed.
+            let facade = apply_principal(
+                areev_cal::AreevFacade::with_session(m, Some(ns.clone()), None),
+                flags,
+            )?;
             let out = facade
                 .reveal_tokens(&ns, &[token])
                 .map_err(|e| e.to_string())?;
+            println!("{out}");
+            Ok(())
+        }
+        "reveal-request" => {
+            let ns = flag(flags, "ns").ok_or("anonymize reveal-request requires --ns")?;
+            let tokens: Vec<String> = flag(flags, "token")
+                .ok_or("anonymize reveal-request requires --token (comma-separate several)")?
+                .split(',')
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect();
+            let because = flag(flags, "because")
+                .ok_or("anonymize reveal-request requires --because \"why\"")?;
+            let facade = apply_principal(
+                areev_cal::AreevFacade::with_session(m, Some(ns.clone()), None),
+                flags,
+            )?;
+            let out = facade
+                .reveal_request(&ns, &tokens, &because)
+                .map_err(|e| e.to_string())?;
+            println!("{out}");
+            Ok(())
+        }
+        "reveal-approve" => {
+            let request =
+                flag(flags, "request").ok_or("anonymize reveal-approve requires --request ID")?;
+            let facade = apply_principal(
+                areev_cal::AreevFacade::with_session(m, None, None),
+                flags,
+            )?;
+            let out = facade.reveal_approve(&request).map_err(|e| e.to_string())?;
             println!("{out}");
             Ok(())
         }
@@ -4534,7 +4595,8 @@ fn run_anonymize(
             Ok(())
         }
         other => Err(format!(
-            "unknown anonymize subcommand '{other}' (expected scan, set, list, clear, or mappings)"
+            "unknown anonymize subcommand '{other}' (expected scan, test, set, list, clear, \
+             mappings, reveal, reveal-request, or reveal-approve)"
         )),
     }
 }
@@ -6974,6 +7036,11 @@ fn run_audit(
         // #278: an override of a legal hold names the hold it overrode.
         if let Some(h) = ctx.get("hold_overridden") {
             row["hold_overridden"] = h.clone();
+        }
+        // #417: a dual-control reveal step names its request and both
+        // principals, so request → approve → reveal reads as one chain.
+        if let Some(r) = ctx.get("reveal") {
+            row["reveal"] = r.clone();
         }
         // #280: the chain. A record written before chaining existed carries
         // neither `seq` nor a predecessor, and is exported as `unchained` —

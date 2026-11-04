@@ -643,6 +643,25 @@ export declare class Areev {
    * returns JSON `{"revealed": {token: value | null}}`.
    */
   revealTokens(ns: string, tokensJson: string): Promise<string>
+  /**
+   * Dual-control reveal, step 1 (#417): ask to reveal `tokensJson` (a
+   * JSON array of placeholders) in `ns`, with a mandatory reason. Needs
+   * `admin` on `ns`; returns JSON `{"request_id", "ns", "requester",
+   * "tokens", "expires_at", "mode"}`.
+   */
+  revealRequest(ns: string, tokensJson: string, because: string): Promise<string>
+  /**
+   * Dual-control reveal, step 2: approve a pending request. Needs
+   * `admin` on its namespace and refuses (`AUT-E005`) the requester
+   * themself; returns the approved request as JSON.
+   */
+  revealApprove(requestId: string): Promise<string>
+  /**
+   * Dual-control reveal, step 3: the requester redeems an approved
+   * request — once, within the TTL. Returns JSON `{"revealed": {token:
+   * value | null}}`.
+   */
+  revealRedeem(requestId: string): Promise<string>
   /** Reject a recommendation with a reason (library-friendly `reject`). */
   dismissRecommendation(hash: string, why: string, scopes?: string | undefined | null): Promise<string>
   /**

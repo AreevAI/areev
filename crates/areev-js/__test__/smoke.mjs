@@ -2991,3 +2991,37 @@ test('FORMAT markdown names the role of a remembered turn', async () => {
     await m.close()
   }
 })
+
+// ── #417: dual-control reveal — requester, a DIFFERENT approver, a TTL.
+
+test('dual-control reveal: request, approve as another principal, redeem once', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'areev-dual-'))
+  const path = join(dir, 'dual.db')
+  const owner = new Areev(path, 'caller')
+  await owner.setAnonPolicy('caller', JSON.stringify(
+    { mode: 'egress', scope: 'session', reveal: { mode: 'dual', ttl_secs: 1800 } }))
+  await owner.cal('GRANT admin, read ON caller TO "user:desk"')
+  await owner.cal('GRANT admin, read ON caller TO "user:approver"')
+  owner.close()
+
+  const as = (p) => new Areev(path, 'caller', null, null, null, p)
+  let desk = as('user:desk')
+  await assert.rejects(() => desk.revealTokens('caller', JSON.stringify(['[PERSON_1]'])), /AUT-E005/)
+  const req = JSON.parse(await desk.revealRequest('caller', JSON.stringify(['[PERSON_1]']), 'safety escalation'))
+  assert.equal(req.requester, 'user:desk')
+  assert.equal(req.mode, 'dual')
+  await assert.rejects(() => desk.revealApprove(req.request_id), /AUT-E005/) // self-approval
+  desk.close()
+
+  const approver = as('user:approver')
+  const ok = JSON.parse(await approver.revealApprove(req.request_id))
+  assert.equal(ok.approver, 'user:approver')
+  await assert.rejects(() => approver.revealRedeem(req.request_id), /AUT-E005/) // not the requester
+  approver.close()
+
+  desk = as('user:desk')
+  const out = JSON.parse(await desk.revealRedeem(req.request_id))
+  assert.ok('[PERSON_1]' in out.revealed)
+  await assert.rejects(() => desk.revealRedeem(req.request_id), /AUT-E005/) // single use
+  desk.close()
+})

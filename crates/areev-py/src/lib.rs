@@ -3448,6 +3448,38 @@ impl Areev {
         py.detach(|| self.facade.reveal_tokens(&ns, &tokens)).map_err(err)
     }
 
+    /// Dual-control reveal, step 1 (#417): ask to reveal `tokens_json` (a
+    /// JSON array of placeholders) in `ns`, with a mandatory reason. Needs
+    /// `admin` on `ns`; returns JSON `{"request_id", "ns", "requester",
+    /// "tokens", "expires_at", "mode"}`.
+    #[pyo3(signature = (ns, tokens_json, because))]
+    fn reveal_request(
+        &self,
+        py: Python<'_>,
+        ns: String,
+        tokens_json: String,
+        because: String,
+    ) -> PyResult<String> {
+        let tokens: Vec<String> = serde_json::from_str(&tokens_json).map_err(err)?;
+        py.detach(|| self.facade.reveal_request(&ns, &tokens, &because)).map_err(err)
+    }
+
+    /// Dual-control reveal, step 2: approve a pending request. Needs
+    /// `admin` on its namespace and refuses (`AUT-E005`) the requester
+    /// themself; returns the approved request as JSON.
+    #[pyo3(signature = (request_id))]
+    fn reveal_approve(&self, py: Python<'_>, request_id: String) -> PyResult<String> {
+        py.detach(|| self.facade.reveal_approve(&request_id)).map_err(err)
+    }
+
+    /// Dual-control reveal, step 3: the requester redeems an approved
+    /// request — once, within the TTL. Returns JSON `{"revealed": {token:
+    /// value | null}}`.
+    #[pyo3(signature = (request_id))]
+    fn reveal_redeem(&self, py: Python<'_>, request_id: String) -> PyResult<String> {
+        py.detach(|| self.facade.reveal_redeem(&request_id)).map_err(err)
+    }
+
     /// Reject a recommendation with a reason (the library-friendly name for
     /// `areev loop reject`).
     #[pyo3(signature = (hash, why, scopes = None))]

@@ -1522,6 +1522,118 @@ fn anonymize_vault_reveal_through_the_binary() {
     assert!(out.contains("caller:john"), "reveal must recover the identity: {out}");
 }
 
+/// #417: dual-control reveal through the binary — a direct reveal is
+/// refused, self-approval is refused, a second admin approves, the requester
+/// redeems once, and `audit export` shows request → approve → reveal with
+/// both principals named.
+#[test]
+fn anonymize_dual_control_reveal_through_the_binary() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("dual.db");
+    let db = db.to_str().unwrap();
+    let run = |args: &[&str]| {
+        let mut full = args.to_vec();
+        full.extend_from_slice(&["--db", db, "--passphrase-env", "SMOKE_PASS"]);
+        let out = Command::new(env!("CARGO_BIN_EXE_areev"))
+            .args(&full)
+            .env("SMOKE_PASS", "correct horse battery staple")
+            .output()
+            .expect("spawn areev");
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).to_string(),
+            String::from_utf8_lossy(&out.stderr).to_string(),
+        )
+    };
+    let (ok, _, err) = run(&[
+        "add", "--ns", "caller", "--subject", "caller:john", "--relation", "prefers",
+        "--object", "tea",
+    ]);
+    assert!(ok, "add failed: {err}");
+    let (ok, _, err) = run(&[
+        "anonymize", "set", "--ns", "caller", "--policy",
+        r#"{"mode": "egress", "scope": "session", "vault": true,
+            "reveal": {"mode": "dual", "ttl_secs": 1800}}"#,
+    ]);
+    assert!(ok, "set failed: {err}");
+    for p in ["user:desk", "user:approver"] {
+        let grant = format!(r#"GRANT admin, read ON caller TO "{p}" WITH because("reveal duty")"#);
+        let (ok, out, err) = run(&["cal", &grant]);
+        assert!(ok, "grant failed: {out} {err}");
+    }
+    let (ok, out, err) = run(&["recall", "--ns", "caller", "--subject", "caller:john"]);
+    assert!(ok && out.contains("[PERSON_1]"), "recall: {out} {err}");
+
+    // Direct reveal: refused under dual control.
+    let (ok, _, err) = run(&[
+        "anonymize", "reveal", "--ns", "caller", "--token", "[PERSON_1]", "--as", "user:desk",
+    ]);
+    assert!(!ok && err.contains("AUT-E005"), "direct reveal must refuse: {err}");
+
+    let (ok, out, err) = run(&[
+        "anonymize", "reveal-request", "--ns", "caller", "--token", "[PERSON_1]",
+        "--because", "safety escalation", "--as", "user:desk",
+    ]);
+    assert!(ok, "request failed: {err}");
+    let req: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    let id = req["request_id"].as_str().unwrap().to_string();
+
+    let (ok, _, err) = run(&["anonymize", "reveal-approve", "--request", &id, "--as", "user:desk"]);
+    assert!(!ok && err.contains("AUT-E005"), "self-approval must refuse: {err}");
+    let (ok, _, err) =
+        run(&["anonymize", "reveal-approve", "--request", &id, "--as", "user:approver"]);
+    assert!(ok, "approval failed: {err}");
+    let (ok, out, err) = run(&["anonymize", "reveal", "--request", &id, "--as", "user:desk"]);
+    assert!(ok, "redeem failed: {err}");
+    assert!(out.contains("caller:john"), "redeem must recover the identity: {out}");
+    let (ok, _, err) = run(&["anonymize", "reveal", "--request", &id, "--as", "user:desk"]);
+    assert!(!ok && err.contains("AUT-E005"), "second use must refuse: {err}");
+
+    let (ok, out, err) = run(&["audit", "export"]);
+    assert!(ok, "export failed: {err}");
+    let rows: Vec<serde_json::Value> = out
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|r| r["verb"].as_str().is_some_and(|v| v.starts_with("reveal")))
+        .collect();
+    // The request record's own address IS the request id; the later steps
+    // name it in `reveal.request_id`.
+    let find = |verb: &str| {
+        rows.iter()
+            .find(|r| {
+                r["verb"] == verb
+                    && (r["hash"].as_str() == Some(id.as_str())
+                        || r["reveal"]["request_id"].as_str() == Some(id.as_str()))
+            })
+            .unwrap_or_else(|| panic!("no {verb} row: {rows:?}"))
+            .clone()
+    };
+    let request = find("reveal.request");
+    let approve = find("reveal.approve");
+    let reveal = find("reveal");
+    assert_eq!(request["hash"], id.as_str(), "the request id is the request record");
+    assert_eq!(request["principal"], "user:desk");
+    assert_eq!(approve["principal"], "user:approver");
+    assert_eq!(approve["reveal"]["requester"], "user:desk");
+    assert_eq!(reveal["principal"], "user:desk");
+    assert_eq!(reveal["reveal"]["approver"], "user:approver");
+    assert!(
+        request["seq"].as_u64() < approve["seq"].as_u64()
+            && approve["seq"].as_u64() < reveal["seq"].as_u64(),
+        "request → approve → reveal, in chain order: {rows:?}"
+    );
+    assert!(!out.contains("caller:john"), "the export must not re-identify");
+}
+
+/// #418: the shipped Indian-identifier fixture file passes as committed.
+#[test]
+fn india_identifier_fixtures_pass() {
+    let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/anonymize/india-identifiers.json");
+    let (ok, out, err) = areev(&["anonymize", "test", "--fixtures", fixtures]);
+    assert!(ok, "the committed fixture set must pass\nstdout: {out}\nstderr: {err}");
+    assert!(out.contains("0 failed"), "{out}");
+}
+
 #[test]
 fn ns_pattern_guards_through_the_binary() {
     let dir = TempDir::new().unwrap();

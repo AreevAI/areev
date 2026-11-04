@@ -47,6 +47,13 @@ pub const KNOWN_CATEGORIES: &[&str] = &[
     // mod-36) or structure-plus-cue (PAN) — see the individual detectors.
     "in_gstin",
     "in_pan",
+    // Indian personal identifiers (issue #418). Checksum-validated (Aadhaar,
+    // Verhoeff), first-digit-shaped (mobile), or cue/state-code-gated (EPIC,
+    // vehicle registration) — see the individual detectors.
+    "in_mobile",
+    "in_aadhaar",
+    "in_epic",
+    "in_vehicle",
 ];
 
 /// Categories whose detections are backed by a checksum or a structural
@@ -74,6 +81,12 @@ pub fn category_is_validated(category: &str) -> bool {
             // keyword rule on the same span, and `account_number` would win
             // the alphabetical fallback — the PAN cue would never yield a PAN.
             | "in_pan"
+            // Verhoeff over all twelve (or sixteen) digits (#418). Marked so a
+            // dash-grouped Aadhaar, which the generic dashed-phone shape also
+            // matches, is reported as what it is.
+            | "in_aadhaar"
+            // Structure (three letters, seven digits) plus a cue (#418).
+            | "in_epic"
     )
 }
 
@@ -122,6 +135,10 @@ pub(super) fn run_tier0(
     detect_aba_routing(text, &mut out);
     detect_in_gstin(text, &mut out);
     detect_in_pan(text, &mut out);
+    detect_in_mobile(text, &mut out);
+    detect_in_aadhaar(text, &mut out);
+    detect_in_epic(text, &mut out);
+    detect_in_vehicle(text, &mut out);
     detect_mrn(text, &mut out);
     detect_secret(text, &mut out);
     detect_keyword_proximity(text, &mut out);
@@ -156,10 +173,13 @@ fn detect_phone(text: &str, out: &mut Vec<Detection>) {
     static NANP: OnceLock<Regex> = OnceLock::new();
     static DASHED: OnceLock<Regex> = OnceLock::new();
     static ISO_SHAPE: OnceLock<Regex> = OnceLock::new();
+    static DMY_SHAPE: OnceLock<Regex> = OnceLock::new();
     // No backreferences in the regex crate, so the dash-grouped form is its
-    // own pattern; ISO-date-shaped candidates are excluded (the date
-    // detector owns those).
+    // own pattern; ISO-date-shaped and day-first dashed-date candidates
+    // (`12-05-2024`, the common Indian form, #418) are excluded — the date
+    // detector owns those.
     let iso_shape = re(&ISO_SHAPE, r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$");
+    let dmy_shape = re(&DMY_SHAPE, r"^[0-9]{1,2}-[0-9]{1,2}-[0-9]{4}$");
     let candidates = [
         re(&INTL, r"\+[1-9][0-9 ().\-]{5,18}[0-9]"),
         re(&NANP, r"\(?[0-9]{3}\)?[ .\-][0-9]{3}[ .\-][0-9]{4}"),
@@ -167,7 +187,9 @@ fn detect_phone(text: &str, out: &mut Vec<Detection>) {
     ];
     for r in candidates {
         for m in r.find_iter(text) {
-            if iso_shape.is_match(m.as_str()) {
+            if iso_shape.is_match(m.as_str())
+                || (dmy_shape.is_match(m.as_str()) && plausible_dmy(m.as_str(), '-'))
+            {
                 continue;
             }
             let digits = m.as_str().chars().filter(char::is_ascii_digit).count();
@@ -250,14 +272,44 @@ fn detect_date(text: &str, out: &mut Vec<Detection>) {
     }
     let slash = re(&SLASH, r"[0-9]{1,2}/[0-9]{1,2}/[0-9]{2,4}");
     for m in slash.find_iter(text) {
-        let parts: Vec<u32> = m.as_str().split('/').map(|p| p.parse().unwrap_or(0)).collect();
-        let plausible_dm = (1..=12).contains(&parts[0]) || (1..=12).contains(&parts[1]);
-        let in_range =
-            (1..=31).contains(&parts[0]) && (1..=31).contains(&parts[1]) && plausible_dm;
-        if in_range && boundary_ok(text, m.start(), m.end()) {
+        if plausible_dmy(m.as_str(), '/') && boundary_ok(text, m.start(), m.end()) {
             out.push(det(m.start(), m.end(), "date", "tier0.date"));
         }
     }
+    // Day-first dashed and dotted dates with a four-digit year (#418):
+    // `12-05-2024`, `12.05.2024`. Until this, the dashed form was reported
+    // as a `phone` by the dash-grouped phone shape.
+    static DASHED: OnceLock<Regex> = OnceLock::new();
+    static DOTTED: OnceLock<Regex> = OnceLock::new();
+    let shapes = [
+        (re(&DASHED, r"[0-9]{1,2}-[0-9]{1,2}-[0-9]{4}"), '-'),
+        (re(&DOTTED, r"[0-9]{1,2}\.[0-9]{1,2}\.[0-9]{4}"), '.'),
+    ];
+    for (shape, sep) in shapes {
+        for m in shape.find_iter(text) {
+            // A dotted run continued by another `.digit` is an IP address or
+            // a version string, not a date.
+            let continues = text[m.end()..].starts_with(sep)
+                || text[..m.start()].ends_with(sep);
+            if !continues
+                && plausible_dmy(m.as_str(), sep)
+                && boundary_ok(text, m.start(), m.end())
+            {
+                out.push(det(m.start(), m.end(), "date", "tier0.date"));
+            }
+        }
+    }
+}
+
+/// `D<sep>M<sep>Y` (or `M<sep>D<sep>Y`): both leading parts in 1..=31 and at
+/// least one of them a plausible month.
+fn plausible_dmy(s: &str, sep: char) -> bool {
+    let parts: Vec<u32> = s.split(sep).map(|p| p.parse().unwrap_or(0)).collect();
+    if parts.len() != 3 {
+        return false;
+    }
+    let plausible_dm = (1..=12).contains(&parts[0]) || (1..=12).contains(&parts[1]);
+    (1..=31).contains(&parts[0]) && (1..=31).contains(&parts[1]) && plausible_dm
 }
 
 fn luhn_ok(digits: &[u8]) -> bool {
@@ -632,6 +684,302 @@ fn detect_in_pan(text: &str, out: &mut Vec<Detection>) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Indian personal identifiers (issue #418)
+// ---------------------------------------------------------------------------
+//
+// Citizens type these the way Indians write them — `9843122760`, `98431
+// 22760`, `+91 98431 22760`, `2345 6789 0124` — usually inside Tamil, Hindi or
+// mixed-script prose. Two things follow:
+//
+// * Boundaries are SCRIPT-aware, not merely Unicode-aware. The shared
+//   `boundary_ok` treats any alphanumeric neighbour as "inside a word", and
+//   Tamil letters and vowel signs are alphabetic, so `எண்9843122760` (a number
+//   glued to the word for "number") would be refused. For a digit run, the
+//   neighbour is "inside" only when it is another digit or a Latin
+//   letter/underscore; a letter of another script is a boundary.
+// * Collisions with what already ships are resolved deliberately: a shape the
+//   generic `phone` detector already reports keeps its `phone` category (so a
+//   value-derived pseudonym minted before this detector existed does not
+//   change), dates, amounts and pincodes stay clean, and the Aadhaar check
+//   digit is the Verhoeff dihedral checksum, so a single wrong digit — or any
+//   adjacent transposition — is not a detection.
+
+/// The digit-run boundary for the Indian detectors (see the section comment).
+/// Also refuses a run continued by a decimal/thousands separator and more
+/// digits (`1,9843122760`, `9843122760.50`), and one directly after `+` — a
+/// `+`-prefixed number is an international number, which `detect_phone` owns.
+fn digit_run_boundary_ok(text: &str, start: usize, end: usize) -> bool {
+    let inside = |c: char| c.is_numeric() || c.is_ascii_alphabetic() || c == '_';
+    let mut before = text[..start].chars().rev();
+    let b1 = before.next();
+    let b2 = before.next();
+    let mut after = text[end..].chars();
+    let a1 = after.next();
+    let a2 = after.next();
+    if b1.is_some_and(|c| inside(c) || c == '+') || a1.is_some_and(inside) {
+        return false;
+    }
+    let sep = |c: char| matches!(c, '.' | ',');
+    let continues_before = b1.is_some_and(sep) && b2.is_some_and(|c| c.is_ascii_digit());
+    let continues_after = a1.is_some_and(sep) && a2.is_some_and(|c| c.is_ascii_digit());
+    !(continues_before || continues_after)
+}
+
+/// A currency marker directly before the run, or a money word directly
+/// after it: `₹9843122760`, `Rs. 7500000000`, `9500000000 rupees`. Ten-digit
+/// amounts starting 6–9 are rare, but an amount is the canonical must-not-
+/// redact case and costs one look in each direction.
+fn looks_like_amount(text: &str, start: usize, end: usize) -> bool {
+    let before = text[..start].trim_end().to_lowercase();
+    let after = text[end..].trim_start().to_lowercase();
+    ["₹", "rs", "rs.", "inr", "$", "usd", "€", "£", "ரூ", "ரூ."]
+        .iter()
+        .any(|m| before.ends_with(m))
+        || ["rupees", "rupee", "crore", "lakh", "/-", "ரூபாய்"]
+            .iter()
+            .any(|w| after.starts_with(w))
+}
+
+/// End offsets of every cue match for the Indian detectors. Unlike
+/// [`cue_ends`] (which uses `\b`), these cues include Tamil and Hindi words
+/// ending in a combining sign (`எண்` ends in the virama), after which `\b`
+/// never fires; so the patterns carry no `\b` and the boundary is checked on
+/// the leading edge only.
+fn script_cue_ends(text: &str, cell: &'static OnceLock<Regex>, pattern: &str) -> Vec<usize> {
+    re(cell, pattern)
+        .find_iter(text)
+        .filter(|m| {
+            text[..m.start()]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !c.is_alphanumeric())
+        })
+        .map(|m| m.end())
+        .collect()
+}
+
+/// Indian mobile numbers — ten digits starting 6–9, with an optional `+91`,
+/// `91` or `0` prefix and the common `5 5` / `3 3 4` groupings (space or
+/// dash).
+///
+/// Shape alone is enough (the 6–9 first digit is the numbering-plan rule, and
+/// it excludes epoch-second timestamps and most reference numbers); a cue word
+/// within 40 characters before the number (`mobile`, `cell`, `ph`, `எண்`,
+/// `கைபேசி`, `தொலைபேசி`, …) raises confidence from 0.9 to 1.0. Amounts are
+/// refused. A span `detect_phone` already reported as `phone` is NOT reported
+/// again — the number keeps the category (and therefore the value-derived
+/// pseudonym) it had before this detector existed.
+fn detect_in_mobile(text: &str, out: &mut Vec<Detection>) {
+    static NUM: OnceLock<Regex> = OnceLock::new();
+    static CUE: OnceLock<Regex> = OnceLock::new();
+    let num = re(
+        &NUM,
+        r"(?:\+91[ \-]?|91[ \-]?|0[ \-]?)?(?:[6-9][0-9]{4}[ \-]?[0-9]{5}|[6-9][0-9]{2}[ \-][0-9]{3}[ \-][0-9]{4})",
+    );
+    let cues = script_cue_ends(
+        text,
+        &CUE,
+        r"(?i)(mobile|mob\.?|cell|phone|ph\.?|contact|whatsapp|call|எண்|கைபேசி|தொலைபேசி|அலைபேசி|मोबाइल|फ़ोन|फोन)",
+    );
+    let phone_spans: Vec<(usize, usize)> = out
+        .iter()
+        .filter(|d| d.category == "phone")
+        .map(|d| (d.start, d.end))
+        .collect();
+    for m in num.find_iter(text) {
+        let (start, end) = (m.start(), m.end());
+        if !digit_run_boundary_ok(text, start, end) || looks_like_amount(text, start, end) {
+            continue;
+        }
+        if phone_spans.contains(&(start, end)) {
+            continue;
+        }
+        let mut d = det(start, end, "in_mobile", "tier0.in_mobile");
+        if !cue_near(&cues, start) {
+            d.confidence = 0.9;
+        }
+        out.push(d);
+    }
+}
+
+// Verhoeff tables: the dihedral group D5 multiplication and the position
+// permutation (Verhoeff 1969; UIDAI uses it for the Aadhaar check digit).
+const VERHOEFF_D: [[u8; 10]; 10] = [
+    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+    [1, 2, 3, 4, 0, 6, 7, 8, 9, 5],
+    [2, 3, 4, 0, 1, 7, 8, 9, 5, 6],
+    [3, 4, 0, 1, 2, 8, 9, 5, 6, 7],
+    [4, 0, 1, 2, 3, 9, 5, 6, 7, 8],
+    [5, 9, 8, 7, 6, 0, 4, 3, 2, 1],
+    [6, 5, 9, 8, 7, 1, 0, 4, 3, 2],
+    [7, 6, 5, 9, 8, 2, 1, 0, 4, 3],
+    [8, 7, 6, 5, 9, 3, 2, 1, 0, 4],
+    [9, 8, 7, 6, 5, 4, 3, 2, 1, 0],
+];
+const VERHOEFF_P: [[u8; 10]; 8] = [
+    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+    [1, 5, 7, 6, 2, 8, 3, 0, 9, 4],
+    [5, 8, 0, 3, 7, 9, 6, 1, 4, 2],
+    [8, 9, 1, 6, 0, 4, 3, 5, 2, 7],
+    [9, 4, 5, 3, 1, 2, 8, 7, 6, 0],
+    [4, 2, 8, 6, 5, 7, 3, 9, 0, 1],
+    [2, 7, 9, 3, 8, 0, 6, 4, 1, 5],
+    [7, 0, 4, 6, 9, 1, 3, 2, 5, 8],
+];
+
+/// Verhoeff check over a digit sequence whose LAST digit is the check digit.
+/// Catches every single-digit error and every adjacent transposition.
+fn verhoeff_ok(digits: &[u8]) -> bool {
+    let mut c = 0u8;
+    for (i, d) in digits.iter().rev().enumerate() {
+        c = VERHOEFF_D[c as usize][VERHOEFF_P[i % 8][*d as usize] as usize];
+    }
+    c == 0
+}
+
+fn digits_of(s: &str) -> Vec<u8> {
+    s.chars().filter_map(|c| c.to_digit(10).map(|d| d as u8)).collect()
+}
+
+/// Aadhaar numbers — twelve digits, first digit 2–9, Verhoeff-checked — and
+/// 16-digit Aadhaar Virtual IDs (VID), also Verhoeff-checked.
+///
+/// The `4 4 4` grouped form (space or dash) runs unconditionally: that
+/// grouping is how the number is printed on the card, and the checksum keeps
+/// nine in ten random grouped runs out. A BARE twelve-digit run is cue-gated
+/// (`Aadhaar`, `UID`, `ஆதார்`, `आधार` within 40 characters) because Indian
+/// payments are full of other twelve-digit numbers (UPI reference / UTR) and
+/// one in ten of those passes Verhoeff by chance. A VID is always cue-gated
+/// (`VID`, `virtual id`, or an Aadhaar cue) — sixteen digits is also a card
+/// number's length.
+fn detect_in_aadhaar(text: &str, out: &mut Vec<Detection>) {
+    static GROUPED: OnceLock<Regex> = OnceLock::new();
+    static BARE: OnceLock<Regex> = OnceLock::new();
+    static VID: OnceLock<Regex> = OnceLock::new();
+    static CUE: OnceLock<Regex> = OnceLock::new();
+    static VID_CUE: OnceLock<Regex> = OnceLock::new();
+    let grouped = re(&GROUPED, r"[2-9][0-9]{3}[ \-][0-9]{4}[ \-][0-9]{4}");
+    for m in grouped.find_iter(text) {
+        let digits = digits_of(m.as_str());
+        if digits.len() == 12
+            && digit_run_boundary_ok(text, m.start(), m.end())
+            && verhoeff_ok(&digits)
+        {
+            out.push(det(m.start(), m.end(), "in_aadhaar", "tier0.in_aadhaar"));
+        }
+    }
+    let cues = script_cue_ends(
+        text,
+        &CUE,
+        r"(?i)(aadhaar|aadhar|adhaar|uidai|uid|ஆதார்|आधार)",
+    );
+    let vid_cues = script_cue_ends(text, &VID_CUE, r"(?i)(vid|virtual id)");
+    if !cues.is_empty() {
+        let bare = re(&BARE, r"[2-9][0-9]{11}");
+        for m in bare.find_iter(text) {
+            if digit_run_boundary_ok(text, m.start(), m.end())
+                && cue_near(&cues, m.start())
+                && verhoeff_ok(&digits_of(m.as_str()))
+            {
+                out.push(det(m.start(), m.end(), "in_aadhaar", "tier0.in_aadhaar"));
+            }
+        }
+    }
+    if cues.is_empty() && vid_cues.is_empty() {
+        return;
+    }
+    let vid = re(&VID, r"[0-9]{4}[ \-]?[0-9]{4}[ \-]?[0-9]{4}[ \-]?[0-9]{4}");
+    for m in vid.find_iter(text) {
+        let digits = digits_of(m.as_str());
+        if digits.len() == 16
+            && digit_run_boundary_ok(text, m.start(), m.end())
+            && (cue_near(&vid_cues, m.start()) || cue_near(&cues, m.start()))
+            && verhoeff_ok(&digits)
+        {
+            out.push(det(m.start(), m.end(), "in_aadhaar", "tier0.in_aadhaar_vid"));
+        }
+    }
+}
+
+/// Indian voter ID (EPIC) numbers — three letters and seven digits.
+///
+/// ALWAYS cue-gated (`EPIC`, `voter id`, `voter`, `வாக்காளர்`, `मतदाता`
+/// within 40 characters): there is no public checksum, and the shape collides
+/// with order and ticket references.
+fn detect_in_epic(text: &str, out: &mut Vec<Detection>) {
+    static NUM: OnceLock<Regex> = OnceLock::new();
+    static CUE: OnceLock<Regex> = OnceLock::new();
+    let cues = script_cue_ends(
+        text,
+        &CUE,
+        r"(?i)(epic|voter id|voter|elector|வாக்காளர்|मतदाता)",
+    );
+    if cues.is_empty() {
+        return;
+    }
+    let num = re(&NUM, r"[A-Za-z]{3}[0-9]{7}");
+    for m in num.find_iter(text) {
+        if digit_run_boundary_ok(text, m.start(), m.end()) && cue_near(&cues, m.start()) {
+            out.push(det(m.start(), m.end(), "in_epic", "tier0.in_epic"));
+        }
+    }
+}
+
+/// The state / union-territory codes of Indian registration marks (including
+/// the retired `OR`, `UA`, `DD`, `DN` still on older plates).
+const IN_STATE_CODES: &[&str] = &[
+    "AN", "AP", "AR", "AS", "BR", "CG", "CH", "DD", "DL", "DN", "GA", "GJ", "HP", "HR",
+    "JH", "JK", "KA", "KL", "LA", "LD", "MH", "ML", "MN", "MP", "MZ", "NL", "OD", "OR",
+    "PB", "PY", "RJ", "SK", "TN", "TR", "TS", "UA", "UK", "UP", "WB",
+];
+
+/// Indian vehicle registration marks — `TN 37 AB 1234`: a state code, a one-
+/// or two-digit RTO code, a series of up to three letters, and a number of up
+/// to four digits, with spaces, dashes or nothing between the parts.
+///
+/// Always needs a listed state code, plus one of:
+/// * the canonical plate shape — state code and series written UPPERCASE, a
+///   one-to-three letter series and a four-digit number — which ordinary
+///   prose does not produce (`up 12 am 2024` is lowercase and stays clean);
+/// * a vehicle cue within 40 characters before (`vehicle`, `registration`,
+///   `reg no`, `வாகன`, `वाहन`, …), which also admits lowercase and the short
+///   forms (`dl 1 c 123`).
+fn detect_in_vehicle(text: &str, out: &mut Vec<Detection>) {
+    static NUM: OnceLock<Regex> = OnceLock::new();
+    static CUE: OnceLock<Regex> = OnceLock::new();
+    let num = re(
+        &NUM,
+        r"([A-Za-z]{2})[ \-]?([0-9]{1,2})[ \-]?([A-Za-z]{0,3})[ \-]?([0-9]{1,4})",
+    );
+    let cues = script_cue_ends(
+        text,
+        &CUE,
+        r"(?i)(vehicle|registration|reg\.? ?no|regn|number plate|bike|lorry|வாகன|வண்டி|वाहन|गाड़ी)",
+    );
+    for c in num.captures_iter(text) {
+        let m = c.get(0).expect("whole match");
+        if !digit_run_boundary_ok(text, m.start(), m.end())
+            || !boundary_ok(text, m.start(), m.end())
+        {
+            continue;
+        }
+        let state = &c[1];
+        if !IN_STATE_CODES.contains(&state.to_ascii_uppercase().as_str()) {
+            continue;
+        }
+        let series = &c[3];
+        let number = &c[4];
+        let canonical = state.chars().all(|ch| ch.is_ascii_uppercase())
+            && series.chars().all(|ch| ch.is_ascii_uppercase())
+            && (1..=3).contains(&series.len())
+            && number.len() == 4;
+        if canonical || cue_near(&cues, m.start()) {
+            out.push(det(m.start(), m.end(), "in_vehicle", "tier0.in_vehicle"));
+        }
+    }
+}
+
 /// Medical record numbers — shape alone is a bare digit run, which is why
 /// this is CUE-GATED rather than pattern-only: a 6–12 digit run counts only
 /// when an MRN cue word sits within 40 characters before it. Matching bare
@@ -731,7 +1079,10 @@ fn detect_keyword_proximity(text: &str, out: &mut Vec<Detection>) {
     const FILLER: &str = r#"(?:\s|is|was|are|be|my|the|your|number|no\.?|code|:|=|#|"|')"#;
     let rules: [(&Regex, &str, &str); 4] = [
         (
-            re(&PIN, &format!(r"(?i)\b(?:pin|passcode){FILLER}{{0,6}}([0-9]{{4,8}})\b")),
+            // `\b` after the cue (#418): "pincode" is the Indian POSTAL code,
+            // and `pin` + the filler word `code` used to read it as a secret
+            // PIN, so every `pincode 641001` was redacted as one.
+            re(&PIN, &format!(r"(?i)\b(?:pin|passcode)\b{FILLER}{{0,6}}([0-9]{{4,8}})\b")),
             "pin",
             "tier0.kw_pin",
         ),
@@ -825,6 +1176,114 @@ pub(super) fn run_known(
     let mut out = Vec::new();
     for (category, terms) in by_category {
         detect_terms(text, &terms, category, "tier0.policy_known", &mut out)?;
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Policy-declared regex detectors (issue #418)
+// ---------------------------------------------------------------------------
+
+/// Longest pattern a policy may declare, in bytes.
+pub const MAX_POLICY_PATTERN_LEN: usize = 1024;
+/// Compiled-program size cap for a policy pattern (`RegexBuilder::size_limit`).
+/// The `regex` crate is a finite-automaton engine — no backtracking, so no
+/// catastrophic matching time — but a pattern like `(a{1000}){1000}` still
+/// blows up at COMPILE time; this bounds that and refuses it at declaration.
+pub const POLICY_REGEX_SIZE_LIMIT: usize = 1 << 20;
+/// Lazy-DFA cache cap per compiled policy pattern.
+const POLICY_REGEX_DFA_LIMIT: usize = 2 << 20;
+/// Compiled patterns kept process-wide; past this the cache is cleared rather
+/// than grown (policies are few, and a clear only costs recompiles).
+const POLICY_REGEX_CACHE_CAP: usize = 256;
+
+/// Compile (and validate) one policy-declared pattern. Refuses an over-long
+/// pattern, one that exceeds the compile size limit, and one that matches the
+/// empty string — an empty match is a zero-width "detection" that redacts
+/// nothing while reporting that it did.
+pub(super) fn compile_policy_pattern(pattern: &str) -> Result<std::sync::Arc<Regex>> {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+    static CACHE: OnceLock<Mutex<HashMap<String, Arc<Regex>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(rx) = cache.lock().expect("regex cache poisoned").get(pattern) {
+        return Ok(rx.clone());
+    }
+    let invalid = |why: String| {
+        crate::error::AreevError::Validation(format!(
+            "invalid anonymization policy: detector pattern {pattern:?} {why}"
+        ))
+    };
+    if pattern.is_empty() {
+        return Err(invalid("is empty".into()));
+    }
+    if pattern.len() > MAX_POLICY_PATTERN_LEN {
+        return Err(invalid(format!("is longer than {MAX_POLICY_PATTERN_LEN} bytes")));
+    }
+    let rx = regex::RegexBuilder::new(pattern)
+        .size_limit(POLICY_REGEX_SIZE_LIMIT)
+        .dfa_size_limit(POLICY_REGEX_DFA_LIMIT)
+        .build()
+        .map_err(|e| invalid(format!("does not compile within the size limit: {e}")))?;
+    if rx.is_match("") {
+        return Err(invalid(
+            "matches the empty string — a detector must match at least one character".into(),
+        ));
+    }
+    let rx = Arc::new(rx);
+    let mut guard = cache.lock().expect("regex cache poisoned");
+    if guard.len() >= POLICY_REGEX_CACHE_CAP {
+        guard.clear();
+    }
+    guard.insert(pattern.to_string(), rx.clone());
+    Ok(rx)
+}
+
+/// Run the policy's regex detectors. A detector with `cue` words only fires
+/// when one of them (case-insensitive, leading-edge boundary — the same
+/// script-aware rule the Indian detectors use) ends within `within_chars`
+/// characters before the match. Zero-width matches are skipped defensively
+/// (declaration refuses patterns that match "", but `\b`-anchored ones can
+/// still match empty mid-text).
+pub(super) fn run_policy_regex(
+    text: &str,
+    specs: &[&super::RegexDetector],
+) -> Result<Vec<Detection>> {
+    let mut out = Vec::new();
+    for spec in specs {
+        let rx = compile_policy_pattern(&spec.pattern)?;
+        let cues: Vec<usize> = if spec.cue.is_empty() {
+            Vec::new()
+        } else {
+            // The cue words are literals: escaped into one case-insensitive
+            // alternation, compiled through the same bounded cache.
+            let alternation: Vec<String> =
+                spec.cue.iter().map(|c| regex::escape(c.trim())).collect();
+            let cue_rx = compile_policy_pattern(&format!("(?i)(?:{})", alternation.join("|")))?;
+            cue_rx
+                .find_iter(text)
+                .filter(|m| {
+                    text[..m.start()]
+                        .chars()
+                        .next_back()
+                        .is_none_or(|c| !c.is_alphanumeric())
+                })
+                .map(|m| m.end())
+                .collect()
+        };
+        for m in rx.find_iter(text) {
+            if m.start() == m.end() {
+                continue;
+            }
+            if !spec.cue.is_empty()
+                && !cues.iter().any(|c| {
+                    m.start() >= *c && text[*c..m.start()].chars().count() <= spec.within_chars
+                })
+            {
+                continue;
+            }
+            out.push(det(m.start(), m.end(), &spec.category, "policy.regex"));
+        }
     }
     Ok(out)
 }
@@ -1164,5 +1623,302 @@ mod in_tax_id_tests {
             cats("PAN / GSTIN 27AAPFU0939F1ZV"),
             vec!["in_gstin:27AAPFU0939F1ZV"]
         );
+    }
+}
+
+#[cfg(test)]
+mod in_personal_id_tests {
+    use super::*;
+
+    /// Every Tier-0 detection, resolved the way `scan` resolves them, as
+    /// `category:span` — so an overlap with phone/date/card shows up here.
+    fn resolved(text: &str) -> Vec<String> {
+        let out = super::super::scan(text, &super::super::AnonPolicy::default(), &[]).unwrap();
+        out.detections
+            .iter()
+            .map(|d| format!("{}:{}", d.category, &out.text[d.start..d.end]))
+            .collect()
+    }
+
+    #[test]
+    fn verhoeff_matches_the_published_vector() {
+        // Wikipedia's worked example: 236 → check digit 3.
+        assert!(verhoeff_ok(&[2, 3, 6, 3]));
+        assert!(!verhoeff_ok(&[2, 3, 6, 4]));
+        assert!(verhoeff_ok(&digits_of("234567890124")));
+        // Every single-digit change of a valid number fails.
+        let valid = digits_of("234567890124");
+        for i in 0..valid.len() {
+            for d in 0..10u8 {
+                if d == valid[i] {
+                    continue;
+                }
+                let mut v = valid.clone();
+                v[i] = d;
+                assert!(!verhoeff_ok(&v), "single-digit change at {i} to {d} passed");
+            }
+        }
+    }
+
+    /// The three reproduction strings of #418, with the Aadhaar corrected to
+    /// a checksum-valid number: the issue's `2345 6789 0123` fails Verhoeff
+    /// (the valid check digit for `23456789012` is 4), and by the issue's own
+    /// acceptance a number that fails it must NOT be reported.
+    #[test]
+    fn the_issue_repro_strings_detect_every_number() {
+        assert_eq!(
+            resolved("என் பெயர் முருகன், என் எண் +91 98431 22760"),
+            vec!["phone:+91 98431 22760"],
+            "the +91 form keeps its pre-#418 category, so its pseudonym is stable"
+        );
+        assert_eq!(
+            resolved("Call me 9843122760, Aadhaar 2345 6789 0124"),
+            vec!["in_mobile:9843122760", "in_aadhaar:2345 6789 0124"]
+        );
+        assert_eq!(
+            resolved("முருகன் 98431 22760 காந்திபுரம் 3வது தெரு"),
+            vec!["in_mobile:98431 22760"]
+        );
+        // The issue's literal Aadhaar: one digit off a valid number.
+        assert_eq!(
+            resolved("Call me 9843122760, Aadhaar 2345 6789 0123"),
+            vec!["in_mobile:9843122760"]
+        );
+    }
+
+    #[test]
+    fn mobile_shapes_and_prefixes() {
+        for (text, want) in [
+            ("9843122760", "9843122760"),
+            ("98431 22760", "98431 22760"),
+            ("98431-22760", "98431-22760"),
+            ("098431-22760", "098431-22760"),
+            ("919843122760", "919843122760"),
+            ("91 98431 22760", "91 98431 22760"),
+            ("984 312 2760", "984 312 2760"),
+        ] {
+            let mut d = Vec::new();
+            detect_in_mobile(text, &mut d);
+            assert_eq!(d.len(), 1, "{text}");
+            assert_eq!(&text[d[0].start..d[0].end], want, "{text}");
+        }
+    }
+
+    #[test]
+    fn mobile_first_digit_and_boundaries() {
+        for text in [
+            "1234567890",        // first digit outside 6-9
+            "5843122760",        // first digit outside 6-9
+            "98431227601",       // eleven digits
+            "x9843122760",       // glued to a Latin letter
+            "Rs. 9843122760",    // an amount
+            "₹9843122760",       // an amount
+            "9843122760 rupees", // an amount
+            "1,9843122760",      // inside a larger number
+            "9843122760.50",     // a decimal
+            "+9843122760",       // an international number, phone's
+        ] {
+            let mut d = Vec::new();
+            detect_in_mobile(text, &mut d);
+            assert!(d.is_empty(), "{text} must not be an Indian mobile: {d:?}");
+        }
+    }
+
+    #[test]
+    fn a_number_glued_to_tamil_script_is_still_detected() {
+        // `எண்` (number) directly followed by the digits, no space, and a
+        // Tamil case suffix glued to the end.
+        let text = "என் எண்9843122760ஐ அழைக்கவும்";
+        let mut d = Vec::new();
+        detect_in_mobile(text, &mut d);
+        assert_eq!(d.len(), 1);
+        assert_eq!(&text[d[0].start..d[0].end], "9843122760");
+        // A cue raises confidence; shape alone is 0.9.
+        assert_eq!(d[0].confidence, 1.0);
+        let mut bare = Vec::new();
+        detect_in_mobile("ref 9843122760", &mut bare);
+        assert_eq!(bare[0].confidence, 0.9);
+        // Non-Latin text around a detection survives byte for byte.
+        let out = super::super::anonymize(text, &super::super::AnonPolicy::default(), &[], None)
+            .unwrap();
+        assert!(out.text.starts_with("என் எண்[IN_MOBILE_1]ஐ அழைக்கவும்"), "{}", out.text);
+    }
+
+    #[test]
+    fn aadhaar_gates() {
+        let mut d = Vec::new();
+        detect_in_aadhaar("2345-6789-0124", &mut d);
+        assert_eq!(d.len(), 1, "dash-grouped form");
+        // Bare twelve digits: only with a cue.
+        let mut d = Vec::new();
+        detect_in_aadhaar("UTR 234567890124", &mut d);
+        assert!(d.is_empty(), "an uncued bare 12-digit run is a payment reference");
+        let mut d = Vec::new();
+        detect_in_aadhaar("ஆதார் 234567890124", &mut d);
+        assert_eq!(d.len(), 1, "Tamil cue");
+        // First digit 0/1 is never an Aadhaar.
+        let first: Vec<u8> = digits_of("12345678901");
+        let check = (0..10u8)
+            .find(|c| {
+                let mut v = first.clone();
+                v.push(*c);
+                verhoeff_ok(&v)
+            })
+            .unwrap();
+        let mut d = Vec::new();
+        detect_in_aadhaar(&format!("1234 5678 901{check}"), &mut d);
+        assert!(d.is_empty());
+    }
+
+    #[test]
+    fn a_dashed_aadhaar_is_aadhaar_not_phone() {
+        assert_eq!(resolved("2345-6789-0124"), vec!["in_aadhaar:2345-6789-0124"]);
+    }
+
+    #[test]
+    fn vid_is_cue_gated_and_verhoeff_checked() {
+        let base = digits_of("912345678901234");
+        let check = (0..10u8)
+            .find(|c| {
+                let mut v = base.clone();
+                v.push(*c);
+                verhoeff_ok(&v)
+            })
+            .unwrap();
+        let vid = format!("9123 4567 8901 234{check}");
+        let mut d = Vec::new();
+        detect_in_aadhaar(&format!("VID {vid}"), &mut d);
+        assert_eq!(d.len(), 1, "{vid}");
+        assert_eq!(d[0].detector, "tier0.in_aadhaar_vid");
+        let mut d = Vec::new();
+        detect_in_aadhaar(&format!("card {vid}"), &mut d);
+        assert!(d.is_empty(), "no cue");
+        let bad = format!("9123 4567 8901 234{}", (check + 1) % 10);
+        let mut d = Vec::new();
+        detect_in_aadhaar(&format!("VID {bad}"), &mut d);
+        assert!(d.is_empty(), "bad check digit");
+    }
+
+    #[test]
+    fn epic_needs_a_cue() {
+        let mut d = Vec::new();
+        detect_in_epic("Voter ID: ABC1234567", &mut d);
+        assert_eq!(d.len(), 1);
+        let mut d = Vec::new();
+        detect_in_epic("வாக்காளர் அட்டை TNX0123456", &mut d);
+        assert_eq!(d.len(), 1, "Tamil cue");
+        let mut d = Vec::new();
+        detect_in_epic("order ABC1234567 shipped", &mut d);
+        assert!(d.is_empty());
+    }
+
+    #[test]
+    fn vehicle_registration_gates() {
+        for text in ["TN 37 AB 1234", "TN37AB1234", "TN-37-AB-1234", "KA 01 MJ 2024"] {
+            let mut d = Vec::new();
+            detect_in_vehicle(text, &mut d);
+            assert_eq!(d.len(), 1, "{text}");
+            assert_eq!(d[0].end - d[0].start, text.len(), "{text}");
+        }
+        // Lowercase or short forms need a cue.
+        let mut d = Vec::new();
+        detect_in_vehicle("we left up 12 am 2024", &mut d);
+        assert!(d.is_empty(), "lowercase prose is not a plate");
+        let mut d = Vec::new();
+        detect_in_vehicle("vehicle no tn 37 ab 1234", &mut d);
+        assert_eq!(d.len(), 1, "a cue admits lowercase");
+        // Not a listed state code.
+        let mut d = Vec::new();
+        detect_in_vehicle("XX 37 AB 1234", &mut d);
+        assert!(d.is_empty());
+    }
+
+    #[test]
+    fn dates_amounts_and_pincodes_stay_clean() {
+        for text in [
+            "complaint dated 12-05-2024",
+            "complaint dated 12.05.2024",
+            "complaint dated 12/05/2024",
+            "pincode 641001",
+            "Coimbatore - 641 001",
+            "amount Rs. 7,50,000",
+            "₹ 98,43,122",
+            "total 2026 cases in ward 37",
+        ] {
+            let got: Vec<String> = resolved(text)
+                .into_iter()
+                .filter(|c| c.starts_with("in_") || c.starts_with("phone") || c.starts_with("pin:"))
+                .collect();
+            assert!(got.is_empty(), "{text}: {got:?}");
+        }
+        // A day-first dashed date is a date now, not a phone.
+        assert_eq!(resolved("12-05-2024"), vec!["date:12-05-2024"]);
+    }
+}
+
+#[cfg(test)]
+mod policy_regex_tests {
+    use super::super::{scan, AnonPolicy};
+
+    #[test]
+    fn a_declared_regex_detector_runs_with_its_cue() {
+        let policy = AnonPolicy::from_json(
+            r#"{"detectors": [{"category": "ward_ref", "pattern": "W[0-9]{3}-[0-9]{4}",
+                "cue": ["ward", "வார்டு"]}]}"#,
+        )
+        .unwrap();
+        let out = scan("ward complaint W012-2024 filed", &policy, &[]).unwrap();
+        assert_eq!(out.detections.len(), 1);
+        assert_eq!(out.detections[0].category, "ward_ref");
+        assert_eq!(out.detections[0].detector, "policy.regex");
+        // No cue → no detection.
+        let out = scan("part number W012-2024", &policy, &[]).unwrap();
+        assert!(out.detections.is_empty());
+        // A regex-only list keeps the tier0 link.
+        let out = scan("mail jane@example.com", &policy, &[]).unwrap();
+        assert_eq!(out.detections[0].category, "email");
+    }
+
+    #[test]
+    fn declaration_refuses_bad_patterns() {
+        for (pattern, why) in [
+            ("(", "does not compile"),
+            ("a*", "matches the empty string"),
+            ("(?:x|)", "matches the empty string"),
+            ("(a{1000}){1000}", "size limit"),
+        ] {
+            let json = serde_json::json!({"detectors": [{"category": "c", "pattern": pattern}]});
+            let err = AnonPolicy::from_json(&json.to_string()).unwrap_err().to_string();
+            assert!(err.contains("VAL-E001") && err.contains(why), "{pattern}: {err}");
+        }
+        let long = "a".repeat(super::MAX_POLICY_PATTERN_LEN + 1);
+        let json = serde_json::json!({"detectors": [{"category": "c", "pattern": long}]});
+        assert!(AnonPolicy::from_json(&json.to_string()).is_err());
+        // Unknown keys on a detector object are refused (fail-closed policy).
+        assert!(AnonPolicy::from_json(
+            r#"{"detectors": [{"category": "c", "pattern": "x+", "flags": "i"}]}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn a_string_only_detector_list_reserializes_unchanged() {
+        // The canonical policy JSON feeds mapping_id, so pre-#418 policies
+        // must serialize byte-for-byte as before.
+        let p = AnonPolicy::from_json(r#"{"detectors": ["tier0"]}"#).unwrap();
+        let s = serde_json::to_string(&p).unwrap();
+        assert!(s.contains(r#""detectors":["tier0"]"#), "{s}");
+        assert!(!s.contains("reveal"), "{s}");
+    }
+
+    #[test]
+    fn reveal_policy_validates() {
+        let p = AnonPolicy::from_json(r#"{"reveal": {"mode": "dual", "ttl_secs": 1800}}"#).unwrap();
+        assert!(p.reveal_policy().is_dual());
+        assert!(!AnonPolicy::default().reveal_policy().is_dual());
+        assert!(AnonPolicy::from_json(r#"{"reveal": {"mode": "triple"}}"#).is_err());
+        assert!(AnonPolicy::from_json(r#"{"reveal": {"mode": "dual", "ttl_secs": 0}}"#).is_err());
+        assert!(AnonPolicy::from_json(r#"{"reveal": {"mode": "dual", "ttl_secs": 99999999}}"#)
+            .is_err());
     }
 }

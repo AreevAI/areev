@@ -470,6 +470,21 @@ e.g. on a backdated grain added off the head chain. So `recall_at(…, Some(r),
 per relation where `recall` returns every live one. Exact namespace only.
 Conformance: `recall_at_is_entity_at_per_relation` (both backends).
 
+## Dual-control reveal state (`reveal_req:` rows, #417)
+
+`anon_reveal_policy(ns)` reads the `anon:<ns>` row FRESH (not the handle's
+policy cache — another Postgres writer may just have declared `dual`) and
+fails closed on an unreadable row. A dual-control request is a
+`reveal_req:<id>` meta row (`REVEAL_REQUEST_PREFIX`), moved pending →
+approved → used by `meta_cas` on the whole value — so two concurrent
+approvals or redemptions cannot both win on Postgres. The logic is the CAL
+facade's (`reveal_request`/`reveal_approve`/`reveal_redeem`); the store only
+holds the row. **`reveal_req:` is NOT in `REPLICABLE_META_PREFIXES`**: a
+replica holding an "approved, unused" copy would be a second use, and the
+vault it reveals from never replicates either. The request/approve/reveal
+audit grains do replicate (evidence). Conformance:
+`dual_control_reveal_is_single_use_and_never_replicates`, both backends.
+
 ## Anonymization key material
 
 Three keys are HKDF-derived from ONE root, with their own domain-separation

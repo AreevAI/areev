@@ -3549,6 +3549,55 @@ impl Areev {
         })
     }
 
+    /// Dual-control reveal, step 1 (#417): ask to reveal `tokensJson` (a
+    /// JSON array of placeholders) in `ns`, with a mandatory reason. Needs
+    /// `admin` on `ns`; returns JSON `{"request_id", "ns", "requester",
+    /// "tokens", "expires_at", "mode"}`.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn reveal_request(
+        &self,
+        ns: String,
+        tokens_json: String,
+        because: String,
+    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let tokens: Vec<String> = serde_json::from_str(&tokens_json).map_err(err)?;
+            facade.reveal_request(&ns, &tokens, &because).map_err(err)
+        })
+    }
+
+    /// Dual-control reveal, step 2: approve a pending request. Needs
+    /// `admin` on its namespace and refuses (`AUT-E005`) the requester
+    /// themself; returns the approved request as JSON.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn reveal_approve(
+        &self,
+        request_id: String,
+    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            facade.reveal_approve(&request_id).map_err(err)
+        })
+    }
+
+    /// Dual-control reveal, step 3: the requester redeems an approved
+    /// request — once, within the TTL. Returns JSON `{"revealed": {token:
+    /// value | null}}`.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn reveal_redeem(
+        &self,
+        request_id: String,
+    ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            facade.reveal_redeem(&request_id).map_err(err)
+        })
+    }
+
     /// Reject a recommendation with a reason (library-friendly `reject`).
     #[napi(ts_return_type = "Promise<string>")]
     pub fn dismiss_recommendation(
