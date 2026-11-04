@@ -189,7 +189,21 @@ pub struct TriggerStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_due_local: Option<String>,
     pub leased_by: Option<String>,
+    /// When this trigger is next due, in epoch milliseconds (#421).
+    ///
+    /// The `trg:` state row's value once the trigger has been evaluated. For
+    /// a CLOCKED trigger never evaluated yet it is computed here, read-only,
+    /// from the declaration — a schedule's next cron instant, a one-shot's
+    /// `at` — because "when will this first fire" is exactly what an operator
+    /// checking a fresh declaration asks. `None` means "due now" for a
+    /// clocked trigger (an interval never fired, a one-shot past its instant
+    /// not yet fired), and "never" for an exhausted one-shot and every
+    /// unclocked kind.
     pub next_due_at: Option<i64>,
+    /// `next_due_at` as an RFC 3339 UTC instant (`2026-11-03T20:30:00Z`), so
+    /// a reader of the JSON need not convert milliseconds by hand (#421).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_due_utc: Option<String>,
     pub last_fired_at: Option<i64>,
     pub consecutive_failures: u32,
     pub last_error: Option<String>,
@@ -509,6 +523,17 @@ impl Evaluator {
             let (st, _raw) = self.resolve_state(&chain, false)?;
             let unusable = schedule::validate(&t).err().map(|e| e.to_string());
             let plan_head = self.plan_head_if_stale(&t)?;
+            // #421: a never-evaluated clocked trigger has no `next_due_at` in
+            // its row yet — the first pass seeds it. Compute the same value
+            // here (read-only, nothing is written) so `show`/`status` can say
+            // when a fresh declaration first fires. An unusable declaration
+            // has no next instant; its `unusable` reason says why.
+            let next_due_at = if st.exhausted || unusable.is_some() {
+                None
+            } else {
+                st.next_due_at
+                    .or_else(|| schedule::initial_due(&t, now).ok().flatten())
+            };
             out.push(TriggerStatus {
                 trigger: hash,
                 name: trigger_name(&t),
@@ -525,11 +550,10 @@ impl Evaluator {
                     && !st.leased(now)
                     && schedule::is_due(&t, &st, now).unwrap_or(false),
                 timezone: schedule::declared_zone(&t),
-                next_due_local: st
-                    .next_due_at
-                    .and_then(|at| schedule::render_local(&t, at)),
+                next_due_local: next_due_at.and_then(|at| schedule::render_local(&t, at)),
                 leased_by: st.leased(now).then(|| st.claimed_by.clone()).flatten(),
-                next_due_at: st.next_due_at,
+                next_due_at,
+                next_due_utc: next_due_at.and_then(schedule::render_utc),
                 last_fired_at: st.last_fired_at,
                 consecutive_failures: st.consecutive_failures,
                 last_error: st.last_error.clone(),

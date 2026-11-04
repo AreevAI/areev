@@ -110,6 +110,23 @@ pub struct RunOptions {
     pub max_concurrent_runs_per_principal: Option<u32>,
 }
 
+impl RunOptions {
+    /// Who the run is started ON BEHALF OF (#293) and whether that initiator
+    /// may settle a `confirmation` ask (#294) — the one place every host
+    /// surface sets the pair, so the CLI (`--initiator` /
+    /// `$AREEV_RUN_INITIATOR`, `--allow-confirmation-asks`) and the Node and
+    /// Python bindings (#422) freeze the same thing into the manifest.
+    ///
+    /// The initiator is trimmed and an empty one is no initiator: a blank
+    /// name would freeze into the manifest and match nothing, which reads
+    /// like a separation-of-duties check while enforcing none.
+    pub fn on_behalf_of(mut self, initiator: Option<String>, allow_confirmation_asks: bool) -> Self {
+        self.initiator = initiator.map(|i| i.trim().to_string()).filter(|i| !i.is_empty());
+        self.allow_confirmation_asks = allow_confirmation_asks;
+        self
+    }
+}
+
 /// The per-LLM-call ceiling when a manifest pins none (§6.7 reserves it per
 /// dispatch). Named because two places must agree: the prepared request and
 /// the `gen_ai.request.max_tokens` the span reports for that same request.

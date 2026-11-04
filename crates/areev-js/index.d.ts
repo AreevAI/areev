@@ -682,8 +682,18 @@ export declare class Areev {
    * unknown key is refused. The run pins the profile's digest, so
    * `runResume` must be given the same one. A plan's per-node `llm` block
    * (`docs/run.md`) configures abstract nodes without it.
+   *
+   * `initiator` (#422, after `llmProfile`) names who the run is started ON
+   * BEHALF OF — the CLI's `--initiator`, frozen into the manifest — so an
+   * approval ask refuses that responder as well as the binding's own
+   * principal (`RUN-E012`): a service running every case as
+   * `service:intake` can still stop the volunteer who reported a case from
+   * approving it. `allowConfirmationAsks` lets that initiator settle a
+   * `confirmation` ask (#294; off by default, as on the CLI). Neither is
+   * read from `$AREEV_RUN_INITIATOR` — a library host passes them
+   * explicitly.
    */
-  runStart(workflow: string, runId: string, inputJson?: string | undefined | null, toolCmd?: string | undefined | null, maxTokens?: number | undefined | null, maxUsdMicros?: number | undefined | null, maxWallMs?: number | undefined | null, askTtlSec?: number | undefined | null, model?: string | undefined | null, baseUrl?: string | undefined | null, keyEnv?: string | undefined | null, llmMaxTokens?: number | undefined | null, allowExecutor?: string | undefined | null, executorCache?: string | undefined | null, sandboxCmd?: string | undefined | null, executorTimeoutSecs?: number | undefined | null, toolEnv?: string | undefined | null, onEvent?: ((arg: string) => void) | undefined | null, credentials?: string | undefined | null, allowHosts?: string | undefined | null, toolEgress?: string | undefined | null, credentialTtlSecs?: number | undefined | null, resolverEnv?: string | undefined | null, maxEffectsPerAttempt?: number | undefined | null, llmToolResultChars?: number | undefined | null, llmContextTokens?: number | undefined | null, llmProfile?: string | undefined | null): Promise<string>
+  runStart(workflow: string, runId: string, inputJson?: string | undefined | null, toolCmd?: string | undefined | null, maxTokens?: number | undefined | null, maxUsdMicros?: number | undefined | null, maxWallMs?: number | undefined | null, askTtlSec?: number | undefined | null, model?: string | undefined | null, baseUrl?: string | undefined | null, keyEnv?: string | undefined | null, llmMaxTokens?: number | undefined | null, allowExecutor?: string | undefined | null, executorCache?: string | undefined | null, sandboxCmd?: string | undefined | null, executorTimeoutSecs?: number | undefined | null, toolEnv?: string | undefined | null, onEvent?: ((arg: string) => void) | undefined | null, credentials?: string | undefined | null, allowHosts?: string | undefined | null, toolEgress?: string | undefined | null, credentialTtlSecs?: number | undefined | null, resolverEnv?: string | undefined | null, maxEffectsPerAttempt?: number | undefined | null, llmToolResultChars?: number | undefined | null, llmContextTokens?: number | undefined | null, llmProfile?: string | undefined | null, initiator?: string | undefined | null, allowConfirmationAsks?: boolean | undefined | null): Promise<string>
   /**
    * Resume a parked/interrupted run from its latest checkpoint.
    *
@@ -796,9 +806,13 @@ export declare class Areev {
    *
    * Prefer this over `add("trigger", …)`: both refuse an incoherent
    * declaration, but only this path also parses the cron expression,
-   * refuses a non-UTC timezone (`TRG-E006`) and checks a composite's gate
-   * against its own members. A trigger that can never fire has exactly one
-   * symptom — nothing happening — so it is worth refusing at authoring
+   * checks the declared timezone and checks a composite's gate against its
+   * own members. A valid IANA zone (`"Asia/Kolkata"`) is accepted — this
+   * binding is built with zone data — and an unknown zone name is refused
+   * rather than falling back to UTC; `TRG-E006` for a real non-UTC zone
+   * applies only to a build without the `areev-trigger/tz` feature
+   * (`docs/triggers.md`, "Timezones"). A trigger that can never fire has
+   * exactly one symptom — nothing happening — so it is worth refusing at authoring
    * time. Resolves to the content address.
    */
   triggerAdd(fieldsJson: string, because: string, ns?: string | undefined | null): Promise<string>
@@ -846,16 +860,22 @@ export declare class Areev {
    * executes from a trigger exactly as it does by hand. Without the pin
    * such a node refuses with `RUN-E018` — the authorization to execute code
    * must come from the host, never from the file that carries it.
+   * `initiator` / `allowConfirmationAsks` (#422, the last two arguments)
+   * reach every run a firing starts exactly as on `runStart`.
+   *
+   * The memory is already open (this handle holds it), so the embedded
+   * backend's one-evaluator-per-file contention (`STO-E012`, #419)
+   * surfaces at the constructor, never here.
    */
-  triggerRun(only?: string | undefined | null, dryRun?: boolean | undefined | null, leaseSecs?: number | undefined | null, maxItems?: number | undefined | null, connectorCmd?: string | undefined | null, toolCmd?: string | undefined | null, credentialsJson?: string | undefined | null, node?: string | undefined | null, model?: string | undefined | null, baseUrl?: string | undefined | null, keyEnv?: string | undefined | null, maxTokens?: number | undefined | null, maxUsdMicros?: number | undefined | null, maxWallMs?: number | undefined | null, askTtlSec?: number | undefined | null, llmMaxTokens?: number | undefined | null, allowExecutor?: string | undefined | null, executorCache?: string | undefined | null, sandboxCmd?: string | undefined | null, executorTimeoutSecs?: number | undefined | null, toolEnv?: string | undefined | null, credentials?: string | undefined | null, allowHosts?: string | undefined | null, toolEgress?: string | undefined | null, credentialTtlSecs?: number | undefined | null, resolverEnv?: string | undefined | null, maxEffectsPerAttempt?: number | undefined | null, llmToolResultChars?: number | undefined | null, llmContextTokens?: number | undefined | null, llmProfile?: string | undefined | null): Promise<string>
+  triggerRun(only?: string | undefined | null, dryRun?: boolean | undefined | null, leaseSecs?: number | undefined | null, maxItems?: number | undefined | null, connectorCmd?: string | undefined | null, toolCmd?: string | undefined | null, credentialsJson?: string | undefined | null, node?: string | undefined | null, model?: string | undefined | null, baseUrl?: string | undefined | null, keyEnv?: string | undefined | null, maxTokens?: number | undefined | null, maxUsdMicros?: number | undefined | null, maxWallMs?: number | undefined | null, askTtlSec?: number | undefined | null, llmMaxTokens?: number | undefined | null, allowExecutor?: string | undefined | null, executorCache?: string | undefined | null, sandboxCmd?: string | undefined | null, executorTimeoutSecs?: number | undefined | null, toolEnv?: string | undefined | null, credentials?: string | undefined | null, allowHosts?: string | undefined | null, toolEgress?: string | undefined | null, credentialTtlSecs?: number | undefined | null, resolverEnv?: string | undefined | null, maxEffectsPerAttempt?: number | undefined | null, llmToolResultChars?: number | undefined | null, llmContextTokens?: number | undefined | null, llmProfile?: string | undefined | null, initiator?: string | undefined | null, allowConfirmationAsks?: boolean | undefined | null): Promise<string>
   /**
    * Hand a webhook or manual payload to a trigger. Areev never opens a
    * port: the host owns the listener and hands the payload over.
    *
-   * Takes the same budgets and the same executor pin as `triggerRun`: a
-   * delivery starts a real run.
+   * Takes the same budgets, executor pin and initiator as `triggerRun`:
+   * a delivery starts a real run.
    */
-  triggerDeliver(trigger: string, payloadJson: string, connectorCmd?: string | undefined | null, toolCmd?: string | undefined | null, credentialsJson?: string | undefined | null, model?: string | undefined | null, baseUrl?: string | undefined | null, keyEnv?: string | undefined | null, maxTokens?: number | undefined | null, maxUsdMicros?: number | undefined | null, maxWallMs?: number | undefined | null, askTtlSec?: number | undefined | null, llmMaxTokens?: number | undefined | null, allowExecutor?: string | undefined | null, executorCache?: string | undefined | null, sandboxCmd?: string | undefined | null, executorTimeoutSecs?: number | undefined | null, toolEnv?: string | undefined | null, credentials?: string | undefined | null, allowHosts?: string | undefined | null, toolEgress?: string | undefined | null, credentialTtlSecs?: number | undefined | null, resolverEnv?: string | undefined | null, maxEffectsPerAttempt?: number | undefined | null, llmToolResultChars?: number | undefined | null, llmContextTokens?: number | undefined | null, llmProfile?: string | undefined | null): Promise<string>
+  triggerDeliver(trigger: string, payloadJson: string, connectorCmd?: string | undefined | null, toolCmd?: string | undefined | null, credentialsJson?: string | undefined | null, model?: string | undefined | null, baseUrl?: string | undefined | null, keyEnv?: string | undefined | null, maxTokens?: number | undefined | null, maxUsdMicros?: number | undefined | null, maxWallMs?: number | undefined | null, askTtlSec?: number | undefined | null, llmMaxTokens?: number | undefined | null, allowExecutor?: string | undefined | null, executorCache?: string | undefined | null, sandboxCmd?: string | undefined | null, executorTimeoutSecs?: number | undefined | null, toolEnv?: string | undefined | null, credentials?: string | undefined | null, allowHosts?: string | undefined | null, toolEgress?: string | undefined | null, credentialTtlSecs?: number | undefined | null, resolverEnv?: string | undefined | null, maxEffectsPerAttempt?: number | undefined | null, llmToolResultChars?: number | undefined | null, llmContextTokens?: number | undefined | null, llmProfile?: string | undefined | null, initiator?: string | undefined | null, allowConfirmationAsks?: boolean | undefined | null): Promise<string>
   /** Stop a trigger firing without deleting it. Mandatory reason. */
   triggerPause(trigger: string, because: string): Promise<string>
   /** Let a paused trigger fire again. Mandatory reason. */

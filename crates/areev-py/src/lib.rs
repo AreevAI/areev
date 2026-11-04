@@ -2311,6 +2311,15 @@ impl Areev {
     /// refused. The run pins the profile's digest, so `run_resume` must be
     /// given the same one. A plan's per-node `llm` block (`docs/run.md`)
     /// configures abstract nodes without it.
+    ///
+    /// `initiator` (#422) names who the run is started ON BEHALF OF — the
+    /// CLI's `--initiator`, frozen into the manifest — so an approval ask
+    /// refuses that responder as well as the binding's own principal
+    /// (`RUN-E012`): a service running every case as `service:intake` can
+    /// still stop the volunteer who reported a case from approving it.
+    /// `allow_confirmation_asks` lets that initiator settle a `confirmation`
+    /// ask (#294; off by default, as on the CLI). Neither is read from
+    /// `$AREEV_RUN_INITIATOR` — a library host passes them explicitly.
     #[pyo3(signature = (workflow, run_id, input_json = None, tool_cmd = None,
                         max_tokens = None, max_usd_micros = None, max_wall_ms = None,
                         ask_ttl_sec = None, model = None, base_url = None, key_env = None,
@@ -2320,7 +2329,8 @@ impl Areev {
                         tool_egress = None, credential_ttl_secs = None, resolver_env = None,
                         max_effects_per_attempt = None,
                         llm_tool_result_chars = None, llm_context_tokens = None,
-                        llm_profile = None))]
+                        llm_profile = None, initiator = None,
+                        allow_confirmation_asks = false))]
     #[allow(clippy::too_many_arguments)]
     fn run_start(
         &self,
@@ -2354,6 +2364,10 @@ impl Areev {
         llm_tool_result_chars: Option<usize>,
         llm_context_tokens: Option<u64>,
         llm_profile: Option<String>,
+        // Appended (#422): who the run is started ON BEHALF OF, frozen into
+        // the manifest — the CLI's `--initiator` / `--allow-confirmation-asks`.
+        initiator: Option<String>,
+        allow_confirmation_asks: bool,
     ) -> PyResult<String> {
         let input: serde_json::Value = match input_json {
             Some(raw) => serde_json::from_str(&raw).map_err(|e| err(format!("input_json: {e}")))?,
@@ -2386,7 +2400,8 @@ impl Areev {
                 llm_tool_result_chars,
                 llm_context_tokens,
             },
-        );
+        )
+        .on_behalf_of(initiator, allow_confirmation_asks);
         let session = py
             .detach(|| runner.start(&h, &run_id, input, &opts))
             .map_err(err)?;
@@ -3512,9 +3527,13 @@ impl Areev {
     ///
     /// Prefer this over `add("trigger", …)`: both refuse an incoherent
     /// declaration, but only this path also parses the cron expression,
-    /// refuses a non-UTC timezone (`TRG-E006`) and checks a composite's gate
-    /// against its own members. A trigger that can never fire has exactly one
-    /// symptom — nothing happening — so it is worth refusing at authoring
+    /// checks the declared timezone and checks a composite's gate against its
+    /// own members. A valid IANA zone (`"Asia/Kolkata"`) is accepted — this
+    /// binding is built with zone data — and an unknown zone name is refused
+    /// rather than falling back to UTC; `TRG-E006` for a real non-UTC zone
+    /// applies only to a build without the `areev-trigger/tz` feature
+    /// (`docs/triggers.md`, "Timezones"). A trigger that can never fire has
+    /// exactly one symptom — nothing happening — so it is worth refusing at authoring
     /// time. Returns the content address.
     #[pyo3(signature = (fields_json, because, ns = None))]
     fn trigger_add(
@@ -3606,6 +3625,12 @@ impl Areev {
     /// executes from a trigger exactly as it does by hand. Without the pin
     /// such a node refuses with `RUN-E018` — the authorization to execute
     /// code must come from the host, never from the file that carries it.
+    /// `initiator` / `allow_confirmation_asks` (#422) reach every run a
+    /// firing starts exactly as on `run_start`.
+    ///
+    /// The memory is already open (this handle holds it), so the embedded
+    /// backend's one-evaluator-per-file contention (`STO-E012`, #419)
+    /// surfaces at the constructor, never here.
     #[pyo3(signature = (only = None, dry_run = false, lease_secs = None, max_items = None,
                         connector_cmd = None, tool_cmd = None, credentials_json = None,
                         node = None, model = None, base_url = None, key_env = None,
@@ -3616,7 +3641,8 @@ impl Areev {
                         tool_egress = None, credential_ttl_secs = None, resolver_env = None,
                         max_effects_per_attempt = None,
                         llm_tool_result_chars = None, llm_context_tokens = None,
-                        llm_profile = None))]
+                        llm_profile = None, initiator = None,
+                        allow_confirmation_asks = false))]
     #[allow(clippy::too_many_arguments)]
     fn trigger_run(
         &self,
@@ -3652,6 +3678,10 @@ impl Areev {
         llm_context_tokens: Option<u64>,
         // Appended (#394 review): the request profile `run_start` takes.
         llm_profile: Option<String>,
+        // Appended (#422): who the run is started ON BEHALF OF, frozen into
+        // the manifest — the CLI's `--initiator` / `--allow-confirmation-asks`.
+        initiator: Option<String>,
+        allow_confirmation_asks: bool,
     ) -> PyResult<String> {
         let ev = self.evaluator(
             connector_cmd, tool_cmd, credentials_json, model, base_url, key_env, llm_profile,
@@ -3663,7 +3693,8 @@ impl Areev {
                 max_effects_per_attempt,
                 llm_tool_result_chars,
                 llm_context_tokens,
-            }),
+            })
+            .on_behalf_of(initiator, allow_confirmation_asks),
         )?;
         let mut opts = areev_trigger::EvalOptions { dry_run, only, ..Default::default() };
         if let Some(secs) = lease_secs {
@@ -3682,8 +3713,8 @@ impl Areev {
     /// Hand a webhook or manual payload to a trigger. Areev never opens a
     /// port: the host owns the listener and hands the payload over.
     ///
-    /// Takes the same budgets and the same executor pin as `trigger_run`: a
-    /// delivery starts a real run.
+    /// Takes the same budgets, executor pin and initiator as `trigger_run`:
+    /// a delivery starts a real run.
     #[pyo3(signature = (trigger, payload_json, connector_cmd = None, tool_cmd = None,
                         credentials_json = None, model = None, base_url = None, key_env = None,
                         max_tokens = None, max_usd_micros = None, max_wall_ms = None,
@@ -3693,7 +3724,8 @@ impl Areev {
                         tool_egress = None, credential_ttl_secs = None, resolver_env = None,
                         max_effects_per_attempt = None,
                         llm_tool_result_chars = None, llm_context_tokens = None,
-                        llm_profile = None))]
+                        llm_profile = None, initiator = None,
+                        allow_confirmation_asks = false))]
     #[allow(clippy::too_many_arguments)]
     fn trigger_deliver(
         &self,
@@ -3726,6 +3758,10 @@ impl Areev {
         llm_context_tokens: Option<u64>,
         // Appended (#394 review): the request profile `run_start` takes.
         llm_profile: Option<String>,
+        // Appended (#422): who the run is started ON BEHALF OF, frozen into
+        // the manifest — the CLI's `--initiator` / `--allow-confirmation-asks`.
+        initiator: Option<String>,
+        allow_confirmation_asks: bool,
     ) -> PyResult<String> {
         let payload: serde_json::Value = serde_json::from_str(&payload_json)
             .map_err(|e| err(format!("payload_json is not JSON: {e}")))?;
@@ -3739,7 +3775,8 @@ impl Areev {
                 max_effects_per_attempt,
                 llm_tool_result_chars,
                 llm_context_tokens,
-            }),
+            })
+            .on_behalf_of(initiator, allow_confirmation_asks),
         )?;
         let report = py.detach(|| ev.deliver(&trigger, payload)).map_err(err)?;
         serde_json::to_string(&report).map_err(err)

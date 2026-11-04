@@ -157,6 +157,15 @@ pub enum AreevError {
     /// before any DDL. A layout change is an explicit migration, never an
     /// implicit one.
     LayoutMismatch(String),
+    /// Another PROCESS holds the embedded memory file's OS lock (#419). The
+    /// cross-process half of single-writer-per-file — `StoreBusy` is the
+    /// in-process half (a second handle in a process that already holds the
+    /// file). Its own code because it is the one open failure that is
+    /// expected contention rather than a fault: a heartbeat `trigger run`
+    /// that loses the file to a concurrent evaluator reports a skipped pass,
+    /// and only this variant tells that apart from a corrupt or missing file
+    /// without parsing a message. Never raised on the postgres backend.
+    FileLocked(String),
     SupersessionConflict(Hash),
     /// A supersession-chain walk (`Areev::supersession_chain`) did not reach
     /// a root within the bounded hop count. Real edit histories terminate in
@@ -221,6 +230,7 @@ impl AreevError {
             Self::LegalHold(_) => "STO-E009",
             Self::AsyncContext(_) => "STO-E010",
             Self::LayoutMismatch(_) => "STO-E011",
+            Self::FileLocked(_) => "STO-E012",
             Self::CryptoError(_) => "CRY-E001",
             Self::AttestationInvalid(_) => "CRY-E002",
             Self::AttestationRequired(_) => "CRY-E003",
@@ -267,6 +277,7 @@ impl std::fmt::Display for AreevError {
             Self::LegalHold(m) => write!(f, "STO-E009: {m}"),
             Self::AsyncContext(m) => write!(f, "STO-E010: {m}"),
             Self::LayoutMismatch(m) => write!(f, "STO-E011: {m}"),
+            Self::FileLocked(m) => write!(f, "STO-E012: memory file locked by another process: {m}"),
             Self::CryptoError(m) => write!(f, "CRY-E001: crypto error: {m}"),
             Self::AttestationInvalid(m) => write!(f, "CRY-E002: attestation invalid: {m}"),
             Self::AttestationRequired(m) => write!(f, "CRY-E003: attestation required: {m}"),
@@ -315,6 +326,7 @@ mod error_code_tests {
             AreevError::LegalHold("x".into()),
             AreevError::AsyncContext("x".into()),
             AreevError::LayoutMismatch("x".into()),
+            AreevError::FileLocked("x".into()),
             AreevError::CryptoError("x".into()),
             AreevError::AccumulateRetryExhausted,
             AreevError::AccumulateInternal("x".into()),

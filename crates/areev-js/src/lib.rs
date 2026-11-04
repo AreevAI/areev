@@ -3633,6 +3633,16 @@ impl Areev {
     /// unknown key is refused. The run pins the profile's digest, so
     /// `runResume` must be given the same one. A plan's per-node `llm` block
     /// (`docs/run.md`) configures abstract nodes without it.
+    ///
+    /// `initiator` (#422, after `llmProfile`) names who the run is started ON
+    /// BEHALF OF — the CLI's `--initiator`, frozen into the manifest — so an
+    /// approval ask refuses that responder as well as the binding's own
+    /// principal (`RUN-E012`): a service running every case as
+    /// `service:intake` can still stop the volunteer who reported a case from
+    /// approving it. `allowConfirmationAsks` lets that initiator settle a
+    /// `confirmation` ask (#294; off by default, as on the CLI). Neither is
+    /// read from `$AREEV_RUN_INITIATOR` — a library host passes them
+    /// explicitly.
     #[napi(ts_return_type = "Promise<string>")]
     #[allow(clippy::too_many_arguments)] // a flat FFI surface; each knob is a distinct scalar
     pub fn run_start(
@@ -3667,6 +3677,10 @@ impl Areev {
         llm_tool_result_chars: Option<u32>,
         llm_context_tokens: Option<i64>,
         llm_profile: Option<String>,
+        // Appended (#422): who the run is started ON BEHALF OF, frozen into
+        // the manifest — the CLI's `--initiator` / `--allow-confirmation-asks`.
+        initiator: Option<String>,
+        allow_confirmation_asks: Option<bool>,
     ) -> napi::Result<napi::bindgen_prelude::AsyncTask<StringJob>> {
         // Built HERE, on the JS thread, before the job is queued — see
         // [`JsEvents`] for why a plain function cannot reach the event bus.
@@ -3713,7 +3727,8 @@ impl Areev {
                     llm_tool_result_chars,
                     llm_context_tokens,
                 },
-            )?;
+            )?
+            .on_behalf_of(initiator, allow_confirmation_asks.unwrap_or(false));
             let session = runner.start(&h, &run_id, input, &opts).map_err(run_err)?;
             Ok(run_session_json(session).to_string())
         }))
@@ -4150,9 +4165,13 @@ impl Areev {
     ///
     /// Prefer this over `add("trigger", …)`: both refuse an incoherent
     /// declaration, but only this path also parses the cron expression,
-    /// refuses a non-UTC timezone (`TRG-E006`) and checks a composite's gate
-    /// against its own members. A trigger that can never fire has exactly one
-    /// symptom — nothing happening — so it is worth refusing at authoring
+    /// checks the declared timezone and checks a composite's gate against its
+    /// own members. A valid IANA zone (`"Asia/Kolkata"`) is accepted — this
+    /// binding is built with zone data — and an unknown zone name is refused
+    /// rather than falling back to UTC; `TRG-E006` for a real non-UTC zone
+    /// applies only to a build without the `areev-trigger/tz` feature
+    /// (`docs/triggers.md`, "Timezones"). A trigger that can never fire has
+    /// exactly one symptom — nothing happening — so it is worth refusing at authoring
     /// time. Resolves to the content address.
     #[napi(ts_return_type = "Promise<string>")]
     pub fn trigger_add(
@@ -4261,6 +4280,12 @@ impl Areev {
     /// executes from a trigger exactly as it does by hand. Without the pin
     /// such a node refuses with `RUN-E018` — the authorization to execute code
     /// must come from the host, never from the file that carries it.
+    /// `initiator` / `allowConfirmationAsks` (#422, the last two arguments)
+    /// reach every run a firing starts exactly as on `runStart`.
+    ///
+    /// The memory is already open (this handle holds it), so the embedded
+    /// backend's one-evaluator-per-file contention (`STO-E012`, #419)
+    /// surfaces at the constructor, never here.
     #[napi(ts_return_type = "Promise<string>")]
     #[allow(clippy::too_many_arguments)] // a flat FFI surface; each knob is a distinct scalar
     pub fn trigger_run(
@@ -4296,6 +4321,10 @@ impl Areev {
         llm_context_tokens: Option<i64>,
         // Appended (#394 review): the request profile `runStart` takes.
         llm_profile: Option<String>,
+        // Appended (#422): who the run is started ON BEHALF OF, frozen into
+        // the manifest — the CLI's `--initiator` / `--allow-confirmation-asks`.
+        initiator: Option<String>,
+        allow_confirmation_asks: Option<bool>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
         let path = self.path.clone();
@@ -4325,7 +4354,8 @@ impl Areev {
                     max_effects_per_attempt,
                     llm_tool_result_chars,
                     llm_context_tokens,
-                })?,
+                })?
+                .on_behalf_of(initiator, allow_confirmation_asks.unwrap_or(false)),
                 decider,
             )?;
             let mut opts = areev_trigger::EvalOptions {
@@ -4350,8 +4380,8 @@ impl Areev {
     /// Hand a webhook or manual payload to a trigger. Areev never opens a
     /// port: the host owns the listener and hands the payload over.
     ///
-    /// Takes the same budgets and the same executor pin as `triggerRun`: a
-    /// delivery starts a real run.
+    /// Takes the same budgets, executor pin and initiator as `triggerRun`:
+    /// a delivery starts a real run.
     #[napi(ts_return_type = "Promise<string>")]
     #[allow(clippy::too_many_arguments)] // a flat FFI surface; each knob is a distinct scalar
     pub fn trigger_deliver(
@@ -4384,6 +4414,10 @@ impl Areev {
         llm_context_tokens: Option<i64>,
         // Appended (#394 review): the request profile `runStart` takes.
         llm_profile: Option<String>,
+        // Appended (#422): who the run is started ON BEHALF OF, frozen into
+        // the manifest — the CLI's `--initiator` / `--allow-confirmation-asks`.
+        initiator: Option<String>,
+        allow_confirmation_asks: Option<bool>,
     ) -> napi::bindgen_prelude::AsyncTask<StringJob> {
         let slot = self.facade.clone();
         let path = self.path.clone();
@@ -4415,7 +4449,8 @@ impl Areev {
                     max_effects_per_attempt,
                     llm_tool_result_chars,
                     llm_context_tokens,
-                })?,
+                })?
+                .on_behalf_of(initiator, allow_confirmation_asks.unwrap_or(false)),
                 decider,
             )?;
             let report = ev.deliver(&trigger, payload).map_err(err)?;

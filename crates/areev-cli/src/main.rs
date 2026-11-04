@@ -153,7 +153,7 @@ COMMANDS:
                                       and gates member aliases for a
                                       `composite` one
   trigger  run [--id T] [--connector-cmd CMD] [--tool-cmd CMD] [--dry-run]
-           [--lease SECS] [--max-items N] [--credential NAME=[header:H=]ENV_VAR|cmd:CMD|vault:P#F]
+           [--lease SECS] [--max-items N] [--lock-wait SECS] [--credential NAME=[header:H=]ENV_VAR|cmd:CMD|vault:P#F]
            [--credential-ttl SECS] [--resolver-env VAR,...]
            [--allow-executor HEX,...] [--sandbox-cmd CMD] [--executor-cache DIR]
            [--executor-timeout SECS] [--tool-env VAR,...]
@@ -162,7 +162,13 @@ COMMANDS:
            [--max-effects N] [--llm-tool-result-chars N] [--llm-context-tokens N]
                                       evaluate once and exit — the cadence is
                                       data in the memory, so the heartbeat can
-                                      be coarse. Safe to invoke concurrently.
+                                      be coarse. Safe to invoke concurrently:
+                                      on postgres evaluators contend per
+                                      trigger; on an embedded FILE one
+                                      evaluator holds it at a time, and a pass
+                                      that cannot open it (STO-E012) reports
+                                      skipped_locked and exits 0. --lock-wait
+                                      retries the open for up to SECS first.
                                       A firing gets the SAME runner `run start`
                                       builds: the executor pin, the sandbox and
                                       the model all reach it, so a plan that
@@ -2243,28 +2249,68 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
                 .into(),
         );
     }
+    // `trigger run` is the one verb for which losing the file to another
+    // process is EXPECTED (#419): two overlapping heartbeat ticks race for
+    // the embedded file's OS lock, and the loser's whole pass is skipped —
+    // reported as `skipped_locked` with exit 0, not paged as a fault. Only
+    // the typed `STO-E012` qualifies; every other open failure still exits
+    // non-zero. `--lock-wait SECS` retries the open until the deadline first.
+    let trigger_pass = cmd == "trigger" && positional.first().map(String::as_str) == Some("run");
+    let lock_wait = match flag(&flags, "lock-wait") {
+        Some(v) if trigger_pass => std::time::Duration::from_secs_f64(
+            v.parse::<f64>()
+                .ok()
+                .filter(|s| s.is_finite() && *s >= 0.0)
+                .ok_or_else(|| format!("--lock-wait: not a number of seconds: {v}"))?,
+        ),
+        Some(_) => return Err("--lock-wait applies to `areev trigger run` only".into()),
+        None => std::time::Duration::ZERO,
+    };
+    let lock_deadline = std::time::Instant::now() + lock_wait;
     let mut m = if is_pg_url {
         open_postgres_store(&db, tel_mode, explicit_index.as_deref(), anon_key, read_only)?
     } else {
-        if explicit_index.is_some() || enc_key.is_some() || anon_key.is_some() || read_only {
-            let mut o = areev_store::AreevOptions::default();
-            if let Some(v) = &explicit_index {
-                o.index_text = !matches!(v.as_str(), "false" | "0" | "off" | "no");
+        let open_file = || {
+            if explicit_index.is_some() || enc_key.is_some() || anon_key.is_some() || read_only {
+                let mut o = areev_store::AreevOptions::default();
+                if let Some(v) = &explicit_index {
+                    o.index_text = !matches!(v.as_str(), "false" | "0" | "off" | "no");
+                }
+                if let Some(key) = &enc_key {
+                    o.encryption_key = Some(**key);
+                }
+                o.anon_key = anon_key;
+                o.telemetry = tel_mode;
+                o.read_only = read_only;
+                Areev::open_with(&db, o)
+            } else if tel_mode != areev_store::TelemetryMode::Off {
+                // Honor the file's declarations AND attach the telemetry sidecar.
+                Areev::open_with_telemetry(&db, tel_mode)
+            } else {
+                Areev::open(&db)
             }
-            if let Some(key) = &enc_key {
-                o.encryption_key = Some(**key);
+        };
+        let opened = loop {
+            match open_file() {
+                Err(areev_core::error::AreevError::FileLocked(why)) if trigger_pass => {
+                    let now = std::time::Instant::now();
+                    if now < lock_deadline {
+                        std::thread::sleep(
+                            (lock_deadline - now).min(std::time::Duration::from_millis(200)),
+                        );
+                        continue;
+                    }
+                    return trigger_cli::report_locked_pass(
+                        &db,
+                        &why,
+                        lock_wait,
+                        flag(&flags, "format").as_deref() == Some("json"),
+                    );
+                }
+                other => break other,
             }
-            o.anon_key = anon_key;
-            o.telemetry = tel_mode;
-            o.read_only = read_only;
-            Areev::open_with(&db, o)
-        } else if tel_mode != areev_store::TelemetryMode::Off {
-            // Honor the file's declarations AND attach the telemetry sidecar.
-            Areev::open_with_telemetry(&db, tel_mode)
-        } else {
-            Areev::open(&db)
-        }
-        .map_err(|e| {
+        };
+        opened.map_err(|e| {
             let mut msg = e.to_string();
             // A .kdf sidecar means the file was created encrypted; opening it
             // without a key fails with an unhelpful "not a database" — say why.
