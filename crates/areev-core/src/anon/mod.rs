@@ -364,7 +364,7 @@ impl PartialEq<&str> for DetectorSpec {
 /// Validated at declaration (`anonymize set` refuses it otherwise): the
 /// pattern compiles under a size limit with the `regex` crate (finite
 /// automata — no backtracking, so no catastrophic match time), is at most
-/// [`detect::MAX_POLICY_PATTERN_LEN`] bytes, and cannot match the empty
+/// `MAX_POLICY_PATTERN_LEN` (1024) bytes, and cannot match the empty
 /// string. With `cue` words, a match counts only when a cue ends within
 /// `within_chars` characters before it — the same proximity rule the
 /// built-in cue-gated detectors use.
