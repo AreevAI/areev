@@ -224,10 +224,18 @@ COMMANDS:
                                       memory's key; new blobs are sealed on
                                       write). Idempotent
   audit export [--since MS] [--until MS] [--out FILE] [--with-outcomes]
+               [--trail approval|destruction|loop[,...]]
                                       accountability evidence as JSONL: every
                                       destructive op (who/what/why/how many)
+                                      + every `run respond` decision (accepted,
+                                      declined, refused — missing grant,
+                                      separation of duties, distinct
+                                      approver, duplicate vote, expired —
+                                      quorum votes and vetoes, with run, ask,
+                                      node, responder, initiator, reason)
                                       + the loop lifecycle with its gating
-                                      edge. BOTH trails hash-chained and
+                                      edge. --trail keeps only the named
+                                      trails. EVERY trail hash-chained and
                                       verified — a missing predecessor is a
                                       chain_break, one merely outside --since
                                       is previous_outside_window, and a
@@ -353,8 +361,8 @@ COMMANDS:
            BECAUSE + gating edge, the runs that touched it, and the executor
            blob its executor_uri points at (present? how many bytes? — read
            lock-free, so it answers while the run is still holding the file)
-  run      <start|resume|respond|input|pause|cancel|list|inspect|verify|fork|
-           shadow|oversight-report|demo>   the governed
+  run      <start|resume|respond|input|pause|cancel|tick|list|inspect|verify|
+           fork|shadow|oversight-report|demo>   the governed
            workflow runtime: journaled, checkpointed, HITL-pausable runs of
            Workflow grains. list [--last N] [--offset N] prints the newest
            runs with outcome + spend (default 20; stderr says when the page
@@ -442,6 +450,23 @@ COMMANDS:
            rather than name what it must not. A bare --tool-env passes nothing
            but that minimal set. Naming a variable already registered as
            holding a secret does NOT re-admit it: it is dropped and reported;
+           tick [--tool-cmd CMD ...] resumes every parked run in --ns whose
+           durable wait (a Tool Definition with executor_uri \"areev://wait\",
+           {\"for_secs\": N} or {\"until_ms\": T} declared or in the node's
+           state) has come due, and prints what it resumed and what is still
+           waiting. No daemon: run it from cron, or let `trigger run` do it —
+           every evaluation pass ticks the namespace too. A resume before
+           due_at never advances the run. Inside the window, `run respond` on
+           the wait's ask is a VETO (needs run.respond; never the run's
+           principal or initiator): the node fails as user-aborted with the
+           reason journaled;
+           respond answers a Client ask. A plan's \"separation\" groups refuse a
+           responder who already answered another gate of the group, and a
+           Definition's \"quorum\": {\"required\": N} keeps the ask open until N
+           DISTINCT responders answered {\"approved\": true} (any refusal
+           settles it). On a memory carrying any mg:permits grant the
+           responder must hold run.respond whatever the handle's binding;
+           every decision lands on the approval trail `audit export` reads;
            input --run-id ID --message TEXT [--as PRINCIPAL] queues a
            steering message: the next superstep hands it to its nodes under
            `$inbox`, so a person redirects a running run in band instead of
@@ -4809,7 +4834,15 @@ fn run_run(
         }
         RunSession::Parked { envelope, run_id } => {
             println!("{envelope}");
-            if envelope["kind"] == "paused" {
+            if envelope["kind"] == "waiting" {
+                eprintln!(
+                    "areev: run waiting until {} (unix ms) — `areev run tick` (or any \
+                     `areev trigger run` pass) resumes it once due; a principal holding \
+                     run.respond may veto inside the window with `areev run respond --run-id \
+                     {run_id} --ask TOOL_CALL_ID --result '{{\"reason\":\"…\"}}' --as PRINCIPAL`",
+                    envelope["due_at_ms"]
+                );
+            } else if envelope["kind"] == "paused" {
                 eprintln!(
                     "areev: run paused by its host — `areev run resume --run-id {run_id}` \
                      continues it under the same run id"
@@ -4856,6 +4889,21 @@ fn run_run(
             }
             let session = runner.start(&h, &run_id, input, &opts).map_err(|e| e.to_string())?;
             print_session(session);
+        }
+        "tick" => {
+            // #416: resume every parked run in this namespace whose wait has
+            // come due. A run whose wait is not due is reported, not touched;
+            // one whose resume fails is reported and the pass continues.
+            let report = runner.tick(&opts).map_err(|e| e.to_string())?;
+            println!("{}", serde_json::to_string_pretty(&report).unwrap());
+            eprintln!(
+                "areev: tick resumed {} run(s); {} wait(s) not yet due",
+                report.resumed.len(),
+                report.waiting.len()
+            );
+            if !report.errors.is_empty() {
+                return Err(format!("{} run(s) failed to resume: {}", report.errors.len(), report.errors.join("; ")));
+            }
         }
         "resume" => {
             let run_id = need("run-id", "areev run resume --run-id ID [--tool-cmd CMD]")?;
@@ -6872,10 +6920,13 @@ fn load_policy(flags: &HashMap<String, String>) -> Result<Option<Policy>, String
 /// [--with-outcomes]` — the accountability evidence bundle (GDPR Art.
 /// 5(2)/30, and the Art. 33 breach-notification input).
 ///
-/// Two hash-chained trails exist as grains; this formats them, nothing more.
+/// Three hash-chained trails exist as grains; this formats them, nothing more.
 /// Tier-2 destruction Observations live in `agent:authz` (one per FORGET /
 /// FORGET SUBJECT / PURGE / hold / reveal, from CAL or the CLI alike), and
-/// the loop's lifecycle audit rides as `loop_audit` Facts in `areev-loop`.
+/// the loop's lifecycle audit rides as `loop_audit` Facts in `areev-loop`, and
+/// every `run respond` decision is an approval Observation in `agent:harness`
+/// on its own `approval` chain (#420). `--trail` narrows the output to the
+/// named trails; the verification always covers all of them.
 /// Output is JSONL — one record per line, oldest first — so extracting a
 /// window is a pipe, not a parser.
 ///
@@ -6916,7 +6967,7 @@ fn run_audit(
     if sub_cmd != "export" {
         return Err(format!(
             "unknown audit subcommand '{sub_cmd}' — usage: areev audit export \
-             [--since MS] [--until MS] [--out FILE]"
+             [--since MS] [--until MS] [--out FILE] [--trail approval|destruction|loop]"
         ));
     }
     let parse_ms = |k: &str| -> Result<Option<i64>, String> {
@@ -6930,6 +6981,24 @@ fn run_audit(
     };
     let since = parse_ms("since")?;
     let until = parse_ms("until")?;
+    // `--trail approval,destruction,loop` (#420): which trails to emit. Every
+    // chain is still VERIFIED in full — a filter narrows the output, never the
+    // verification, so a gap is reported whichever trail it sits in.
+    let trails: Option<Vec<String>> = match flag(flags, "trail") {
+        None => None,
+        Some(v) => {
+            let names: Vec<String> =
+                v.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
+            if let Some(bad) =
+                names.iter().find(|t| !matches!(t.as_str(), "approval" | "destruction" | "loop"))
+            {
+                return Err(format!(
+                    "--trail takes approval, destruction or loop (comma-separated), got '{bad}'"
+                ));
+            }
+            Some(names)
+        }
+    };
     let in_window = |at: i64| since.is_none_or(|s| at >= s) && until.is_none_or(|u| at <= u);
 
     // Tier-2 destruction audit: Observations in the reserved authz namespace.
@@ -7117,6 +7186,75 @@ fn run_audit(
         rows.push((at, row));
     }
 
+    // #420: the approval trail — every `run respond` decision (accepted,
+    // declined, refused, a quorum vote, a veto) as an Observation in
+    // `agent:harness`, appended to the memory's own `approval` chain by
+    // `areev-run`. Verified exactly like the destruction chain: a named
+    // predecessor missing from the store is a break, one merely outside the
+    // window is `previous_outside_window`, and a gap in `seq` is a break.
+    let mut approvals: Vec<(u64, i64, serde_json::Value, serde_json::Value)> = Vec::new();
+    let mut seen_approval: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let harness = m
+        .recent(
+            areev_core::authz::HARNESS_NS,
+            Some(areev_core::types::GrainType::Observation),
+            usize::MAX / 2,
+        )
+        .map_err(|e| e.to_string())?;
+    for g in harness {
+        let Some(ctx) = areev_run::approval::context_of(&g).cloned() else { continue };
+        let Some(mut row) = areev_run::approval::row(&g) else { continue };
+        let at = row["at_ms"].as_i64().unwrap_or(0);
+        if !in_window(at) {
+            continue;
+        }
+        row["trail"] = serde_json::json!("approval");
+        let seq = ctx.get("seq").and_then(|v| v.as_u64());
+        match seq {
+            None => row["unchained"] = serde_json::json!(true),
+            Some(seq) => {
+                row["seq"] = serde_json::json!(seq);
+                if let Some(p) = ctx.get("previous_audit").and_then(|v| v.as_str()) {
+                    row["previous_audit"] = serde_json::json!(p);
+                }
+                if ctx.get("chain_root").and_then(|v| v.as_bool()) == Some(true) {
+                    row["chain_root"] = serde_json::json!(true);
+                }
+            }
+        }
+        seen_approval.insert(g.hash.to_hex());
+        approvals.push((seq.unwrap_or(0), at, row, ctx));
+    }
+    approvals.sort_by_key(|(seq, at, ..)| (*seq, *at));
+    let mut prev_seq: Option<u64> = None;
+    for (seq, at, mut row, ctx) in approvals {
+        if let Some(p) = ctx.get("previous_audit").and_then(|v| v.as_str()) {
+            if !seen_approval.contains(p) {
+                let exists = areev_core::error::Hash::from_hex(p)
+                    .ok()
+                    .map(|h| m.has(&h).unwrap_or(false))
+                    .unwrap_or(false);
+                if exists {
+                    row["previous_outside_window"] = serde_json::json!(true);
+                } else {
+                    breaks += 1;
+                    row["chain_break"] = serde_json::json!(true);
+                }
+            }
+        }
+        if row.get("seq").is_some() {
+            if let Some(prev) = prev_seq {
+                if seq > prev + 1 {
+                    breaks += 1;
+                    row["chain_break"] = serde_json::json!(true);
+                    row["missing_seq"] = serde_json::json!(seq - prev - 1);
+                }
+            }
+            prev_seq = Some(seq);
+        }
+        rows.push((at, row));
+    }
+
     // #319: the Verify gate's outcomes, on request.
     //
     // A gated apply records `gating_evalset` / `gating_run_id` /
@@ -7162,6 +7300,15 @@ fn run_audit(
         }
     }
 
+    // The filter (#420) narrows what is EMITTED; every chain above was
+    // verified in full, and the break warning still counts every trail.
+    if let Some(keep) = &trails {
+        rows.retain(|(_, row)| {
+            let t = row.get("trail").and_then(|t| t.as_str()).unwrap_or("");
+            let t = if t == "loop_outcome" { "loop" } else { t };
+            keep.iter().any(|k| k == t)
+        });
+    }
     rows.sort_by_key(|(at, _)| *at);
     let mut out = String::new();
     for (_, row) in &rows {
@@ -7177,8 +7324,9 @@ fn run_audit(
     }
     if breaks > 0 {
         eprintln!(
-            "areev: warning: {breaks} loop audit record(s) name a predecessor absent from this \
-             export — the chain is truncated (widen --since, or the trail was tampered with)"
+            "areev: warning: {breaks} audit record(s) name a predecessor absent from this \
+             export, or leave a gap in their chain's sequence — the chain is truncated \
+             (widen --since, or the trail was tampered with)"
         );
     }
     eprintln!("audit export: {} records", rows.len());

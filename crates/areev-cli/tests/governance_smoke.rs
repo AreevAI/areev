@@ -213,3 +213,104 @@ fn a_sweep_without_yes_prints_the_plan_instead_of_erasing() {
     assert!(err.contains("set") && err.contains("release"), "{err}");
 
 }
+
+/// #420's repro through the real binary: an approval run with one refused and
+/// one accepted response, plus one `forget-subject`, exports the destruction
+/// record AND both approval records — each trail an unbroken chain — and
+/// `--trail` narrows the output without narrowing the verification.
+#[test]
+fn audit_export_carries_the_approval_trail_beside_the_destruction_trail() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("a.db");
+    let db = db.to_str().unwrap();
+    let (ok, out, err) = areev(&["run", "--db", db, "--ns", "ops", "demo"]);
+    assert!(ok, "demo seed failed: {err}");
+    let wf = out
+        .lines()
+        .find_map(|l| l.strip_prefix("demo plan seeded (workflow "))
+        .and_then(|l| l.strip_suffix(")"))
+        .expect("workflow hash in demo output")
+        .to_string();
+    #[cfg(not(windows))]
+    let greet_cmd = r#"printf '{"greeting":"hello"}'"#;
+    #[cfg(windows)]
+    let greet_cmd = r#"echo {"greeting":"hello"}"#;
+    let (ok, out, err) = areev(&[
+        "run", "--db", db, "--ns", "ops", "start", "--workflow", &wf, "--run-id", "r1",
+        "--tool-cmd", greet_cmd, "--initiator", "citizen:4821",
+    ]);
+    assert!(ok, "start failed: {err}");
+    let env: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    let ask = env["asks"][0]["tool_call_id"].as_str().unwrap().to_string();
+    // Refused: the initiator may not approve.
+    let (ok, _, _) = areev(&[
+        "run", "--db", db, "--ns", "ops", "respond", "--run-id", "r1", "--ask", &ask,
+        "--result", r#"{"approved":true}"#, "--as", "citizen:4821",
+    ]);
+    assert!(!ok, "the initiator's approval must be refused");
+    // Accepted.
+    let (ok, _, err) = areev(&[
+        "run", "--db", db, "--ns", "ops", "respond", "--run-id", "r1", "--ask", &ask,
+        "--result", r#"{"approved":true}"#, "--as", "volunteer:33410",
+    ]);
+    assert!(ok, "respond failed: {err}");
+    // One erasure.
+    let (ok, _, err) = areev(&["add", "pat", "likes", "tea", "--db", db, "--ns", "ops"]);
+    assert!(ok, "{err}");
+    let (ok, _, err) = areev(&[
+        "forget-subject", "pat", "--db", db, "--ns", "ops", "--yes", "--because", "Art. 17 #42",
+    ]);
+    assert!(ok, "forget-subject failed: {err}");
+
+    let (ok, out, err) = areev(&["audit", "export", "--db", db]);
+    assert!(ok, "audit export failed: {err}");
+    let rows: Vec<serde_json::Value> =
+        out.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let trail = |t: &str| rows.iter().filter(|r| r["trail"] == t).collect::<Vec<_>>();
+    assert_eq!(trail("destruction").len(), 1, "{out}");
+    let approvals = trail("approval");
+    assert_eq!(approvals.len(), 2, "{out}");
+    assert_eq!(approvals[0]["outcome"], "refused");
+    assert_eq!(approvals[0]["refusal"], "separation_of_duties");
+    assert_eq!(approvals[0]["run_id"], "r1", "{out}");
+    assert_eq!(approvals[0]["ask"], ask.as_str());
+    assert_eq!(approvals[0]["node"], "approve");
+    assert_eq!(approvals[0]["responder"], "citizen:4821");
+    assert_eq!(approvals[0]["initiator"], "citizen:4821");
+    assert_eq!(approvals[0]["seq"], 1);
+    assert_eq!(approvals[0]["chain_root"], true);
+    assert_eq!(approvals[1]["outcome"], "accepted");
+    assert_eq!(approvals[1]["responder"], "volunteer:33410");
+    assert_eq!(approvals[1]["seq"], 2);
+    assert_eq!(approvals[1]["previous_audit"], approvals[0]["hash"]);
+    assert!(rows.iter().all(|r| r.get("chain_break").is_none()), "{out}");
+    assert!(!err.contains("truncated"), "{err}");
+
+    // The filter narrows the output, and only the output.
+    let (ok, out, err) = areev(&["audit", "export", "--db", db, "--trail", "approval"]);
+    assert!(ok, "{err}");
+    assert_eq!(out.lines().count(), 2, "{out}");
+    assert!(out.lines().all(|l| l.contains("\"trail\":\"approval\"")), "{out}");
+    let (ok, out, _) = areev(&["audit", "export", "--db", db, "--trail", "destruction,loop"]);
+    assert!(ok);
+    assert_eq!(out.lines().count(), 1, "{out}");
+    let (ok, _, err) = areev(&["audit", "export", "--db", db, "--trail", "reads"]);
+    assert!(!ok && err.contains("--trail"), "{err}");
+}
+
+/// `areev run tick` (#416): with nothing waiting it reports an empty pass —
+/// and it is a real verb, not an unknown-subcommand error.
+#[test]
+fn run_tick_reports_an_empty_pass() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("t.db");
+    let db = db.to_str().unwrap();
+    let (ok, _, err) = areev(&["add", "acme", "owes", "4200", "--db", db, "--ns", "ops"]);
+    assert!(ok, "{err}");
+    let (ok, out, err) = areev(&["run", "--db", db, "--ns", "ops", "tick"]);
+    assert!(ok, "tick failed: {err}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["resumed"], serde_json::json!([]));
+    assert_eq!(v["waiting"], serde_json::json!([]));
+    assert!(v["now_ms"].as_u64().unwrap() > 0);
+}

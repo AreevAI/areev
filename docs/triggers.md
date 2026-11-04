@@ -943,6 +943,14 @@ accounting` loops this same one-shot evaluation at `$AREEV_HEARTBEAT_SECS`
 ticks, and `k8s-cronjob` renders against that image's name, so the template
 applies unedited — see [`docker.md`](docker.md).
 
+Every acting pass also **ticks the namespace's durable waits** (#416): a run
+parked on an `areev://wait` node whose `due_at_ms` has passed is resumed, the
+same as `areev run tick` would, and the report lists it under
+`waits_resumed` (a failed resume lands in `errors` as `wait tick: …`). A
+`--dry-run` pass or a single-trigger pass (`--id`) does not tick. So a
+cooling-off period needs no second heartbeat — see
+[`run.md`](run.md#cooling-off-the-durable-timer-node-areevwait).
+
 The rendered interval is the **greatest common divisor** of your declared
 intervals, floored at 60s — deliberately coarser than your shortest trigger.
 The memory owns the real cadence; rendering a 30-second cron because one trigger

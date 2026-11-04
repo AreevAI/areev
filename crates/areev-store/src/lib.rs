@@ -3655,13 +3655,10 @@ impl Areev {
         Ok(affected > 0)
     }
 
-    /// `meta` key holding the head of the memory's Tier-2 destruction audit
-    /// chain: `<seq>:<hex head>`.
-    ///
-    /// A write-path CACHE, not state: it is recomputable from the grains
-    /// themselves, so it deliberately does not replicate (it is outside
-    /// [`REPLICABLE_META_PREFIXES`]) — a replica's chain is its own.
-    const AUDIT_HEAD_KEY: &'static str = "audit_head:tier2";
+    // Each chain's head lives in the `meta` row `audit_head:<chain>` as
+    // `<seq>:<hex head>`. A write-path CACHE, not state: it is recomputable
+    // from the grains themselves, so it deliberately does not replicate (it is
+    // outside [`REPLICABLE_META_PREFIXES`]) — a replica's chain is its own.
 
     /// Append one Tier-2 audit Observation to the memory's destruction
     /// chain (#280).
@@ -3677,7 +3674,33 @@ impl Areev {
     /// row lock every write takes, so two Postgres writers can never mint
     /// two records claiming the same predecessor.
     pub fn append_audit(&mut self, obs: &mut areev_core::types::Observation) -> Result<Hash> {
+        self.append_audit_on(Self::AUDIT_CHAIN_TIER2, obs)
+    }
+
+    /// The destruction chain's name — what [`Self::append_audit`] appends to.
+    pub const AUDIT_CHAIN_TIER2: &'static str = "tier2";
+
+    /// The run-approval chain's name (#420): every `run respond` decision —
+    /// accepted, refused, a quorum vote, a veto — appended by `areev-run`.
+    pub const AUDIT_CHAIN_APPROVAL: &'static str = "approval";
+
+    /// [`Self::append_audit`] on a NAMED chain (#420).
+    ///
+    /// Each chain has its own head row (`audit_head:<chain>`), its own `seq`
+    /// and its own root, so one trail's records never leave a gap in another's
+    /// numbering — an approval-only export of a memory that also erased
+    /// something must not read as a truncated chain. Same compare-and-set
+    /// claim, same failure shape (a store error between claim and write
+    /// leaves a visible gap, never two records at one sequence).
+    pub fn append_audit_on(
+        &mut self,
+        chain: &str,
+        obs: &mut areev_core::types::Observation,
+    ) -> Result<Hash> {
         self.check_writable("append an audit record")?;
+        // `audit_head:tier2` is the pre-#420 row, so the destruction chain
+        // keeps its head across the upgrade.
+        let head_key = format!("audit_head:{chain}");
         // Claim the slot with a compare-and-set, THEN write the record.
         //
         // The order matters and the other one is worse: writing first and
@@ -3688,7 +3711,7 @@ impl Areev {
         // leaves a GAP, which the export reports honestly as a break. A
         // visible gap is the right failure for a tamper-evidence trail.
         for _ in 0..Self::AUDIT_APPEND_ATTEMPTS {
-            let head = self.meta_get(Self::AUDIT_HEAD_KEY)?;
+            let head = self.meta_get(&head_key)?;
             let (seq, prev) = match &head {
                 None => (1u64, None),
                 Some(raw) => match raw.split_once(':') {
@@ -3711,7 +3734,7 @@ impl Areev {
             areev_core::authz::chain_audit_observation(&mut candidate, prev.as_deref(), seq);
             let (_, hash) = areev_core::format::serialize_grain(&candidate)?;
             let claimed = self.meta_cas(
-                Self::AUDIT_HEAD_KEY,
+                &head_key,
                 head.as_deref(),
                 &format!("{seq}:{}", hash.to_hex()),
             )?;
@@ -3732,7 +3755,15 @@ impl Areev {
 
     /// The chain head as `(seq, hash)`, for an export checkpoint.
     pub fn audit_chain_head(&self) -> Result<Option<(u64, String)>> {
-        Ok(self.meta_get(Self::AUDIT_HEAD_KEY)?.and_then(|raw| {
+        self.audit_chain_head_on(Self::AUDIT_CHAIN_TIER2)
+    }
+
+    /// [`Self::audit_chain_head`] for a named chain (#420).
+    pub fn audit_chain_head_on(&self, chain: &str) -> Result<Option<(u64, String)>> {
+        // `audit_head:tier2` is the pre-#420 row, so the destruction chain
+        // keeps its head across the upgrade.
+        let head_key = format!("audit_head:{chain}");
+        Ok(self.meta_get(&head_key)?.and_then(|raw| {
             raw.split_once(':')
                 .and_then(|(n, h)| n.parse::<u64>().ok().map(|n| (n, h.to_string())))
         }))

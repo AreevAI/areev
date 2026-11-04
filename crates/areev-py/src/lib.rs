@@ -616,6 +616,10 @@ impl areev_trigger::RunStarter for RunnerStarter {
             Err(e) => areev_trigger::StartResult::Failed(e.to_string()),
         }
     }
+
+    fn tick(&self) -> std::result::Result<areev_run::TickReport, String> {
+        self.runner.tick(&self.opts).map_err(|e| e.to_string())
+    }
 }
 
 fn parse_hash(hex: &str) -> PyResult<Hash> {
@@ -2474,6 +2478,20 @@ impl Areev {
         py.detach(|| runner.respond(&run_id, &tool_call_id, result, is_error, &responder))
             .map_err(err)?;
         Ok(json!({"responded": tool_call_id, "run_id": run_id}).to_string())
+    }
+
+    /// Resume every parked run in this handle's namespace whose durable wait
+    /// (#416 — a Tool Definition with `executor_uri: "areev://wait"`) has come
+    /// due; returns the `TickReport` as JSON (`now_ms`, `resumed`, `waiting`,
+    /// `errors`). A wait not yet due is reported, never advanced. No daemon:
+    /// call it on a cadence, as `areev run tick` and `trigger run` do.
+    /// `tool_cmd` executes the host nodes after a wait, as on `run_resume`.
+    #[pyo3(signature = (tool_cmd = None))]
+    fn run_tick(&self, py: Python<'_>, tool_cmd: Option<String>) -> PyResult<String> {
+        let runner = self.runner(tool_cmd, None);
+        let opts = run_options(None, None, None, None, RunLimits::default());
+        let report = py.detach(|| runner.tick(&opts)).map_err(err)?;
+        serde_json::to_string(&report).map_err(err)
     }
 
     /// Queue a steering message: the next superstep hands it to its nodes

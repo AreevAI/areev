@@ -153,8 +153,8 @@ in source.
 | `RUN-E008` | `DanglingIntent` | An intent has no result and the host refuses redelivery |
 | `RUN-E009` | `ReplayDivergence` | Verify replay did not reproduce the journal |
 | `RUN-E010` | `ManifestMismatch` | The manifest does not match the plan |
-| `RUN-E011` | `UnknownAsk` | No pending ask with that `tool_call_id` |
-| `RUN-E012` | `Unauthorized` | The principal may not perform the run verb |
+| `RUN-E011` | `UnknownAsk` | No pending ask with that `tool_call_id` — or it is already settled, expired, or (an `areev://wait` ask, #416) its veto window has closed |
+| `RUN-E012` | `Unauthorized` | The principal may not perform the run verb. On `respond`: the responder lacks `run.respond` on a memory carrying any grant (whatever the handle's binding, #423), is the run's principal or initiator on an approval or veto ask, already answered another gate of the plan's `separation` group, or already voted on this quorum ask (#424) — the message names the earlier answer |
 | `RUN-E013` | `Canceled` | The run was cancelled |
 | `RUN-E014` | `ReducerLawViolation` | A reducer broke its declared law |
 | `RUN-E015` | `CheckpointTooLarge` | A checkpoint exceeded its size bound |

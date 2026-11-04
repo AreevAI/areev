@@ -720,6 +720,9 @@ pub struct JournalEntry {
     /// replay feeds as the reading before `ResponseSettled`/late arrivals.
     pub result_clock_ms: u64,
     pub superstep: u64,
+    /// Who wrote the result (`author_did`): for a Client ask, the RESPONDER.
+    /// What the distinct-approver check (#424) compares against.
+    pub result_author: Option<String>,
 }
 
 /// One loaded checkpoint.
@@ -850,6 +853,7 @@ fn ingest(
         result: None,
         result_clock_ms: 0,
         superstep,
+        result_author: None,
     });
     match status {
         "pending" => {
@@ -859,6 +863,7 @@ fn ingest(
         _ => {
             entry.result = Some((g.hash, outcome_from_grain(g, status)));
             entry.result_clock_ms = g.get_i64("created_at").unwrap_or(0).max(0) as u64;
+            entry.result_author = g.get_str("author_did").map(str::to_string);
         }
     }
     Ok(())

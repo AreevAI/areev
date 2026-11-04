@@ -370,6 +370,20 @@ path, exercise it through a facade, not only through the store.
 Conformance: `cases/legal_hold.rs`, both backends; store tests:
 `tests/retention_floor_hold_tests.rs`, `tests/async_safety_tests.rs`.
 
+## Audit chains (`append_audit` / `append_audit_on`, #280, #420)
+
+`append_audit` appends a Tier-2 destruction record to the `tier2` chain;
+`append_audit_on(chain, obs)` appends to a NAMED chain — `AUDIT_CHAIN_APPROVAL`
+(`"approval"`) carries `areev-run`'s respond decisions. Each chain has its own
+head row `audit_head:<chain>` (`<seq>:<hex>`, claimed by `meta_cas` BEFORE the
+write, so a failure leaves a visible gap, never two records at one seq), its
+own `seq` from 1 and its own `chain_root`, so one trail never leaves a gap in
+another's numbering. The head rows are a write-path cache outside
+`REPLICABLE_META_PREFIXES` — a replica's chains are its own.
+`audit_chain_head_on` reads one. The chain does not care where its records
+live: destruction records are in `agent:authz`, approval records in
+`agent:harness`. Tests: `tests/audit_chain_tests.rs`.
+
 ## Forks / heads / merge (the "grains as git" model)
 
 - Local add collapses the head (DELETE+INSERT into `heads`); **import UNIONs**

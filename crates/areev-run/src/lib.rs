@@ -15,6 +15,7 @@
 //! intent re-delivers under the same idempotency key and the redelivery is
 //! journaled as an Observation — recorded, never silent.
 
+pub mod approval;
 pub mod broker;
 pub mod clock;
 pub mod egress;
@@ -58,7 +59,7 @@ pub use executor::{
 };
 pub use manifest::{
     abstract_nodes, pin_from_definition, BudgetsSpec, DeciderPin, ForkBase, PinnedTool,
-    RunManifest, DECIDE_EXECUTOR,
+    RunManifest, DECIDE_EXECUTOR, WAIT_EXECUTOR, WAIT_URI,
 };
 // The decision seam's reserved names, for hosts authoring decision nodes.
 pub use areev_run_core::{DECIDE_TOOL, DECIDE_URI};
@@ -168,6 +169,40 @@ pub struct InspectReport {
     /// the manifest. Absent when there were none.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// The plan's separation groups (#424), as frozen in the manifest.
+    /// Absent when the plan declares none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub separation: Vec<Vec<String>>,
+    /// Quorum progress (#424) per pending ask that declares one:
+    /// `{tool_call_id, node, required, approvals, approvers}`. Absent when no
+    /// pending ask has a quorum.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub quorum: Vec<serde_json::Value>,
+    /// Open waits (#416) per pending wait ask: `{tool_call_id, node,
+    /// due_at_ms}` (or `error` when the instant cannot be computed). Absent
+    /// when the run is not waiting.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub waits: Vec<serde_json::Value>,
+    /// The run's approval-trail records (#420), oldest first: every accepted,
+    /// declined and refused response, quorum vote and veto. Absent when there
+    /// are none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub approvals: Vec<serde_json::Value>,
+}
+
+/// What `Runner::tick` did (#416): which parked waits it found due and
+/// resumed, which are still waiting, and what failed (one run's failure does
+/// not stop the pass).
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct TickReport {
+    /// The clock reading the pass judged dueness against.
+    pub now_ms: u64,
+    /// `{run_id, nodes, due_at_ms, session}` per resumed run — `session` is
+    /// `finished:<outcome>` or `parked:<kind>`.
+    pub resumed: Vec<serde_json::Value>,
+    /// `{run_id, node, tool_call_id, due_at_ms}` per wait not yet due.
+    pub waiting: Vec<serde_json::Value>,
+    pub errors: Vec<String>,
 }
 
 /// What `Runner::pause` answers (#344): the standing request, whether this
@@ -231,5 +266,10 @@ pub struct OversightReport {
     pub authorized_responders: serde_json::Value,
     pub budgets: serde_json::Value,
     pub kill_switch: serde_json::Value,
+    /// Every recorded decision on this run's asks (#420): accepted, declined
+    /// and refused responses, quorum votes and vetoes, oldest first. Absent
+    /// when none was recorded.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub approvals: Vec<serde_json::Value>,
 }
 pub use lease::{RunLease, DEFAULT_RUN_LEASE_MS};

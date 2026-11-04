@@ -701,6 +701,14 @@ export declare class Areev {
    */
   runRespond(runId: string, toolCallId: string, resultJson: string, responder: string, isError?: boolean | undefined | null): Promise<string>
   /**
+   * Resume every parked run in this handle's namespace whose durable wait
+   * (#416 — a Tool Definition with `executor_uri: "areev://wait"`) has come
+   * due; resolves to the `TickReport` as JSON (`now_ms`, `resumed`,
+   * `waiting`, `errors`). A wait not yet due is reported, never advanced.
+   * `toolCmd` executes the host nodes after a wait, as on `runResume`.
+   */
+  runTick(toolCmd?: string | undefined | null): Promise<string>
+  /**
    * Queue a steering message: the next superstep hands it to its nodes
    * under `$inbox`.
    */

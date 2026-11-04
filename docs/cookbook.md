@@ -2124,6 +2124,85 @@ hold grain text — so it goes through the same pseudonymization as LLM egress
 and nothing it answers is written into the memory file
 ([`security-model.md`](security-model.md#decision-backends-egress)).
 
+## 28. Two approvers and a cooling-off period on one decision
+
+A governance change that needs **two different people** to sign it off, then
+**72 hours** in which anyone with standing may veto it, then takes effect —
+one run, one journal, one `verify`. Author the plan from a binding (the
+`separation` and `quorum`/`wait` fields have no CAL syntax):
+
+```python
+import areev, json
+db = areev.Areev("gov.db", ns="gov")
+
+approve = db.add("tool", json.dumps({"tool_name": "approve", "kind": "definition",
+    "tool_description": "two volunteers approve the change",
+    "executor_kind": "client", "quorum": {"required": 2}}), ns="gov")
+cooling = db.add("tool", json.dumps({"tool_name": "cooling_off", "kind": "definition",
+    "tool_description": "72h veto window",
+    "executor_uri": "areev://wait", "wait": {"for_secs": 259200}}), ns="gov")
+apply_ = db.add("tool", json.dumps({"tool_name": "apply", "kind": "definition",
+    "tool_description": "apply the change"}), ns="gov")
+wf = db.add("workflow", json.dumps({
+    "nodes": ["approve", "cooling_off", "apply"],
+    "edges": [{"src": "approve", "dst": "cooling_off"},
+              {"src": "cooling_off", "dst": "apply", "cond": "waited == true"}],
+    "bindings": {"approve": approve, "cooling_off": cooling, "apply": apply_},
+}), ns="gov")
+db.cal('GRANT run.respond ON gov TO "volunteer:1" WITH because("governance desk")')
+db.cal('GRANT run.respond ON gov TO "volunteer:2" WITH because("governance desk")')
+db.cal('GRANT run.respond ON gov TO "volunteer:3" WITH because("governance desk")')
+```
+
+Two gates that must have different approvers are a plan-level
+`"separation": [["approve", "approve_2"]]` instead of one quorum ask — use
+whichever matches your rule. Then run it:
+
+```bash
+areev run start --db gov.db --ns gov --workflow <WF> --run-id chg-42   --as service:governance --initiator volunteer:author --tool-cmd ./apply.sh
+# parks on approve: {"kind":"requires_action","asks":[{..."tool_call_id":"<ASK>"}]}
+
+areev run respond --db gov.db --ns gov --run-id chg-42 --ask <ASK>   --result '{"approved":true}' --as volunteer:1
+areev run resume  --db gov.db --ns gov --run-id chg-42 --tool-cmd ./apply.sh
+# still parked: "quorum":{"required":2,"approvals":1,...}
+areev run respond --db gov.db --ns gov --run-id chg-42 --ask <ASK>   --result '{"approved":true}' --as volunteer:2
+areev run resume  --db gov.db --ns gov --run-id chg-42 --tool-cmd ./apply.sh
+# {"kind":"waiting","due_at_ms":…,"asks":[{"ask_kind":"veto","tool_call_id":"<WAIT>",…}]}
+```
+
+`volunteer:1` answering twice, or `volunteer:author` (the initiator) approving
+at all, is refused `RUN-E012`. Resuming before `due_at_ms` does nothing — put
+the tick on the heartbeat you already run, and it applies the change once the
+window closes:
+
+```bash
+areev run tick --db gov.db --ns gov --tool-cmd ./apply.sh   # e.g. every 5 minutes from cron
+# {"resumed":[{"run_id":"chg-42","session":"finished:Completed",…}],"waiting":[],…}
+```
+
+(`areev trigger run` ticks the namespace too, so a host already running
+triggers needs nothing new.) Inside the window, a granted volunteer who is
+neither the run's principal nor its initiator may veto:
+
+```bash
+areev run respond --db gov.db --ns gov --run-id chg-42 --ask <WAIT>   --result '{"reason":"threshold too low"}' --as volunteer:3
+areev run resume --db gov.db --ns gov --run-id chg-42
+# {"finished":"Failed { node: \"cooling_off\", detail: \"vetoed by volunteer:3: threshold too low\" }"}
+```
+
+Every answer, refusal, vote and veto is one record on the hash-chained
+approval trail — export just that trail, verified, for an hourly anchor:
+
+```bash
+areev audit export --db gov.db --trail approval --since <MS>
+# {"trail":"approval","outcome":"vote","run_id":"chg-42","node":"approve","responder":"volunteer:1",
+#  "quorum":{"required":2,"approvals":1,...},"seq":1,"chain_root":true,...}
+```
+
+`areev run oversight-report --run-id chg-42` lists the same decisions under
+`approvals`; `run inspect` shows quorum progress and the open wait. Details:
+[`run.md`](run.md#cooling-off-the-durable-timer-node-areevwait).
+
 ## See also
 
 - [`../ARCHITECTURE.md`](../ARCHITECTURE.md) — how Areev is built

@@ -83,6 +83,10 @@ impl RunStarter for RunnerStarter {
             Err(e) => StartResult::Failed(e.to_string()),
         }
     }
+
+    fn tick(&self) -> std::result::Result<areev_run::TickReport, String> {
+        self.runner.tick(&self.opts).map_err(|e| e.to_string())
+    }
 }
 
 pub fn run_trigger(

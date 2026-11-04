@@ -103,7 +103,37 @@ pub struct PinnedTool {
     /// serialize byte-identically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llm: Option<areev_run_core::LlmNodeConfig>,
+    /// The Definition's `quorum.required` (#424): how many DISTINCT
+    /// responders must answer `approved: true` before this approval ask
+    /// settles. Frozen like `ask_kind`, so a supersession cannot lower the
+    /// bar on an ask people are already voting on. `None` (absent) is the
+    /// single-answer ask every run had before; a declared `1` normalizes to
+    /// it, so manifests keep their bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quorum: Option<u32>,
+    /// A durable timer (#416, `executor_uri: "areev://wait"`): the
+    /// Definition's normalized `wait` declaration — `{}` (read `for_secs` /
+    /// `until_ms` from the node's state at park) or `{"for_secs": N}` /
+    /// `{"until_ms": N}` (declared, wins over state). Present exactly when
+    /// `executor` is [`WAIT_EXECUTOR`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait: Option<serde_json::Value>,
 }
+
+/// The `executor` a durable timer node (#416) pins as. The scheduler sees a
+/// Client ask (an approval: the initiator and principal cannot veto it); the
+/// DRIVER settles it when its window closes, and a `respond` inside the
+/// window is a veto.
+pub const WAIT_EXECUTOR: &str = "wait";
+
+/// The reserved `executor_uri` that makes a Tool Definition a durable timer.
+pub const WAIT_URI: &str = "areev://wait";
+
+/// The `ask_kind` of a wait (#416): answering it is a veto.
+pub const ASK_KIND_VETO: &str = "veto";
+
+/// The Workflow grain's plan-level separation field (#424).
+pub const SEPARATION_FIELD: &str = "separation";
 
 /// The `executor` a decision node (C3) pins as.
 pub const DECIDE_EXECUTOR: &str = "decide";
@@ -250,6 +280,14 @@ pub struct RunManifest {
     /// and absent — on every run that raised none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// Separation groups (#424), from the Workflow grain's `separation`
+    /// field: within a group, a responder who answered one gate is refused on
+    /// the others. Validated at resolve (every name a client node of this
+    /// plan) and FROZEN, like `ask_kind`, so a superseded plan cannot loosen
+    /// a run already parked on its second gate. Empty — and absent — on every
+    /// plan that declares none, so stored manifests keep their bytes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub separation: Vec<Vec<String>>,
 }
 
 
@@ -456,6 +494,8 @@ impl RunManifest {
                     decide: None,
                     locked_params: None,
                     llm: None,
+                    quorum: None,
+                    wait: None,
                 });
                 continue;
             }
@@ -483,6 +523,8 @@ impl RunManifest {
                             decide: None,
                             locked_params: None,
                             llm: None,
+                            quorum: None,
+                            wait: None,
                         }
                     } else {
                         let pin = pin_from_definition(node, &h, &g)?;
@@ -537,6 +579,8 @@ impl RunManifest {
                             decide: None,
                             locked_params: None,
                             llm: None,
+                            quorum: None,
+                            wait: None,
                         },
                         None => return Err(RunError::NoToolLlm { node: node.clone() }),
                     }
@@ -666,6 +710,8 @@ impl RunManifest {
                 }
             }
         }
+        let separation =
+            parse_separation(fields.and_then(|f| f.get(SEPARATION_FIELD)), &pinned)?;
         Ok(RunManifest {
             run_id: run_id.to_string(),
             plan_hash: plan_hash.to_hex(),
@@ -690,6 +736,7 @@ impl RunManifest {
             decider: None,
             dispatch_pins,
             warnings,
+            separation,
         })
     }
 
@@ -862,7 +909,7 @@ impl RunManifest {
         self.pinned
             .iter()
             .map(|p| match p.executor.as_str() {
-                "client" => NodeExecutor::Client {
+                "client" | WAIT_EXECUTOR => NodeExecutor::Client {
                     tool_hash: p.tool_hash.clone(),
                     tool_name: p.tool_name.clone(),
                     // Absent means approval — the stricter reading (#294).
@@ -1106,6 +1153,10 @@ pub fn pin_from_definition(
     // other client `executor_uri`.
     let decide_node =
         executor == "host" && g.get_str("executor_uri") == Some(areev_run_core::DECIDE_URI);
+    // A durable timer (#416): the reserved URI names the DRIVER's clock, not
+    // code, on either executor kind — a wait is answered by time, or vetoed
+    // by a person.
+    let wait_node = g.get_str("executor_uri") == Some(WAIT_URI);
     // `executor_uri` used to be written, parsed, CAL-buildable — and read by
     // nothing, so a Definition naming `executor://crm.lookup@v3` executed
     // whatever `--tool-cmd` happened to be. That is the failure with no
@@ -1113,6 +1164,7 @@ pub fn pin_from_definition(
     // dispatches or is refused by name.
     let executor_uri = match g.get_str("executor_uri") {
         None => None,
+        Some(_) if wait_node => None,
         Some(uri) if executor == "client" => {
             return Err(RunError::CodeExecRefused {
                 condition: format!(
@@ -1144,6 +1196,14 @@ pub fn pin_from_definition(
     // native exec, which would run wasm bytes as a program.
     let runtime = match g.get_str("runtime") {
         None | Some("native") => None,
+        Some(rt) if wait_node => {
+            return Err(RunError::CodeExecRefused {
+                condition: format!(
+                    "node '{node}' is a wait node ({WAIT_URI}) but declares runtime {rt:?} — \
+                     the driver's clock answers it, and there is no code to run"
+                ),
+            })
+        }
         Some(rt) if decide_node => {
             return Err(RunError::CodeExecRefused {
                 condition: format!(
@@ -1218,6 +1278,16 @@ pub fn pin_from_definition(
     // for, and a value this build does not understand must not silently
     // fall through to the weaker reading.
     let ask_kind = match g.get_str("ask_kind") {
+        // A wait is always answerable as a veto (#416), and only as one.
+        None | Some(ASK_KIND_VETO) if wait_node => Some(ASK_KIND_VETO.to_string()),
+        Some(other) if wait_node => {
+            return Err(RunError::InvalidPlan {
+                why: format!(
+                    "node '{node}' is a wait node ({WAIT_URI}) declaring ask_kind {other:?} — \
+                     answering a wait is a veto, so its only ask kind is {ASK_KIND_VETO:?}"
+                ),
+            })
+        }
         None | Some(ASK_KIND_APPROVAL) => None,
         Some(_) if executor != "client" => {
             return Err(RunError::InvalidPlan {
@@ -1234,7 +1304,7 @@ pub fn pin_from_definition(
                 why: format!(
                     "node '{node}' declares ask_kind {other:?}, which this build does \
                      not understand — accepted: {ASK_KIND_APPROVAL}, \
-                     {ASK_KIND_CONFIRMATION}"
+                     {ASK_KIND_CONFIRMATION} (and {ASK_KIND_VETO} on a {WAIT_URI} node)"
                 ),
             })
         }
@@ -1247,7 +1317,9 @@ pub fn pin_from_definition(
     let locked_params = match g.fields.get("locked_params") {
         None | Some(serde_json::Value::Null) => None,
         Some(serde_json::Value::Object(o)) if o.is_empty() => None,
-        Some(v @ serde_json::Value::Object(_)) if executor == "host" && !decide_node => Some(v.clone()),
+        Some(v @ serde_json::Value::Object(_)) if executor == "host" && !decide_node && !wait_node => {
+            Some(v.clone())
+        }
         // A client or decision tool: nothing a model calls, so nothing to
         // lock. Ignored, as 1.12 ignored it; the start records RUN-W001
         // (`locked_params_warning`).
@@ -1258,11 +1330,19 @@ pub fn pin_from_definition(
             })
         }
     };
+    let quorum = parse_quorum(node, g.fields.get("quorum"), executor, wait_node, ask_kind.as_deref())?;
+    let wait = parse_wait(node, g.fields.get("wait"), wait_node)?;
     Ok(PinnedTool {
         node: node.to_string(),
         tool_hash: h.to_hex(),
         tool_name,
-        executor: if decide_node { DECIDE_EXECUTOR.into() } else { executor.into() },
+        executor: if decide_node {
+            DECIDE_EXECUTOR.into()
+        } else if wait_node {
+            WAIT_EXECUTOR.into()
+        } else {
+            executor.into()
+        },
         executor_uri,
         runtime,
         runtime_limits,
@@ -1272,7 +1352,200 @@ pub fn pin_from_definition(
         decide,
         locked_params,
         llm: None,
+        quorum,
+        wait,
     })
+}
+
+/// The most approvals one ask may require (#424). A sanity bound, far above
+/// any real four- or six-eyes rule; a larger value is refused, never clamped.
+pub const MAX_QUORUM: u64 = 64;
+
+/// Validate a Definition's `quorum` (#424): `{"required": N}`, `1 ≤ N ≤`
+/// [`MAX_QUORUM`], on an APPROVAL client tool only. `1` is the ordinary ask
+/// and normalizes to `None`.
+fn parse_quorum(
+    node: &str,
+    v: Option<&serde_json::Value>,
+    executor: &str,
+    wait_node: bool,
+    ask_kind: Option<&str>,
+) -> std::result::Result<Option<u32>, RunError> {
+    let v = match v {
+        None | Some(serde_json::Value::Null) => return Ok(None),
+        Some(v) => v,
+    };
+    let bad = |why: String| RunError::InvalidPlan { why: format!("node '{node}' declares quorum {v}: {why}") };
+    if executor != "client" || wait_node {
+        return Err(bad("a quorum counts PEOPLE answering an approval ask, so only a client tool \
+                        (not a host tool, decision node or wait) may declare one"
+            .into()));
+    }
+    if ask_kind == Some(ASK_KIND_CONFIRMATION) {
+        return Err(bad("a confirmation is answered by the run's own initiator — a quorum is \
+                        an approval rule"
+            .into()));
+    }
+    let Some(obj) = v.as_object() else {
+        return Err(bad("expected an object {\"required\": N}".into()));
+    };
+    if let Some(k) = obj.keys().find(|k| k.as_str() != "required") {
+        return Err(bad(format!("unknown key '{k}' — accepted: required")));
+    }
+    let n = obj
+        .get("required")
+        .and_then(|n| n.as_u64())
+        .ok_or_else(|| bad("`required` must be a positive integer".into()))?;
+    if n == 0 || n > MAX_QUORUM {
+        return Err(bad(format!("`required` must be between 1 and {MAX_QUORUM}")));
+    }
+    Ok((n > 1).then_some(n as u32))
+}
+
+/// Validate a wait node's `wait` declaration (#416): absent/`{}` (read the
+/// instant from state at park), or exactly one of `for_secs` (> 0) /
+/// `until_ms`. A `wait` field on anything but a wait node is refused — it
+/// would describe a timer nothing runs.
+fn parse_wait(
+    node: &str,
+    v: Option<&serde_json::Value>,
+    wait_node: bool,
+) -> std::result::Result<Option<serde_json::Value>, RunError> {
+    let declared = match v {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => Some(v),
+    };
+    if !wait_node {
+        return match declared {
+            None => Ok(None),
+            Some(_) => Err(RunError::InvalidPlan {
+                why: format!(
+                    "node '{node}' declares wait but its executor_uri is not {WAIT_URI} — \
+                     nothing would honour it"
+                ),
+            }),
+        };
+    }
+    let Some(v) = declared else { return Ok(Some(serde_json::json!({}))) };
+    let spec = wait_spec(v).map_err(|why| RunError::InvalidPlan {
+        why: format!("node '{node}' declares wait {v}: {why}"),
+    })?;
+    Ok(Some(spec))
+}
+
+/// Normalize a `{for_secs | until_ms}` object (#416) — the one parser the
+/// declaration (at start) and the node's state (at park) share. `{}` is
+/// accepted: it means "nothing declared here".
+pub fn wait_spec(v: &serde_json::Value) -> std::result::Result<serde_json::Value, String> {
+    let Some(obj) = v.as_object() else {
+        return Err("expected an object {\"for_secs\": N} or {\"until_ms\": N}".into());
+    };
+    if let Some(k) = obj.keys().find(|k| !matches!(k.as_str(), "for_secs" | "until_ms")) {
+        return Err(format!("unknown key '{k}' — accepted: for_secs, until_ms"));
+    }
+    match (obj.get("for_secs"), obj.get("until_ms")) {
+        (Some(_), Some(_)) => Err("declares both for_secs and until_ms — name one instant".into()),
+        (Some(s), None) => match s.as_u64() {
+            Some(n) if n > 0 => Ok(serde_json::json!({"for_secs": n})),
+            _ => Err("for_secs must be a positive integer".into()),
+        },
+        (None, Some(u)) => match u.as_u64() {
+            Some(n) => Ok(serde_json::json!({"until_ms": n})),
+            None => Err("until_ms must be a non-negative integer (unix ms)".into()),
+        },
+        (None, None) => Ok(serde_json::json!({})),
+    }
+}
+
+/// When a parked wait (#416) comes due, in unix ms: the DECLARED instant
+/// when the Definition names one, else the one the node's state carries at
+/// park (`for_secs` / `until_ms` at the top level of the ask's input). A
+/// relative `for_secs` counts from `parked_at_ms` — the intent grain's
+/// journaled clock, so every reader of the journal computes the same instant.
+pub fn wait_due_at(
+    declared: Option<&serde_json::Value>,
+    input: &serde_json::Value,
+    parked_at_ms: u64,
+) -> std::result::Result<u64, String> {
+    let from_decl = match declared {
+        Some(d) => wait_spec(d)?,
+        None => serde_json::json!({}),
+    };
+    let spec = if from_decl.as_object().is_some_and(|o| !o.is_empty()) {
+        from_decl
+    } else {
+        let mut picked = serde_json::Map::new();
+        for k in ["for_secs", "until_ms"] {
+            if let Some(v) = input.get(k) {
+                picked.insert(k.into(), v.clone());
+            }
+        }
+        wait_spec(&serde_json::Value::Object(picked)).map_err(|e| format!("state: {e}"))?
+    };
+    if let Some(n) = spec.get("for_secs").and_then(|n| n.as_u64()) {
+        return Ok(parked_at_ms.saturating_add(n.saturating_mul(1000)));
+    }
+    if let Some(n) = spec.get("until_ms").and_then(|n| n.as_u64()) {
+        return Ok(n);
+    }
+    Err(format!(
+        "the wait declares no instant and the node's state carries neither for_secs nor \
+         until_ms — {WAIT_URI} needs one"
+    ))
+}
+
+/// Validate the plan's `separation` groups (#424) against the pins just
+/// resolved: an array of groups, each ≥ 2 distinct node ids, every one a
+/// client (approval) node of this plan. A group naming a host, wait or
+/// unknown node is refused — it would promise a check nothing performs.
+fn parse_separation(
+    v: Option<&serde_json::Value>,
+    pinned: &[PinnedTool],
+) -> std::result::Result<Vec<Vec<String>>, RunError> {
+    let v = match v {
+        None | Some(serde_json::Value::Null) => return Ok(Vec::new()),
+        Some(v) => v,
+    };
+    let bad = |why: String| RunError::InvalidPlan { why: format!("separation {v}: {why}") };
+    let Some(groups) = v.as_array() else {
+        return Err(bad("expected an array of node-id groups, e.g. [[\"approve\", \"approve_2\"]]".into()));
+    };
+    let mut out = Vec::with_capacity(groups.len());
+    for g in groups {
+        let Some(members) = g.as_array() else {
+            return Err(bad(format!("group {g} is not an array of node ids")));
+        };
+        let mut group: Vec<String> = Vec::with_capacity(members.len());
+        for n in members {
+            let Some(name) = n.as_str() else {
+                return Err(bad(format!("group {g} holds {n}, which is not a node id")));
+            };
+            if group.iter().any(|x| x == name) {
+                return Err(bad(format!("group {g} names '{name}' twice")));
+            }
+            let Some(pin) = pinned.iter().find(|p| p.node == name) else {
+                return Err(bad(format!("group {g} names '{name}', which is not a node of this plan")));
+            };
+            if pin.executor != "client" || pin.ask_kind.as_deref() == Some(ASK_KIND_CONFIRMATION) {
+                return Err(bad(format!(
+                    "group {g} names '{name}', a {} node{} — separation binds the RESPONDERS of \
+                     approval asks, so every member must be a client approval node",
+                    pin.executor,
+                    if pin.ask_kind.as_deref() == Some(ASK_KIND_CONFIRMATION) {
+                        " (confirmation)"
+                    } else {
+                        ""
+                    }
+                )));
+            }
+            group.push(name.to_string());
+        }
+        if group.len() < 2 {
+            return Err(bad(format!("group {g} names fewer than two nodes — nothing to separate")));
+        }
+        out.push(group);
+    }
+    Ok(out)
 }
 
 /// The `RUN-W001` text for a pin whose Definition declares `locked_params`
@@ -1477,6 +1750,7 @@ mod tests {
             decider: None,
             dispatch_pins: Vec::new(),
             warnings: Vec::new(),
+            separation: Vec::new(),
         }
     }
 
@@ -1495,6 +1769,8 @@ mod tests {
             decide: None,
             locked_params: None,
             llm: None,
+            quorum: None,
+            wait: None,
         }
     }
 
@@ -1520,6 +1796,8 @@ mod tests {
                 decide: None,
                 locked_params: None,
                 llm: None,
+                quorum: None,
+                wait: None,
             },
             host_pin("reply_done", "reply_email"),
             host_pin("reply_rejected", "reply_email"),
@@ -1567,6 +1845,8 @@ mod tests {
             decide: None,
             locked_params: None,
             llm: None,
+            quorum: None,
+            wait: None,
         };
         let mut m = bare();
         m.pinned = vec![

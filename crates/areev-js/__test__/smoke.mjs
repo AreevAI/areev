@@ -2991,3 +2991,39 @@ test('FORMAT markdown names the role of a remembered turn', async () => {
     await m.close()
   }
 })
+
+test('runTick resumes a due wait and reports one not yet due (#416)', async () => {
+  const m = makeDb('ops')
+  const approve = await m.add('tool', JSON.stringify({
+    tool_name: 'approve', kind: 'definition', tool_description: 'approve',
+    executor_kind: 'client', created_at: 801,
+  }), 'ops')
+  const cooling = await m.add('tool', JSON.stringify({
+    tool_name: 'cooling_off', kind: 'definition', tool_description: 'veto window',
+    executor_uri: 'areev://wait', created_at: 802,
+  }), 'ops')
+  const apply = await m.add('tool', JSON.stringify({
+    tool_name: 'apply', kind: 'definition', tool_description: 'apply', created_at: 803,
+  }), 'ops')
+  const wf = await m.add('workflow', JSON.stringify({
+    nodes: ['approve', 'cooling_off', 'apply'],
+    edges: [{ src: 'approve', dst: 'cooling_off' }, { src: 'cooling_off', dst: 'apply' }],
+    bindings: { approve, cooling_off: cooling, apply },
+    created_at: 804,
+  }), 'ops')
+  const tool = `printf '{"applied":true}'`
+
+  for (const [id, input] of [['due', '{"until_ms":1}'], ['later', '{"for_secs":31536000}']]) {
+    const s = JSON.parse(await m.runStart(wf, id, input, tool))
+    await m.runRespond(id, s.parked.asks[0].tool_call_id, '{"approved":true}', 'volunteer:2')
+    const parked = JSON.parse(await m.runResume(id, tool)).parked
+    assert.equal(parked.kind, 'waiting')
+    assert.equal(parked.asks[0].ask_kind, 'veto')
+  }
+  const report = JSON.parse(await m.runTick(tool))
+  assert.deepEqual(report.resumed.map((r) => r.run_id), ['due'])
+  assert.equal(report.resumed[0].session, 'finished:Completed')
+  assert.deepEqual(report.waiting.map((w) => w.run_id), ['later'])
+  assert.equal(JSON.parse(await m.runVerify('due')).verified, true)
+  m.close()
+})

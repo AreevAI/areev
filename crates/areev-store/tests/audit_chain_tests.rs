@@ -116,3 +116,29 @@ fn the_head_is_a_cache_and_survives_a_reopen() {
     let h = m.append_audit(&mut obs).unwrap();
     assert_eq!(seq_of(&mut m, &h), 2, "the chain continues across a reopen");
 }
+
+#[test]
+fn a_named_chain_numbers_independently_of_the_destruction_chain() {
+    // #420: the approval trail is its own chain, so an approval-only export
+    // of a memory that also erased something never reads as a gap.
+    let (mut m, _d) = open_mem();
+    let mut d1 = audit_observation("counsel:jane", "delete", "hash:aa", Some("dsar"), 1, 1_000);
+    m.append_audit(&mut d1).unwrap();
+    let mut a1 = audit_observation("volunteer:1", "run.respond", "run:r1", None, 0, 1_001);
+    let a1h = m.append_audit_on(Areev::AUDIT_CHAIN_APPROVAL, &mut a1).unwrap();
+    let mut d2 = audit_observation("counsel:jane", "delete", "hash:bb", Some("dsar"), 1, 1_002);
+    let d2h = m.append_audit(&mut d2).unwrap();
+    let mut a2 = audit_observation("volunteer:2", "run.respond", "run:r1", None, 0, 1_003);
+    let a2h = m.append_audit_on(Areev::AUDIT_CHAIN_APPROVAL, &mut a2).unwrap();
+
+    assert_eq!(seq_of(&mut m, &a1h), 1, "the approval chain has its own root");
+    assert_eq!(seq_of(&mut m, &a2h), 2);
+    assert_eq!(seq_of(&mut m, &d2h), 2, "the destruction chain is untouched by it");
+    let g = m.get(&a2h).unwrap();
+    assert_eq!(g.fields["context"]["previous_audit"].as_str().unwrap(), a1h.to_hex());
+    assert_eq!(
+        m.audit_chain_head_on(Areev::AUDIT_CHAIN_APPROVAL).unwrap().unwrap().1,
+        a2h.to_hex()
+    );
+    assert_eq!(m.audit_chain_head().unwrap().unwrap().1, d2h.to_hex());
+}

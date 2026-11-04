@@ -224,11 +224,56 @@ consumer keeps compiling and reading. Rules that are load-bearing:
 
 ## HITL (§6.6)
 
-`respond` validates in order (pausable → known ask by `tool_call_id`, NEVER
-index → unexpired → separation of duties: an `approval` ask structurally
-refuses responder == triggering principal → schema) and journals REJECTED
+`respond` validates in order (`run.respond` grant on a governed file →
+known ask by `tool_call_id`, NEVER index → unsettled → unexpired (not for a
+wait) → separation of duties: an `approval` ask structurally refuses
+responder == triggering principal or initiator → distinct approvers across
+the plan's separation groups → veto window / quorum) and journals REJECTED
 responses as Observations before erroring — a losing approval is audit
 evidence. Responding and resuming are separate acts.
+
+## Approval governance (#416, #420, #423, #424)
+
+All four rules are DRIVER-side; `areev-run-core` is untouched and the epoch
+does not move.
+
+- **#423 — `check_responder` asks the FILE, not the handle.** Owner-posture
+  handles skip the responder's `run.respond` check only when
+  `file_is_governed()` is false (no live, parseable `mg:permits` head in
+  `agent:authz`). Every respond surface (CLI, MCP, py, js, `/api/run/respond`)
+  goes through `Runner::respond`, so they all inherit it.
+- **The approval trail (`approval.rs`)** — every decision in `respond` is one
+  Observation in `agent:harness` with `run_id` (so `run_grains` indexes it),
+  appended to `Areev::append_audit_on(AUDIT_CHAIN_APPROVAL)`. Outcomes:
+  `accepted` / `declined` / `refused` (+ `refusal`) / `vote` / `veto`. A
+  refusal keeps the #292 object text (`rejected response to ask …`), which
+  `runner_tests` matches on. Trail writes after the result grain are
+  best-effort (the result is authoritative); a `vote` write is NOT — it is the
+  only durable form a vote has. The run id rides the grain's top-level
+  `run_id` only — a `run_id` key nested in `context` does not read back under
+  that name (it is a compact-field-map name).
+- **#424 — `RunManifest.separation`** (plan field `separation`, validated by
+  `parse_separation`: every member a client APPROVAL pin) and
+  **`PinnedTool.quorum`** (`parse_quorum`, 1–64, 1 normalizes to `None`).
+  `separation_conflict` reads settled results' `JournalEntry.result_author`
+  (= `author_did`, the responder) plus recorded votes on other group nodes.
+  Quorum votes are counted from the trail (`approval::voters`); the settling
+  answer is written as the ordinary result. `verify_governance` appends one
+  `VerifyStep` per settled quorum approval and per separation group.
+- **#416 — `executor_uri: "areev://wait"`** pins as `WAIT_EXECUTOR` with
+  `ask_kind: "veto"` and a normalized `wait` spec; `executors()` maps it to
+  `NodeExecutor::Client { approval: true }`. `resume_run` settles a pending
+  wait only when `now >= due` (`wait_due_at`: declared spec wins over the
+  ask input's `for_secs`/`until_ms`; `for_secs` counts from the INTENT grain's
+  `created_at`), written like the expiry path — so `verify` needs no new rule.
+  An undeterminable instant settles as `SchemaValidationFailed`. The ask TTL
+  never applies to a wait. `respond` on a wait = veto (`UserAborted`,
+  `vetoed by …`), refused `RUN-E011` after `due`. `annotate_envelope` adds
+  `kind: "waiting"`/`due_at_ms`/quorum progress at both park returns.
+  `Runner::tick` walks `run_index` for the namespace and resumes due waits;
+  `areev_trigger::RunStarter::tick` (default no-op) is how `trigger run` ticks.
+- Tests: `tests/approval_governance_tests.rs` (a `JumpClock` drives the
+  window); CLI `governance_smoke.rs` pins #420's export repro.
 
 ## Wave 2 (agent-grade)
 

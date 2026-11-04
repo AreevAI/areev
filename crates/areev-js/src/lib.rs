@@ -188,6 +188,10 @@ impl areev_trigger::RunStarter for RunnerStarter {
             Err(e) => areev_trigger::StartResult::Failed(e.to_string()),
         }
     }
+
+    fn tick(&self) -> std::result::Result<areev_run::TickReport, String> {
+        self.runner.tick(&self.opts).map_err(|e| e.to_string())
+    }
 }
 
 /// `cal_add`, with the schedule check `add("trigger", …)` used to skip.
@@ -3814,6 +3818,26 @@ impl Areev {
                 .respond(&run_id, &tool_call_id, result, is_error.unwrap_or(false), &responder)
                 .map_err(run_err)?;
             Ok(json!({"responded": tool_call_id, "run_id": run_id}).to_string())
+        })
+    }
+
+    /// Resume every parked run in this handle's namespace whose durable wait
+    /// (#416 — a Tool Definition with `executor_uri: "areev://wait"`) has come
+    /// due; resolves to the `TickReport` as JSON (`now_ms`, `resumed`,
+    /// `waiting`, `errors`). A wait not yet due is reported, never advanced.
+    /// `toolCmd` executes the host nodes after a wait, as on `runResume`.
+    #[napi(ts_return_type = "Promise<string>")]
+    pub fn run_tick(&self, tool_cmd: Option<String>) -> napi::bindgen_prelude::AsyncTask<StringJob> {
+        let slot = self.facade.clone();
+        let ns = self.ns.clone();
+        let actor = self.actor.clone();
+        StringJob::spawn(move || {
+            let facade = take_facade(&slot)?;
+            let runner = js_runner(facade, ns, actor, tool_cmd);
+            let opts = js_run_options_full(None, None, None, None, JsRunLimits::default())?;
+            let report = runner.tick(&opts).map_err(run_err)?;
+            serde_json::to_string(&report)
+                .map_err(|e| err(AreevError::Validation(format!("tick report: {e}"))))
         })
     }
 
