@@ -244,9 +244,12 @@ pub struct AnonPolicy {
     pub min_confidence: f32,
     /// Which chain links this policy demands (proposal §5.4): "tier0" runs
     /// in-tree; "ner"/"llm" require a host-installed [`DetectorBackend`] of
-    /// that kind and FAIL CLOSED without one (D6).
+    /// that kind and FAIL CLOSED without one (D6). An entry may also be an
+    /// object — a policy-declared [`RegexDetector`] (#418) — which runs in
+    /// addition to the named links; a list holding only regex entries keeps
+    /// the default `tier0` link.
     #[serde(default = "default_detectors")]
-    pub detectors: Vec<String>,
+    pub detectors: Vec<DetectorSpec>,
     /// Persist the pseudonym mapping to the file's sealed vault (proposal
     /// §7). Requires scope `session`/`memory` and an encrypted memory.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -266,6 +269,36 @@ pub struct AnonPolicy {
     /// (same table the grain-egress path builds).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub known: Vec<KnownIdentity>,
+    /// Re-identification control (#417): `{"mode": "dual", "ttl_secs":
+    /// 1800}` requires a second principal to approve every reveal. Absent =
+    /// `single`, the historical behaviour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reveal: Option<RevealPolicy>,
+}
+
+impl AnonPolicy {
+    /// The effective reveal control (`single` when the policy declares none).
+    pub fn reveal_policy(&self) -> RevealPolicy {
+        self.reveal.clone().unwrap_or_default()
+    }
+
+    /// The named chain links this policy demands — `["tier0"]` when the list
+    /// holds only regex detectors.
+    pub fn named_detectors(&self) -> Vec<&str> {
+        let named: Vec<&str> = self.detectors.iter().filter_map(DetectorSpec::name).collect();
+        if named.is_empty() { vec!["tier0"] } else { named }
+    }
+
+    /// The policy-declared regex detectors.
+    pub fn regex_detectors(&self) -> Vec<&RegexDetector> {
+        self.detectors
+            .iter()
+            .filter_map(|d| match d {
+                DetectorSpec::Regex(r) => Some(r),
+                DetectorSpec::Named(_) => None,
+            })
+            .collect()
+    }
 }
 
 /// One entry of [`AnonPolicy::known`]: a bare value and the category it
@@ -282,8 +315,121 @@ fn default_known_category() -> String {
     "person".to_string()
 }
 
-fn default_detectors() -> Vec<String> {
-    vec!["tier0".to_string()]
+fn default_detectors() -> Vec<DetectorSpec> {
+    vec![DetectorSpec::Named("tier0".to_string())]
+}
+
+/// One entry of [`AnonPolicy::detectors`]: a named chain link (`"tier0"`,
+/// `"ner"`, `"llm"`) or a policy-declared regex detector. Untagged, so a
+/// policy written before #418 — a list of strings — reads and re-serializes
+/// byte-for-byte as it did (the canonical policy JSON feeds `mapping_id`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum DetectorSpec {
+    Named(String),
+    Regex(RegexDetector),
+}
+
+impl DetectorSpec {
+    /// The chain-link name, for a named entry.
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            DetectorSpec::Named(n) => Some(n),
+            DetectorSpec::Regex(_) => None,
+        }
+    }
+}
+
+impl From<&str> for DetectorSpec {
+    fn from(s: &str) -> Self {
+        DetectorSpec::Named(s.to_string())
+    }
+}
+
+impl From<String> for DetectorSpec {
+    fn from(s: String) -> Self {
+        DetectorSpec::Named(s)
+    }
+}
+
+impl PartialEq<&str> for DetectorSpec {
+    fn eq(&self, other: &&str) -> bool {
+        self.name() == Some(*other)
+    }
+}
+
+/// A policy-declared regex detector (#418) — for identifier shapes Areev
+/// should not hard-code (a ward reference, an internal case number).
+///
+/// Validated at declaration (`anonymize set` refuses it otherwise): the
+/// pattern compiles under a size limit with the `regex` crate (finite
+/// automata — no backtracking, so no catastrophic match time), is at most
+/// `MAX_POLICY_PATTERN_LEN` (1024) bytes, and cannot match the empty
+/// string. With `cue` words, a match counts only when a cue ends within
+/// `within_chars` characters before it — the same proximity rule the
+/// built-in cue-gated detectors use.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RegexDetector {
+    /// The category matches are reported as (the policy's `categories` map
+    /// then decides the action, like any built-in category).
+    pub category: String,
+    pub pattern: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cue: Vec<String>,
+    #[serde(default = "default_regex_cue_window")]
+    pub within_chars: usize,
+}
+
+fn default_regex_cue_window() -> usize {
+    40
+}
+
+/// Bounds on a policy's regex detectors, so a declared policy cannot make
+/// every scan arbitrarily expensive.
+pub const MAX_POLICY_REGEX_DETECTORS: usize = 32;
+const MAX_POLICY_REGEX_CUES: usize = 32;
+
+/// Who may re-identify a pseudonym (#417). `single` (the default) is the
+/// historical rule: one principal holding `admin` on the namespace reveals,
+/// audited. `dual` is two-person control: a requester asks with a reason, a
+/// DIFFERENT principal holding `admin` approves, and the requester may then
+/// reveal exactly once within `ttl_secs` of the approval. Under `dual` a
+/// direct reveal is refused (`AUT-E005`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RevealPolicy {
+    #[serde(default = "default_reveal_mode")]
+    pub mode: String,
+    /// How long a request stays approvable after it is made, and how long a
+    /// reveal stays redeemable after it is approved.
+    #[serde(default = "default_reveal_ttl")]
+    pub ttl_secs: u64,
+}
+
+fn default_reveal_mode() -> String {
+    "single".into()
+}
+
+fn default_reveal_ttl() -> u64 {
+    1800
+}
+
+/// Longest reveal window a policy may declare (seven days): a dual-control
+/// approval that stays redeemable for months is a standing grant, not a
+/// decision.
+pub const MAX_REVEAL_TTL_SECS: u64 = 7 * 24 * 3600;
+
+impl Default for RevealPolicy {
+    fn default() -> Self {
+        RevealPolicy { mode: default_reveal_mode(), ttl_secs: default_reveal_ttl() }
+    }
+}
+
+impl RevealPolicy {
+    pub fn is_dual(&self) -> bool {
+        self.mode == "dual"
+    }
 }
 
 impl Default for AnonPolicy {
@@ -303,6 +449,7 @@ impl Default for AnonPolicy {
             vault_ttl_days: None,
             because: None,
             known: Vec::new(),
+            reveal: None,
         }
     }
 }
@@ -373,11 +520,58 @@ impl AnonPolicy {
                     .into(),
             ));
         }
+        let mut regex_count = 0usize;
         for d in &self.detectors {
-            if !matches!(d.as_str(), "tier0" | "ner" | "llm") {
+            match d {
+                DetectorSpec::Named(name) => {
+                    if !matches!(name.as_str(), "tier0" | "ner" | "llm") {
+                        return Err(AreevError::Validation(format!(
+                            "invalid anonymization policy: unknown detector '{name}' \
+                             (expected tier0, ner, llm, or a regex detector object \
+                             {{\"category\", \"pattern\", \"cue\"}})"
+                        )));
+                    }
+                }
+                DetectorSpec::Regex(r) => {
+                    regex_count += 1;
+                    if r.category.trim().is_empty() {
+                        return Err(AreevError::Validation(
+                            "invalid anonymization policy: a regex detector needs a \
+                             non-empty category"
+                                .into(),
+                        ));
+                    }
+                    if r.cue.len() > MAX_POLICY_REGEX_CUES
+                        || r.cue.iter().any(|c| c.trim().is_empty())
+                    {
+                        return Err(AreevError::Validation(format!(
+                            "invalid anonymization policy: regex detector '{}' cue list \
+                             must hold 1..={MAX_POLICY_REGEX_CUES} non-empty words",
+                            r.category
+                        )));
+                    }
+                    detect::compile_policy_pattern(&r.pattern)?;
+                }
+            }
+        }
+        if regex_count > MAX_POLICY_REGEX_DETECTORS {
+            return Err(AreevError::Validation(format!(
+                "invalid anonymization policy: at most {MAX_POLICY_REGEX_DETECTORS} regex \
+                 detectors"
+            )));
+        }
+        if let Some(r) = &self.reveal {
+            if !matches!(r.mode.as_str(), "single" | "dual") {
                 return Err(AreevError::Validation(format!(
-                    "invalid anonymization policy: unknown detector '{d}' (expected \
-                     tier0, ner, or llm)"
+                    "invalid anonymization policy: unknown reveal mode '{}' (expected \
+                     single or dual)",
+                    r.mode
+                )));
+            }
+            if r.ttl_secs == 0 || r.ttl_secs > MAX_REVEAL_TTL_SECS {
+                return Err(AreevError::Validation(format!(
+                    "invalid anonymization policy: reveal.ttl_secs must be within \
+                     1..={MAX_REVEAL_TTL_SECS}"
                 )));
             }
         }
@@ -497,7 +691,8 @@ pub fn scan_with(
 ) -> Result<ScanOutcome> {
     policy.validate()?;
     let text = nfc(text).into_owned();
-    let mut detections = if policy.detectors.iter().any(|d| d == "tier0") {
+    let named = policy.named_detectors();
+    let mut detections = if named.contains(&"tier0") {
         detect::run_tier0(&text, &policy.custom_terms, known_identities, &policy.term_sets)?
     } else {
         Vec::new()
@@ -505,7 +700,11 @@ pub fn scan_with(
     if !policy.known.is_empty() {
         detections.extend(detect::run_known(&text, &policy.known)?);
     }
-    for kind in policy.detectors.iter().filter(|d| *d != "tier0") {
+    let regex_detectors = policy.regex_detectors();
+    if !regex_detectors.is_empty() {
+        detections.extend(detect::run_policy_regex(&text, &regex_detectors)?);
+    }
+    for kind in named.into_iter().filter(|d| *d != "tier0") {
         let backend = backends
             .iter()
             .find(|b| b.kind() == kind)

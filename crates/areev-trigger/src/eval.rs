@@ -142,6 +142,10 @@ pub struct EvalReport {
     /// double-processing, which is what makes re-polling safe — see #128's
     /// stable run ids, a prerequisite for this.
     pub cursor_held: Vec<String>,
+    /// Parked runs this pass resumed because their durable wait (#416) came
+    /// due — the run-side half of the heartbeat (`RunStarter::tick`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub waits_resumed: Vec<String>,
 }
 
 /// One trigger considered, for `--dry-run` and `status`.
@@ -189,7 +193,21 @@ pub struct TriggerStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_due_local: Option<String>,
     pub leased_by: Option<String>,
+    /// When this trigger is next due, in epoch milliseconds (#421).
+    ///
+    /// The `trg:` state row's value once the trigger has been evaluated. For
+    /// a CLOCKED trigger never evaluated yet it is computed here, read-only,
+    /// from the declaration — a schedule's next cron instant, a one-shot's
+    /// `at` — because "when will this first fire" is exactly what an operator
+    /// checking a fresh declaration asks. `None` means "due now" for a
+    /// clocked trigger (an interval never fired, a one-shot past its instant
+    /// not yet fired), and "never" for an exhausted one-shot and every
+    /// unclocked kind.
     pub next_due_at: Option<i64>,
+    /// `next_due_at` as an RFC 3339 UTC instant (`2026-11-03T20:30:00Z`), so
+    /// a reader of the JSON need not convert milliseconds by hand (#421).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_due_utc: Option<String>,
     pub last_fired_at: Option<i64>,
     pub consecutive_failures: u32,
     pub last_error: Option<String>,
@@ -265,6 +283,15 @@ pub fn trigger_name(trigger: &Trigger) -> Option<String> {
 /// duplicate rule lives, which is the whole idempotency story.
 pub trait RunStarter: Send + Sync {
     fn start(&self, workflow: &str, run_id: &str, input: serde_json::Value) -> StartResult;
+
+    /// Resume every parked run in the evaluator's namespace whose durable
+    /// wait (#416, `executor_uri: "areev://wait"`) has come due —
+    /// `areev_run::Runner::tick`. Called once at the end of every acting
+    /// pass. The default ticks nothing, for a starter that cannot resume
+    /// runs (an ingest-only host, a test double).
+    fn tick(&self) -> std::result::Result<areev_run::TickReport, String> {
+        Ok(areev_run::TickReport::default())
+    }
 }
 
 /// What starting a run did.
@@ -509,6 +536,17 @@ impl Evaluator {
             let (st, _raw) = self.resolve_state(&chain, false)?;
             let unusable = schedule::validate(&t).err().map(|e| e.to_string());
             let plan_head = self.plan_head_if_stale(&t)?;
+            // #421: a never-evaluated clocked trigger has no `next_due_at` in
+            // its row yet — the first pass seeds it. Compute the same value
+            // here (read-only, nothing is written) so `show`/`status` can say
+            // when a fresh declaration first fires. An unusable declaration
+            // has no next instant; its `unusable` reason says why.
+            let next_due_at = if st.exhausted || unusable.is_some() {
+                None
+            } else {
+                st.next_due_at
+                    .or_else(|| schedule::initial_due(&t, now).ok().flatten())
+            };
             out.push(TriggerStatus {
                 trigger: hash,
                 name: trigger_name(&t),
@@ -525,11 +563,10 @@ impl Evaluator {
                     && !st.leased(now)
                     && schedule::is_due(&t, &st, now).unwrap_or(false),
                 timezone: schedule::declared_zone(&t),
-                next_due_local: st
-                    .next_due_at
-                    .and_then(|at| schedule::render_local(&t, at)),
+                next_due_local: next_due_at.and_then(|at| schedule::render_local(&t, at)),
                 leased_by: st.leased(now).then(|| st.claimed_by.clone()).flatten(),
-                next_due_at: st.next_due_at,
+                next_due_at,
+                next_due_utc: next_due_at.and_then(schedule::render_utc),
                 last_fired_at: st.last_fired_at,
                 consecutive_failures: st.consecutive_failures,
                 last_error: st.last_error.clone(),
@@ -761,6 +798,25 @@ impl Evaluator {
                 Err(e) => {
                     // One broken trigger must not stop the others.
                     report.errors.push(e.to_string());
+                }
+            }
+        }
+        // The heartbeat also resumes parked runs whose durable wait (#416)
+        // came due — the same posture as the triggers themselves: no daemon,
+        // cadence is whatever calls this. Skipped on a dry run (it would
+        // resume) and on a single-trigger pass (asked about one trigger only).
+        if !opts.dry_run && opts.only.is_none() {
+            if let Some(starter) = &self.starter {
+                match starter.tick() {
+                    Ok(t) => {
+                        report.waits_resumed = t
+                            .resumed
+                            .iter()
+                            .filter_map(|r| r.get("run_id").and_then(|v| v.as_str()).map(String::from))
+                            .collect();
+                        report.errors.extend(t.errors.into_iter().map(|e| format!("wait tick: {e}")));
+                    }
+                    Err(e) => report.errors.push(format!("wait tick: {e}")),
                 }
             }
         }

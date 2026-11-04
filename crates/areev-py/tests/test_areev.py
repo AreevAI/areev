@@ -2242,3 +2242,102 @@ def test_date_ordered_filtered_recall_fills_page(tmp_path):
         ))
         assert [g["fields"]["subject"] for g in res["grains"]] == ["s3", "s2", "s1", "s0"][:n]
         assert not any(w.startswith("CAL-W015") for w in res.get("warnings", []))
+
+
+def _wait_plan(db, wait=None):
+    """approve (client) -> cooling_off (areev://wait) -> apply (host)."""
+    approve = db.add("tool", json.dumps({
+        "tool_name": "approve", "kind": "definition", "tool_description": "approve",
+        "executor_kind": "client", "created_at": 801}), ns="ops")
+    cooling = {"tool_name": "cooling_off", "kind": "definition",
+               "tool_description": "veto window", "executor_uri": "areev://wait",
+               "created_at": 802}
+    if wait is not None:
+        cooling["wait"] = wait
+    cooling = db.add("tool", json.dumps(cooling), ns="ops")
+    apply_ = db.add("tool", json.dumps({
+        "tool_name": "apply", "kind": "definition", "tool_description": "apply",
+        "created_at": 803}), ns="ops")
+    return db.add("workflow", json.dumps({
+        "nodes": ["approve", "cooling_off", "apply"],
+        "edges": [{"src": "approve", "dst": "cooling_off"},
+                  {"src": "cooling_off", "dst": "apply"}],
+        "bindings": {"approve": approve, "cooling_off": cooling, "apply": apply_},
+        "created_at": 804,
+    }), ns="ops")
+
+
+def test_run_tick_resumes_a_due_wait_and_reports_one_not_due(tmp_path):
+    # #416: a wait parks the run as "waiting"; a resume before due_at does not
+    # advance it; run_tick resumes it once due, and reports what still waits.
+    db = areev.Areev(str(tmp_path / "wait.db"), ns="ops", actor="service:gov")
+    wf = _wait_plan(db)
+    tool = "printf '{\"applied\":true}'"
+
+    # Due long ago (until_ms from state): the next tick settles it.
+    s = json.loads(db.run_start(wf, "due", input_json='{"until_ms": 1}', tool_cmd=tool))
+    ask = s["parked"]["asks"][0]["tool_call_id"]
+    db.run_respond("due", ask, '{"approved": true}', "volunteer:2")
+    parked = json.loads(db.run_resume("due", tool_cmd=tool))["parked"]
+    assert parked["kind"] == "waiting" and parked["due_at_ms"] == 1
+    assert parked["asks"][0]["ask_kind"] == "veto"
+
+    # Not due for a year: stays parked through resume and tick alike.
+    s = json.loads(db.run_start(wf, "later", input_json='{"for_secs": 31536000}', tool_cmd=tool))
+    ask = s["parked"]["asks"][0]["tool_call_id"]
+    db.run_respond("later", ask, '{"approved": true}', "volunteer:2")
+    assert json.loads(db.run_resume("later", tool_cmd=tool))["parked"]["kind"] == "waiting"
+    assert json.loads(db.run_resume("later", tool_cmd=tool))["parked"]["kind"] == "waiting"
+
+    report = json.loads(db.run_tick(tool_cmd=tool))
+    assert [r["run_id"] for r in report["resumed"]] == ["due"], report
+    assert report["resumed"][0]["session"] == "finished:Completed"
+    assert [w["run_id"] for w in report["waiting"]] == ["later"], report
+    assert json.loads(db.run_verify("due"))["verified"] is True
+
+    # A veto inside the window ends the run, and is on the oversight record.
+    wait_ask = json.loads(db.run_inspect("later"))["waits"][0]["tool_call_id"]
+    with pytest.raises(ValueError, match="RUN-E012"):
+        db.run_respond("later", wait_ask, '{"reason": "mine"}', "service:gov")
+    db.run_respond("later", wait_ask, '{"reason": "too soon"}', "volunteer:3")
+    done = json.loads(db.run_resume("later", tool_cmd=tool))
+    assert "vetoed by volunteer:3" in done["finished"], done
+    approvals = json.loads(db.run_oversight_report("later"))["approvals"]
+    assert any(a["outcome"] == "veto" and a["reason"] == "too soon" for a in approvals)
+
+
+# --------------------------------------------------------------------------
+# #417 — dual-control reveal: requester, a DIFFERENT approver, a TTL
+# --------------------------------------------------------------------------
+
+def test_dual_control_reveal_request_approve_redeem(tmp_path):
+    path = str(tmp_path / "dual.db")
+    owner = areev.Areev(path, ns="caller")
+    owner.set_anon_policy("caller", json.dumps(
+        {"mode": "egress", "scope": "session", "reveal": {"mode": "dual", "ttl_secs": 1800}}))
+    owner.cal('GRANT admin, read ON caller TO "user:desk"')
+    owner.cal('GRANT admin, read ON caller TO "user:approver"')
+    del owner
+
+    desk = areev.Areev(path, ns="caller", principal="user:desk")
+    with pytest.raises(ValueError, match="AUT-E005"):
+        desk.reveal_tokens("caller", json.dumps(["[PERSON_1]"]))
+    req = json.loads(desk.reveal_request("caller", json.dumps(["[PERSON_1]"]), "safety escalation"))
+    rid = req["request_id"]
+    assert req["requester"] == "user:desk" and req["mode"] == "dual"
+    with pytest.raises(ValueError, match="AUT-E005"):
+        desk.reveal_approve(rid)  # self-approval
+    del desk
+
+    approver = areev.Areev(path, ns="caller", principal="user:approver")
+    ok = json.loads(approver.reveal_approve(rid))
+    assert ok["approver"] == "user:approver" and ok["requester"] == "user:desk"
+    with pytest.raises(ValueError, match="AUT-E005"):
+        approver.reveal_redeem(rid)  # only the requester redeems
+    del approver
+
+    desk = areev.Areev(path, ns="caller", principal="user:desk")
+    out = json.loads(desk.reveal_redeem(rid))
+    assert "[PERSON_1]" in out["revealed"]
+    with pytest.raises(ValueError, match="AUT-E005"):
+        desk.reveal_redeem(rid)  # single use

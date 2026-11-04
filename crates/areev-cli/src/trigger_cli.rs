@@ -83,6 +83,10 @@ impl RunStarter for RunnerStarter {
             Err(e) => StartResult::Failed(e.to_string()),
         }
     }
+
+    fn tick(&self) -> std::result::Result<areev_run::TickReport, String> {
+        self.runner.tick(&self.opts).map_err(|e| e.to_string())
+    }
 }
 
 pub fn run_trigger(
@@ -509,6 +513,9 @@ fn show(
         if let Some(by) = &found.leased_by {
             println!("leased by    {by}");
         }
+        if let Some(next) = next_due_text(&found) {
+            println!("next due     {next}");
+        }
         match found.last_fired_at {
             Some(t) => println!("last fired   {t}"),
             None => println!("last fired   never"),
@@ -533,6 +540,27 @@ fn show(
         }
     }
     Ok(())
+}
+
+/// The "next due" instant for a clocked trigger, in its declared zone and in
+/// UTC (#421): `2026-11-04T02:00:00+05:30 Asia/Kolkata (2026-11-03T20:30:00Z)`,
+/// or just the UTC instant for a UTC trigger. `now` for one due at once (an
+/// interval never fired, an overdue instant). `None` for the kinds that fire
+/// when something arrives rather than on a clock, for an exhausted one-shot,
+/// and for an unusable declaration — whose own line already says why.
+fn next_due_text(s: &areev_trigger::TriggerStatus) -> Option<String> {
+    let clocked = matches!(s.kind.as_str(), "interval" | "polling" | "schedule" | "once");
+    if !clocked || s.exhausted || s.unusable.is_some() {
+        return None;
+    }
+    let Some(utc) = s.next_due_utc.as_deref() else {
+        return Some("now".into());
+    };
+    let when = match s.next_due_local.as_deref() {
+        Some(local) => format!("{local} ({utc})"),
+        None => utc.to_string(),
+    };
+    Some(if s.due { format!("{when} — due now") } else { when })
 }
 
 fn status(facade: &Arc<AreevFacade>, ns: &str, json_out: bool) -> Result<(), String> {
@@ -580,6 +608,9 @@ fn status(facade: &Arc<AreevFacade>, ns: &str, json_out: bool) -> Result<(), Str
             short(&s.workflow, 12),
             s.name.as_deref().map(|n| format!("  {n}")).unwrap_or_default()
         );
+        if let Some(next) = next_due_text(s) {
+            println!("              next due: {next}");
+        }
         if let Some(why) = &s.unusable {
             println!("              cannot fire: {why}");
         }
@@ -669,6 +700,46 @@ fn evaluate(
     } else {
         Err(format!("{} trigger(s) failed", report.errors.len()))
     }
+}
+
+/// The report for a `trigger run` whose WHOLE pass was skipped because
+/// another process holds the embedded memory file (`STO-E012`, #419).
+///
+/// The embedded backend admits one evaluator per file at a time: the file's
+/// OS lock is exclusive, so a second heartbeat tick overlapping the first
+/// cannot even open the memory. That is the documented steady state, not a
+/// fault, so it exits 0 — a heartbeat that paged on it would page on every
+/// overlap. The JSON is the ordinary `EvalReport` shape (every counter zero:
+/// no trigger was examined, so none can honestly be counted as locked) plus
+/// `pass_skipped_locked: true` and the store's reason. Postgres never gets
+/// here: several evaluators share a schema and contend per trigger instead.
+pub fn report_locked_pass(
+    db: &str,
+    why: &str,
+    waited: std::time::Duration,
+    json_out: bool,
+) -> Result<(), String> {
+    let waited_note = if waited.is_zero() {
+        String::new()
+    } else {
+        format!(" after waiting {}s", waited.as_secs_f64())
+    };
+    if json_out {
+        let mut v = serde_json::to_value(areev_trigger::EvalReport::default())
+            .map_err(|e| e.to_string())?;
+        if let Some(o) = v.as_object_mut() {
+            o.insert("pass_skipped_locked".into(), serde_json::json!(true));
+            o.insert("locked_reason".into(), serde_json::json!(format!("STO-E012: {why}")));
+            o.insert("lock_wait_secs".into(), serde_json::json!(waited.as_secs_f64()));
+        }
+        println!("{v}");
+    } else {
+        println!(
+            "skipped_locked · pass skipped{waited_note}: another process holds {db} \
+             (STO-E012) — one evaluator per embedded file at a time; the next tick picks it up"
+        );
+    }
+    Ok(())
 }
 
 /// `areev trigger render` — emit scheduler config, never create it.

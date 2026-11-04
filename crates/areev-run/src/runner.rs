@@ -110,6 +110,23 @@ pub struct RunOptions {
     pub max_concurrent_runs_per_principal: Option<u32>,
 }
 
+impl RunOptions {
+    /// Who the run is started ON BEHALF OF (#293) and whether that initiator
+    /// may settle a `confirmation` ask (#294) — the one place every host
+    /// surface sets the pair, so the CLI (`--initiator` /
+    /// `$AREEV_RUN_INITIATOR`, `--allow-confirmation-asks`) and the Node and
+    /// Python bindings (#422) freeze the same thing into the manifest.
+    ///
+    /// The initiator is trimmed and an empty one is no initiator: a blank
+    /// name would freeze into the manifest and match nothing, which reads
+    /// like a separation-of-duties check while enforcing none.
+    pub fn on_behalf_of(mut self, initiator: Option<String>, allow_confirmation_asks: bool) -> Self {
+        self.initiator = initiator.map(|i| i.trim().to_string()).filter(|i| !i.is_empty());
+        self.allow_confirmation_asks = allow_confirmation_asks;
+        self
+    }
+}
+
 /// The per-LLM-call ceiling when a manifest pins none (§6.7 reserves it per
 /// dispatch). Named because two places must agree: the prepared request and
 /// the `gen_ai.request.max_tokens` the span reports for that same request.
@@ -654,11 +671,19 @@ impl Runner {
     }
 
     /// `respond` authorizes the RESPONDER, not the session: on a governed
-    /// session (non-owner), the responder principal's own grants must cover
-    /// `run.respond` — an approval boundary where "whoever holds the
-    /// process" can approve is not an approval boundary.
+    /// FILE — any live `mg:permits` grant in it — the responder principal's
+    /// own grants must cover `run.respond` — an approval boundary where
+    /// "whoever holds the process" can approve is not an approval boundary.
+    ///
+    /// The handle's binding does not decide it (#423). Before, an unbound
+    /// (owner-posture) handle skipped the check, so a host that forgot to
+    /// bind a principal silently accepted ANY responder string on a file
+    /// that grants `run.respond` to specific people — the responder is the
+    /// identity being judged, not the session. A file with no grants at all
+    /// keeps the single-user path: nobody could hold the grant there, so
+    /// checking would refuse every answer.
     fn check_responder(&self, responder: &str) -> Result<(), RunError> {
-        if self.facade.authz().is_owner() {
+        if self.facade.authz().is_owner() && !self.file_is_governed()? {
             return Ok(());
         }
         let session = self
@@ -669,6 +694,28 @@ impl Runner {
             .authz()
             .check(areev_core::authz::Verb::RunRespond, &self.ns)
             .map_err(|e| RunError::Unauthorized { what: e.to_string() })
+    }
+
+    /// Whether this memory carries any live, parseable `mg:permits` grant —
+    /// the line between the single-user posture and a governed file (#423).
+    fn file_is_governed(&self) -> Result<bool, RunError> {
+        self.facade
+            .with_store(|m| {
+                m.recent_live(
+                    areev_core::authz::AUTHZ_NS,
+                    Some(areev_core::types::GrainType::Fact),
+                    usize::MAX / 2,
+                )
+            })
+            .map(|rows| {
+                rows.iter().any(|g| {
+                    g.get_str("relation") == Some(areev_core::authz::REL_PERMITS)
+                        && g.get_str("object").is_some_and(|o| {
+                            areev_core::authz::Grant::from_object_string(o).is_ok()
+                        })
+                })
+            })
+            .map_err(err_run)
     }
 
     /// A declared memory read (#255) needs `read` on its namespace. Checked
@@ -1315,6 +1362,75 @@ impl Runner {
                     continue;
                 }
             }
+            // A durable timer (#416) settles HERE, and only once due: a resume
+            // before `due_at` leaves it parked — the node after it never runs
+            // early, however often `resume` is called. The settle is written
+            // with this resume's reading on the result grain, so `verify`
+            // replays the wait from the journal like any answered ask. Its
+            // window is its own deadline: the ask TTL never expires a wait.
+            if manifest
+                .pinned
+                .get(pending.node_idx)
+                .is_some_and(|p| p.executor == crate::manifest::WAIT_EXECUTOR)
+            {
+                let outcome = match self.wait_due_at(&manifest, &view, &pending) {
+                    Ok(due) if now < due => continue,
+                    Ok(due) => {
+                        let result = json!({
+                            "waited": true,
+                            "due_at_ms": due,
+                            "resumed_at_ms": now,
+                        });
+                        EffectOutcome::Completed {
+                            journal_bytes: result.to_string().len() as u64,
+                            result,
+                            input_tokens: 0,
+                            output_tokens: 0,
+                            usd_micros: 0,
+                        }
+                    }
+                    Err(why) => {
+                        let detail = format!("wait cannot be scheduled: {why}");
+                        EffectOutcome::Failed {
+                            cause: FailCause::SchemaValidationFailed,
+                            journal_bytes: detail.len() as u64,
+                            detail,
+                        }
+                    }
+                };
+                let executor = executors
+                    .get(pending.node_idx)
+                    .cloned()
+                    .ok_or_else(|| RunError::ManifestMismatch {
+                        why: "ask node outside manifest".into(),
+                    })?;
+                let intent = view
+                    .entries
+                    .get(&pending.key)
+                    .map(|e| e.intent)
+                    .ok_or_else(|| RunError::Tainted {
+                        why: "pending wait with no journaled intent".into(),
+                    })?;
+                self.facade
+                    .with_store(|m| {
+                        journal::write_result(
+                            m,
+                            &self.ns,
+                            run_id,
+                            &plan_hash,
+                            &intent,
+                            &pending.key,
+                            &executor,
+                            &outcome,
+                            st.superstep,
+                            now,
+                            &self.principal,
+                        )
+                    })
+                    .map_err(err_run)?;
+                events.push(EventIn::ResponseSettled { tool_call_id: id, outcome });
+                continue;
+            }
             if pending
                 .ask
                 .expires_at_sec
@@ -1584,6 +1700,11 @@ impl Runner {
     /// Answer a Client ask (§6.6's validation order). Responding and
     /// resuming are separate acts: this writes the journaled result and
     /// returns; `resume` spends the compute.
+    ///
+    /// Every decision this makes — accepted, declined, refused, a quorum vote
+    /// (#424), a veto (#416) — is appended to the memory's hash-chained
+    /// approval trail (#420, [`crate::approval`]) with the run, the ask, the
+    /// node, the responder, the run's principal and initiator, and the reason.
     pub fn respond(
         &self,
         run_id: &str,
@@ -1609,20 +1730,36 @@ impl Runner {
         // there is no scheduler clock while parked. The reading lands on
         // the result grain, so replay sees it.
         let now = self.clock.now_ms();
+        let ask_node = st.pending_asks.get(tool_call_id).map(|p| p.key.node.clone());
 
-        let journal_rejection = |why: &str| {
+        // One record per decision, on the approval chain (#420).
+        let record = |outcome: &str,
+                      refusal: Option<&str>,
+                      reason: &str,
+                      extra: Option<Value>|
+         -> Result<Hash, RunError> {
+            let rec = crate::approval::ApprovalRecord {
+                run_id,
+                ask: tool_call_id,
+                node: ask_node.as_deref(),
+                responder,
+                principal: Some(&manifest.principal),
+                initiator: manifest.initiator.as_deref(),
+                outcome,
+                refusal,
+                reason,
+                extra,
+                at_ms: now,
+            };
+            self.facade
+                .with_store(|m| crate::approval::append(m, &rec))
+                .map_err(err_run)
+        };
+        let journal_rejection = |refusal: &str, why: &str| {
             // The losing/invalid response is journaled BEFORE the caller is
             // told no — "two officers approved conflicting outcomes seconds
             // apart" is audit evidence, not noise (§6.6).
-            let mut obs = Observation::new(responder, "human")
-                .subject(&format!("run:{run_id}"))
-                .object(&format!("rejected response to ask {tool_call_id}: {why}"))
-                .namespace(HARNESS_NS)
-                .created_at(now as i64);
-            obs.common
-                .extra_fields
-                .insert("run_id".into(), json!(run_id));
-            let _ = self.facade.with_store(|m| m.add(&obs));
+            let _ = record(crate::approval::OUTCOME_REFUSED, Some(refusal), why, None);
         };
 
         // The `run.respond` grant check runs HERE rather than first (#292):
@@ -1631,14 +1768,14 @@ impl Runner {
         // anyone can join to a run. Loading the manifest first costs one read
         // on a path that is already human-paced.
         if let Err(e) = self.check_responder(responder) {
-            journal_rejection(&format!(
-                "responder lacks run.respond on {}: {e}",
-                self.ns
-            ));
+            journal_rejection(
+                "missing_grant",
+                &format!("responder lacks run.respond on {}: {e}", self.ns),
+            );
             return Err(e);
         }
         let Some(pending) = st.pending_asks.get(tool_call_id) else {
-            journal_rejection("no such pending ask (settled, expired, or never asked)");
+            journal_rejection("unknown_ask", "no such pending ask (settled, expired, or never asked)");
             return Err(RunError::UnknownAsk { tool_call_id: tool_call_id.to_string() });
         };
         let bubbled = matches!(
@@ -1651,15 +1788,20 @@ impl Runner {
                 .get(&pending.key)
                 .is_some_and(|e| e.result.is_some())
         {
-            journal_rejection("already settled — first commit won");
+            journal_rejection("already_settled", "already settled — first commit won");
             return Err(RunError::UnknownAsk { tool_call_id: tool_call_id.to_string() });
         }
-        if pending
-            .ask
-            .expires_at_sec
-            .is_some_and(|exp| (now / 1000) as i64 > exp)
+        let pin = manifest.pinned.get(pending.node_idx);
+        let is_wait = pin.is_some_and(|p| p.executor == crate::manifest::WAIT_EXECUTOR);
+        // A wait's window is its own deadline (#416): the ask TTL does not
+        // apply to it — the window check below does.
+        if !is_wait
+            && pending
+                .ask
+                .expires_at_sec
+                .is_some_and(|exp| (now / 1000) as i64 > exp)
         {
-            journal_rejection("expired");
+            journal_rejection("expired", "expired");
             return Err(RunError::UnknownAsk { tool_call_id: tool_call_id.to_string() });
         }
         // Approval separation of duties (§6.6, D5): structurally refused,
@@ -1676,15 +1818,18 @@ impl Runner {
         // without it the person behind the request was invisible to this
         // check and could approve their own work. The field is free-form
         // attribution — a value naming no principal (a trigger occurrence id)
-        // simply never matches a responder.
+        // simply never matches a responder. A veto (#416) is an approval ask
+        // too: the person who asked for a change cannot cancel the cooling-off
+        // around it, nor waive it.
         if pending.ask.approval {
             let self_approval = responder == manifest.principal;
             let initiator_approval = manifest.initiator.as_deref() == Some(responder);
             if self_approval || initiator_approval {
                 let who = if self_approval { "principal" } else { "initiator" };
-                journal_rejection(&format!(
-                    "approval by the triggering {who} '{responder}'"
-                ));
+                journal_rejection(
+                    "separation_of_duties",
+                    &format!("approval by the triggering {who} '{responder}'"),
+                );
                 return Err(RunError::Unauthorized {
                     what: format!(
                         "approval ask {tool_call_id} requires a responder other than \
@@ -1702,22 +1847,34 @@ impl Runner {
             return self.respond(&child, tool_call_id, result, is_error, responder);
         }
 
-        let outcome = if is_error {
-            let detail = result.to_string();
-            EffectOutcome::Failed {
-                cause: FailCause::UserAborted,
-                journal_bytes: detail.len() as u64,
-                detail,
-            }
-        } else {
-            EffectOutcome::Completed {
-                journal_bytes: result.to_string().len() as u64,
-                result,
-                input_tokens: 0,
-                output_tokens: 0,
-                usd_micros: 0,
-            }
-        };
+        // Approval records of this run: quorum votes (#424) have no other
+        // durable form until their ask settles.
+        let records = self
+            .facade
+            .with_store(|m| crate::approval::load_for_run(m, run_id))
+            .map_err(err_run)?;
+
+        // Distinct approvers across gates (#424): within a separation group,
+        // a responder who answered (or voted on) one gate is refused on the
+        // others. Structural, always on — the plan declared it, the manifest
+        // froze it.
+        if let Some((earlier_node, earlier)) =
+            separation_conflict(&manifest, &view, &records, &pending.key.node, tool_call_id, responder)
+        {
+            let why = format!(
+                "'{responder}' already answered gate '{earlier_node}' ({earlier}), and the plan \
+                 separates it from '{}'",
+                pending.key.node
+            );
+            journal_rejection("distinct_approver", &why);
+            return Err(RunError::Unauthorized {
+                what: format!(
+                    "approval ask {tool_call_id} requires a responder distinct from the other \
+                     gates of its separation group: {why}"
+                ),
+            });
+        }
+
         let executor = manifest
             .executors()
             .get(pending.node_idx)
@@ -1728,24 +1885,303 @@ impl Runner {
             .get(&pending.key)
             .map(|e| e.intent)
             .ok_or_else(|| RunError::UnknownAsk { tool_call_id: tool_call_id.to_string() })?;
-        self.facade
-            .with_store(|m| {
-                journal::write_result(
-                    m,
-                    &self.ns,
-                    run_id,
-                    &plan_hash,
-                    &intent,
-                    &pending.key,
-                    &executor,
-                    &outcome,
-                    st.superstep,
-                    now,
-                    responder,
-                )
-            })
-            .map_err(err_run)?;
+        let write = |outcome: &EffectOutcome| -> Result<Hash, RunError> {
+            self.facade
+                .with_store(|m| {
+                    journal::write_result(
+                        m,
+                        &self.ns,
+                        run_id,
+                        &plan_hash,
+                        &intent,
+                        &pending.key,
+                        &executor,
+                        outcome,
+                        st.superstep,
+                        now,
+                        responder,
+                    )
+                })
+                .map_err(err_run)
+        };
+
+        // A durable timer (#416): the only answer a wait takes is a VETO, and
+        // only inside its window. It fails the node as user-aborted, so the
+        // run ends there with the reason journaled.
+        if is_wait {
+            let due = self.wait_due_at(&manifest, &view, pending);
+            if let Ok(due) = due {
+                if now >= due {
+                    journal_rejection(
+                        "window_closed",
+                        &format!("veto window closed at {due} (now {now})"),
+                    );
+                    return Err(RunError::UnknownAsk { tool_call_id: tool_call_id.to_string() });
+                }
+            }
+            let reason = result
+                .get("reason")
+                .and_then(|r| r.as_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| result.to_string());
+            let detail = format!("vetoed by {responder}: {reason}");
+            let outcome = EffectOutcome::Failed {
+                cause: FailCause::UserAborted,
+                journal_bytes: detail.len() as u64,
+                detail,
+            };
+            write(&outcome)?;
+            let _ = record(
+                crate::approval::OUTCOME_VETO,
+                None,
+                &reason,
+                due.ok().map(|d| json!({"due_at_ms": d})),
+            );
+            return Ok(());
+        }
+
+        // N-of-M quorum on one ask (#424): the ask settles only when N
+        // distinct responders have answered `approved: true`. Any refusal
+        // settles it at once. Each counted vote is a chained record — the
+        // only durable form it has until the ask settles.
+        let mut quorum_extra = None;
+        if let Some(required) = pin.and_then(|p| p.quorum) {
+            let voters = crate::approval::voters(&records, tool_call_id);
+            if voters.iter().any(|v| v == responder) {
+                let why = format!("'{responder}' already voted on this ask");
+                journal_rejection("duplicate_vote", &why);
+                return Err(RunError::Unauthorized {
+                    what: format!(
+                        "quorum ask {tool_call_id} needs {required} DISTINCT approvers: {why}"
+                    ),
+                });
+            }
+            let approve = !is_error && result.get("approved") == Some(&Value::Bool(true));
+            let mut approvers = voters.clone();
+            approvers.push(responder.to_string());
+            let progress = json!({"quorum": {
+                "required": required,
+                "approvals": if approve { approvers.len() } else { voters.len() },
+                "approvers": if approve { approvers.clone() } else { voters.clone() },
+            }});
+            if approve && (approvers.len() as u32) < required {
+                record(
+                    crate::approval::OUTCOME_VOTE,
+                    None,
+                    &format!("approval {} of {required}", approvers.len()),
+                    Some(progress),
+                )?;
+                return Ok(());
+            }
+            quorum_extra = Some(progress);
+        }
+
+        let outcome = if is_error {
+            let detail = result.to_string();
+            EffectOutcome::Failed {
+                cause: FailCause::UserAborted,
+                journal_bytes: detail.len() as u64,
+                detail,
+            }
+        } else {
+            EffectOutcome::Completed {
+                journal_bytes: result.to_string().len() as u64,
+                result: result.clone(),
+                input_tokens: 0,
+                output_tokens: 0,
+                usd_micros: 0,
+            }
+        };
+        write(&outcome)?;
+        // The result grain is the authoritative answer; the trail record is
+        // the evidence. A trail write failing after the answer landed must not
+        // turn an accepted response into an error the caller would retry.
+        let (label, reason) = if is_error {
+            (crate::approval::OUTCOME_DECLINED, result.to_string())
+        } else {
+            (crate::approval::OUTCOME_ACCEPTED, String::new())
+        };
+        let _ = record(label, None, &reason, quorum_extra);
         Ok(())
+    }
+
+    /// When a parked wait ask (#416) comes due, from its pin, its input and
+    /// the intent grain's journaled clock (the park).
+    fn wait_due_at(
+        &self,
+        manifest: &RunManifest,
+        view: &journal::JournalView,
+        pending: &areev_run_core::PendingAsk,
+    ) -> Result<u64, String> {
+        let pin = manifest.pinned.get(pending.node_idx).ok_or("ask node outside manifest")?;
+        let intent = view
+            .entries
+            .get(&pending.key)
+            .map(|e| e.intent)
+            .ok_or("pending wait with no journaled intent")?;
+        let parked_at = self
+            .facade
+            .with_store(|m| m.get(&intent))
+            .map_err(|e| e.to_string())?
+            .get_i64("created_at")
+            .unwrap_or(0)
+            .max(0) as u64;
+        crate::manifest::wait_due_at(pin.wait.as_ref(), &pending.ask.input, parked_at)
+    }
+
+    /// Annotate a parked envelope (#416, #424): a wait ask carries its
+    /// `due_at_ms` and `ask_kind: "veto"`, a quorum ask its progress, and an
+    /// envelope whose every ask is a wait is `kind: "waiting"` with the
+    /// earliest `due_at_ms`.
+    fn annotate_envelope(&self, manifest: &RunManifest, run_id: &str, envelope: &mut Value) {
+        let governed = manifest
+            .pinned
+            .iter()
+            .any(|p| p.executor == crate::manifest::WAIT_EXECUTOR || p.quorum.is_some());
+        if !governed {
+            return;
+        }
+        let Ok(view) = self.facade.with_store(|m| journal::load(m, &self.ns, run_id)) else {
+            return;
+        };
+        let Some(st) = view
+            .checkpoints
+            .last()
+            .and_then(|c| serde_json::from_value::<SchedulerState>(c.scheduler.clone()).ok())
+        else {
+            return;
+        };
+        let records = self
+            .facade
+            .with_store(|m| crate::approval::load_for_run(m, run_id))
+            .unwrap_or_default();
+        let Some(asks) = envelope.get_mut("asks").and_then(|a| a.as_array_mut()) else {
+            return;
+        };
+        let mut all_waits = !asks.is_empty();
+        let mut earliest: Option<u64> = None;
+        for ask in asks.iter_mut() {
+            let id = ask.get("tool_call_id").and_then(|i| i.as_str()).unwrap_or_default().to_string();
+            let Some(pending) = st.pending_asks.get(&id) else {
+                all_waits = false;
+                continue;
+            };
+            let Some(pin) = manifest.pinned.get(pending.node_idx) else {
+                all_waits = false;
+                continue;
+            };
+            let Some(o) = ask.as_object_mut() else { continue };
+            if pin.executor == crate::manifest::WAIT_EXECUTOR {
+                o.insert("kind".into(), json!("waiting"));
+                o.insert("ask_kind".into(), json!(crate::manifest::ASK_KIND_VETO));
+                match self.wait_due_at(manifest, &view, pending) {
+                    Ok(due) => {
+                        o.insert("due_at_ms".into(), json!(due));
+                        earliest = Some(earliest.map_or(due, |e| e.min(due)));
+                    }
+                    Err(why) => {
+                        o.insert("wait_error".into(), json!(why));
+                    }
+                }
+            } else {
+                all_waits = false;
+                if let Some(required) = pin.quorum {
+                    let voters = crate::approval::voters(&records, &id);
+                    o.insert(
+                        "quorum".into(),
+                        json!({"required": required, "approvals": voters.len(), "approvers": voters}),
+                    );
+                }
+            }
+        }
+        if all_waits {
+            if let Some(o) = envelope.as_object_mut() {
+                o.insert("kind".into(), json!("waiting"));
+                if let Some(e) = earliest {
+                    o.insert("due_at_ms".into(), json!(e));
+                }
+            }
+        }
+    }
+
+    /// Resume every parked run in this namespace whose wait (#416) has come
+    /// due — the heartbeat posture: no daemon, a command on a cadence
+    /// (`areev run tick`, and every `areev trigger run` pass). Needs
+    /// `run.execute`, the grant `resume` takes. A run whose resume fails is
+    /// reported and the pass continues.
+    pub fn tick(&self, opts: &RunOptions) -> Result<crate::TickReport, RunError> {
+        self.check_run_verb(areev_core::authz::Verb::RunExecute)?;
+        let now = self.clock.now_ms();
+        let mut report = crate::TickReport { now_ms: now, ..Default::default() };
+        let index = self.run_index(Some(&self.ns), 0, usize::MAX, RUN_INDEX_MAX_SCAN)?;
+        for (_, run_id, _) in index.rows {
+            let Ok(manifest) = self.load_manifest(&run_id) else { continue };
+            if !manifest.pinned.iter().any(|p| p.executor == crate::manifest::WAIT_EXECUTOR) {
+                continue;
+            }
+            let view = match self.facade.with_store(|m| journal::load(m, &self.ns, &run_id)) {
+                Ok(v) => v,
+                Err(e) => {
+                    report.errors.push(format!("{run_id}: {e}"));
+                    continue;
+                }
+            };
+            let Some(st) = view
+                .checkpoints
+                .last()
+                .and_then(|c| serde_json::from_value::<SchedulerState>(c.scheduler.clone()).ok())
+            else {
+                continue;
+            };
+            if st.is_terminal() {
+                continue;
+            }
+            let mut due_nodes = Vec::new();
+            let mut due_at_min: Option<u64> = None;
+            for (id, pending) in &st.pending_asks {
+                let is_wait = manifest
+                    .pinned
+                    .get(pending.node_idx)
+                    .is_some_and(|p| p.executor == crate::manifest::WAIT_EXECUTOR);
+                if !is_wait || view.entries.get(&pending.key).is_some_and(|e| e.result.is_some()) {
+                    continue;
+                }
+                match self.wait_due_at(&manifest, &view, pending) {
+                    Ok(due) if due > now => report.waiting.push(json!({
+                        "run_id": run_id, "node": pending.key.node,
+                        "tool_call_id": id, "due_at_ms": due,
+                    })),
+                    // Due — or undeterminable, which the resume settles as a
+                    // failed node rather than leaving parked forever.
+                    other => {
+                        due_nodes.push(pending.key.node.clone());
+                        if let Ok(due) = other {
+                            due_at_min = Some(due_at_min.map_or(due, |d| d.min(due)));
+                        }
+                    }
+                }
+            }
+            if due_nodes.is_empty() {
+                continue;
+            }
+            match self.resume(&run_id, opts) {
+                Ok(session) => {
+                    let session = match session {
+                        RunSession::Finished { outcome, .. } => format!("finished:{outcome:?}"),
+                        RunSession::Parked { envelope, .. } => format!(
+                            "parked:{}",
+                            envelope.get("kind").and_then(|k| k.as_str()).unwrap_or("requires_action")
+                        ),
+                    };
+                    report.resumed.push(json!({
+                        "run_id": run_id, "nodes": due_nodes,
+                        "due_at_ms": due_at_min, "session": session,
+                    }));
+                }
+                Err(e) => report.errors.push(format!("{run_id}: {e}")),
+            }
+        }
+        Ok(report)
     }
 
     /// Write the cancel marker (the kill-switch primitive). The drive loop
@@ -3023,7 +3459,8 @@ impl Runner {
                 continue;
             }
 
-            if let Some(envelope) = parked_envelope {
+            if let Some(mut envelope) = parked_envelope {
+                self.annotate_envelope(manifest, &run_id, &mut envelope);
                 // in_flight is 0 here: every dispatch drains with its wave.
                 //
                 // Release: a parked run is not a process. It is a journaled
@@ -3089,19 +3526,18 @@ impl Runner {
             if !st.pending_asks.is_empty() {
                 slots.release(&self.facade);
                 lease.release(&self.facade);
-                return Ok(RunSession::Parked {
-                    envelope: json!({
-                        "kind": "requires_action",
-                        "run_id": run_id,
-                        "checkpoint": prev_ckpt.map(|h| h.to_hex()),
-                        "asks": st
-                            .pending_asks
-                            .values()
-                            .map(|p| p.ask.clone())
-                            .collect::<Vec<_>>(),
-                    }),
-                    run_id,
+                let mut envelope = json!({
+                    "kind": "requires_action",
+                    "run_id": run_id,
+                    "checkpoint": prev_ckpt.map(|h| h.to_hex()),
+                    "asks": st
+                        .pending_asks
+                        .values()
+                        .map(|p| p.ask.clone())
+                        .collect::<Vec<_>>(),
                 });
+                self.annotate_envelope(manifest, &run_id, &mut envelope);
+                return Ok(RunSession::Parked { envelope, run_id });
             }
             return Err(RunError::Storage {
                 detail: "driver made no progress with no work in flight".into(),
@@ -3348,6 +3784,38 @@ impl Runner {
         if view.pause.is_paused() && !finished {
             phase = Some("paused".into());
         }
+        // Approval governance (#416, #420, #424): quorum progress and open
+        // waits per pending ask, and the run's decision trail.
+        let approvals = self
+            .facade
+            .with_store(|m| crate::approval::load_for_run(m, run_id))
+            .unwrap_or_default();
+        let mut quorum = Vec::new();
+        let mut waits = Vec::new();
+        if let Some(st) = last
+            .and_then(|c| serde_json::from_value::<SchedulerState>(c.scheduler.clone()).ok())
+            .filter(|st| !st.is_terminal())
+        {
+            for (id, pending) in &st.pending_asks {
+                let Some(pin) = manifest.pinned.get(pending.node_idx) else { continue };
+                if view.entries.get(&pending.key).is_some_and(|e| e.result.is_some()) {
+                    continue;
+                }
+                if let Some(required) = pin.quorum {
+                    let voters = crate::approval::voters(&approvals, id);
+                    quorum.push(json!({
+                        "tool_call_id": id, "node": pending.key.node, "required": required,
+                        "approvals": voters.len(), "approvers": voters,
+                    }));
+                }
+                if pin.executor == crate::manifest::WAIT_EXECUTOR {
+                    waits.push(match self.wait_due_at(&manifest, &view, pending) {
+                        Ok(due) => json!({"tool_call_id": id, "node": pending.key.node, "due_at_ms": due}),
+                        Err(why) => json!({"tool_call_id": id, "node": pending.key.node, "error": why}),
+                    });
+                }
+            }
+        }
         Ok(crate::InspectReport {
             run_id: run_id.to_string(),
             plan_hash: manifest.plan_hash.clone(),
@@ -3384,6 +3852,15 @@ impl Runner {
                     if let Some(lock) = &p.locked_params {
                         row_obj.insert("locked_params".into(), lock.clone());
                     }
+                    if let Some(kind) = &p.ask_kind {
+                        row_obj.insert("ask_kind".into(), json!(kind));
+                    }
+                    if let Some(q) = p.quorum {
+                        row_obj.insert("quorum".into(), json!({"required": q}));
+                    }
+                    if let Some(w) = &p.wait {
+                        row_obj.insert("wait".into(), w.clone());
+                    }
                     if manifest.dispatch_pins.iter().any(|d| std::ptr::eq(d, p)) {
                         row_obj.insert("dispatch_only".into(), json!(true));
                     }
@@ -3418,6 +3895,10 @@ impl Runner {
                 "llm_tool_result_chars": manifest.llm_tool_result_chars,
             }),
             pause,
+            separation: manifest.separation.clone(),
+            quorum,
+            waits,
+            approvals,
         })
     }
 
@@ -3452,8 +3933,20 @@ impl Runner {
         let gated: Vec<Value> = manifest
             .pinned
             .iter()
-            .filter(|p| p.executor == "client")
-            .map(|p| json!({"node": p.node, "tool": p.tool_name}))
+            .filter(|p| p.executor == "client" || p.executor == crate::manifest::WAIT_EXECUTOR)
+            .map(|p| {
+                let mut row = json!({"node": p.node, "tool": p.tool_name});
+                if let Some(kind) = &p.ask_kind {
+                    row["ask_kind"] = json!(kind);
+                }
+                if let Some(q) = p.quorum {
+                    row["quorum"] = json!({"required": q});
+                }
+                if let Some(w) = &p.wait {
+                    row["wait"] = w.clone();
+                }
+                row
+            })
             .collect();
         // Authorized responders: principals granted run.respond in the file.
         let responders: Vec<String> = self
@@ -3491,6 +3984,10 @@ impl Runner {
                 }
             }
         }
+        let approvals = self
+            .facade
+            .with_store(|m| crate::approval::load_for_run(m, &run_id))
+            .unwrap_or_default();
         Ok(crate::OversightReport {
             run_id,
             plan_hash: manifest.plan_hash.clone(),
@@ -3498,6 +3995,10 @@ impl Runner {
                 "client_gated_nodes": gated,
                 "every_client_ask_is_an_approval": true,
                 "separation_of_duties": "responder != triggering principal, refused structurally",
+                // #424: across gates — within a group, one responder answers
+                // at most one gate — and N-of-M on one ask (per gated node's
+                // `quorum`). #416: a wait node's veto window (`wait`).
+                "separation_groups": manifest.separation,
                 "ask_ttl_sec": manifest.ask_ttl_sec,
             }),
             authorized_responders: json!({
@@ -3510,6 +4011,9 @@ impl Runner {
                 "measured_cancel_to_drain_ms": cancel_ms,
                 "note": "measured from journaled cancel Facts to the terminal checkpoint's journaled close",
             }),
+            // #420: every recorded decision on this run's asks — accepted,
+            // declined, refused, quorum votes and vetoes.
+            approvals,
         })
     }
 
@@ -3971,7 +4475,144 @@ impl Runner {
             }
             break 'replay;
         }
+        // Only over a replay that verified something: a governance step must
+        // never be what turns an empty report into a passing one.
+        if !report.steps.is_empty() {
+            self.verify_governance(&manifest, &view, run_id, &mut report);
+        }
         report.verified = !report.steps.is_empty() && report.steps.iter().all(|s| s.ok);
         Ok(report)
     }
+
+    /// The approval rules a replay cannot see (#424): the scheduler takes an
+    /// ask's answer from its result grain, which says nothing about the votes
+    /// behind it or who answered the OTHER gates. So verify re-checks them
+    /// against the journal and the approval trail: every quorum ask settled
+    /// as approved has `required` distinct recorded approvers, and no
+    /// responder answered two gates of one separation group. One step per
+    /// governed ask; a violation fails verification.
+    fn verify_governance(
+        &self,
+        manifest: &RunManifest,
+        view: &JournalView,
+        run_id: &str,
+        report: &mut VerifyReport,
+    ) {
+        let quorum_nodes: BTreeMap<&str, u32> = manifest
+            .pinned
+            .iter()
+            .filter_map(|p| p.quorum.map(|q| (p.node.as_str(), q)))
+            .collect();
+        if quorum_nodes.is_empty() && manifest.separation.is_empty() {
+            return;
+        }
+        let records = self
+            .facade
+            .with_store(|m| crate::approval::load_for_run(m, run_id))
+            .unwrap_or_default();
+        for e in view.entries.values() {
+            let Some(&required) = quorum_nodes.get(e.key.node.as_str()) else { continue };
+            let Some((_, EffectOutcome::Completed { result, .. })) = &e.result else { continue };
+            if result.get("approved") != Some(&Value::Bool(true)) {
+                continue;
+            }
+            let ask = e.key.tool_call_id();
+            let mut approvers = crate::approval::voters(&records, &ask);
+            if let Some(a) = &e.result_author {
+                if !approvers.contains(a) {
+                    approvers.push(a.clone());
+                }
+            }
+            let ok = approvers.len() as u32 >= required;
+            report.steps.push(VerifyStep {
+                superstep: e.superstep,
+                verdict: format!(
+                    "quorum on '{}' (ask {ask}): {} of {required} distinct approver(s) recorded{}",
+                    e.key.node,
+                    approvers.len(),
+                    if ok { "" } else { " — the settled approval is NOT backed by its quorum" }
+                ),
+                ok,
+            });
+        }
+        for group in &manifest.separation {
+            let mut seen: BTreeMap<&str, &str> = BTreeMap::new();
+            let mut clash = None;
+            for e in view.entries.values() {
+                if !group.contains(&e.key.node) || e.result.is_none() {
+                    continue;
+                }
+                let Some(author) = e.result_author.as_deref() else { continue };
+                match seen.get(author) {
+                    Some(&other) if other != e.key.node => {
+                        clash = Some(format!("'{author}' answered both '{other}' and '{}'", e.key.node));
+                    }
+                    _ => {
+                        seen.insert(author, e.key.node.as_str());
+                    }
+                }
+            }
+            report.steps.push(VerifyStep {
+                superstep: 0,
+                verdict: match &clash {
+                    None => format!("separation {group:?}: distinct responders"),
+                    Some(c) => format!("separation {group:?} violated: {c}"),
+                },
+                ok: clash.is_none(),
+            });
+        }
+    }
+}
+
+/// The earlier answer that bars `responder` from this gate (#424): a settled
+/// result they authored, or a quorum vote they cast, on ANOTHER node of a
+/// separation group that contains `node`. `(other node, what they did)`.
+fn separation_conflict(
+    manifest: &RunManifest,
+    view: &JournalView,
+    records: &[Value],
+    node: &str,
+    ask: &str,
+    responder: &str,
+) -> Option<(String, String)> {
+    let others: std::collections::BTreeSet<&str> = manifest
+        .separation
+        .iter()
+        .filter(|g| g.iter().any(|n| n == node))
+        .flat_map(|g| g.iter().map(String::as_str))
+        .filter(|n| *n != node)
+        .collect();
+    if others.is_empty() {
+        return None;
+    }
+    for e in view.entries.values() {
+        if others.contains(e.key.node.as_str())
+            && e.result.is_some()
+            && e.result_author.as_deref() == Some(responder)
+        {
+            return Some((e.key.node.clone(), format!("answered ask {}", e.key.tool_call_id())));
+        }
+    }
+    records
+        .iter()
+        .filter(|r| r.get("ask").and_then(|a| a.as_str()) != Some(ask))
+        .filter(|r| r.get("responder").and_then(|w| w.as_str()) == Some(responder))
+        .filter(|r| {
+            matches!(
+                r.get("outcome").and_then(|o| o.as_str()),
+                Some(crate::approval::OUTCOME_VOTE)
+            )
+        })
+        .find_map(|r| {
+            let n = r.get("node").and_then(|n| n.as_str())?;
+            others.contains(n).then(|| {
+                (
+                    n.to_string(),
+                    format!(
+                        "voted on ask {}",
+                        r.get("ask").and_then(|a| a.as_str()).unwrap_or("?")
+                    ),
+                )
+            })
+        })
 }

@@ -127,7 +127,15 @@ absolute path in a process-wide `OPEN_FILES` registry and a second open fails
 with **`STO-E002`** (`OpenFileGuard`, released on drop; `None` on Postgres,
 which is genuinely multi-writer). The cross-process OS lock never caught this
 because within one process that lock is already held. Node has no
-deterministic drop, so its binding exposes `close()`.
+deterministic drop, so its binding exposes `close()`. The cross-process half
+is typed too (#419): `TursoDb::open` classifies turso's lock-contention
+failure (`Locking error: … locked by another process`, the only place the
+type survives is that text — turso folds `LimboError::LockingError` into a
+string) as **`STO-E012` `FileLocked`** via `db::open_err`; any other lock
+failure stays `STO-E001`. `locked_text_is_classified` pins the match against
+turso's exact wording, so a turso bump that rewords it fails a test. It is
+what lets `areev trigger run` treat a held file as a skipped pass. Embedded
+only — no conformance case, since Postgres has no file lock to contend.
 
 `add` is **idempotent on the content address**: `add_batch_inner` probes `has`
 before reserving counters and skips grains already stored (and duplicates
@@ -370,6 +378,20 @@ path, exercise it through a facade, not only through the store.
 Conformance: `cases/legal_hold.rs`, both backends; store tests:
 `tests/retention_floor_hold_tests.rs`, `tests/async_safety_tests.rs`.
 
+## Audit chains (`append_audit` / `append_audit_on`, #280, #420)
+
+`append_audit` appends a Tier-2 destruction record to the `tier2` chain;
+`append_audit_on(chain, obs)` appends to a NAMED chain — `AUDIT_CHAIN_APPROVAL`
+(`"approval"`) carries `areev-run`'s respond decisions. Each chain has its own
+head row `audit_head:<chain>` (`<seq>:<hex>`, claimed by `meta_cas` BEFORE the
+write, so a failure leaves a visible gap, never two records at one seq), its
+own `seq` from 1 and its own `chain_root`, so one trail never leaves a gap in
+another's numbering. The head rows are a write-path cache outside
+`REPLICABLE_META_PREFIXES` — a replica's chains are its own.
+`audit_chain_head_on` reads one. The chain does not care where its records
+live: destruction records are in `agent:authz`, approval records in
+`agent:harness`. Tests: `tests/audit_chain_tests.rs`.
+
 ## Forks / heads / merge (the "grains as git" model)
 
 - Local add collapses the head (DELETE+INSERT into `heads`); **import UNIONs**
@@ -469,6 +491,21 @@ e.g. on a backdated grain added off the head chain. So `recall_at(…, Some(r),
 1, …)` == `entity_at(…, r, …)` exactly, and an as-of recall returns ONE grain
 per relation where `recall` returns every live one. Exact namespace only.
 Conformance: `recall_at_is_entity_at_per_relation` (both backends).
+
+## Dual-control reveal state (`reveal_req:` rows, #417)
+
+`anon_reveal_policy(ns)` reads the `anon:<ns>` row FRESH (not the handle's
+policy cache — another Postgres writer may just have declared `dual`) and
+fails closed on an unreadable row. A dual-control request is a
+`reveal_req:<id>` meta row (`REVEAL_REQUEST_PREFIX`), moved pending →
+approved → used by `meta_cas` on the whole value — so two concurrent
+approvals or redemptions cannot both win on Postgres. The logic is the CAL
+facade's (`reveal_request`/`reveal_approve`/`reveal_redeem`); the store only
+holds the row. **`reveal_req:` is NOT in `REPLICABLE_META_PREFIXES`**: a
+replica holding an "approved, unused" copy would be a second use, and the
+vault it reveals from never replicates either. The request/approve/reveal
+audit grains do replicate (evidence). Conformance:
+`dual_control_reveal_is_single_use_and_never_replicates`, both backends.
 
 ## Anonymization key material
 

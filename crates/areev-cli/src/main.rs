@@ -153,7 +153,7 @@ COMMANDS:
                                       and gates member aliases for a
                                       `composite` one
   trigger  run [--id T] [--connector-cmd CMD] [--tool-cmd CMD] [--dry-run]
-           [--lease SECS] [--max-items N] [--credential NAME=[header:H=]ENV_VAR|cmd:CMD|vault:P#F]
+           [--lease SECS] [--max-items N] [--lock-wait SECS] [--credential NAME=[header:H=]ENV_VAR|cmd:CMD|vault:P#F]
            [--credential-ttl SECS] [--resolver-env VAR,...]
            [--allow-executor HEX,...] [--sandbox-cmd CMD] [--executor-cache DIR]
            [--executor-timeout SECS] [--tool-env VAR,...]
@@ -162,7 +162,13 @@ COMMANDS:
            [--max-effects N] [--llm-tool-result-chars N] [--llm-context-tokens N]
                                       evaluate once and exit — the cadence is
                                       data in the memory, so the heartbeat can
-                                      be coarse. Safe to invoke concurrently.
+                                      be coarse. Safe to invoke concurrently:
+                                      on postgres evaluators contend per
+                                      trigger; on an embedded FILE one
+                                      evaluator holds it at a time, and a pass
+                                      that cannot open it (STO-E012) reports
+                                      skipped_locked and exits 0. --lock-wait
+                                      retries the open for up to SECS first.
                                       A firing gets the SAME runner `run start`
                                       builds: the executor pin, the sandbox and
                                       the model all reach it, so a plan that
@@ -224,10 +230,18 @@ COMMANDS:
                                       memory's key; new blobs are sealed on
                                       write). Idempotent
   audit export [--since MS] [--until MS] [--out FILE] [--with-outcomes]
+               [--trail approval|destruction|loop[,...]]
                                       accountability evidence as JSONL: every
                                       destructive op (who/what/why/how many)
+                                      + every `run respond` decision (accepted,
+                                      declined, refused — missing grant,
+                                      separation of duties, distinct
+                                      approver, duplicate vote, expired —
+                                      quorum votes and vetoes, with run, ask,
+                                      node, responder, initiator, reason)
                                       + the loop lifecycle with its gating
-                                      edge. BOTH trails hash-chained and
+                                      edge. --trail keeps only the named
+                                      trails. EVERY trail hash-chained and
                                       verified — a missing predecessor is a
                                       chain_break, one merely outside --since
                                       is previous_outside_window, and a
@@ -353,8 +367,8 @@ COMMANDS:
            BECAUSE + gating edge, the runs that touched it, and the executor
            blob its executor_uri points at (present? how many bytes? — read
            lock-free, so it answers while the run is still holding the file)
-  run      <start|resume|respond|input|pause|cancel|list|inspect|verify|fork|
-           shadow|oversight-report|demo>   the governed
+  run      <start|resume|respond|input|pause|cancel|tick|list|inspect|verify|
+           fork|shadow|oversight-report|demo>   the governed
            workflow runtime: journaled, checkpointed, HITL-pausable runs of
            Workflow grains. list [--last N] [--offset N] prints the newest
            runs with outcome + spend (default 20; stderr says when the page
@@ -442,6 +456,23 @@ COMMANDS:
            rather than name what it must not. A bare --tool-env passes nothing
            but that minimal set. Naming a variable already registered as
            holding a secret does NOT re-admit it: it is dropped and reported;
+           tick [--tool-cmd CMD ...] resumes every parked run in --ns whose
+           durable wait (a Tool Definition with executor_uri \"areev://wait\",
+           {\"for_secs\": N} or {\"until_ms\": T} declared or in the node's
+           state) has come due, and prints what it resumed and what is still
+           waiting. No daemon: run it from cron, or let `trigger run` do it —
+           every evaluation pass ticks the namespace too. A resume before
+           due_at never advances the run. Inside the window, `run respond` on
+           the wait's ask is a VETO (needs run.respond; never the run's
+           principal or initiator): the node fails as user-aborted with the
+           reason journaled;
+           respond answers a Client ask. A plan's \"separation\" groups refuse a
+           responder who already answered another gate of the group, and a
+           Definition's \"quorum\": {\"required\": N} keeps the ask open until N
+           DISTINCT responders answered {\"approved\": true} (any refusal
+           settles it). On a memory carrying any mg:permits grant the
+           responder must hold run.respond whatever the handle's binding;
+           every decision lands on the approval trail `audit export` reads;
            input --run-id ID --message TEXT [--as PRINCIPAL] queues a
            steering message: the next superstep hands it to its nodes under
            `$inbox`, so a person redirects a running run in band instead of
@@ -544,7 +575,22 @@ COMMANDS:
                                       process's live pseudonym mappings, and
                                       `reveal --ns NS --token T` reverse-looks
                                       one up (admin verb; Tier-2 audited by
-                                      fingerprint). Add --anonymize-egress to
+                                      fingerprint). A policy with
+                                      \"reveal\": {\"mode\": \"dual\", \"ttl_secs\": N}
+                                      refuses that direct form (AUT-E005) and
+                                      takes two principals instead:
+                                        reveal-request --ns NS --token T[,T2]
+                                          --because \"why\" --as A  → request id
+                                        reveal-approve --request ID --as B
+                                          (B != A; admin; within the TTL)
+                                        reveal --request ID --as A
+                                          (once, within ttl_secs of approval)
+                                      each step (and each refusal) a Tier-2
+                                      record in `audit export`. The policy
+                                      may also declare regex detectors:
+                                      \"detectors\": [{\"category\": C,
+                                      \"pattern\": RE, \"cue\": [W, ...]}],
+                                      validated at `set`. Add --anonymize-egress to
                                       any verb to force egress on as a host
                                       floor, and --anonymize-cmd 'CMD' to
                                       install a Tier-1 NER detector (JSON
@@ -2243,28 +2289,68 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
                 .into(),
         );
     }
+    // `trigger run` is the one verb for which losing the file to another
+    // process is EXPECTED (#419): two overlapping heartbeat ticks race for
+    // the embedded file's OS lock, and the loser's whole pass is skipped —
+    // reported as `skipped_locked` with exit 0, not paged as a fault. Only
+    // the typed `STO-E012` qualifies; every other open failure still exits
+    // non-zero. `--lock-wait SECS` retries the open until the deadline first.
+    let trigger_pass = cmd == "trigger" && positional.first().map(String::as_str) == Some("run");
+    let lock_wait = match flag(&flags, "lock-wait") {
+        Some(v) if trigger_pass => std::time::Duration::from_secs_f64(
+            v.parse::<f64>()
+                .ok()
+                .filter(|s| s.is_finite() && *s >= 0.0)
+                .ok_or_else(|| format!("--lock-wait: not a number of seconds: {v}"))?,
+        ),
+        Some(_) => return Err("--lock-wait applies to `areev trigger run` only".into()),
+        None => std::time::Duration::ZERO,
+    };
+    let lock_deadline = std::time::Instant::now() + lock_wait;
     let mut m = if is_pg_url {
         open_postgres_store(&db, tel_mode, explicit_index.as_deref(), anon_key, read_only)?
     } else {
-        if explicit_index.is_some() || enc_key.is_some() || anon_key.is_some() || read_only {
-            let mut o = areev_store::AreevOptions::default();
-            if let Some(v) = &explicit_index {
-                o.index_text = !matches!(v.as_str(), "false" | "0" | "off" | "no");
+        let open_file = || {
+            if explicit_index.is_some() || enc_key.is_some() || anon_key.is_some() || read_only {
+                let mut o = areev_store::AreevOptions::default();
+                if let Some(v) = &explicit_index {
+                    o.index_text = !matches!(v.as_str(), "false" | "0" | "off" | "no");
+                }
+                if let Some(key) = &enc_key {
+                    o.encryption_key = Some(**key);
+                }
+                o.anon_key = anon_key;
+                o.telemetry = tel_mode;
+                o.read_only = read_only;
+                Areev::open_with(&db, o)
+            } else if tel_mode != areev_store::TelemetryMode::Off {
+                // Honor the file's declarations AND attach the telemetry sidecar.
+                Areev::open_with_telemetry(&db, tel_mode)
+            } else {
+                Areev::open(&db)
             }
-            if let Some(key) = &enc_key {
-                o.encryption_key = Some(**key);
+        };
+        let opened = loop {
+            match open_file() {
+                Err(areev_core::error::AreevError::FileLocked(why)) if trigger_pass => {
+                    let now = std::time::Instant::now();
+                    if now < lock_deadline {
+                        std::thread::sleep(
+                            (lock_deadline - now).min(std::time::Duration::from_millis(200)),
+                        );
+                        continue;
+                    }
+                    return trigger_cli::report_locked_pass(
+                        &db,
+                        &why,
+                        lock_wait,
+                        flag(&flags, "format").as_deref() == Some("json"),
+                    );
+                }
+                other => break other,
             }
-            o.anon_key = anon_key;
-            o.telemetry = tel_mode;
-            o.read_only = read_only;
-            Areev::open_with(&db, o)
-        } else if tel_mode != areev_store::TelemetryMode::Off {
-            // Honor the file's declarations AND attach the telemetry sidecar.
-            Areev::open_with_telemetry(&db, tel_mode)
-        } else {
-            Areev::open(&db)
-        }
-        .map_err(|e| {
+        };
+        opened.map_err(|e| {
             let mut msg = e.to_string();
             // A .kdf sidecar means the file was created encrypted; opening it
             // without a key fails with an unhelpful "not a database" — say why.
@@ -4510,14 +4596,60 @@ fn run_anonymize(
             Ok(())
         }
         "reveal" => {
-            let ns = flag(flags, "ns").ok_or("anonymize reveal requires --ns")?;
+            // `--request ID` redeems an approved dual-control request (#417);
+            // otherwise the direct form, which a dual-control namespace
+            // refuses (AUT-E005).
+            if let Some(request) = flag(flags, "request") {
+                let facade = apply_principal(
+                    areev_cal::AreevFacade::with_session(m, None, None),
+                    flags,
+                )?;
+                let out = facade.reveal_redeem(&request).map_err(|e| e.to_string())?;
+                println!("{out}");
+                return Ok(());
+            }
+            let ns = flag(flags, "ns").ok_or("anonymize reveal requires --ns (or --request ID)")?;
             let token = flag(flags, "token").ok_or("anonymize reveal requires --token")?;
             // Facade path: admin-gated + Tier-2 audited (fingerprints only).
-            let facade =
-                areev_cal::AreevFacade::with_session(m, Some(ns.clone()), None);
+            // `--as` binds the principal, so the audit names who revealed.
+            let facade = apply_principal(
+                areev_cal::AreevFacade::with_session(m, Some(ns.clone()), None),
+                flags,
+            )?;
             let out = facade
                 .reveal_tokens(&ns, &[token])
                 .map_err(|e| e.to_string())?;
+            println!("{out}");
+            Ok(())
+        }
+        "reveal-request" => {
+            let ns = flag(flags, "ns").ok_or("anonymize reveal-request requires --ns")?;
+            let tokens: Vec<String> = flag(flags, "token")
+                .ok_or("anonymize reveal-request requires --token (comma-separate several)")?
+                .split(',')
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect();
+            let because = flag(flags, "because")
+                .ok_or("anonymize reveal-request requires --because \"why\"")?;
+            let facade = apply_principal(
+                areev_cal::AreevFacade::with_session(m, Some(ns.clone()), None),
+                flags,
+            )?;
+            let out = facade
+                .reveal_request(&ns, &tokens, &because)
+                .map_err(|e| e.to_string())?;
+            println!("{out}");
+            Ok(())
+        }
+        "reveal-approve" => {
+            let request =
+                flag(flags, "request").ok_or("anonymize reveal-approve requires --request ID")?;
+            let facade = apply_principal(
+                areev_cal::AreevFacade::with_session(m, None, None),
+                flags,
+            )?;
+            let out = facade.reveal_approve(&request).map_err(|e| e.to_string())?;
             println!("{out}");
             Ok(())
         }
@@ -4534,7 +4666,8 @@ fn run_anonymize(
             Ok(())
         }
         other => Err(format!(
-            "unknown anonymize subcommand '{other}' (expected scan, set, list, clear, or mappings)"
+            "unknown anonymize subcommand '{other}' (expected scan, test, set, list, clear, \
+             mappings, reveal, reveal-request, or reveal-approve)"
         )),
     }
 }
@@ -4809,7 +4942,15 @@ fn run_run(
         }
         RunSession::Parked { envelope, run_id } => {
             println!("{envelope}");
-            if envelope["kind"] == "paused" {
+            if envelope["kind"] == "waiting" {
+                eprintln!(
+                    "areev: run waiting until {} (unix ms) — `areev run tick` (or any \
+                     `areev trigger run` pass) resumes it once due; a principal holding \
+                     run.respond may veto inside the window with `areev run respond --run-id \
+                     {run_id} --ask TOOL_CALL_ID --result '{{\"reason\":\"…\"}}' --as PRINCIPAL`",
+                    envelope["due_at_ms"]
+                );
+            } else if envelope["kind"] == "paused" {
                 eprintln!(
                     "areev: run paused by its host — `areev run resume --run-id {run_id}` \
                      continues it under the same run id"
@@ -4856,6 +4997,21 @@ fn run_run(
             }
             let session = runner.start(&h, &run_id, input, &opts).map_err(|e| e.to_string())?;
             print_session(session);
+        }
+        "tick" => {
+            // #416: resume every parked run in this namespace whose wait has
+            // come due. A run whose wait is not due is reported, not touched;
+            // one whose resume fails is reported and the pass continues.
+            let report = runner.tick(&opts).map_err(|e| e.to_string())?;
+            println!("{}", serde_json::to_string_pretty(&report).unwrap());
+            eprintln!(
+                "areev: tick resumed {} run(s); {} wait(s) not yet due",
+                report.resumed.len(),
+                report.waiting.len()
+            );
+            if !report.errors.is_empty() {
+                return Err(format!("{} run(s) failed to resume: {}", report.errors.len(), report.errors.join("; ")));
+            }
         }
         "resume" => {
             let run_id = need("run-id", "areev run resume --run-id ID [--tool-cmd CMD]")?;
@@ -6872,10 +7028,13 @@ fn load_policy(flags: &HashMap<String, String>) -> Result<Option<Policy>, String
 /// [--with-outcomes]` — the accountability evidence bundle (GDPR Art.
 /// 5(2)/30, and the Art. 33 breach-notification input).
 ///
-/// Two hash-chained trails exist as grains; this formats them, nothing more.
+/// Three hash-chained trails exist as grains; this formats them, nothing more.
 /// Tier-2 destruction Observations live in `agent:authz` (one per FORGET /
 /// FORGET SUBJECT / PURGE / hold / reveal, from CAL or the CLI alike), and
-/// the loop's lifecycle audit rides as `loop_audit` Facts in `areev-loop`.
+/// the loop's lifecycle audit rides as `loop_audit` Facts in `areev-loop`, and
+/// every `run respond` decision is an approval Observation in `agent:harness`
+/// on its own `approval` chain (#420). `--trail` narrows the output to the
+/// named trails; the verification always covers all of them.
 /// Output is JSONL — one record per line, oldest first — so extracting a
 /// window is a pipe, not a parser.
 ///
@@ -6916,7 +7075,7 @@ fn run_audit(
     if sub_cmd != "export" {
         return Err(format!(
             "unknown audit subcommand '{sub_cmd}' — usage: areev audit export \
-             [--since MS] [--until MS] [--out FILE]"
+             [--since MS] [--until MS] [--out FILE] [--trail approval|destruction|loop]"
         ));
     }
     let parse_ms = |k: &str| -> Result<Option<i64>, String> {
@@ -6930,6 +7089,24 @@ fn run_audit(
     };
     let since = parse_ms("since")?;
     let until = parse_ms("until")?;
+    // `--trail approval,destruction,loop` (#420): which trails to emit. Every
+    // chain is still VERIFIED in full — a filter narrows the output, never the
+    // verification, so a gap is reported whichever trail it sits in.
+    let trails: Option<Vec<String>> = match flag(flags, "trail") {
+        None => None,
+        Some(v) => {
+            let names: Vec<String> =
+                v.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
+            if let Some(bad) =
+                names.iter().find(|t| !matches!(t.as_str(), "approval" | "destruction" | "loop"))
+            {
+                return Err(format!(
+                    "--trail takes approval, destruction or loop (comma-separated), got '{bad}'"
+                ));
+            }
+            Some(names)
+        }
+    };
     let in_window = |at: i64| since.is_none_or(|s| at >= s) && until.is_none_or(|u| at <= u);
 
     // Tier-2 destruction audit: Observations in the reserved authz namespace.
@@ -6974,6 +7151,11 @@ fn run_audit(
         // #278: an override of a legal hold names the hold it overrode.
         if let Some(h) = ctx.get("hold_overridden") {
             row["hold_overridden"] = h.clone();
+        }
+        // #417: a dual-control reveal step names its request and both
+        // principals, so request → approve → reveal reads as one chain.
+        if let Some(r) = ctx.get("reveal") {
+            row["reveal"] = r.clone();
         }
         // #280: the chain. A record written before chaining existed carries
         // neither `seq` nor a predecessor, and is exported as `unchained` —
@@ -7117,6 +7299,75 @@ fn run_audit(
         rows.push((at, row));
     }
 
+    // #420: the approval trail — every `run respond` decision (accepted,
+    // declined, refused, a quorum vote, a veto) as an Observation in
+    // `agent:harness`, appended to the memory's own `approval` chain by
+    // `areev-run`. Verified exactly like the destruction chain: a named
+    // predecessor missing from the store is a break, one merely outside the
+    // window is `previous_outside_window`, and a gap in `seq` is a break.
+    let mut approvals: Vec<(u64, i64, serde_json::Value, serde_json::Value)> = Vec::new();
+    let mut seen_approval: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let harness = m
+        .recent(
+            areev_core::authz::HARNESS_NS,
+            Some(areev_core::types::GrainType::Observation),
+            usize::MAX / 2,
+        )
+        .map_err(|e| e.to_string())?;
+    for g in harness {
+        let Some(ctx) = areev_run::approval::context_of(&g).cloned() else { continue };
+        let Some(mut row) = areev_run::approval::row(&g) else { continue };
+        let at = row["at_ms"].as_i64().unwrap_or(0);
+        if !in_window(at) {
+            continue;
+        }
+        row["trail"] = serde_json::json!("approval");
+        let seq = ctx.get("seq").and_then(|v| v.as_u64());
+        match seq {
+            None => row["unchained"] = serde_json::json!(true),
+            Some(seq) => {
+                row["seq"] = serde_json::json!(seq);
+                if let Some(p) = ctx.get("previous_audit").and_then(|v| v.as_str()) {
+                    row["previous_audit"] = serde_json::json!(p);
+                }
+                if ctx.get("chain_root").and_then(|v| v.as_bool()) == Some(true) {
+                    row["chain_root"] = serde_json::json!(true);
+                }
+            }
+        }
+        seen_approval.insert(g.hash.to_hex());
+        approvals.push((seq.unwrap_or(0), at, row, ctx));
+    }
+    approvals.sort_by_key(|(seq, at, ..)| (*seq, *at));
+    let mut prev_seq: Option<u64> = None;
+    for (seq, at, mut row, ctx) in approvals {
+        if let Some(p) = ctx.get("previous_audit").and_then(|v| v.as_str()) {
+            if !seen_approval.contains(p) {
+                let exists = areev_core::error::Hash::from_hex(p)
+                    .ok()
+                    .map(|h| m.has(&h).unwrap_or(false))
+                    .unwrap_or(false);
+                if exists {
+                    row["previous_outside_window"] = serde_json::json!(true);
+                } else {
+                    breaks += 1;
+                    row["chain_break"] = serde_json::json!(true);
+                }
+            }
+        }
+        if row.get("seq").is_some() {
+            if let Some(prev) = prev_seq {
+                if seq > prev + 1 {
+                    breaks += 1;
+                    row["chain_break"] = serde_json::json!(true);
+                    row["missing_seq"] = serde_json::json!(seq - prev - 1);
+                }
+            }
+            prev_seq = Some(seq);
+        }
+        rows.push((at, row));
+    }
+
     // #319: the Verify gate's outcomes, on request.
     //
     // A gated apply records `gating_evalset` / `gating_run_id` /
@@ -7162,6 +7413,15 @@ fn run_audit(
         }
     }
 
+    // The filter (#420) narrows what is EMITTED; every chain above was
+    // verified in full, and the break warning still counts every trail.
+    if let Some(keep) = &trails {
+        rows.retain(|(_, row)| {
+            let t = row.get("trail").and_then(|t| t.as_str()).unwrap_or("");
+            let t = if t == "loop_outcome" { "loop" } else { t };
+            keep.iter().any(|k| k == t)
+        });
+    }
     rows.sort_by_key(|(at, _)| *at);
     let mut out = String::new();
     for (_, row) in &rows {
@@ -7177,8 +7437,9 @@ fn run_audit(
     }
     if breaks > 0 {
         eprintln!(
-            "areev: warning: {breaks} loop audit record(s) name a predecessor absent from this \
-             export — the chain is truncated (widen --since, or the trail was tampered with)"
+            "areev: warning: {breaks} audit record(s) name a predecessor absent from this \
+             export, or leave a gap in their chain's sequence — the chain is truncated \
+             (widen --since, or the trail was tampered with)"
         );
     }
     eprintln!("audit export: {} records", rows.len());

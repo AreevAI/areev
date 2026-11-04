@@ -100,6 +100,35 @@ top of that.
   never identities. Pseudonym mappings otherwise stay in process custody:
   bounded in memory, returned only to in-process callers, and carried on
   MCP/server payloads as mapping **ids** only.
+- **Reveal can require two people** (#417). A namespace whose policy declares
+  `"reveal": {"mode": "dual", "ttl_secs": N}` refuses the direct reveal
+  (`AUT-E005`) on every surface that can reveal — the CLI, Python and Node all
+  reach it through one facade method, and MCP and the console expose no
+  reveal at all. Instead: a requester holding `admin` asks with a mandatory
+  reason (`reveal-request`); a **different** principal holding `admin`
+  approves (`reveal-approve` — self-approval is `AUT-E005`) within `ttl_secs`
+  of the request; the requester then redeems it (`reveal --request ID`)
+  **once**, within `ttl_secs` of the approval. Request, approval, every
+  refusal and the reveal are each Tier-2 records in `audit export`, naming
+  the request id and both principals (`context.reveal`), on the same
+  hash chain as erasures; the request id *is* the request record's content
+  address. The redeemable state is a `reveal_req:<id>` `meta` row moved
+  pending → approved → used by compare-and-swap, so two concurrent approvals
+  or redemptions on Postgres cannot both win. It **never replicates**: a
+  follower receives the policy and the audit trail but nothing it could
+  redeem — single use is a property of one memory, and the vault it reveals
+  from does not travel either. The policy is read fresh from the file at
+  every reveal, and an unreadable policy refuses rather than falling back to
+  `single`. Known limit: the policy itself is set by one `admin`, so changing
+  `dual` back to `single` is a single-person act; restrict who holds `admin`
+  on `"*"`-scoped policy writes accordingly.
+- **Policy-declared regex detectors are validated at declaration** (#418).
+  A policy may add `{"category", "pattern", "cue"}` detector objects; the
+  pattern is compiled once by the `regex` crate (finite automata — linear
+  time, no backtracking, so no catastrophic matching), under a compiled-size
+  cap, a 1 KiB length cap and a 32-detector cap, and a pattern that can match
+  the empty string is refused. A policy that fails any of these never
+  reaches the file (`VAL-E001` at `anonymize set`).
 - **The free-text APIs read, never write, the trust boundary.**
   `scan_text`/`anonymize_text` stay pure-text-in/JSON-out (no grain writes),
   but they now read the store's known-identity table for the facade's
@@ -1326,6 +1355,9 @@ Three consequences worth knowing:
 - **The owner is unaffected.** An unbound handle is `AuthzSet::owner`, which
   allows every verb everywhere, so gating changed nothing for a host that never
   binds a principal.
+  The one deliberate exception is the **responder** of a run's ask (#423,
+  below): the identity being judged there is the person answering, not the
+  handle, so an unbound handle does not waive it.
 - **A walk is all-or-nothing.** `related` over `"a,b"` refuses unless the
   principal may read both: a walk is not composable from the namespaces it was
   allowed, so a partial answer would silently mean something else.
@@ -1356,6 +1388,44 @@ answer is right under a session too. Two enforcement tests keep it that way:
 `areev-cal/tests/host_surface_gating.rs` fails the build on any new ungated
 `with_store` in the three files, and the per-binding parity tests drive the
 whole public surface under a zero-grant principal and assert the refusal.
+
+### Who may answer a run's ask
+
+`areev run respond` (and `run_respond` / `runRespond`, the MCP tool,
+`POST /api/run/respond`) all go through `Runner::respond`, so every rule below
+holds on every surface:
+
+- **A governed file checks the responder whatever the handle's binding**
+  (#423). When the memory carries ANY live `mg:permits` grant, the responder's
+  own grants must cover `run.respond` on the run's namespace — refused
+  `RUN-E012` (wrapping `AUT-E001`) otherwise. Through 1.13.2 an unbound
+  (owner-posture) handle skipped the check, so a host that forgot to bind a
+  principal accepted any responder string on a file that grants approvals to
+  specific people. A memory with no grants at all keeps the single-user path:
+  nobody could hold the grant there, so checking would refuse every answer.
+- **Separation of duties** is structural on every approval ask: never the
+  run's principal, never its `--initiator`.
+- **Distinct approvers across gates** (#424): a plan's `separation` groups
+  refuse a responder who already answered — or cast a quorum vote on —
+  another gate of the same group, naming the earlier answer (`RUN-E012`).
+- **N-of-M quorum** (#424): a Definition's `quorum: {"required": N}` keeps the
+  ask open until N DISTINCT responders, each passing the checks above, have
+  answered `approved: true`; the same principal twice is refused, and any
+  refusal settles the ask. `verify` re-checks that every settled quorum
+  approval is backed by N recorded distinct approvers, and that no responder
+  answered two gates of one group.
+- **Veto** (#416): inside an `areev://wait` window, an answer is a veto under
+  the same rules — `run.respond`, and never the principal or initiator, so
+  the person who asked for a change can neither cancel nor waive its
+  cooling-off.
+- **Every decision is chained evidence** (#420): accepted, declined and
+  refused responses, quorum votes and vetoes each append one Observation to
+  the memory's `approval` audit chain (`seq`, `previous_audit`,
+  `chain_root`, its own head row `audit_head:approval`), naming the run, the
+  ask, the node, the responder, the run's principal and initiator, and the
+  reason. `areev audit export --trail approval` emits and verifies it. The
+  initiator is recorded as given: a host that must not keep a person's id in
+  an immutable, replicating record should pass a pseudonymous one.
 
 ## Areev Loop (self-improvement) trust boundary
 

@@ -2991,3 +2991,128 @@ test('FORMAT markdown names the role of a remembered turn', async () => {
     await m.close()
   }
 })
+
+test('runTick resumes a due wait and reports one not yet due (#416)', async () => {
+  const m = makeDb('ops')
+  const approve = await m.add('tool', JSON.stringify({
+    tool_name: 'approve', kind: 'definition', tool_description: 'approve',
+    executor_kind: 'client', created_at: 801,
+  }), 'ops')
+  const cooling = await m.add('tool', JSON.stringify({
+    tool_name: 'cooling_off', kind: 'definition', tool_description: 'veto window',
+    executor_uri: 'areev://wait', created_at: 802,
+  }), 'ops')
+  const apply = await m.add('tool', JSON.stringify({
+    tool_name: 'apply', kind: 'definition', tool_description: 'apply', created_at: 803,
+  }), 'ops')
+  const wf = await m.add('workflow', JSON.stringify({
+    nodes: ['approve', 'cooling_off', 'apply'],
+    edges: [{ src: 'approve', dst: 'cooling_off' }, { src: 'cooling_off', dst: 'apply' }],
+    bindings: { approve, cooling_off: cooling, apply },
+    created_at: 804,
+  }), 'ops')
+  const tool = `printf '{"applied":true}'`
+
+  for (const [id, input] of [['due', '{"until_ms":1}'], ['later', '{"for_secs":31536000}']]) {
+    const s = JSON.parse(await m.runStart(wf, id, input, tool))
+    await m.runRespond(id, s.parked.asks[0].tool_call_id, '{"approved":true}', 'volunteer:2')
+    const parked = JSON.parse(await m.runResume(id, tool)).parked
+    assert.equal(parked.kind, 'waiting')
+    assert.equal(parked.asks[0].ask_kind, 'veto')
+  }
+  const report = JSON.parse(await m.runTick(tool))
+  assert.deepEqual(report.resumed.map((r) => r.run_id), ['due'])
+  assert.equal(report.resumed[0].session, 'finished:Completed')
+  assert.deepEqual(report.waiting.map((w) => w.run_id), ['later'])
+  assert.equal(JSON.parse(await m.runVerify('due')).verified, true)
+  m.close()
+})
+
+test('runStart / triggerRun freeze an initiator, and the approval ask refuses it (#422)', async () => {
+  // A service runs every case under ONE principal; the initiator is how the
+  // approval check still refuses the person behind the work — here, the
+  // volunteer who reported the case. The CLI's `--initiator`, in library form.
+  const m = makeDb('ops')
+  const greet = await m.add('tool', JSON.stringify({
+    tool_name: 'greet', kind: 'definition', tool_description: 'greets', created_at: 600,
+  }), 'ops')
+  const approve = await m.add('tool', JSON.stringify({
+    tool_name: 'approve', kind: 'definition', tool_description: 'human approves',
+    executor_kind: 'client', created_at: 601,
+  }), 'ops')
+  const wf = await m.add('workflow', JSON.stringify({
+    nodes: ['greet', 'approve'], edges: [{ src: 'greet', dst: 'approve' }],
+    bindings: { greet, approve }, created_at: 602,
+  }), 'ops')
+  const tool = `printf '{"greeting":"hello"}'`
+  const volunteer = 'volunteer:20931'
+
+  // `initiator` sits after `llmProfile`: 23 knobs between `toolCmd` and it.
+  const session = JSON.parse(await m.runStart(
+    wf, 'js-ini', '{}', tool, ...Array(23).fill(undefined), volunteer))
+  assert.ok(session.parked, 'the client-gated node parks the run')
+  const ask = session.parked.asks[0].tool_call_id
+  await assert.rejects(
+    m.runRespond('js-ini', ask, '{"ok":true}', volunteer),
+    (e) => /RUN-E012/.test(e.message) && e.message.includes(volunteer),
+  )
+  await m.runRespond('js-ini', ask, '{"ok":true}', 'user:officer')
+  assert.equal(JSON.parse(await m.runResume('js-ini')).finished, 'Completed')
+
+  // Without an initiator the same responder is accepted — so the refusal
+  // above is the initiator's, not something else's.
+  const plain = JSON.parse(await m.runStart(wf, 'js-plain', '{}', tool))
+  await m.runRespond('js-plain', plain.parked.asks[0].tool_call_id, '{"ok":true}', volunteer)
+
+  // The trigger path freezes it too: a firing starts the run on the
+  // volunteer's behalf. `initiator` is triggerRun's 31st argument.
+  await m.triggerAdd(JSON.stringify({ kind: 'interval', workflow: wf, interval_secs: 60 }), 'intake')
+  const before = new Set(JSON.parse(await m.runList()))
+  const report = JSON.parse(await m.triggerRun(
+    null, false, null, null, null, tool, ...Array(24).fill(undefined), volunteer))
+  assert.equal(report.runs_started, 1, JSON.stringify(report))
+  const fired = JSON.parse(await m.runList()).filter((r) => !before.has(r))
+  assert.equal(fired.length, 1)
+  const inspected = JSON.parse(await m.runInspect(fired[0]))
+  const [pending] = Object.keys(inspected.pending_asks)
+  assert.ok(pending, JSON.stringify(inspected))
+  await assert.rejects(
+    m.runRespond(fired[0], pending, '{"ok":true}', volunteer),
+    /RUN-E012/,
+  )
+  m.close()
+})
+
+// ── #417: dual-control reveal — requester, a DIFFERENT approver, a TTL.
+
+test('dual-control reveal: request, approve as another principal, redeem once', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'areev-dual-'))
+  const path = join(dir, 'dual.db')
+  const owner = new Areev(path, 'caller')
+  await owner.setAnonPolicy('caller', JSON.stringify(
+    { mode: 'egress', scope: 'session', reveal: { mode: 'dual', ttl_secs: 1800 } }))
+  await owner.cal('GRANT admin, read ON caller TO "user:desk"')
+  await owner.cal('GRANT admin, read ON caller TO "user:approver"')
+  owner.close()
+
+  const as = (p) => new Areev(path, 'caller', null, null, null, p)
+  let desk = as('user:desk')
+  await assert.rejects(() => desk.revealTokens('caller', JSON.stringify(['[PERSON_1]'])), /AUT-E005/)
+  const req = JSON.parse(await desk.revealRequest('caller', JSON.stringify(['[PERSON_1]']), 'safety escalation'))
+  assert.equal(req.requester, 'user:desk')
+  assert.equal(req.mode, 'dual')
+  await assert.rejects(() => desk.revealApprove(req.request_id), /AUT-E005/) // self-approval
+  desk.close()
+
+  const approver = as('user:approver')
+  const ok = JSON.parse(await approver.revealApprove(req.request_id))
+  assert.equal(ok.approver, 'user:approver')
+  await assert.rejects(() => approver.revealRedeem(req.request_id), /AUT-E005/) // not the requester
+  approver.close()
+
+  desk = as('user:desk')
+  const out = JSON.parse(await desk.revealRedeem(req.request_id))
+  assert.ok('[PERSON_1]' in out.revealed)
+  await assert.rejects(() => desk.revealRedeem(req.request_id), /AUT-E005/) // single use
+  desk.close()
+})

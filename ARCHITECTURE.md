@@ -1254,6 +1254,50 @@ not only in grain reads (issue #32). `AnonPolicy.known` is the
 caller-supplied complement — identities a host holds but never interned as
 a grain subject (a CRM row, an email header), each with its own category.
 
+### Re-identification may need two people; the redeemable state never replicates
+
+**Decision (2026-11, issue #417):** a namespace's anon policy may declare
+`"reveal": {"mode": "dual", "ttl_secs": N}`. The direct reveal is then refused
+(`AUT-E005`), and a reveal is three steps by two principals, both holding the
+existing `admin` verb — no new verb, because the second signature is a
+property of the *policy*, not of a right: request (with a mandatory reason) →
+approve (by a different principal, within the TTL) → redeem (by the
+requester, once, within the TTL of the approval). One facade method family
+serves every surface that can reveal (CLI, Python, Node); MCP and the console
+expose no reveal, so there is no path around it.
+
+Where the state lives was the decision. The request, approval, refusals and
+reveal are Tier-2 audit grains on the destruction chain — evidence, which
+replicates like all evidence. The *redeemable* state (pending → approved →
+used) is a `reveal_req:<id>` `meta` row moved by `meta_cas`, outside
+`REPLICABLE_META_PREFIXES`: a replica holding a copy of an "approved, unused"
+row would hold a second use, and the vault the reveal reads never travels
+either. This is the same rule as "a declaration replicates; an authorization
+never does" — the policy replicates, a granted re-identification does not. The
+request id is the request record's content address, so the evidence and the
+state name each other.
+
+### Indian identifiers are detected as typed, and an existing category is not taken away
+
+**Decision (2026-11, issue #418):** Tier-0 grows `in_mobile`, `in_aadhaar`
+(Verhoeff), `in_epic` (cue-gated) and `in_vehicle` (state-code-gated), and a
+policy may declare its own regex detectors (validated at `set`: size-capped
+compile, non-empty match). Two rules made the additions safe to ship without a
+versioned detector set (there is none — detection is per build):
+
+- **A span the generic `phone` detector already reported keeps `phone`.** A
+  `memory`-scope or ingress pseudonym is value-derived *per category*; moving
+  `+91 98431 22760` from `phone` to `in_mobile` would mint a different token
+  for a number already stored under the old one. `in_mobile` therefore covers
+  only the shapes nothing caught before (bare, `5 5`, `0`/`91` prefixes).
+- **A category may move only toward the validator-backed reading** — the #281
+  precedent: a dash-grouped Aadhaar that was `phone` becomes `in_aadhaar`
+  (checksum-backed), and a day-first dashed date that was `phone` becomes
+  `date`. Detection stays additive, so a policy that redacts `phone` and
+  allows the rest still redacts the span. The consequence to know: text
+  ingested before and after an upgrade can carry different tokens for such a
+  value, and newly detected spans transform where they did not before.
+
 ### A cycle's back-edge gates a node's own first activation, not the entry's
 
 A bounded cycle's re-entry point can be **any** node, not only the plan's
@@ -2710,6 +2754,46 @@ harness Facts like cancel, because two pause cycles in one millisecond must
 not rank arbitrarily. It needs `run.execute` (resume's grant, not cancel's
 low bar), is idempotent, and is refused with `RUN-E029` on a finished run or
 a pending cancel: cancel wins, and cancel on a paused run finalizes it.
+
+### Who answers an ask is judged in the driver, against the file — and recorded on its own chain (#416, #420, #423, #424)
+
+**Decision (2026-11-05):** four approval rules land together, and all four
+live in the DRIVER (`Runner::respond` / `resume_run`), not in the pure
+scheduler, so `areev-run-core` and the scheduler epoch do not move:
+
+- **The file decides whether the responder is checked, not the handle**
+  (#423). A memory carrying any live `mg:permits` grant checks the
+  responder's `run.respond` grant whatever the answering handle's binding;
+  only a grant-free memory keeps the single-user path. The responder is the
+  identity being judged — an owner-posture handle that skipped the check let a
+  forgotten `principal=` silently accept any responder string.
+- **Distinct approvers and quorum are frozen declarations** (#424): a plan's
+  `separation` groups and a Definition's `quorum.required` are validated at
+  resolve and frozen into the manifest, like `ask_kind`, so a superseded plan
+  cannot loosen a run already parked on its second gate. A quorum ask settles
+  only on N distinct approvals; until then each vote is a chained trail
+  record — the only durable form a vote has — and the scheduler sees nothing
+  until the settling answer is written as the ask's ordinary result.
+  `verify` re-checks both rules against the journal and the trail, because a
+  replay answers an ask from its result and cannot see the votes behind it.
+- **A durable timer is a Client ask the driver settles by clock** (#416).
+  `executor_uri: "areev://wait"` pins as executor `wait`, which the scheduler
+  sees as an approval ask; `resume` settles it only once its `due_at_ms` —
+  computed from the declaration or the node's state and the intent grain's
+  journaled clock — has passed, writing the result with that resume's reading,
+  exactly the expiry path. So `verify` replays a wait with no new rule, a
+  resume before the instant cannot advance the run, and an answer inside the
+  window is a veto under the approval rules (never the principal or
+  initiator). A one-shot trigger starting a second run was declined: it split
+  one decision across two journals, and `verify` proved half of it. `areev
+  run tick` and every `trigger run` pass resume due waits — no daemon.
+- **Approval decisions get their own audit chain** (#420). Every `respond`
+  decision is one Observation in `agent:harness` appended to a NAMED chain
+  (`Areev::append_audit_on("approval", …)`, head row `audit_head:approval`),
+  not to the destruction chain: one trail's records must never leave a gap in
+  another's numbering, or an approval-only export of a memory that also erased
+  something reads as truncated. `audit export` verifies every chain in full
+  and `--trail` narrows only what it emits.
 
 ### A decision model may score and order; only code omits, gates, approves or applies
 

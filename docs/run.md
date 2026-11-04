@@ -127,6 +127,9 @@ What each piece means:
   (`entity_at`, `related`, `recall`, or a pinned saved `query`). The runtime answers that node itself, from the
   file it already holds; no tool is involved. See
   [Reading the run's own memory](#reading-the-runs-own-memory-reads).
+- **`separation`** — groups of client approval nodes whose answers must come
+  from DIFFERENT people (#424): `[["approve", "approve_2"]]`. Frozen at start;
+  see [Human-in-the-loop, precisely](#human-in-the-loop-precisely).
 - **`llm`**: node → the configuration of an **abstract** node's model loop
   (#391). It sets the system text, the instruction (literal or from the
   input), which state keys the model sees, which pinned tools it is offered,
@@ -1169,9 +1172,15 @@ reproduce the boundary instead of guessing at it.
   it. (The check runs after the known-ask and expiry checks, so an unknown or
   expired ask is reported as such rather than as a separation-of-duties
   refusal.)
-- **`--initiator`** (`$AREEV_RUN_INITIATOR`, a trailing parameter on the
-  bindings) names who or what a run was started ON BEHALF OF, frozen into the
-  manifest. Event, poll and schedule runs execute under an agent's SERVICE
+- **`--initiator`** (`$AREEV_RUN_INITIATOR`) names who or what a run was
+  started ON BEHALF OF, frozen into the manifest. The bindings take it as a
+  trailing parameter since #422 — `initiator` / `allowConfirmationAsks` after
+  `llmProfile` on Node's `runStart`, `triggerRun` and `triggerDeliver`, and
+  `initiator=` / `allow_confirmation_asks=` on Python's `run_start`,
+  `trigger_run` and `trigger_deliver` — set through the same
+  `RunOptions::on_behalf_of` the CLI uses. They read no environment variable:
+  a library host passes the value per run, which is the point when one
+  service principal runs every case. Event, poll and schedule runs execute under an agent's SERVICE
   principal, so `principal` alone could not name the person behind the work
   and the approval check could not refuse them. The field is free-form
   attribution: a value that names no principal — a trigger occurrence id —
@@ -1191,9 +1200,14 @@ reproduce the boundary instead of guessing at it.
   not a permission — the `--allow-executor` reasoning. Everything else holds:
   the TTL, the `run.respond` grant check, journaled rejections, and MCP still
   refusing its own run's asks.
-- On governed sessions (grants present in the file), the responder's own
-  grants must cover `run.respond`. Grants are ordinary `mg:permits` Facts —
-  they live in the file, sync with it, and are granted in CAL:
+- When the memory carries **any** live `mg:permits` grant, the responder's
+  own grants must cover `run.respond` on the run's namespace — whether or not
+  the answering handle is bound to a principal (#423). The responder is the
+  identity being judged, not the session: through 1.13.2 an unbound handle
+  skipped the check and accepted any responder string. A memory with no grants
+  at all is the single-user posture and accepts any responder (still never the
+  principal or initiator of an approval). Grants are ordinary `mg:permits`
+  Facts — they live in the file, sync with it, and are granted in CAL:
 
   ```
   GRANT run.respond ON ops TO "user:officer" WITH because("refund approvals")
@@ -1204,7 +1218,35 @@ reproduce the boundary instead of guessing at it.
   silent 4xx. Since 1.9.0 (#292) that includes the two the code used to
   skip: the separation-of-duties refusal (the most audit-relevant one the
   runtime makes) and the `run.respond` grant refusal, which now loads the run
-  first so the record carries `run_id`.
+  first so the record carries `run_id`. Since #420 every decision — accepted
+  and declined answers too, quorum votes and vetoes — is one record on the
+  memory's hash-chained **approval trail** (see "The approval trail" below).
+- **Distinct approvers across gates** (#424). A plan may declare separation
+  groups on the Workflow grain, beside `name` and `reducers`:
+
+  ```json
+  "separation": [["approve", "approve_2"]]
+  ```
+
+  Within a group, a responder who answered one gate (or cast a quorum vote
+  on it) is refused on the others with `RUN-E012`, naming the earlier answer,
+  and the refusal is journaled like the separation-of-duties one. Validated at
+  start — every member must be a client APPROVAL node of the plan, a group
+  needs two distinct members (`RUN-E019` otherwise) — and frozen into the
+  manifest, so a superseded plan cannot loosen a run parked on its second
+  gate. Always on: there is no flag to disable it.
+- **N-of-M quorum on one ask** (#424). A client Tool Definition may declare
+  `quorum: {"required": N}` (1–64; 1 is the ordinary ask). The ask settles
+  only when N DISTINCT responders — each passing every check above — have
+  answered `{"approved": true}`; until then each approval is a recorded
+  **vote** and the run stays parked (`resume` re-parks; the envelope's ask
+  carries `quorum: {required, approvals, approvers}`). The same principal
+  voting twice is refused `RUN-E012`. Any other answer — `approved` not
+  `true`, or `--is-error` — settles the ask at once as that responder's
+  answer. The settling answer is the result the node contributes. `verify`
+  re-checks that the settled approval is backed by N recorded distinct
+  approvers. Frozen at start like `ask_kind`; a confirmation ask or a
+  non-client tool declaring a quorum is refused `RUN-E019`.
 - `--ask-ttl <sec>` on start bounds how long an ask may sit unanswered.
 - Refusing an ask is a first-class answer: `--is-error true` journals the
   refusal and fails the node as user-aborted.
@@ -1219,6 +1261,85 @@ reproduce the boundary instead of guessing at it.
   duties is judged against the parent's triggering principal before the
   answer is forwarded. `--ask-ttl` still applies: an expired bubbled ask is
   forwarded anyway, and the child's own resume settles it as `Timeout`.
+
+`run inspect` shows the frozen `separation` groups, each pinned node's
+`ask_kind`/`quorum`/`wait`, quorum progress per pending ask (`quorum`), open
+waits (`waits`), and the run's decision trail (`approvals`);
+`run oversight-report` adds `separation_groups` and the gated nodes' quorum
+and wait declarations under `human_gates`, and the same `approvals` list.
+
+### Cooling-off: the durable timer node (`areev://wait`)
+
+Some decisions must not take effect the moment they are approved: a routing
+change waits 24 h, a responsibility grant 72 h, and anyone with standing may
+cancel it in between. A **wait node** is that window inside ONE run — one
+journal, one `verify` — instead of a second run started by a `once` trigger.
+
+```json
+{"kind": "definition", "tool_name": "cooling_off",
+ "executor_uri": "areev://wait", "wait": {"for_secs": 259200}}
+```
+
+- `wait` declares the instant: `{"for_secs": N}` (counted from the park) or
+  `{"until_ms": T}` (unix ms). Leave `wait` out and the node reads
+  `for_secs` / `until_ms` from the top level of its STATE at park; a declared
+  value wins over state, so a run's input cannot shorten a cooling-off the
+  plan fixed. Unknown keys, both at once, or `for_secs: 0` are `RUN-E019` at
+  start; a state that names no instant fails the node (schema) at the next
+  resume or tick rather than parking forever.
+- The run **parks** with an envelope of `kind: "waiting"` and `due_at_ms`;
+  each wait ask carries `ask_kind: "veto"` and its own `due_at_ms`. The park's
+  clock is the intent grain's journaled `created_at`, so every reader of the
+  journal computes the same `due_at_ms`.
+- **A resume before `due_at_ms` does not advance.** The node after the wait
+  never runs early, however often `resume` is called. Past it, the next
+  `resume` — or `areev run tick`, which resumes every due run in the
+  namespace, or any `areev trigger run` pass, which ticks too — settles the
+  wait with `{"waited": true, "due_at_ms", "resumed_at_ms"}`, written with
+  that resume's clock reading on the result grain, so `verify` replays the
+  wait from the journal like any answered ask. No daemon: put `run tick` (or
+  `trigger run`) on the heartbeat you already have. The ask TTL never expires
+  a wait — its window is its own deadline.
+- **Veto.** Inside the window, `run respond` on the wait's ask is a veto:
+  the responder must hold `run.respond` (on a governed memory) and must not
+  be the run's principal or initiator — the person who asked for a change can
+  neither cancel nor waive its cooling-off. The veto fails the node as
+  user-aborted with `vetoed by <responder>: <reason>` (`reason` from the
+  result object, else the whole result), so the run ends `Failed` at the wait
+  and nothing after it runs. The veto is on the approval trail and in
+  `oversight-report`'s `approvals`. After `due_at_ms` a veto is refused
+  `RUN-E011` (window closed) — the next resume settles the wait instead.
+- `executor_uri: "areev://wait"` is reserved like `areev://decide`: it names
+  the driver's clock, not code, so a `runtime` on it is refused (`RUN-E018`)
+  and it is never offered to an LLM node. `ask_kind` on it may only be
+  `"veto"`; a `wait` field on any other Definition is refused.
+
+```bash
+areev run tick --db gov.db --ns gov.changes
+# {"now_ms": …, "resumed": [{"run_id": "chg-42", "nodes": ["cooling_off"],
+#   "due_at_ms": …, "session": "finished:Completed"}], "waiting": [], "errors": []}
+```
+
+The bindings expose the same pass as `run_tick(tool_cmd=None)` /
+`runTick(toolCmd?)`, returning the report as JSON. MCP has no tick tool: a
+tick resumes runs, which is the host's cadence to own.
+
+### The approval trail
+
+Every `respond` decision is one Observation in `agent:harness`, appended to the
+memory's **approval** audit chain (`context.audit: "approval"`, `seq`,
+`previous_audit`, `chain_root`; its own head, so it never leaves a gap in the
+destruction chain's numbering). `context.outcome` is `accepted`, `declined`
+(`--is-error`), `refused` (with `refusal`: `missing_grant`, `unknown_ask`,
+`already_settled`, `expired`, `separation_of_duties`, `distinct_approver`,
+`duplicate_vote`, `window_closed`), `vote` (a counted quorum approval that did
+not yet settle its ask) or `veto`. The record carries the `run_id` (top-level,
+which indexes it to its run) and, in `context`, the `ask`, `node`,
+`responder`, `principal`, `initiator`, `reason`, and `quorum` progress or
+`due_at_ms` where they apply. A refusal keeps the #292 object text (`rejected response to ask
+…`). `areev audit export --trail approval` exports and verifies the chain; a
+quorum vote has no other durable form until its ask settles, which is why the
+runtime reads these records back to count votes.
 
 The web console (`areev ui`) surfaces pending asks in its **Runs tab**, which
 groups runs as *Waiting on you* / *In flight* / *Finished* so an ask cannot be
@@ -2411,16 +2532,19 @@ The same runtime on every surface — one journal, one set of rules:
 
 | Surface | Shape |
 |---|---|
-| CLI | `areev run start/resume/respond/input/pause/cancel/list/inspect/verify/fork/shadow/oversight-report/demo`, plus `areev run-trace` / `areev runs-touching` |
+| CLI | `areev run start/resume/respond/input/pause/cancel/tick/list/inspect/verify/fork/shadow/oversight-report/demo`, plus `areev run-trace` / `areev runs-touching` |
 | MCP | the eight `areev_run_*` tools ([reference](mcp-reference.md)); host tools only via `$AREEV_RUN_TOOL_CMD`; the acting principal is server-bound — `principal`/`responder` are never client-supplied |
-| Python | `db.run_start(workflow, run_id, input_json, tool_cmd, …, allow_executor=…, executor_cache=…, sandbox_cmd=…, executor_timeout_secs=…, on_event=…)`, `run_resume` (same tail), `run_respond(…, responder=…)`, `run_input`, `run_pause`, `run_cancel`, `run_verify`, `run_shadow(run_ids, plan=…, plan_body=…, options=…)`, `run_fork`, `run_list`, `run_inspect`, `run_oversight_report(run_id=…, plan=…)`, `changes_since` — JSON strings out. `on_event` is a callable taking one JSON string: the same §6.10 line `--events` prints |
-| Node | `await m.runStart(…, onEvent)` and the same set (`runRespond`, `runInput`, `runPause`, `runFork`, `runInspect`, `runOversightReport`, …) — promises, JSON strings out. `onEvent` is `(event: string) => void`, called from the event bus's own thread |
+| Python | `db.run_start(workflow, run_id, input_json, tool_cmd, …, allow_executor=…, executor_cache=…, sandbox_cmd=…, executor_timeout_secs=…, on_event=…)`, `run_resume` (same tail), `run_respond(…, responder=…)`, `run_input`, `run_pause`, `run_cancel`, `run_tick(tool_cmd=…)`, `run_verify`, `run_shadow(run_ids, plan=…, plan_body=…, options=…)`, `run_fork`, `run_list`, `run_inspect`, `run_oversight_report(run_id=…, plan=…)`, `changes_since` — JSON strings out. `on_event` is a callable taking one JSON string: the same §6.10 line `--events` prints |
+| Node | `await m.runStart(…, onEvent)` and the same set (`runRespond`, `runInput`, `runPause`, `runTick`, `runFork`, `runInspect`, `runOversightReport`, …) — promises, JSON strings out. `onEvent` is `(event: string) => void`, called from the event bus's own thread |
 | HTTP / console | `GET /api/run/list`, `GET /api/run/inspect`, `POST /api/run/respond` (per-principal credential required), `POST /api/run/cancel`; the console's Runs tab is the approval queue. The console's **Workflows** tab visualizes and edits plans themselves — an editable node/edge graph over the same Workflow grains, built entirely on `/api/browse` and `/api/cal` (`ADD workflow`), no dedicated route. It also draws what a plan does *not* contain: the Trigger grains that point at it (read-only, in their own lane) and, when a run is selected, a status rail per step from that run's journal grains — a client-side join on `mg:step_action:<node>`, not a new endpoint. The **Tools** tab is the other half of that picture: the Tool definitions a node can bind to, each with its schema, locked params and the plans that bind it, plus every execution grain grouped by run. A plan with a bounded-cycle edge or a per-node retry count opens view-only: `ADD`/`SUPERSEDE workflow` has no surface syntax yet to author either (`* N` populates `retries`, not `max_cycles`) — and for the same reason, connecting an edge that would close a cycle in an editable plan is refused rather than silently saved as an unbounded one |
 
 Authorization uses three verbs, granted like any other
 ([CAL DCL](cal-reference.md)): `run.execute` (start/resume/pause), `run.respond`
 (answer asks), `run.cancel` (the brake). An unbound local session is the
-owner and holds every right — grants matter once a file is shared.
+owner and holds every right — grants matter once a file is shared. The one
+right an unbound session cannot lend is an approval: once the file carries any
+grant, the RESPONDER's own `run.respond` is checked (#423).
+`run tick` takes `run.execute`, like the resumes it performs.
 
 ## The run ↔ memory join
 

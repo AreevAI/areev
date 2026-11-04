@@ -6,6 +6,84 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Run: distinct approvers across gates, and N-of-M quorum on one ask
+  (#424).** A Workflow may declare `"separation": [["approve", "approve_2"]]`,
+  validated at run start and frozen into the manifest like `ask_kind`: a
+  responder who answered (or voted on) one gate of a group is refused on the
+  others with `RUN-E012`, naming the earlier answer. A client Tool Definition
+  may declare `quorum: {"required": N}` (1–64): each `approved: true` from a
+  distinct `run.respond` holder is a journaled vote and the run stays parked
+  until N; the same principal twice is refused; any other answer settles the
+  ask at once. Both are structural (no flag), replayed by `verify`, and shown
+  in `run inspect` / `run oversight-report`.
+- **Run: a durable timer node, `areev://wait`, with a veto window (#416).** A
+  Tool Definition with `executor_uri: "areev://wait"` parks the run as
+  `kind: "waiting"` with `due_at_ms`, from a declared `wait: {for_secs |
+  until_ms}` or the node's state. A resume before the instant does nothing, so
+  the next node never runs early; once due, `run resume`, the new **`areev run
+  tick`** (also `runTick` / `run_tick` on the bindings), or any `areev trigger
+  run` pass settles it. A `respond` inside the window is a veto (`ask_kind:
+  "veto"`): it needs `run.respond`, may not come from the run's principal or
+  initiator, and fails the node with the reason journaled; after the window it
+  is `RUN-E011`. The clock readings are journaled, so `verify` replays across
+  the wait.
+- **`audit export`: a hash-chained approval trail (#420).** Every `run
+  respond` decision — accepted, declined (`--is-error`), refused (separation of
+  duties, missing grant, distinct-approver, expired), quorum vote, veto — is
+  one record on its own chain (`trail: "approval"`, with `seq`, `hash`,
+  `chain_root`, `previous_outside_window`), carrying run id, ask id, node,
+  responder, initiator and reason. `--trail approval|destruction|loop` narrows
+  the output; every chain is still verified.
+- **anonymize: dual-control reveal (#417).** A namespace policy may declare
+  `"reveal": {"mode": "dual", "ttl_secs": N}` (≤ 7 days). A direct reveal is
+  then refused; `anonymize reveal-request --because` returns a request id, a
+  *different* `admin` holder approves with `reveal-approve`, and only the
+  requester redeems with `reveal --request ID`, once, within the TTL. Request,
+  approval, refusal and reveal are Tier-2 records naming both principals, and
+  show in `audit export`. Request state is a non-replicating meta row moved by
+  compare-and-swap, so a follower can never redeem. New code `AUT-E005`. The
+  bindings gain `revealRequest` / `revealApprove` / `revealRedeem` (and the
+  snake_case trio). Default `mode: "single"` is unchanged.
+- **anonymize: Tier-0 detectors for Indian identifiers, plus policy regex
+  detectors (#418).** `in_mobile` (10 digits starting 6–9, `+91`/`91`/`0`
+  prefixes, `5 5` and `3 3 4` groupings, English and Tamil cues raising
+  confidence), `in_aadhaar` (Verhoeff-checked; 16-digit VID too), `in_epic`
+  (cue-gated) and `in_vehicle` (state-code list). Boundaries are
+  Unicode-aware, so a number touching Tamil script is still found. A policy's
+  `detectors` may now hold `{category, pattern, cue, within_chars}` regex
+  entries, validated at `anonymize set` (size-limited, no empty matches);
+  string-only policies serialize byte-for-byte as before. A `+91`-prefixed
+  mobile stays `phone`, so existing pseudonyms do not move. Fixtures ship as
+  `examples/anonymize/india-identifiers.json`.
+- **Bindings: `initiator` and `allowConfirmationAsks` on `runStart` /
+  `triggerRun` / `triggerDeliver` (#422)** — and `initiator=` /
+  `allow_confirmation_asks=` in Python — frozen into the manifest through the
+  same `RunOptions::on_behalf_of` the CLI now uses, so a service running under
+  one principal can still have the approval ask refuse the person behind the
+  work (`RUN-E012`). The bindings do not read `$AREEV_RUN_INITIATOR`.
+- **`trigger show` / `trigger status` print the next due instant (#421)**, in
+  the declared zone and in UTC (`next due 2026-11-05T02:00:00+05:30
+  Asia/Kolkata (2026-11-04T20:30:00Z)`), computed for a trigger never
+  evaluated; JSON gains `next_due_utc`.
+
+### Fixed
+
+- **Security: the `run.respond` grant check was skipped on a handle opened
+  without a principal (#423).** When a memory holds any `mg:permits` grant,
+  the responder's own `run.respond` grant is now checked however the
+  answering handle was opened — CLI, MCP, both bindings and the console all
+  inherit it. A memory with no grants keeps the single-user path.
+- **`trigger run` on the embedded backend: a concurrent loser exited 1 (#419).**
+  A pass that finds the file held by another process now reports
+  `skipped_locked` and exits 0, as `docs/triggers.md` documented;
+  `--lock-wait SECS` retries the open first. The contention is the new
+  `STO-E012`; every other open failure still exits non-zero.
+- **Binding docstrings for `trigger_add` said non-UTC zones are refused
+  (#421).** A valid IANA zone is accepted; `TRG-E006` applies only to builds
+  without the `tz` feature.
+
 ## [1.13.2] — 2026-10-23
 
 ### Added

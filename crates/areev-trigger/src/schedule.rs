@@ -185,6 +185,23 @@ pub fn render_local(_trigger: &Trigger, _at_ms: i64) -> Option<String> {
     None
 }
 
+/// `at_ms` as an RFC 3339 UTC instant (`2026-11-03T20:30:00Z`) — the half of
+/// `trigger show`'s "next due" line that does not depend on a zone (#421).
+pub fn render_utc(at_ms: i64) -> Option<String> {
+    chrono::DateTime::from_timestamp_millis(at_ms)
+        .map(|utc| utc.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+}
+
+/// Whether this kind of trigger fires on a clock at all — the kinds a "next
+/// due" instant means something for. Push and gate kinds fire when something
+/// arrives, so they have no next instant to report.
+pub fn is_clocked(trigger: &Trigger) -> bool {
+    matches!(
+        trigger.kind,
+        TriggerKind::Interval | TriggerKind::Polling | TriggerKind::Schedule | TriggerKind::Once
+    )
+}
+
 /// The zone a schedule trigger evaluates in.
 fn trigger_zone(trigger: &Trigger) -> Option<String> {
     trigger
