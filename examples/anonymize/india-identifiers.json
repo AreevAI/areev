@@ -1,0 +1,43 @@
+{
+  "policy": {
+    "mode": "egress",
+    "default_action": "allow",
+    "categories": {
+      "in_mobile": "redact",
+      "in_aadhaar": "redact",
+      "in_epic": "redact",
+      "in_vehicle": "redact",
+      "phone": "redact"
+    }
+  },
+  "must_redact": [
+    "என் பெயர் முருகன், என் எண் +91 98431 22760",
+    "Call me 9843122760, Aadhaar 2345 6789 0124",
+    "முருகன் 98431 22760 காந்திபுரம் 3வது தெரு",
+    "கைபேசி எண்9843122760",
+    "mobile 098431-22760",
+    "reach me on 919843122760",
+    "ஆதார் எண் 234567890124",
+    "Aadhaar 2345-6789-0124",
+    "Voter ID: ABC1234567",
+    "வாக்காளர் அட்டை TNX0123456",
+    "Vehicle TN 37 AB 1234 parked on the road",
+    "TN37AB1234 hit the barrier",
+    "vehicle no tn 37 ab 1234"
+  ],
+  "must_not_redact": [
+    "Aadhaar 2345 6789 0123",
+    "complaint dated 12-05-2024",
+    "complaint dated 12.05.2024",
+    "complaint dated 12/05/2024",
+    "pincode 641001",
+    "Coimbatore - 641 001",
+    "compensation of Rs. 7,50,000 sanctioned",
+    "budget Rs. 9500000000 for the ward",
+    "UTR 234567890124 credited",
+    "order ABC1234567 shipped",
+    "ticket 1234567890 closed",
+    "we left up 12 am 2024",
+    "3வது தெரு, ward 37, 2026 complaints"
+  ]
+}

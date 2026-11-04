@@ -1142,6 +1142,10 @@ can pin the right negatives:
 | `aba_routing` | Federal Reserve district prefix **and** the 3-7-1 checksum, and **always** cue-gated: the checksum passes about one random nine-digit run in ten |
 | `in_gstin` | Indian GSTIN (15 characters): a state code `01`–`38`, `97` or `99`, **and** the mod-36 check character (weights 1,2 alternating from the left over the first 14 characters). Runs unconditionally, case-insensitive |
 | `in_pan` | Indian PAN (10 characters): a holder-type letter (`P C H F A T B L J G`) in the fourth position, and **always** cue-gated (`PAN`, `PAN No`, `Income Tax PAN`, `Permanent Account Number`) within 40 characters — it has no public checksum. A PAN inside a GSTIN is covered by the `in_gstin` span, never reported twice |
+| `in_mobile` | Indian mobile (#418): ten digits starting 6–9, optional `+91` / `91` / `0` prefix, `5 5` or `3 3 4` grouping. Shape alone (confidence 0.9; a cue such as `mobile`, `ph`, `எண்`, `கைபேசி` within 40 characters raises it to 1.0). Amounts (`₹`, `Rs`, `rupees`, `crore`) and digits continuing a larger number are refused. A span the generic `phone` detector already reports (`+91 98431 22760`, `984-312-2760`) stays `phone`, so its pseudonym does not change across the upgrade |
+| `in_aadhaar` | Aadhaar (#418): twelve digits, first 2–9, **Verhoeff** check digit. The `4 4 4` grouped form runs unconditionally; a bare twelve-digit run needs a cue (`Aadhaar`, `UID`, `ஆதார்`, `आधार`) — a UPI reference is also twelve digits. A 16-digit VID (Verhoeff too) always needs a cue (`VID`, `virtual id`, or an Aadhaar cue) |
+| `in_epic` | Voter ID (#418): three letters + seven digits, **always** cue-gated (`EPIC`, `voter id`, `வாக்காளர்`, `मतदाता`) |
+| `in_vehicle` | Vehicle registration (#418): `TN 37 AB 1234` with a listed state/UT code; the canonical UPPERCASE plate with a four-digit number runs unconditionally, lowercase or short forms need a cue (`vehicle`, `reg no`, `வாகன`, `वाहन`) |
 | `mrn` | cue only (`MRN`, `medical record number`, …) within 40 characters |
 
 The US detectors (1.9.0, #281) also fixed a leak: a dashed SSN matched the
@@ -1161,6 +1165,44 @@ invoice. Under the egress floor with no declared policy, `Supplier GSTIN
 27AAPFU0939F1ZV` reads back as `Supplier GSTIN [IN_GSTIN_1]`. Worth adding to
 `must_not_redact`: `27AAPFU0939F1VZ` (last two transposed), `00AAPFU0939F1ZV`
 (unassigned state code), and `SKU AAPFU0939F` (PAN-shaped, no cue).
+
+The Indian personal identifiers (#418) come with a ready fixture file,
+[`examples/anonymize/india-identifiers.json`](../examples/anonymize/), written
+the way citizens type them inside Tamil prose — `முருகன் 98431 22760
+காந்திபுரம்` reads back with the mobile replaced and the Tamil untouched, byte
+for byte. A number glued straight onto Tamil script (`எண்9843122760`) is still
+detected: for a digit run, only another digit or a Latin letter counts as "the
+same word". Its negatives pin what used to go wrong nearby: `12-05-2024` (a
+day-first dashed date, formerly reported as `phone`), `pincode 641001`
+(`pincode` used to cue the secret-PIN detector), a rupee amount, an uncued UPI
+reference, and `Aadhaar 2345 6789 0123` — one digit off a valid number, which
+the Verhoeff check refuses.
+
+```bash
+areev anonymize test --fixtures examples/anonymize/india-identifiers.json
+# → 26 fixtures: 26 passed, 0 failed (0 missed, 0 false positive)
+```
+
+**Shapes Areev should not hard-code** go in the policy as regex detectors.
+Each one is validated when you `set` it — it must compile under a size cap,
+stay under 1 KiB, and match at least one character — and, like everything
+else, belongs in a fixture file:
+
+```json
+{
+  "mode": "egress",
+  "categories": { "ward_ref": "redact" },
+  "detectors": [
+    "tier0",
+    { "category": "ward_ref", "pattern": "W[0-9]{3}-[0-9]{4}",
+      "cue": ["ward", "வார்டு"], "within_chars": 40 }
+  ]
+}
+```
+
+`cue` is optional; with it, a match counts only when a cue word ends within
+`within_chars` (default 40) characters before it. A list holding only regex
+detectors keeps the built-in `tier0` chain.
 
 ### Redact on context, not just on category
 
@@ -1221,6 +1263,45 @@ areev recall --db support.db --passphrase-env MEMPASS --ns caller --subject call
 areev anonymize reveal --db support.db --passphrase-env MEMPASS \
   --ns caller --token "[PERSON_1]"
 ```
+
+**Two people to re-identify.** One `admin` holder revealing alone is the
+baseline; when a rule says a re-identification needs a requester, a different
+approver, a reason and an expiry, declare it on the namespace — and give both
+people `admin` there:
+
+```bash
+areev anonymize set --db support.db --passphrase-env MEMPASS --ns caller --policy '{
+  "mode": "egress", "scope": "session", "vault": true,
+  "reveal": {"mode": "dual", "ttl_secs": 1800}
+}'
+areev cal --db support.db --passphrase-env MEMPASS \
+  'GRANT admin, read ON caller TO "user:safety-desk"'
+areev cal --db support.db --passphrase-env MEMPASS \
+  'GRANT admin, read ON caller TO "user:duty-officer"'
+
+# The direct form is now refused: AUT-E005 (and the refusal is recorded).
+areev anonymize reveal-request --db support.db --passphrase-env MEMPASS \
+  --ns caller --token "[PERSON_1]" --because "threat report #2231" \
+  --as user:safety-desk
+# → {"request_id": "9c1e…", "expires_at": …, "mode": "dual", …}
+
+areev anonymize reveal-approve --db support.db --passphrase-env MEMPASS \
+  --request 9c1e… --as user:duty-officer     # the requester themself: AUT-E005
+
+areev anonymize reveal --db support.db --passphrase-env MEMPASS \
+  --request 9c1e… --as user:safety-desk      # once, within 30 min of approval
+
+areev audit export --db support.db --passphrase-env MEMPASS | grep '"reveal'
+# reveal.request (safety-desk) → reveal.approve (duty-officer) → reveal,
+# each naming request_id, requester and approver; refusals as reveal.refused
+```
+
+The request must be approved within `ttl_secs` of being made, and redeemed
+within `ttl_secs` of being approved; a second redemption is refused. Python
+and Node expose the same three steps as `reveal_request(ns, tokens_json,
+because)` / `reveal_approve(request_id)` / `reveal_redeem(request_id)`
+(`revealRequest` / `revealApprove` / `revealRedeem`). Requests live in the
+memory they were made on and never replicate — approve and redeem there.
 
 Store less instead: `{"mode": "ingress"}` (encrypted memory required)
 transforms **before** the hash commits — `remember`'s extractor LLM never

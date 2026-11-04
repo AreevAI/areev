@@ -1254,6 +1254,50 @@ not only in grain reads (issue #32). `AnonPolicy.known` is the
 caller-supplied complement — identities a host holds but never interned as
 a grain subject (a CRM row, an email header), each with its own category.
 
+### Re-identification may need two people; the redeemable state never replicates
+
+**Decision (2026-11, issue #417):** a namespace's anon policy may declare
+`"reveal": {"mode": "dual", "ttl_secs": N}`. The direct reveal is then refused
+(`AUT-E005`), and a reveal is three steps by two principals, both holding the
+existing `admin` verb — no new verb, because the second signature is a
+property of the *policy*, not of a right: request (with a mandatory reason) →
+approve (by a different principal, within the TTL) → redeem (by the
+requester, once, within the TTL of the approval). One facade method family
+serves every surface that can reveal (CLI, Python, Node); MCP and the console
+expose no reveal, so there is no path around it.
+
+Where the state lives was the decision. The request, approval, refusals and
+reveal are Tier-2 audit grains on the destruction chain — evidence, which
+replicates like all evidence. The *redeemable* state (pending → approved →
+used) is a `reveal_req:<id>` `meta` row moved by `meta_cas`, outside
+`REPLICABLE_META_PREFIXES`: a replica holding a copy of an "approved, unused"
+row would hold a second use, and the vault the reveal reads never travels
+either. This is the same rule as "a declaration replicates; an authorization
+never does" — the policy replicates, a granted re-identification does not. The
+request id is the request record's content address, so the evidence and the
+state name each other.
+
+### Indian identifiers are detected as typed, and an existing category is not taken away
+
+**Decision (2026-11, issue #418):** Tier-0 grows `in_mobile`, `in_aadhaar`
+(Verhoeff), `in_epic` (cue-gated) and `in_vehicle` (state-code-gated), and a
+policy may declare its own regex detectors (validated at `set`: size-capped
+compile, non-empty match). Two rules made the additions safe to ship without a
+versioned detector set (there is none — detection is per build):
+
+- **A span the generic `phone` detector already reported keeps `phone`.** A
+  `memory`-scope or ingress pseudonym is value-derived *per category*; moving
+  `+91 98431 22760` from `phone` to `in_mobile` would mint a different token
+  for a number already stored under the old one. `in_mobile` therefore covers
+  only the shapes nothing caught before (bare, `5 5`, `0`/`91` prefixes).
+- **A category may move only toward the validator-backed reading** — the #281
+  precedent: a dash-grouped Aadhaar that was `phone` becomes `in_aadhaar`
+  (checksum-backed), and a day-first dashed date that was `phone` becomes
+  `date`. Detection stays additive, so a policy that redacts `phone` and
+  allows the rest still redacts the span. The consequence to know: text
+  ingested before and after an upgrade can carry different tokens for such a
+  value, and newly detected spans transform where they did not before.
+
 ### A cycle's back-edge gates a node's own first activation, not the entry's
 
 A bounded cycle's re-entry point can be **any** node, not only the plan's

@@ -100,6 +100,35 @@ top of that.
   never identities. Pseudonym mappings otherwise stay in process custody:
   bounded in memory, returned only to in-process callers, and carried on
   MCP/server payloads as mapping **ids** only.
+- **Reveal can require two people** (#417). A namespace whose policy declares
+  `"reveal": {"mode": "dual", "ttl_secs": N}` refuses the direct reveal
+  (`AUT-E005`) on every surface that can reveal — the CLI, Python and Node all
+  reach it through one facade method, and MCP and the console expose no
+  reveal at all. Instead: a requester holding `admin` asks with a mandatory
+  reason (`reveal-request`); a **different** principal holding `admin`
+  approves (`reveal-approve` — self-approval is `AUT-E005`) within `ttl_secs`
+  of the request; the requester then redeems it (`reveal --request ID`)
+  **once**, within `ttl_secs` of the approval. Request, approval, every
+  refusal and the reveal are each Tier-2 records in `audit export`, naming
+  the request id and both principals (`context.reveal`), on the same
+  hash chain as erasures; the request id *is* the request record's content
+  address. The redeemable state is a `reveal_req:<id>` `meta` row moved
+  pending → approved → used by compare-and-swap, so two concurrent approvals
+  or redemptions on Postgres cannot both win. It **never replicates**: a
+  follower receives the policy and the audit trail but nothing it could
+  redeem — single use is a property of one memory, and the vault it reveals
+  from does not travel either. The policy is read fresh from the file at
+  every reveal, and an unreadable policy refuses rather than falling back to
+  `single`. Known limit: the policy itself is set by one `admin`, so changing
+  `dual` back to `single` is a single-person act; restrict who holds `admin`
+  on `"*"`-scoped policy writes accordingly.
+- **Policy-declared regex detectors are validated at declaration** (#418).
+  A policy may add `{"category", "pattern", "cue"}` detector objects; the
+  pattern is compiled once by the `regex` crate (finite automata — linear
+  time, no backtracking, so no catastrophic matching), under a compiled-size
+  cap, a 1 KiB length cap and a 32-detector cap, and a pattern that can match
+  the empty string is refused. A policy that fails any of these never
+  reaches the file (`VAL-E001` at `anonymize set`).
 - **The free-text APIs read, never write, the trust boundary.**
   `scan_text`/`anonymize_text` stay pure-text-in/JSON-out (no grain writes),
   but they now read the store's known-identity table for the facade's

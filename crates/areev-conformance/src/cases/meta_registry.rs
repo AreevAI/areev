@@ -311,6 +311,97 @@ pub fn indian_tax_ids_pseudonymise_on_egress(b: &dyn Backend) {
     }
 }
 
+
+/// Built-in Indian personal-identifier detectors (#418) on the egress
+/// boundary, both directions: mobiles, a Verhoeff-valid Aadhaar, a cued EPIC
+/// and a plate are pseudonymised; the issue's own one-digit-off Aadhaar, a
+/// day-first date, a pincode and an amount pass through raw.
+pub fn indian_personal_ids_pseudonymise_on_egress(b: &dyn Backend) {
+    let mut m = b.open_named("anon_in_personal");
+    m.set_anon_policy(
+        "ns",
+        r#"{"mode": "egress", "default_action": "allow",
+            "categories": {"in_mobile": "pseudonym", "in_aadhaar": "pseudonym",
+                           "in_epic": "pseudonym", "in_vehicle": "pseudonym"}}"#,
+    )
+    .unwrap();
+    let cases: &[(&str, &str, &str)] = &[
+        ("m1", "எண் 98431 22760", "எண் [IN_MOBILE_1]"),
+        ("m2", "call 9843122760", "call [IN_MOBILE_1]"),
+        ("a1", "Aadhaar 2345 6789 0124", "Aadhaar [IN_AADHAAR_1]"),
+        ("a2", "Aadhaar 2345 6789 0123", "Aadhaar 2345 6789 0123"),
+        ("e1", "Voter ID ABC1234567", "Voter ID [IN_EPIC_1]"),
+        ("v1", "TN 37 AB 1234", "[IN_VEHICLE_1]"),
+        ("d1", "dated 12-05-2024", "dated 12-05-2024"),
+        ("p1", "pincode 641001", "pincode 641001"),
+        ("r1", "Rs. 9500000000", "Rs. 9500000000"),
+    ];
+    for (rel, object, _) in cases {
+        m.add(&fact("ns", "citizen:x", rel, object)).unwrap();
+    }
+    for (rel, object, want) in cases {
+        let got = m.latest("ns", "citizen:x", rel).unwrap().expect("stored");
+        assert_eq!(got.fields["object"], *want, "[{}] egress of {object:?}", b.name());
+    }
+}
+
+/// Dual-control reveal (#417) on every backend: the request state is a
+/// `reveal_req:` meta row moved by `meta_cas`, so single use holds on
+/// Postgres's real conditional update as it does on the embedded writer —
+/// and the row NEVER replicates: a follower that imported the leader's
+/// bundle (policy and audit trail included) has nothing it could redeem.
+pub fn dual_control_reveal_is_single_use_and_never_replicates(b: &dyn Backend) {
+    use areev_core::authz::{Grant, Verb};
+    let mut m = b.open_named("reveal_dual_src");
+    m.set_anon_policy(
+        "ns",
+        r#"{"mode": "egress", "reveal": {"mode": "dual", "ttl_secs": 600}}"#,
+    )
+    .unwrap();
+    m.add(&fact("ns", "caller:john", "prefers", "tea")).unwrap();
+    let f = areev_cal::AreevFacade::with_session(m, Some("ns".into()), None);
+    let admin = Grant { verbs: vec![Verb::Admin], namespaces: vec!["ns".into()] };
+    f.set_grants("user:a", std::slice::from_ref(&admin), "requester").unwrap();
+    f.set_grants("user:b", &[admin], "approver").unwrap();
+
+    let tokens = vec!["[PERSON_1]".to_string()];
+    let code = |e: areev_core::error::AreevError| e.code().to_string();
+    f.bind_principal("user:a").unwrap();
+    assert_eq!(code(f.reveal_tokens("ns", &tokens).unwrap_err()), "AUT-E005");
+    let req: serde_json::Value =
+        serde_json::from_str(&f.reveal_request_at("ns", &tokens, "case 7", 1_000).unwrap()).unwrap();
+    let id = req["request_id"].as_str().unwrap().to_string();
+    assert_eq!(code(f.reveal_approve_at(&id, 1_001).unwrap_err()), "AUT-E005", "self-approval");
+    f.bind_principal("user:b").unwrap();
+    f.reveal_approve_at(&id, 1_002).unwrap();
+    f.bind_principal("user:a").unwrap();
+    f.reveal_redeem_at(&id, 1_003).unwrap();
+    assert_eq!(
+        code(f.reveal_redeem_at(&id, 1_004).unwrap_err()),
+        "AUT-E005",
+        "[{}] a request is single-use",
+        b.name()
+    );
+
+    let bundle = b.scratch().join("reveal_dual.mgb");
+    f.with_store(|m| m.bundle_since(0, bundle.to_str().unwrap())).unwrap();
+    let bytes = std::fs::read(&bundle).unwrap();
+    assert!(
+        !bytes.windows(11).any(|w| w == areev_store::REVEAL_REQUEST_PREFIX.as_bytes()),
+        "the bundle must not carry reveal request state"
+    );
+    let mut dst = b.open_named("reveal_dual_dst");
+    dst.import_bundle(bundle.to_str().unwrap()).unwrap();
+    assert!(
+        dst.meta_scan(areev_store::REVEAL_REQUEST_PREFIX).unwrap().is_empty(),
+        "[{}] no reveal request may exist on the replica",
+        b.name()
+    );
+    assert!(
+        dst.anon_reveal_policy("ns").unwrap().is_dual(),
+        "the policy itself does replicate"
+    );
+}
 // ---- trigger evaluation state (`trg:`) -----------------------------------
 //
 // The declaration is a grain and replicates; the evaluation state must not.

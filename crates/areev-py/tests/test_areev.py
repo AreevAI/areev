@@ -2304,3 +2304,40 @@ def test_run_tick_resumes_a_due_wait_and_reports_one_not_due(tmp_path):
     assert "vetoed by volunteer:3" in done["finished"], done
     approvals = json.loads(db.run_oversight_report("later"))["approvals"]
     assert any(a["outcome"] == "veto" and a["reason"] == "too soon" for a in approvals)
+
+
+# --------------------------------------------------------------------------
+# #417 — dual-control reveal: requester, a DIFFERENT approver, a TTL
+# --------------------------------------------------------------------------
+
+def test_dual_control_reveal_request_approve_redeem(tmp_path):
+    path = str(tmp_path / "dual.db")
+    owner = areev.Areev(path, ns="caller")
+    owner.set_anon_policy("caller", json.dumps(
+        {"mode": "egress", "scope": "session", "reveal": {"mode": "dual", "ttl_secs": 1800}}))
+    owner.cal('GRANT admin, read ON caller TO "user:desk"')
+    owner.cal('GRANT admin, read ON caller TO "user:approver"')
+    del owner
+
+    desk = areev.Areev(path, ns="caller", principal="user:desk")
+    with pytest.raises(ValueError, match="AUT-E005"):
+        desk.reveal_tokens("caller", json.dumps(["[PERSON_1]"]))
+    req = json.loads(desk.reveal_request("caller", json.dumps(["[PERSON_1]"]), "safety escalation"))
+    rid = req["request_id"]
+    assert req["requester"] == "user:desk" and req["mode"] == "dual"
+    with pytest.raises(ValueError, match="AUT-E005"):
+        desk.reveal_approve(rid)  # self-approval
+    del desk
+
+    approver = areev.Areev(path, ns="caller", principal="user:approver")
+    ok = json.loads(approver.reveal_approve(rid))
+    assert ok["approver"] == "user:approver" and ok["requester"] == "user:desk"
+    with pytest.raises(ValueError, match="AUT-E005"):
+        approver.reveal_redeem(rid)  # only the requester redeems
+    del approver
+
+    desk = areev.Areev(path, ns="caller", principal="user:desk")
+    out = json.loads(desk.reveal_redeem(rid))
+    assert "[PERSON_1]" in out["revealed"]
+    with pytest.raises(ValueError, match="AUT-E005"):
+        desk.reveal_redeem(rid)  # single use

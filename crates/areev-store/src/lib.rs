@@ -1654,6 +1654,18 @@ impl TriggerState {
 
 const VAULT_PREFIX: &str = "vault:";
 
+/// `meta` prefix of dual-control reveal requests (#417): one row per request,
+/// `reveal_req:<request-id>`, holding its state (pending → approved → used).
+///
+/// Deliberately NOT in `REPLICABLE_META_PREFIXES`, for the `trg:` reason
+/// and one more: the request is a per-memory decision about THIS memory's
+/// vault (which never replicates either), and single use is enforced by a
+/// `meta_cas` on this row — a replica that received the row would hold a
+/// second copy of the same "unused" state, i.e. a second use. The Tier-2
+/// audit Observations that record the request, approval and reveal ARE
+/// grains and replicate as evidence; the redeemable state does not.
+pub const REVEAL_REQUEST_PREFIX: &str = "reveal_req:";
+
 const REPLICABLE_META_PREFIXES: [&str; 6] =
     ["qry:", "tpl:", "retention:", "retention_floor:", "anon:", "hold:"];
 
@@ -4121,6 +4133,25 @@ impl Areev {
     /// the policy mints another shape would fail OPEN.
     pub fn anon_placeholder(&self, ns: &str) -> Result<Option<String>> {
         self.anon.placeholder(ns)
+    }
+
+    /// The reveal control declared for `ns` (#417), read FRESH from the
+    /// file rather than from this handle's policy cache — on Postgres a
+    /// second writer may have just declared `dual`, and a reveal must not be
+    /// admitted on a stale `single`. No row → `single` (the default). An
+    /// unreadable row fails closed: a reveal is refused rather than admitted
+    /// under a policy this build cannot read.
+    pub fn anon_reveal_policy(&self, ns: &str) -> Result<areev_core::anon::RevealPolicy> {
+        match self.meta_get(&format!("{}{ns}", anon_gate::ANON_PREFIX))? {
+            None => Ok(areev_core::anon::RevealPolicy::default()),
+            Some(json) => Ok(areev_core::anon::AnonPolicy::from_json(&json)
+                .map_err(|e| {
+                    AreevError::Validation(format!(
+                        "anon:{ns} policy row is unreadable ({e}) — reveal fails closed"
+                    ))
+                })?
+                .reveal_policy()),
+        }
     }
 
     /// Reverse-lookup one placeholder token (proposal D9, REQ-ANON-3):

@@ -74,6 +74,25 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+/// The `meta` key of one dual-control reveal request (#417).
+fn reveal_req_key(request_id: &str) -> String {
+    format!("{}{request_id}", areev_store::REVEAL_REQUEST_PREFIX)
+}
+
+/// A parsed `reveal_req:` row. `raw` keeps the whole value so a state step
+/// rewrites it field-by-field rather than dropping fields a newer build
+/// added.
+struct RevealRequestRow {
+    ns: String,
+    requester: String,
+    because: String,
+    state: String,
+    tokens: Vec<String>,
+    ttl_secs: u64,
+    expires_at: i64,
+    raw: serde_json::Value,
+}
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -935,8 +954,38 @@ impl AreevFacade {
     /// execution writes a Tier-2 Observation in `agent:authz` carrying the
     /// revealed values' *fingerprints*, never the identities. Returns JSON
     /// `{"revealed": {token: value | null}}`.
+    ///
+    /// Under a dual-control reveal policy (`"reveal": {"mode": "dual"}`,
+    /// #417) this direct form is REFUSED (`AUT-E005`, itself recorded): a
+    /// reveal there goes through [`Self::reveal_request`] →
+    /// [`Self::reveal_approve`] (a different principal) →
+    /// [`Self::reveal_redeem`].
     pub fn reveal_tokens(&self, ns: &str, tokens: &[String]) -> Result<String> {
         self.check_verb(Verb::Admin, ns)?;
+        let now = now_ms();
+        if self.with_store(|m| m.anon_reveal_policy(ns))?.is_dual() {
+            self.audit_reveal_refusal(ns, None, None, "dual_control", now)?;
+            return Err(AreevError::RevealRefused(format!(
+                "namespace \"{ns}\" requires dual-control reveal — request with \
+                 `anonymize reveal-request` (a reason is mandatory), have a different \
+                 admin approve with `reveal-approve`, then redeem with \
+                 `reveal --request ID`"
+            )));
+        }
+        self.reveal_and_audit(ns, tokens, None, None, now)
+    }
+
+    /// The reveal itself plus its Tier-2 record. `chain` is the dual-control
+    /// context (`request_id`, both principals) when the reveal redeems an
+    /// approved request.
+    fn reveal_and_audit(
+        &self,
+        ns: &str,
+        tokens: &[String],
+        because: Option<&str>,
+        chain: Option<serde_json::Value>,
+        now: i64,
+    ) -> Result<String> {
         let mut revealed = serde_json::Map::new();
         let mut fingerprints: Vec<String> = Vec::new();
         self.with_store(|m| -> Result<()> {
@@ -959,14 +1008,19 @@ impl AreevFacade {
             &self.session_principal(),
             "reveal",
             ns,
-            None,
+            because,
             fingerprints.len(),
-            now_ms(),
+            now,
         );
-        if !fingerprints.is_empty() {
+        {
             let ctx = obs.common.context.get_or_insert_with(|| serde_json::json!({}));
             if let Some(o) = ctx.as_object_mut() {
-                o.insert("revealed_fingerprints".into(), serde_json::json!(fingerprints));
+                if !fingerprints.is_empty() {
+                    o.insert("revealed_fingerprints".into(), serde_json::json!(fingerprints));
+                }
+                if let Some(chain) = chain {
+                    o.insert("reveal".into(), chain);
+                }
             }
         }
         // The reveal is a Tier-2 record like an erasure, so it rides the
@@ -974,6 +1028,359 @@ impl AreevFacade {
         self.with_store(|m| m.append_audit(&mut obs))?;
         serde_json::to_string(&serde_json::json!({"revealed": revealed}))
             .map_err(|e| AreevError::Internal(e.to_string()))
+    }
+
+    // ---- dual-control reveal (#417) ---------------------------------------
+    //
+    // A request is a `reveal_req:<id>` meta row (non-replicating — see
+    // `areev_store::REVEAL_REQUEST_PREFIX`) whose state moves pending →
+    // approved → used, each step a `meta_cas` on the whole row, so two
+    // approvers or two redemptions racing on Postgres cannot both win. The id
+    // IS the content address of the request's Tier-2 audit Observation, so
+    // the evidence and the redeemable state name each other. Every step, and
+    // every refusal of a known request, is its own Tier-2 record carrying
+    // `context.reveal = {request_id, requester, approver?, reason?}`.
+    //
+    // The `_at` forms take the clock as a parameter (tests drive TTL expiry
+    // with it); the plain forms read the wall clock.
+
+    /// Ask to reveal `tokens` in `ns`, with a mandatory reason. Needs `admin`
+    /// on `ns` (the requester is the one who will see the plaintext, so the
+    /// baseline reveal right still applies — dual control ADDS a second
+    /// person, it never lowers the bar). Returns JSON `{"request_id", "ns",
+    /// "requester", "tokens", "expires_at", "mode"}`; the request must be
+    /// approved within the policy's `ttl_secs`.
+    pub fn reveal_request(&self, ns: &str, tokens: &[String], because: &str) -> Result<String> {
+        self.reveal_request_at(ns, tokens, because, now_ms())
+    }
+
+    /// [`Self::reveal_request`] with an explicit clock (epoch ms).
+    pub fn reveal_request_at(
+        &self,
+        ns: &str,
+        tokens: &[String],
+        because: &str,
+        now: i64,
+    ) -> Result<String> {
+        self.check_verb(Verb::Admin, ns)?;
+        if ns.contains('*') {
+            return Err(AreevError::Validation(
+                "a reveal request names one exact namespace, never a pattern".into(),
+            ));
+        }
+        let because = because.trim();
+        if because.is_empty() {
+            return Err(AreevError::Validation(
+                "a reveal request needs a reason (--because) — it is what the approver \
+                 decides on and what the audit records"
+                    .into(),
+            ));
+        }
+        if tokens.is_empty() || tokens.iter().any(|t| t.trim().is_empty()) {
+            return Err(AreevError::Validation(
+                "a reveal request needs at least one non-empty token".into(),
+            ));
+        }
+        // One decision per bounded, reviewable set: an approver cannot
+        // meaningfully sign off on an unbounded list.
+        const MAX_REVEAL_REQUEST_TOKENS: usize = 256;
+        if tokens.len() > MAX_REVEAL_REQUEST_TOKENS {
+            return Err(AreevError::Validation(format!(
+                "a reveal request names at most {MAX_REVEAL_REQUEST_TOKENS} tokens"
+            )));
+        }
+        let policy = self.with_store(|m| m.anon_reveal_policy(ns))?;
+        let requester = self.session_principal();
+        let ttl_ms = (policy.ttl_secs as i64).saturating_mul(1000);
+        let expires_at = now.saturating_add(ttl_ms);
+        let hash = self.audit_reveal_step(
+            "reveal.request",
+            ns,
+            Some(because),
+            tokens.len(),
+            serde_json::json!({
+                "requester": requester,
+                "mode": policy.mode,
+                "expires_at": expires_at,
+            }),
+            now,
+        )?;
+        let request_id = hash.to_hex();
+        let state = serde_json::json!({
+            "v": 1,
+            "ns": ns,
+            "tokens": tokens,
+            "requester": requester,
+            "because": because,
+            "ttl_secs": policy.ttl_secs,
+            "created_at": now,
+            "expires_at": expires_at,
+            "state": "pending",
+        });
+        let claimed = self.with_store(|m| {
+            m.meta_cas(&reveal_req_key(&request_id), None, &state.to_string())
+        })?;
+        if !claimed {
+            return Err(AreevError::Internal(format!(
+                "reveal request {request_id} already exists"
+            )));
+        }
+        serde_json::to_string(&serde_json::json!({
+            "request_id": request_id,
+            "ns": ns,
+            "requester": requester,
+            "tokens": tokens.len(),
+            "expires_at": expires_at,
+            "mode": policy.mode,
+        }))
+        .map_err(|e| AreevError::Internal(e.to_string()))
+    }
+
+    /// Approve a pending reveal request. Needs `admin` on the request's
+    /// namespace, and is refused (`AUT-E005`, recorded) when the approver IS
+    /// the requester, when the request is not pending, or after its TTL. On
+    /// success the reveal window restarts: the requester may redeem once
+    /// within `ttl_secs` of this approval. Returns the request (namespace,
+    /// requester, reason, tokens, new expiry) so the approver sees what they
+    /// approved.
+    pub fn reveal_approve(&self, request_id: &str) -> Result<String> {
+        self.reveal_approve_at(request_id, now_ms())
+    }
+
+    /// [`Self::reveal_approve`] with an explicit clock (epoch ms).
+    pub fn reveal_approve_at(&self, request_id: &str, now: i64) -> Result<String> {
+        let (raw, req) = self.load_reveal_request(request_id)?;
+        let ns = req.ns.clone();
+        self.check_verb(Verb::Admin, &ns)?;
+        let approver = self.session_principal();
+        let refuse = |reason: &str, msg: String| -> Result<String> {
+            self.audit_reveal_refusal(&ns, Some(request_id), Some(&req.requester), reason, now)?;
+            Err(AreevError::RevealRefused(msg))
+        };
+        if approver == req.requester {
+            return refuse(
+                "self_approval",
+                format!(
+                    "request {request_id} was made by '{approver}', who cannot also \
+                     approve it — dual control needs a different principal"
+                ),
+            );
+        }
+        if req.state != "pending" {
+            return refuse(
+                "not_pending",
+                format!("request {request_id} is already {}", req.state),
+            );
+        }
+        if now > req.expires_at {
+            return refuse(
+                "expired",
+                format!("request {request_id} expired before it was approved"),
+            );
+        }
+        let expires_at = now.saturating_add((req.ttl_secs as i64).saturating_mul(1000));
+        let mut next = req.raw.clone();
+        next["state"] = serde_json::json!("approved");
+        next["approver"] = serde_json::json!(approver);
+        next["approved_at"] = serde_json::json!(now);
+        next["expires_at"] = serde_json::json!(expires_at);
+        let won = self.with_store(|m| {
+            m.meta_cas(&reveal_req_key(request_id), Some(&raw), &next.to_string())
+        })?;
+        if !won {
+            return refuse(
+                "concurrent_change",
+                format!("request {request_id} changed while it was being approved — re-read it"),
+            );
+        }
+        self.audit_reveal_step(
+            "reveal.approve",
+            &ns,
+            Some(&req.because),
+            req.tokens.len(),
+            serde_json::json!({
+                "request_id": request_id,
+                "requester": req.requester,
+                "approver": approver,
+                "expires_at": expires_at,
+            }),
+            now,
+        )?;
+        serde_json::to_string(&serde_json::json!({
+            "request_id": request_id,
+            "ns": ns,
+            "requester": req.requester,
+            "approver": approver,
+            "because": req.because,
+            "tokens": req.tokens,
+            "expires_at": expires_at,
+        }))
+        .map_err(|e| AreevError::Internal(e.to_string()))
+    }
+
+    /// Redeem an approved reveal request: the reveal itself, exactly once,
+    /// by the requester, within the approval's TTL. Needs `admin` on the
+    /// namespace. Refused (`AUT-E005`, recorded) for anyone but the
+    /// requester, an unapproved or already-used request, or after expiry.
+    /// Returns JSON `{"revealed": {token: value | null}}`, like
+    /// [`Self::reveal_tokens`]; its Tier-2 record names both principals and
+    /// the request id, closing the request → approve → reveal chain.
+    pub fn reveal_redeem(&self, request_id: &str) -> Result<String> {
+        self.reveal_redeem_at(request_id, now_ms())
+    }
+
+    /// [`Self::reveal_redeem`] with an explicit clock (epoch ms).
+    pub fn reveal_redeem_at(&self, request_id: &str, now: i64) -> Result<String> {
+        let (raw, req) = self.load_reveal_request(request_id)?;
+        let ns = req.ns.clone();
+        self.check_verb(Verb::Admin, &ns)?;
+        let who = self.session_principal();
+        let refuse = |reason: &str, msg: String| -> Result<String> {
+            self.audit_reveal_refusal(&ns, Some(request_id), Some(&req.requester), reason, now)?;
+            Err(AreevError::RevealRefused(msg))
+        };
+        if who != req.requester {
+            return refuse(
+                "not_requester",
+                format!(
+                    "request {request_id} belongs to '{}' — only the requester redeems it",
+                    req.requester
+                ),
+            );
+        }
+        match req.state.as_str() {
+            "approved" => {}
+            "pending" => {
+                return refuse(
+                    "not_approved",
+                    format!("request {request_id} has not been approved"),
+                )
+            }
+            other => {
+                return refuse(
+                    "already_used",
+                    format!("request {request_id} is {other} — a reveal request is single-use"),
+                )
+            }
+        }
+        if now > req.expires_at {
+            return refuse(
+                "expired",
+                format!("the approval of request {request_id} has expired"),
+            );
+        }
+        let mut next = req.raw.clone();
+        next["state"] = serde_json::json!("used");
+        next["used_at"] = serde_json::json!(now);
+        let won = self.with_store(|m| {
+            m.meta_cas(&reveal_req_key(request_id), Some(&raw), &next.to_string())
+        })?;
+        if !won {
+            return refuse(
+                "already_used",
+                format!("request {request_id} was redeemed concurrently — single-use"),
+            );
+        }
+        let approver = req.raw.get("approver").cloned().unwrap_or(serde_json::Value::Null);
+        self.reveal_and_audit(
+            &ns,
+            &req.tokens,
+            Some(&req.because),
+            Some(serde_json::json!({
+                "request_id": request_id,
+                "requester": req.requester,
+                "approver": approver,
+                "approved_at": req.raw.get("approved_at"),
+            })),
+            now,
+        )
+    }
+
+    /// Read one request row: `(raw row text, parsed)`. An unknown id is
+    /// `AUT-E005` (not recorded — there is no namespace to attach it to).
+    fn load_reveal_request(&self, request_id: &str) -> Result<(String, RevealRequestRow)> {
+        let raw = self
+            .with_store(|m| m.meta_get(&reveal_req_key(request_id)))?
+            .ok_or_else(|| {
+                AreevError::RevealRefused(format!(
+                    "no reveal request {request_id} in this memory (requests do not \
+                     replicate — approve and redeem on the memory they were made on)"
+                ))
+            })?;
+        let v: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
+            AreevError::Validation(format!("reveal request {request_id} is unreadable: {e}"))
+        })?;
+        let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+        let row = RevealRequestRow {
+            ns: s("ns"),
+            requester: s("requester"),
+            because: s("because"),
+            state: s("state"),
+            tokens: v
+                .get("tokens")
+                .and_then(|t| t.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                .unwrap_or_default(),
+            ttl_secs: v.get("ttl_secs").and_then(|x| x.as_u64()).unwrap_or(0),
+            expires_at: v.get("expires_at").and_then(|x| x.as_i64()).unwrap_or(0),
+            raw: v.clone(),
+        };
+        if row.ns.is_empty() || row.requester.is_empty() {
+            return Err(AreevError::Validation(format!(
+                "reveal request {request_id} is unreadable: missing ns/requester"
+            )));
+        }
+        Ok((raw, row))
+    }
+
+    /// One Tier-2 record of the dual-control trail; returns its address.
+    fn audit_reveal_step(
+        &self,
+        verb: &str,
+        ns: &str,
+        because: Option<&str>,
+        count: usize,
+        reveal: serde_json::Value,
+        now: i64,
+    ) -> Result<Hash> {
+        let mut obs = areev_core::authz::audit_observation(
+            &self.session_principal(),
+            verb,
+            ns,
+            because,
+            count,
+            now,
+        );
+        if let Some(o) = obs.common.context.as_mut().and_then(|c| c.as_object_mut()) {
+            o.insert("reveal".into(), reveal);
+        }
+        self.with_store(|m| m.append_audit(&mut obs))
+    }
+
+    /// Record a refused reveal step (`reveal.refused`), naming who tried,
+    /// the requester when there is a request, and why.
+    fn audit_reveal_refusal(
+        &self,
+        ns: &str,
+        request_id: Option<&str>,
+        requester: Option<&str>,
+        reason: &str,
+        now: i64,
+    ) -> Result<()> {
+        self.audit_reveal_step(
+            "reveal.refused",
+            ns,
+            None,
+            0,
+            serde_json::json!({
+                "request_id": request_id,
+                "requester": requester,
+                "attempted_by": self.session_principal(),
+                "reason": reason,
+            }),
+            now,
+        )?;
+        Ok(())
     }
 
     // ---- text anonymization (docs/anonymization-proposal.md, P0) ----------

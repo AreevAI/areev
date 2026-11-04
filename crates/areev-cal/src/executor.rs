@@ -5958,7 +5958,8 @@ pub(super) fn map_store_err(e: AreevError, span: Option<super::errors::Span>) ->
         AreevError::AuthzDenied(_)
         | AreevError::AuthzUnknownPrincipal(_)
         | AreevError::AuthzConfigInvalid(_)
-        | AreevError::AuthzTokenUnrecognized => CalError::NotAuthorized {
+        | AreevError::AuthzTokenUnrecognized
+        | AreevError::RevealRefused(_) => CalError::NotAuthorized {
             detail: e.to_string(),
             span,
             store_code,

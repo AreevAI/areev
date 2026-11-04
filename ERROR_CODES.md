@@ -99,6 +99,7 @@ limited vs deadline vs invalid question) without parsing a message.
 | `AUT-E002` | `AuthzUnknownPrincipal` | A principal name no credential authenticates |
 | `AUT-E003` | `AuthzConfigInvalid` | The credential map failed to load or validate (unknown key, bad version, malformed entry — fail closed) |
 | `AUT-E004` | `AuthzTokenUnrecognized` | A presented bearer token matched no credential (the message never echoes the token) |
+| `AUT-E005` | `RevealRefused` | A re-identification the namespace's dual-control reveal policy does not admit (#417): a direct `reveal` under `"reveal": {"mode": "dual"}`, a self-approval (approver = requester), an approval or redemption after the TTL, a redemption of an unapproved or already-used request, a redemption by anyone but the requester, or an unknown request id. Distinct from `AUT-E001` (a missing `admin` grant): the principal may hold every right and still need a second person. Every refusal of a known request is itself a Tier-2 record (`reveal.refused`) |
 
 `areev_loop::Error` — Areev Loop engine (`crates/areev-loop/src/error.rs`), append-only:
 
