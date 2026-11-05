@@ -6,6 +6,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.14.0] — 2026-11-05
+
+### Security
+
+- **Dependencies: bumped past six advisories `cargo deny` flags against
+  1.13.2's lockfile** — RUSTSEC-2026-0385 (`ctutils` < 0.4.4,
+  non-constant-time mask generation and `u128` comparisons, reached through
+  `aes-gcm`), RUSTSEC-2026-0386 (`tokio` `AsyncFd` I/O safety), and
+  RUSTSEC-2026-0391/0398/0403/0410 (`zstd`/`zstd-safe`/`zstd-sys`): `ctutils`
+  0.4.8, `tokio` 1.54.1, `zstd` 0.13.4, `zstd-safe` 7.4.0, `zstd-sys` 2.1.2,
+  in the root and `areev-js` lockfiles; `areev-js` also moves off a yanked
+  `chacha20` (0.10.2). Lockfile-only: no manifest requirement changed.
+- **`cargo deny`: RUSTSEC-2026-0387 (`crypto-bigint` < 0.7.6) is a documented
+  ignore, tracked in #427.** It reaches the tree only via `jsonwebtoken`
+  11.1.0 (the latest) → `p256`/`p384` → `elliptic-curve` 0.13 under the
+  non-default `oidc` feature, and has no semver-compatible fix. It is not
+  reachable: the leak is over secret integers, and the ES256/ES384 path is
+  verification-only against the issuer's public key — the same posture as
+  the `rsa` ignore (#140).
+
 ### Added
 
 - **Run: distinct approvers across gates, and N-of-M quorum on one ask
@@ -5093,7 +5113,8 @@ ecosystem adapters, and the enterprise plane.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.13.2...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.14.0...HEAD
+[1.14.0]: https://github.com/AreevAI/areev/compare/v1.13.2...v1.14.0
 [1.13.2]: https://github.com/AreevAI/areev/compare/v1.13.1...v1.13.2
 [1.13.1]: https://github.com/AreevAI/areev/compare/v1.13.0...v1.13.1
 [1.13.0]: https://github.com/AreevAI/areev/compare/v1.12.2...v1.13.0
