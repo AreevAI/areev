@@ -18,6 +18,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   0.4.8, `tokio` 1.54.1, `zstd` 0.13.4, `zstd-safe` 7.4.0, `zstd-sys` 2.1.2,
   in the root and `areev-js` lockfiles; `areev-js` also moves off a yanked
   `chacha20` (0.10.2). Lockfile-only: no manifest requirement changed.
+- **`cargo deny`: RUSTSEC-2026-0387 (`crypto-bigint` < 0.7.6) is a documented
+  ignore, tracked in #427.** It reaches the tree only via `jsonwebtoken`
+  11.1.0 (the latest) → `p256`/`p384` → `elliptic-curve` 0.13 under the
+  non-default `oidc` feature, and has no semver-compatible fix. It is not
+  reachable: the leak is over secret integers, and the ES256/ES384 path is
+  verification-only against the issuer's public key — the same posture as
+  the `rsa` ignore (#140).
 
 ### Added
 

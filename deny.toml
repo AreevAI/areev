@@ -39,6 +39,16 @@ ignore = [
     # (with the conditions that invalidate it): #140. Re-check on every
     # jsonwebtoken bump.
     { id = "RUSTSEC-2023-0071", reason = "rsa private-key timing attack; Areev only verifies with public keys, and only under the non-default `oidc` feature — see #140" },
+    # RUSTSEC-2026-0387 — non-constant-time arithmetic in `crypto-bigint` < 0.7.6,
+    # reaching the tree ONLY via jsonwebtoken 11.1.0 (the latest) → p256/p384 →
+    # elliptic-curve 0.13 → crypto-bigint 0.5.5, under the same NON-DEFAULT
+    # `oidc` feature. No semver-compatible update reaches 0.7.
+    #
+    # Not reachable, for the reason above: the leak is over SECRET integers, and
+    # the ES256/ES384 path here is verification-only — issuer public key,
+    # signature and message are all public; Areev holds no EC private key and
+    # never signs. Same invalidating conditions as #140. Tracking issue: #427.
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint timing over secret integers; Areev only verifies ECDSA id_tokens with public keys, under the non-default `oidc` feature — see #427" },
 ]
 
 [licenses]
