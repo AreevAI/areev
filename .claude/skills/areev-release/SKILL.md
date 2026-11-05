@@ -25,7 +25,19 @@ it goes out under npm's `preview` dist-tag and as a PyPI pre-release, so
 - `python3 scripts/repo_stats.py --check` — the quality figures in README.md
   still match the tree; regenerate and commit if not.
 - `cargo test --workspace` green; `cargo clippy --workspace --all-targets -- -D warnings` clean.
-- `cargo deny check` passes (advisories, licenses, sources, bans).
+- `cargo deny --all-features check` passes (advisories, licenses, sources,
+  bans). **`--all-features` is the point**: `security.yml`'s
+  `cargo-deny-action` passes it by default (it is not written in the
+  workflow), and the non-default features (`oidc`, `postgres`,
+  `postgres-tls`, `tls`) pull crates a plain `cargo deny check` never sees. 1.14.0 hit exactly
+  this: the pre-flight passed, and the release PR then failed on
+  RUSTSEC-2026-0387 in `crypto-bigint`, reachable only through
+  `jsonwebtoken` under `oidc`. Run it in `crates/areev-js` and
+  `areev-sandbox` too — each detached lockfile carries its own advisories
+  (1.14.0's areev-js lock also held a yanked `chacha20`). When a fix needs
+  only a lockfile bump, `cargo update -p <crate>` in every lockfile that
+  holds it; when no compatible fix exists, `deny.toml` takes a documented
+  ignore with a tracking issue, never a bare ID.
 - Fuzz smoke: `cargo +nightly fuzz build`.
 - Confirm `THIRD-PARTY-NOTICES.md` is current (regenerate with `cargo about` if deps changed).
 
