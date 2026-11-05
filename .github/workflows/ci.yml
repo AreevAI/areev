@@ -49,6 +49,20 @@ jobs:
           foreach ($p in 'rustc.exe','cargo.exe','link.exe') {
             Add-MpPreference -ExclusionProcess $p
           }
+      # The linker has died with `ld terminated with signal 7 [Bus error]`
+      # on ubuntu-latest (test, coverage) while writing test binaries — the
+      # signature of the runner's disk filling under a ~3,500-test workspace's
+      # debug artifacts. Free the preinstalled toolchains this repo never uses
+      # (~25-30 GB). Best-effort, like the Defender step: a runner image that
+      # moves these paths must not fail the build. `df` stays in the log so a
+      # recurrence can be checked against the free space it started with.
+      - name: Free disk space (linux)
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
       # `cargo test` runs test BINARIES one at a time, parallelising only
@@ -262,6 +276,20 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
+      # The linker has died with `ld terminated with signal 7 [Bus error]`
+      # on ubuntu-latest (test, coverage) while writing test binaries — the
+      # signature of the runner's disk filling under a ~3,500-test workspace's
+      # debug artifacts. Free the preinstalled toolchains this repo never uses
+      # (~25-30 GB). Best-effort, like the Defender step: a runner image that
+      # moves these paths must not fail the build. `df` stays in the log so a
+      # recurrence can be checked against the free space it started with.
+      - name: Free disk space (linux)
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Measure coverage
