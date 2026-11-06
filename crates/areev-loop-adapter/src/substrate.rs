@@ -19,9 +19,13 @@
 //!    content-addressed, syncable grains; only the type byte differs.
 //! 2. **Liveness comes from `derived_from`.** `supersede` stamps the new
 //!    grain's `derived_from` with the old hash, so a grain is superseded iff
-//!    its hash appears in some sibling's `derived_from`. All-namespace scans
-//!    (no ns filter) enumerate via the op-log (`changes_since`), since `recent`
-//!    requires a namespace.
+//!    its hash appears in some sibling's `derived_from`.
+//!
+//! Type reads go through the store's bounded, paged
+//! `grains_of_type_since` (#430): a read with `since_ms` touches only grains
+//! created at or after it, so a gated Loop pass with nothing new reads nothing
+//! old. A read with `since_ms = None` — the first pass, or a `full_sweep` —
+//! is the one that loads every grain of the type, and says so.
 
 use areev_cal::classify::{classify, StatementClass};
 use areev_cal::{parse, CalExecutor, CalExecutorConfig, CalStoreFacade, AreevFacade};
@@ -29,7 +33,7 @@ use areev_core::error::{AreevError, Hash};
 use areev_core::format::deserialize::DeserializedGrain;
 use areev_core::authz::Verb;
 use areev_core::types::{Fact, Grain, GrainType, Workflow, WorkflowEdge};
-use areev_store::{Areev, TelemetryMode, OP_FORGET};
+use areev_store::{Areev, TelemetryMode};
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 use areev_loop::error::{Error as WErr, Result as WResult};
@@ -43,8 +47,11 @@ const LOOP_NS: &str = "areev-loop";
 /// Sentinel subject/relation for the persisted loop state blob.
 const STATE_SUBJECT: &str = "__loop_state__";
 const STATE_RELATION: &str = "state";
-/// Upper bound on grains scanned per query (interim; real substrate paginates).
+/// Upper bound on grains scanned per `recent` query (the loop-internal reads).
 const MAX_SCAN: usize = 1_000_000;
+/// Grains fetched per page of a type read (#430). The bound applies per page,
+/// so a page's blobs are released before the next is fetched.
+const PAGE: usize = 512;
 
 fn we(e: AreevError) -> WErr {
     WErr::Substrate(e.to_string())
@@ -208,32 +215,27 @@ impl_substrate!(BorrowedSubstrate<'_>);
 // --- operations (free functions over &AreevFacade) ---
 
 fn recent_ns(f: &AreevFacade, ns: &str, gt: GrainType) -> WResult<Vec<DeserializedGrain>> {
-    // An explicitly requested namespace is a capability assertion. Deny it
-    // loudly; silently returning an empty set would misreport authorization
-    // failure as "the analyzer found no data".
+    // Same capability assertion as `read_user_type`'s explicit namespace.
     require_read(f, ns)?;
     f.with_store(|m| m.recent(ns, Some(gt), MAX_SCAN))
         .map_err(we)
 }
 
-/// Enumerate every grain of `gt` across all namespaces via the op-log.
-fn all_grains(f: &AreevFacade, gt: GrainType) -> WResult<Vec<DeserializedGrain>> {
-    let ops = f.with_store(|m| m.changes_since(0, MAX_SCAN)).map_err(we)?;
-    let mut seen = BTreeSet::new();
-    let mut out = Vec::new();
-    for op in ops {
-        if op.op == OP_FORGET || !seen.insert(op.hash.to_hex()) {
-            continue;
-        }
-        if let Ok(g) = f.with_store(|m| m.get(&op.hash)) {
-            if g.grain_type == gt && may_read(f, &grain_namespace(&g)) {
-                out.push(g);
-            }
-        }
-    }
-    Ok(out)
-}
-
+/// Read user grains of `gt`, paged through the store's bounded
+/// `grains_of_type_since` (#430).
+///
+/// With `since_ms` set, only grains created at or after it are fetched — a
+/// gated pass over a large memory with nothing new costs one empty index
+/// probe per type, not a read of every grain. With `since_ms = None` this is
+/// the whole-type load (the first pass, or a `full_sweep`): every grain of the
+/// type is read, a page at a time, and the records kept are what the caller
+/// asked for.
+///
+/// Liveness is decided after paging, as it always was: a grain is superseded
+/// when some grain read names it in `derived_from` (mapping decision 2). The
+/// store's `superseded_by` column is deliberately NOT used — `forget` of a
+/// superseding grain (a Loop rollback) leaves it set on the predecessor, while
+/// the Loop treats the predecessor as live again and must re-propose.
 fn read_user_type(
     f: &AreevFacade,
     gt: GrainType,
@@ -241,36 +243,57 @@ fn read_user_type(
     opts: ReadOpts,
 ) -> WResult<Vec<GrainRecord>> {
     let explicit = namespace.is_some();
-    let raw = match namespace {
-        Some(ns) => recent_ns(f, ns, gt)?,
-        None => all_grains(f, gt)?,
-    };
-    let superseded = superseded_set(&raw);
+    if let Some(ns) = namespace {
+        // An explicitly requested namespace is a capability assertion. Deny it
+        // loudly; silently returning an empty set would misreport
+        // authorization failure as "the analyzer found no data".
+        require_read(f, ns)?;
+    }
     let mut out = Vec::new();
-    for g in raw {
-        let ns = grain_namespace(&g);
-        // Never surface loop-internal or governance grains in ALL-NAMESPACE
-        // scans. `agent:authz` holds the file's own grant Facts and the
-        // Tier-2 audit Observations; an analyzer sweeping everything that
-        // sees them as ordinary memory can propose tombstoning them
-        // (retention_sweep did), which locks every non-owner principal out
-        // of the file and destroys the very Art. 30 records the audit
-        // export exists to produce. Governance state is metadata about the
-        // memory, not memory. An EXPLICITLY requested namespace is
-        // different: the caller named it, `recent_ns` authz-checked it, and
-        // consumers like the run_outcome analyzer (agent:harness) and the
-        // gating-evidence loader depend on reading it.
-        if !explicit && (ns == LOOP_NS || ns.starts_with("agent:")) {
-            continue;
+    let mut parents: BTreeSet<String> = BTreeSet::new();
+    let mut cursor = None;
+    loop {
+        let page = f
+            .with_store(|m| {
+                m.grains_of_type_since(gt, namespace, opts.since_ms, cursor, PAGE, false)
+            })
+            .map_err(we)?;
+        for g in &page.grains {
+            // Every grain read counts toward liveness, filtered or not — a
+            // supersession recorded in a namespace this scan skips still
+            // retires its target.
+            parents.extend(derived_parents(g));
+            let ns = grain_namespace(g);
+            // Never surface loop-internal or governance grains in
+            // ALL-NAMESPACE scans. `agent:authz` holds the file's own grant
+            // Facts and the Tier-2 audit Observations; an analyzer sweeping
+            // everything that sees them as ordinary memory can propose
+            // tombstoning them (retention_sweep did), which locks every
+            // non-owner principal out of the file and destroys the very
+            // Art. 30 records the audit export exists to produce. Governance
+            // state is metadata about the memory, not memory. An EXPLICITLY
+            // requested namespace is different: the caller named it,
+            // `require_read` checked it, and consumers like the run_outcome
+            // analyzer (agent:harness) and the gating-evidence loader depend
+            // on reading it.
+            if !explicit && (ns == LOOP_NS || ns.starts_with("agent:") || !may_read(f, &ns)) {
+                continue;
+            }
+            let created = grain_created_ms(g);
+            out.push(map_user_grain(g, ns, created));
         }
-        if opts.live_only && superseded.contains(&g.hash.to_hex()) {
-            continue;
+        match page.next {
+            Some(next) => cursor = Some(next),
+            None => break,
         }
-        let created = grain_created_ms(&g);
-        if opts.since_ms.is_some_and(|s| created < s) {
-            continue;
-        }
-        out.push(map_user_grain(&g, ns, created));
+    }
+    if opts.live_only {
+        out.retain(|r| !parents.contains(&r.hash));
+    }
+    // The column and the blob agree on `created_at` for every grain written
+    // with one; this keeps the substrate's contract exact for any that do not.
+    if let Some(s) = opts.since_ms {
+        out.retain(|r| r.created_at_ms >= s);
     }
     Ok(out)
 }
@@ -1012,17 +1035,6 @@ fn loop_record(
         superseded_by: None,
         fields,
     }
-}
-
-/// Hashes that some sibling grain supersedes (via `derived_from`).
-fn superseded_set(grains: &[DeserializedGrain]) -> BTreeSet<String> {
-    let mut set = BTreeSet::new();
-    for g in grains {
-        for parent in derived_parents(g) {
-            set.insert(parent);
-        }
-    }
-    set
 }
 
 fn derived_parents(g: &DeserializedGrain) -> Vec<String> {

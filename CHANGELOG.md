@@ -6,6 +6,42 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.14.1] — 2026-11-07
+
+### Fixed
+
+- **Loop: a pass costs what landed since its watermark, not what the memory
+  holds (#430).** The gate (`count_new`) asked the substrate for every Fact,
+  Event, Tool and Observation grain since the watermark, and the adapter
+  answered by walking the whole op-log, fetching every grain in the memory by
+  hash, and filtering by `created_at` in Rust — four times, once per type —
+  before deciding whether anything was new. On a 20,000-grain Postgres memory
+  a pass with nothing new took four to twelve minutes to answer
+  `min_new_not_met`; at 436 MB of payload every pass exceeded 2 GiB RSS and
+  was killed. The store now answers the read itself: a new
+  `Areev::grains_of_type_since` is keyset-paged (`(created_at, seq)`) over a
+  new `grains(gtype, created_at, seq)` index, and the adapter pages through it
+  for the gate and the analysis pass alike, so a skipped pass decodes no old
+  grain and a pass over N new grains holds those N. Measured by the new
+  `Areev::blobs_decoded` diagnostic: a skipped pass over a 400-grain memory
+  went from 1,605 decoded blobs to a constant independent of its size.
+  The first pass (no watermark), a
+  `full_sweep`, `tool_failure`'s rolling `window_days` window and the
+  whole-memory analyzers remain deliberately wider — `docs/loop.md` lists
+  them. Conformance: `type_since_reads_only_what_is_new_and_pages_completely`,
+  both backends and the paired Postgres layout.
+- **Postgres schema version 3** — the index above. Rolling-deploy safe from
+  version 1 (`areev provision --check` reports `safe`); the first read-write
+  open builds it under the bootstrap lock. Under `?provision=never`, run
+  `areev provision` before rolling out (`docs/deployment-profile.md`).
+
+### Changed
+
+- **CI: free runner disk before linking on Ubuntu** (`test`, `coverage`),
+  and the release runbook's pre-flight now runs `cargo deny --all-features`,
+  which is what `security.yml` checks (1.14.0's release PR caught
+  RUSTSEC-2026-0387 only there).
+
 ## [1.14.0] — 2026-11-05
 
 ### Security
@@ -5113,7 +5149,8 @@ ecosystem adapters, and the enterprise plane.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.14.0...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.14.1...HEAD
+[1.14.1]: https://github.com/AreevAI/areev/compare/v1.14.0...v1.14.1
 [1.14.0]: https://github.com/AreevAI/areev/compare/v1.13.2...v1.14.0
 [1.13.2]: https://github.com/AreevAI/areev/compare/v1.13.1...v1.13.2
 [1.13.1]: https://github.com/AreevAI/areev/compare/v1.13.0...v1.13.1

@@ -333,12 +333,13 @@ migration**, and the binary knows which: `areev provision --check` reports
 `rolling_deploy: safe | drain_writers_first | unknown`, computed from
 `PG_ROLLING_SAFE_FROM` — the oldest stamped version whose writers keep
 working during and after this build's bootstrap. Ask it rather than reasoning
-from the release notes. The two migrations so far:
+from the release notes. The migrations so far:
 
 | From → to | Verdict | Why |
 |---|---|---|
 | unstamped → **1** (the `terms` digest key) | `drain_writers_first` | it DROPS a constraint an older writer's `ON CONFLICT (term)` still needs — detail below |
 | **1 → 2** (1.9.0, #307: `oplog.ns`) | `safe` | one NULLABLE column plus a backfill. An older writer inserts without it and its rows simply read as unattributed, which is exactly how pre-1.9.0 rows behave anyway |
+| **2 → 3** (1.14.1, #430: `idx_grains_gtype_created`) | `safe` | one index on `grains(gtype, created_at, seq)`, which no writer needs to know about. The first new-build read-write open builds it under the bootstrap lock, which blocks writes to `grains` for as long as the build takes — proportional to the grain count, seconds at tens of thousands. Under `?provision=never`, run `areev provision` first: until then an open refuses `STO-E008`, as for any version move |
 
 The v1 case, which is the one that bites:
 

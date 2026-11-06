@@ -232,6 +232,20 @@ Pg-only multi-writer race cases); extend it whenever store semantics change.
   truncates the seek. Present in both backends' schemas; `CREATE INDEX IF NOT
   EXISTS` on every open is the migration, so an existing file pays the build
   once at its next open.
+- `idx_grains_gtype_created` on `grains(gtype, created_at, seq)` (#430) —
+  serves **`grains_of_type_since(gtype, ns, since_ms, cursor, limit,
+  live_only)`**, the keyset-paged "grains of type T created at or after a
+  watermark" read the Loop's gate and analysis pass stand on. Before it, the
+  adapter answered that by walking the op-log and `get`-ing every grain in
+  the memory, so a pass with nothing new cost the whole memory (minutes and
+  >2 GiB RSS at 436 MB of payload). Pages in `(created_at, seq)` order; pass
+  `next` back as `cursor` until `None`. `ns` takes a scope or `None` (every
+  namespace — the caller authz-filters per grain); `since_ms = None` is the
+  unbounded, still-paged read. `blobs_decoded()` counts blobs decoded through
+  `get`, the `recent*` scans and this read — the diagnostic the "costs what
+  is new, not what is old" tests measure (`areev-loop-adapter/tests/
+  bounded_reads.rs`). Postgres: `PG_SCHEMA_VERSION` 3, rolling-safe from 1.
+  Conformance: `type_since_reads_only_what_is_new_and_pages_completely`.
 - BM25 leg: `fts_vocab(id, term)` + `fts_post(term, seq, ns, tf)` +
   `fts_doc(seq, len)` — our own inverted index. Written on add, dropped on
   `forget`, rebuilt by `rebuild_text_index`. **Meant to be deleted** if

@@ -1235,6 +1235,15 @@ impl QueryExpander for EnglishExpander {
     }
 }
 
+/// One page of [`Areev::grains_of_type_since`] (#430).
+#[derive(Debug, Default)]
+pub struct TypeSincePage {
+    /// The page's grains, egress applied, in `(created_at, seq)` order.
+    pub grains: Vec<DeserializedGrain>,
+    /// The cursor for the next page — `None` when this page was the last.
+    pub next: Option<(i64, i64)>,
+}
+
 /// Ordering for the recent-by-type scan (`recent_ordered`).
 ///
 /// `Seq` — insertion order, newest first — is the default and what `recent` /
@@ -1920,6 +1929,12 @@ const SCHEMA: &[&str] = &[
     // no index at all): the null test does not act as an equality constraint,
     // so it truncates the seek before `s` is reached.
     "CREATE INDEX IF NOT EXISTS idx_grains_ns_s ON grains(ns, s, p)",
+    // `grains_of_type_since` (#430): "every grain of type T created after a
+    // watermark" — the Loop's gate and analysis reads. Without it the only way
+    // to answer was to fetch every grain and filter in Rust, which made a pass
+    // with nothing new cost the whole memory. `seq` closes the key so the
+    // keyset page `(created_at, seq) > cursor` is a pure index range.
+    "CREATE INDEX IF NOT EXISTS idx_grains_gtype_created ON grains(gtype, created_at, seq)",
     "CREATE TABLE IF NOT EXISTS embeddings(seq INTEGER PRIMARY KEY, vec BLOB)",
     // BM25 leg — our own inverted index. See `search_text` for why this is not
     // Turso's `USING fts`.
@@ -2672,6 +2687,10 @@ pub struct Areev {
     /// True only while the store itself is writing attestation grains — the
     /// one path allowed into the reserved `agent:attest` namespace.
     attesting: bool,
+    /// Grain blobs this handle has fetched and decoded through `get` and the
+    /// plural type scans. A diagnostic, read by [`blobs_decoded`](Self::blobs_decoded)
+    /// (#430).
+    blobs_decoded: u64,
 }
 
 impl Areev {
@@ -3227,6 +3246,7 @@ impl Areev {
             signer: None,
             trusted: None,
             attesting: false,
+            blobs_decoded: 0,
         };
 
         // Load the file's anonymization policies (+ seed known-identity
@@ -6232,8 +6252,96 @@ impl Areev {
             .iter()
             .map(|(_, b)| deserialize_blob(b))
             .collect::<Result<_>>()?;
+        self.blobs_decoded += out.len() as u64;
         self.egress_exit(egress_hint, &mut out)?;
         Ok(out)
+    }
+
+    /// One page of grains of `gtype` whose `created_at` is at or after
+    /// `since_ms`, in `(created_at, seq)` order, strictly after `cursor`
+    /// (#430).
+    ///
+    /// The bounded read behind "what landed since the watermark": it is served
+    /// by `idx_grains_gtype_created`, so the rows it touches — and the blobs it
+    /// fetches — are the matching grains of this page and nothing older. A
+    /// caller pages by passing the returned `next` back as `cursor` until it
+    /// comes back `None`; memory held is one page, never the memory.
+    ///
+    /// `ns = None` reads every namespace (the caller filters by authorization
+    /// per grain, since a grain's namespace is in the grain); `Some(ns)`
+    /// accepts a `"org.*"` scope like every plural read. `since_ms = None` is
+    /// the unbounded read — every grain of the type, still paged. `live_only`
+    /// drops grains the index layer records as superseded.
+    pub fn grains_of_type_since(
+        &mut self,
+        gtype: areev_core::types::GrainType,
+        ns: Option<&str>,
+        since_ms: Option<i64>,
+        cursor: Option<(i64, i64)>,
+        limit: usize,
+        live_only: bool,
+    ) -> Result<TypeSincePage> {
+        let ns_ids = match ns {
+            Some(n) => {
+                let ids = self.ns_param_ids(n)?;
+                if ids.is_empty() {
+                    return Ok(TypeSincePage::default());
+                }
+                Some(ids)
+            }
+            None => None,
+        };
+        let live = if live_only { " AND superseded_by IS NULL" } else { "" };
+        // Ids are dictionary integers, never caller text, so inlining them is
+        // safe; a single namespace keeps one cached statement shape.
+        let ns_sql = match &ns_ids {
+            None => String::new(),
+            Some(ids) if ids.len() == 1 => format!(" AND ns = {}", ids[0]),
+            Some(ids) => format!(
+                " AND ns IN ({})",
+                ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
+            ),
+        };
+        let since = since_ms.unwrap_or(i64::MIN);
+        let (c_at, c_seq) = cursor.unwrap_or((i64::MIN, i64::MIN));
+        let limit = limit.max(1);
+        let rows = self.db.query(
+            &format!(
+                "SELECT created_at, seq, blob FROM grains \
+                 WHERE gtype = ?1 AND created_at >= ?2 \
+                 AND (created_at > ?3 OR (created_at = ?3 AND seq > ?4)){ns_sql}{live} \
+                 ORDER BY created_at, seq LIMIT ?5"
+            ),
+            vec![
+                pi(gtype as u8 as i64),
+                pi(since),
+                pi(c_at),
+                pi(c_seq),
+                pi(limit as i64),
+            ],
+        )?;
+        let mut grains = Vec::with_capacity(rows.len());
+        let mut last = None;
+        for row in &rows {
+            if let (Some(at), Some(seq), Some(b)) = (row.i64(0), row.i64(1), row.blob(2)) {
+                grains.push(deserialize_blob(&b)?);
+                last = Some((at, seq));
+            }
+        }
+        self.blobs_decoded += grains.len() as u64;
+        let hint = ns.filter(|n| !NsScope::is_pattern(n));
+        self.egress_exit(hint, &mut grains)?;
+        let next = if rows.len() >= limit { last } else { None };
+        Ok(TypeSincePage { grains, next })
+    }
+
+    /// Grain blobs this handle has fetched and decoded through [`get`](Self::get),
+    /// the `recent*` scans and [`grains_of_type_since`](Self::grains_of_type_since).
+    /// A diagnostic for bounded-read guarantees (#430): a caller asserting
+    /// "this pass read only what is new" measures it here rather than trusting
+    /// a code path.
+    pub fn blobs_decoded(&self) -> u64 {
+        self.blobs_decoded
     }
 
     /// Recent grains of ONE session, newest first — the index-backed form of
@@ -6367,6 +6475,7 @@ impl Areev {
             None => return Err(AreevError::NotFound(*hash)),
         };
         let mut g = deserialize_blob(&blob)?;
+        self.blobs_decoded += 1;
         // Egress boundary: ns resolved from the grain itself (`get` has no
         // ns parameter). `latest` and the memory-tool `view` inherit this.
         self.egress_one(None, &mut g)?;
