@@ -132,6 +132,10 @@ pub(crate) const PG_SCHEMA: &[&str] = &[
     // computes a distance per row. This tier has the steeper slope of the two
     // (a round trip per statement on top of the scan), so it needs it more.
     "CREATE INDEX IF NOT EXISTS idx_grains_ns_s ON grains(ns, s, p)",
+    // Mirrors the embedded SCHEMA's idx_grains_gtype_created (#430): the
+    // Loop's "grains of type T since the watermark" read, keyset-paged on
+    // (created_at, seq). Without it that read is a heap scan of every grain.
+    "CREATE INDEX IF NOT EXISTS idx_grains_gtype_created ON grains(gtype, created_at, seq)",
     // Dimension-less at creation: the `vec vector(dim)` column arrives via
     // `ensure_embeddings` at the first set_embedder (the dim is host-
     // supplied), but the TABLE must exist up front — forget() deletes from
@@ -272,7 +276,7 @@ pub(crate) const PG_SEED: &[&str] = &[
 /// anywhere. `pg_schema_version_tracks_the_schema` (below) hashes both arrays
 /// and fails the build if the digest moves without this constant moving, so
 /// forgetting is a red test rather than a silent data bug.
-pub(crate) const PG_SCHEMA_VERSION: &str = "2";
+pub(crate) const PG_SCHEMA_VERSION: &str = "3";
 
 /// The oldest stamped schema version whose writers keep working during AND
 /// after this build's bootstrap — the machine-readable half of
@@ -282,7 +286,8 @@ pub(crate) const PG_SCHEMA_VERSION: &str = "2";
 /// Version 2 adds a NULLABLE `oplog.ns` column and an index. An old-build
 /// writer inserts without it and keeps working; a new-build reader treats
 /// NULL as unattributable. So version 1 writers survive the migration, and
-/// this is a rolling-safe change.
+/// this is a rolling-safe change. Version 3 (#430) adds one index and nothing
+/// a writer must know about, so it is rolling-safe from 1 as well.
 ///
 /// `pg_schema_version_tracks_the_schema` hashes the schema arrays, so a
 /// version bump forces this constant to be reconsidered in the same commit.
@@ -3301,7 +3306,7 @@ mod schema_version_tests {
     /// #160 shape (a dictionary keyed on a column that was never added, so
     /// every recall answers empty). A stale stamp is worse than a missing one.
     const EXPECTED_DIGEST: &str =
-        "6e0120dfa4c54bdbc8e1beaaf402719df728d0bda1fffb628881458cc39f541f";
+        "a8d6eb4e16217373ff13a7e527a5bff04eddd750a8be32dd0f1f12f741be1395";
 
     fn digest() -> String {
         use sha2::{Digest, Sha256};

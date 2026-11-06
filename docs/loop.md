@@ -1049,6 +1049,19 @@ The SessionEnd Claude Code hook runs `areev loop run --min-new 20
 --min-new-errors 3 --quiet`, so most session ends are a watermark check that
 exits immediately. There is no scheduler in the product.
 
+**A gate check costs what landed, not what the memory holds** (1.14.1,
+#430). The gate counts grains created after the watermark through a bounded,
+keyset-paged store read over an index on `(type, created_at)`, and the
+analysis pass reads its watermarked inputs the same way — so a pass with
+nothing new decodes no old grain, and one over 200 new grains holds those 200.
+Three reads are wider by design, and worth knowing on a large memory: the
+**first** pass (no watermark yet) and a **`full_sweep`** read every grain of
+each type, a page at a time; `tool_failure` reads its rolling `window_days`
+window (a failure *rate* needs the calls that succeeded); and the
+whole-memory analyzers (`duplicate_sweep`, `contradiction_sweep`,
+`staleness`, and `cold_grains`, which also scans Tool grains for pinned
+evalsets) read the live Facts/Observations they compare old against new.
+
 The loop also closes **into** the agent's context: the UserPromptSubmit hook
 `areev recall-hook --with-loop` appends a compact block of pending
 recommendations (severity + summary, capped at 3, `origin=llm` entries

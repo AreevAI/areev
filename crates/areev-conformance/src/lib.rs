@@ -344,6 +344,8 @@ macro_rules! for_each_conformance_case {
         // in-run recall (#342): recall_at == entity_at per relation; the k ceiling
         $per_case!(recall_at_is_entity_at_per_relation);
         $per_case!(run_recall_is_bounded_and_refused_past_its_ceiling);
+        // #430: the bounded, paged type-since read the Loop's gate stands on
+        $per_case!(type_since_reads_only_what_is_new_and_pages_completely);
         // #368 aggregates + dotted paths + read-only max_limit; #369 mounts by
         // locator; #370 the pinned `op: query` run read; #373 RUN applies the
         // saved body's stages
