@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.14.2] — 2026-11-08
+
 ### Fixed
 
 - **Loop: the Tool grains are counted, not read — a pass's memory no longer
@@ -57,6 +59,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`docs/deployment-profile.md`). Conformance:
   `tool_index_answers_counts_errors_and_definitions_without_reading_calls`,
   both backends.
+
+### Changed
+
+- **Internal crate requirements raised to `1.14.2`.** The adapter and the
+  CLI call store and Loop API added in this release, so `^1.14.0` would let a
+  lockfile pair them with a 1.14.1 dependency that lacks it.
 
 ## [1.14.1] — 2026-11-07
 
@@ -5201,7 +5209,8 @@ ecosystem adapters, and the enterprise plane.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.14.1...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.14.2...HEAD
+[1.14.2]: https://github.com/AreevAI/areev/compare/v1.14.1...v1.14.2
 [1.14.1]: https://github.com/AreevAI/areev/compare/v1.14.0...v1.14.1
 [1.14.0]: https://github.com/AreevAI/areev/compare/v1.13.2...v1.14.0
 [1.13.2]: https://github.com/AreevAI/areev/compare/v1.13.1...v1.13.2
