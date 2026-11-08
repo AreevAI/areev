@@ -39,7 +39,7 @@ use std::collections::BTreeSet;
 use areev_loop::error::{Error as WErr, Result as WResult};
 use areev_loop::{
     BudgetUsage, Capabilities, GrainAccess, GrainRecord, GrainSpec, HeadGroup, OmsSubstrate,
-    QueryUsage, ReadOpts, SubstrateRead, TelemetryView,
+    QueryUsage, ReadOpts, SubstrateRead, TelemetryView, ToolTally,
 };
 
 /// The namespace the loop's own grains live in (mirrors `areev_loop::LOOP_NS`).
@@ -50,8 +50,11 @@ const STATE_RELATION: &str = "state";
 /// Upper bound on grains scanned per `recent` query (the loop-internal reads).
 const MAX_SCAN: usize = 1_000_000;
 /// Grains fetched per page of a type read (#430). The bound applies per page,
-/// so a page's blobs are released before the next is fetched.
-const PAGE: usize = 512;
+/// so a page's blobs are released before the next is fetched — and a page is
+/// the whole resident footprint of a fold (#433), so it is kept small: a Tool
+/// body decodes to several times its stored size when its content is
+/// structured.
+const PAGE: usize = 128;
 
 fn we(e: AreevError) -> WErr {
     WErr::Substrate(e.to_string())
@@ -142,6 +145,43 @@ macro_rules! impl_substrate {
                 opts: ReadOpts,
             ) -> WResult<Vec<GrainRecord>> {
                 grains_of_type(self.facade_ref(), grain_type, namespace, opts)
+            }
+            fn visit_grains_of_type(
+                &self,
+                grain_type: &str,
+                namespace: Option<&str>,
+                opts: ReadOpts,
+                visit: &mut dyn FnMut(GrainRecord) -> WResult<()>,
+            ) -> WResult<BTreeSet<String>> {
+                visit_grains_of_type(self.facade_ref(), grain_type, namespace, opts, visit)
+            }
+            fn count_of_type(
+                &self,
+                grain_type: &str,
+                namespace: Option<&str>,
+                since_ms: Option<i64>,
+            ) -> WResult<u64> {
+                count_of_type(self.facade_ref(), grain_type, namespace, since_ms)
+            }
+            fn tool_definitions(&self, namespace: Option<&str>) -> WResult<Vec<GrainRecord>> {
+                tool_definitions(self.facade_ref(), namespace)
+            }
+            fn tool_tallies(
+                &self,
+                namespace: Option<&str>,
+                opts: ReadOpts,
+            ) -> WResult<Option<std::collections::BTreeMap<String, ToolTally>>> {
+                tool_tallies(self.facade_ref(), namespace, opts)
+            }
+            fn tool_errors(
+                &self,
+                namespace: Option<&str>,
+                opts: ReadOpts,
+            ) -> WResult<Option<Vec<GrainRecord>>> {
+                tool_errors(self.facade_ref(), namespace, opts)
+            }
+            fn event_sessions_since(&self, since_ms: Option<i64>) -> WResult<Option<u64>> {
+                event_sessions_since(self.facade_ref(), since_ms)
             }
             fn grain(&self, hash: &str) -> WResult<Option<GrainRecord>> {
                 grain(self.facade_ref(), hash)
@@ -242,6 +282,31 @@ fn read_user_type(
     namespace: Option<&str>,
     opts: ReadOpts,
 ) -> WResult<Vec<GrainRecord>> {
+    let mut out = Vec::new();
+    let retired = visit_user_type(f, gt, namespace, opts, &mut |r| {
+        out.push(r);
+        Ok(())
+    })?;
+    if !retired.is_empty() {
+        out.retain(|r| !retired.contains(&r.hash));
+    }
+    Ok(out)
+}
+
+/// The paged read behind [`read_user_type`], one record at a time (#433).
+///
+/// Holds a page of blobs and the `derived_from` parents seen, never the
+/// records: those go to `visit` as each page is decoded. Liveness is
+/// therefore returned rather than applied — with `live_only`, the parents of
+/// every grain read are the hashes a live caller must discount, since a grain
+/// is retired by one read after it. Without `live_only` the set is empty.
+fn visit_user_type(
+    f: &AreevFacade,
+    gt: GrainType,
+    namespace: Option<&str>,
+    opts: ReadOpts,
+    visit: &mut dyn FnMut(GrainRecord) -> WResult<()>,
+) -> WResult<BTreeSet<String>> {
     let explicit = namespace.is_some();
     if let Some(ns) = namespace {
         // An explicitly requested namespace is a capability assertion. Deny it
@@ -249,7 +314,6 @@ fn read_user_type(
         // authorization failure as "the analyzer found no data".
         require_read(f, ns)?;
     }
-    let mut out = Vec::new();
     let mut parents: BTreeSet<String> = BTreeSet::new();
     let mut cursor = None;
     loop {
@@ -258,44 +322,211 @@ fn read_user_type(
                 m.grains_of_type_since(gt, namespace, opts.since_ms, cursor, PAGE, false)
             })
             .map_err(we)?;
-        for g in &page.grains {
+        let next = page.next;
+        for g in page.grains {
             // Every grain read counts toward liveness, filtered or not — a
             // supersession recorded in a namespace this scan skips still
             // retires its target.
-            parents.extend(derived_parents(g));
-            let ns = grain_namespace(g);
-            // Never surface loop-internal or governance grains in
-            // ALL-NAMESPACE scans. `agent:authz` holds the file's own grant
-            // Facts and the Tier-2 audit Observations; an analyzer sweeping
-            // everything that sees them as ordinary memory can propose
-            // tombstoning them (retention_sweep did), which locks every
-            // non-owner principal out of the file and destroys the very
-            // Art. 30 records the audit export exists to produce. Governance
-            // state is metadata about the memory, not memory. An EXPLICITLY
-            // requested namespace is different: the caller named it,
-            // `require_read` checked it, and consumers like the run_outcome
-            // analyzer (agent:harness) and the gating-evidence loader depend
-            // on reading it.
-            if !explicit && (ns == LOOP_NS || ns.starts_with("agent:") || !may_read(f, &ns)) {
+            if opts.live_only {
+                parents.extend(derived_parents(&g));
+            }
+            if !visible(f, &g, explicit) {
                 continue;
             }
-            let created = grain_created_ms(g);
-            out.push(map_user_grain(g, ns, created));
+            let ns = grain_namespace(&g);
+            let created = grain_created_ms(&g);
+            // The column and the blob agree on `created_at` for every grain
+            // written with one; this keeps the substrate's contract exact for
+            // any that do not.
+            if opts.since_ms.is_some_and(|s| created < s) {
+                continue;
+            }
+            visit(into_user_record(g, ns, created))?;
         }
-        match page.next {
-            Some(next) => cursor = Some(next),
+        match next {
+            Some(n) => cursor = Some(n),
             None => break,
         }
     }
-    if opts.live_only {
-        out.retain(|r| !parents.contains(&r.hash));
+    Ok(parents)
+}
+
+/// May an all-namespace scan surface this grain?
+///
+/// Never loop-internal or governance grains in ALL-NAMESPACE scans.
+/// `agent:authz` holds the file's own grant Facts and the Tier-2 audit
+/// Observations; an analyzer sweeping everything that sees them as ordinary
+/// memory can propose tombstoning them (retention_sweep did), which locks every
+/// non-owner principal out of the file and destroys the very Art. 30 records
+/// the audit export exists to produce. Governance state is metadata about the
+/// memory, not memory. An EXPLICITLY requested namespace is different: the
+/// caller named it, `require_read` checked it, and consumers like the
+/// run_outcome analyzer (agent:harness) and the gating-evidence loader depend
+/// on reading it.
+fn visible(f: &AreevFacade, g: &DeserializedGrain, explicit: bool) -> bool {
+    explicit || ns_visible(f, &grain_namespace(g))
+}
+
+fn ns_visible(f: &AreevFacade, ns: &str) -> bool {
+    !(ns == LOOP_NS || ns.starts_with("agent:") || !may_read(f, ns))
+}
+
+fn visit_grains_of_type(
+    f: &AreevFacade,
+    grain_type: &str,
+    namespace: Option<&str>,
+    opts: ReadOpts,
+    visit: &mut dyn FnMut(GrainRecord) -> WResult<()>,
+) -> WResult<BTreeSet<String>> {
+    match user_grain_type(grain_type, namespace) {
+        Some(gt) => visit_user_type(f, gt, namespace, opts, visit),
+        // The loop's own ledger reads are small and already one materialised
+        // listing; visiting them is the trait's default shape.
+        None => {
+            for g in grains_of_type(f, grain_type, namespace, opts)? {
+                visit(g)?;
+            }
+            Ok(BTreeSet::new())
+        }
     }
-    // The column and the blob agree on `created_at` for every grain written
-    // with one; this keeps the substrate's contract exact for any that do not.
-    if let Some(s) = opts.since_ms {
-        out.retain(|r| r.created_at_ms >= s);
+}
+
+/// How many grains of a type since `since_ms` an all-namespace read would
+/// surface, from the store's index — no blob read (#433). A named namespace
+/// (a scope the index count cannot apply the same way) counts the visit.
+fn count_of_type(
+    f: &AreevFacade,
+    grain_type: &str,
+    namespace: Option<&str>,
+    since_ms: Option<i64>,
+) -> WResult<u64> {
+    let opts = ReadOpts { live_only: false, since_ms };
+    match (user_grain_type(grain_type, namespace), namespace) {
+        (Some(gt), None) => {
+            let per_ns = f.with_store(|m| m.count_of_type_since(gt, since_ms)).map_err(we)?;
+            Ok(per_ns
+                .into_iter()
+                .filter(|(ns, _)| ns_visible(f, ns))
+                .map(|(_, n)| n)
+                .sum())
+        }
+        _ => {
+            let mut n = 0u64;
+            visit_grains_of_type(f, grain_type, namespace, opts, &mut |_| {
+                n += 1;
+                Ok(())
+            })?;
+            Ok(n)
+        }
     }
-    Ok(out)
+}
+
+/// Live Tool Definitions through the store's definition index (#432) — the
+/// call grains are never read. Visibility as for every user read; liveness
+/// as `read_user_type` decides it (a Definition retired by a later one's
+/// `derived_from`), among the Definitions.
+fn tool_definitions(f: &AreevFacade, namespace: Option<&str>) -> WResult<Vec<GrainRecord>> {
+    let explicit = namespace.is_some();
+    if let Some(ns) = namespace {
+        require_read(f, ns)?;
+    }
+    let defs = f.with_store(|m| m.tool_definitions(namespace)).map_err(we)?;
+    let parents: BTreeSet<String> = defs.iter().flat_map(derived_parents).collect();
+    Ok(defs
+        .into_iter()
+        .filter(|g| visible(f, g, explicit) && !parents.contains(&g.hash.to_hex()))
+        .map(|g| {
+            let ns = grain_namespace(&g);
+            let created = grain_created_ms(&g);
+            into_user_record(g, ns, created)
+        })
+        .collect())
+}
+
+/// Per-tool counts from the store's Tool index (#433) — no call grain read.
+/// `None` when the store cannot answer from the index (not built yet on this
+/// handle, or an anonymization policy is live); the engine then folds.
+fn tool_tallies(
+    f: &AreevFacade,
+    namespace: Option<&str>,
+    opts: ReadOpts,
+) -> WResult<Option<std::collections::BTreeMap<String, ToolTally>>> {
+    if let Some(ns) = namespace {
+        require_read(f, ns)?;
+    }
+    let Some(rows) = f
+        .with_store(|m| m.tool_counts(namespace, opts.since_ms, opts.live_only))
+        .map_err(we)?
+    else {
+        return Ok(None);
+    };
+    let mut out: std::collections::BTreeMap<String, ToolTally> = Default::default();
+    for r in rows {
+        if namespace.is_none() && !ns_visible(f, &r.namespace) {
+            continue;
+        }
+        let t = out.entry(r.tool).or_default();
+        t.calls += r.calls;
+        t.errors += r.errors;
+    }
+    Ok(Some(out))
+}
+
+/// The error Tool grains from the store's Tool index (#433) — only they are
+/// decoded. Visibility as for every user read.
+fn tool_errors(f: &AreevFacade, namespace: Option<&str>, opts: ReadOpts) -> WResult<Option<Vec<GrainRecord>>> {
+    let explicit = namespace.is_some();
+    if let Some(ns) = namespace {
+        require_read(f, ns)?;
+    }
+    let Some(grains) = f
+        .with_store(|m| m.tool_errors(namespace, opts.since_ms, opts.live_only))
+        .map_err(we)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(
+        grains
+            .into_iter()
+            .filter(|g| visible(f, g, explicit))
+            .map(|g| {
+                let ns = grain_namespace(&g);
+                let created = grain_created_ms(&g);
+                into_user_record(g, ns, created)
+            })
+            .filter(|r| opts.since_ms.is_none_or(|s| r.created_at_ms >= s))
+            .collect(),
+    ))
+}
+
+/// Distinct non-empty Event `session_id`s since `since_ms`, over the
+/// namespaces an all-namespace read surfaces — from `thread_idx`, no Event
+/// read (#433).
+fn event_sessions_since(f: &AreevFacade, since_ms: Option<i64>) -> WResult<Option<u64>> {
+    let pairs = f
+        .with_store(|m| m.sessions_of_type_since(GrainType::Event, since_ms))
+        .map_err(we)?;
+    let sessions: BTreeSet<i64> = pairs
+        .into_iter()
+        .filter(|(ns, _)| ns_visible(f, ns))
+        .map(|(_, s)| s)
+        .collect();
+    Ok(Some(sessions.len() as u64))
+}
+
+/// The store grain type a curated user read maps to — `None` for the loop's
+/// own ledger reads (`grains_of_type` routes those to `read_loop`).
+fn user_grain_type(grain_type: &str, namespace: Option<&str>) -> Option<GrainType> {
+    match grain_type {
+        "fact" => Some(GrainType::Fact),
+        "event" => Some(GrainType::Event),
+        "tool" => Some(GrainType::Tool),
+        "observation" if namespace == Some(LOOP_NS) => None,
+        "observation" => Some(GrainType::Observation),
+        "skill" => Some(GrainType::Skill),
+        "goal" => Some(GrainType::Goal),
+        _ => None,
+    }
 }
 
 /// Read loop-internal grains (recommendations / audit) stored as Facts.
@@ -447,12 +678,11 @@ fn strict_workflow(fields: &Map<String, Value>) -> WResult<Workflow> {
 /// particular revision existing. That ordering is what the pin is for: a
 /// proposer that could choose its own grader is not gated.
 fn tool_evalset(f: &AreevFacade, tool: &str) -> WResult<Option<String>> {
-    let defs = grains_of_type(f, "tool", None, ReadOpts::default())?;
-    Ok(defs
+    // The Definitions alone, through the store's index (#432) — never the
+    // call grains, which are nearly every Tool grain in a busy memory.
+    Ok(tool_definitions(f, None)?
         .into_iter()
-        .filter(|g| {
-            g.str_field("kind") == Some("definition") && g.tool_name() == Some(tool)
-        })
+        .filter(|g| g.tool_name() == Some(tool))
         .filter_map(|g| {
             g.str_field("evalset_hash")
                 .filter(|h| !h.trim().is_empty())
@@ -568,7 +798,7 @@ fn grain(f: &AreevFacade, hash: &str) -> WResult<Option<GrainRecord>> {
         }
     }
     require_read(f, &ns)?;
-    let mut rec = map_user_grain(&g, ns, created);
+    let mut rec = into_user_record(g, ns, created);
     rec.superseded_by = superseded_by;
     Ok(Some(rec))
 }
@@ -1007,7 +1237,9 @@ fn grain_created_ms(g: &DeserializedGrain) -> i64 {
         .unwrap_or_else(|| g.header.created_at_sec as i64 * 1000)
 }
 
-fn map_user_grain(g: &DeserializedGrain, namespace: String, created_ms: i64) -> GrainRecord {
+/// A store grain as the loop's record, moving the decoded fields rather
+/// than cloning them — a fold's page holds each body once, not twice.
+fn into_user_record(g: DeserializedGrain, namespace: String, created_ms: i64) -> GrainRecord {
     GrainRecord {
         hash: g.hash.to_hex(),
         grain_type: g.grain_type.as_str().to_string(),
@@ -1015,7 +1247,7 @@ fn map_user_grain(g: &DeserializedGrain, namespace: String, created_ms: i64) -> 
         created_at_ms: created_ms,
         valid_to_ms: g.get_i64("valid_to"),
         superseded_by: None,
-        fields: g.fields.clone().into_iter().collect(),
+        fields: g.fields.into_iter().collect(),
     }
 }
 

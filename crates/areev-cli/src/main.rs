@@ -303,7 +303,8 @@ COMMANDS:
            Re-runs skip what is already imported; see docs/migrate.md.
   reindex                             backfill + rebuild the BM25 text index
                                       (e.g. after --index-text true on a file
-                                      written with indexing off)
+                                      written with indexing off), the link
+                                      indexes, and the Tool index
   vector-index <status|build|drop|check> [--m N] [--ef-construction N]
            [--ef-search N] [--queries FILE.json --ns SCOPE] [--k N]
                                       the ANN (pgvector HNSW) index over the
@@ -3005,6 +3006,10 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
             // until this runs.
             let links = m.rebuild_link_indexes().map_err(|e| e.to_string())?;
             println!("link indexes rebuilt: {links} rows (provenance, runs, cross-links)");
+            // The Tool index (#432, #433) — healed on a read-write open,
+            // rebuilt here too so `reindex` leaves every secondary index current.
+            let tools = m.rebuild_tool_index().map_err(|e| e.to_string())?;
+            println!("tool index rebuilt: {tools} tool grains");
         }
         // ── areev vector-index: the ANN index, from the shell (#141) ──
         "vector-index" => {

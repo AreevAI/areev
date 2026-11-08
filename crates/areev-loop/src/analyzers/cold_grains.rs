@@ -12,7 +12,6 @@ use crate::error::Result;
 use crate::manifest::*;
 use crate::model::{ActionKind, Severity};
 use crate::recommendation::{Proposal, RecDraft, Summary};
-use crate::substrate::ReadOpts;
 use serde_json::{json, Map};
 use std::collections::HashSet;
 
@@ -98,10 +97,13 @@ impl Analyzer for ColdGrains {
         // recommendation cites, and since this analyzer's own findings cite
         // the fact they flag, that would make every cold finding suppress
         // itself on the next run.
+        //
+        // Read through `tool_definitions` (#432): the Definitions alone, never
+        // the call grains beside them, which on a busy agent are nearly every
+        // Tool grain in the memory.
         let pinned: HashSet<String> = ctx
-            .grains_of_type(crate::model::grain_type::TOOL, ReadOpts::default())?
+            .tool_definitions()?
             .iter()
-            .filter(|t| t.str_field("kind") == Some("definition"))
             .filter_map(|t| t.str_field("evalset_hash").map(str::to_string))
             .collect();
 

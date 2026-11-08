@@ -1056,11 +1056,42 @@ analysis pass reads its watermarked inputs the same way — so a pass with
 nothing new decodes no old grain, and one over 200 new grains holds those 200.
 Three reads are wider by design, and worth knowing on a large memory: the
 **first** pass (no watermark yet) and a **`full_sweep`** read every grain of
-each type, a page at a time; `tool_failure` reads its rolling `window_days`
-window (a failure *rate* needs the calls that succeeded); and the
-whole-memory analyzers (`duplicate_sweep`, `contradiction_sweep`,
-`staleness`, and `cold_grains`, which also scans Tool grains for pinned
-evalsets) read the live Facts/Observations they compare old against new.
+each type, a page at a time; and the whole-memory analyzers
+(`duplicate_sweep`, `contradiction_sweep`, `staleness`, `cold_grains`) read
+the live Facts/Observations they compare old against new.
+
+**The Tool grains are counted, not read** (1.14.2, #432/#433). A busy agent's
+memory is mostly Tool *calls*, and two readers used to hold all of them:
+`tool_failure`'s rolling `window_days` window (30 days by default, so the
+whole memory while the memory is younger than that) and the gate's count of
+what is new. On a 20,000-grain Postgres memory that was 2.7 GiB for a pass
+with nothing new. The store now keeps a narrow index of every Tool grain —
+tool name, error flag, whether it is a Definition, and its `derived_from`
+parent — and the Loop asks it questions instead of reading the calls:
+
+- `tool_failure` takes its per-tool call/error counts from the index and
+  decodes **only the error grains** (it clusters their text). The rate's
+  liveness rule is unchanged — a call superseded by a later Tool grain in the
+  window is not counted — and is answered by the index's parent column.
+- The gate counts grains per type, Tool errors, Events and their distinct
+  `session_id`s from indexes; a skipped pass decodes only the Loop's own
+  state.
+- The evalset pin (Rule E1) and `cold_grains`' in-use set read the Tool
+  **Definitions** alone, never the calls.
+- `tool_error_recurrence` re-measurement reads the error grains since the
+  apply, not every call.
+
+A pass with nothing new therefore decodes the window's failures (plus the
+evidence of the recommendations it re-checks), whatever the window holds.
+Where the index cannot answer — a read-only open of a memory written before
+1.14.2, which never builds it, or a memory with an anonymization policy live
+(tool names leave through egress) — the same reads fold the grains a page at
+a time instead: the same answer, holding a page and the running counts, never
+the window's bodies. A third-party substrate gets the fold by default
+(`SubstrateRead::visit_grains_of_type`, `count_of_type`, `tool_tallies`,
+`tool_errors`, `event_sessions_since`, `tool_definitions` are all provided
+methods). The index is built on the first read-write open after upgrading
+(one paged pass over the Tool grains) and by `areev reindex`.
 
 The loop also closes **into** the agent's context: the UserPromptSubmit hook
 `areev recall-hook --with-loop` appends a compact block of pending

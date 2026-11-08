@@ -74,6 +74,14 @@ impl GrainSpec {
     }
 }
 
+/// One tool's calls and failures over a read window
+/// ([`SubstrateRead::tool_tallies`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ToolTally {
+    pub calls: u64,
+    pub errors: u64,
+}
+
 /// One entity holding more than one live head (fork surfacing input).
 #[derive(Debug, Clone, PartialEq)]
 pub struct HeadGroup {
@@ -144,6 +152,84 @@ pub trait SubstrateRead {
         namespace: Option<&str>,
         opts: ReadOpts,
     ) -> Result<Vec<GrainRecord>>;
+
+    /// The same read as [`grains_of_type`](Self::grains_of_type), handed to
+    /// `visit` one record at a time so the caller never holds the set (#433).
+    /// A caller that keeps only a fold — counts, clusters, a few hashes — holds
+    /// that and one substrate page, not every body the read touched.
+    ///
+    /// **Liveness is settled at the end, not per record.** A grain is retired
+    /// by a LATER grain that supersedes it, so with `opts.live_only` a
+    /// streaming substrate may visit a grain before it has read the grain
+    /// that retires it. The returned set names every hash the read found
+    /// retired; a caller folding a live view discounts those it visited. A
+    /// substrate that filters before visiting (this default, which visits the
+    /// already-live `grains_of_type`) returns an empty set. With
+    /// `live_only = false` the set is always empty.
+    fn visit_grains_of_type(
+        &self,
+        grain_type: &str,
+        namespace: Option<&str>,
+        opts: ReadOpts,
+        visit: &mut dyn FnMut(GrainRecord) -> Result<()>,
+    ) -> Result<std::collections::BTreeSet<String>> {
+        for g in self.grains_of_type(grain_type, namespace, opts)? {
+            visit(g)?;
+        }
+        Ok(Default::default())
+    }
+
+    /// How many grains of one type [`grains_of_type`](Self::grains_of_type)
+    /// would return with `live_only = false` and this `since_ms` — superseded
+    /// grains included. A substrate with an index answers it without reading a
+    /// grain (#433); the default counts the read.
+    fn count_of_type(&self, grain_type: &str, namespace: Option<&str>, since_ms: Option<i64>) -> Result<u64> {
+        Ok(self
+            .grains_of_type(grain_type, namespace, ReadOpts { live_only: false, since_ms })?
+            .len() as u64)
+    }
+
+    /// Per-tool call and error counts over the Tool grains `grains_of_type`
+    /// would read with these `opts`, without reading them (#433) — keyed by
+    /// tool name, grains without one not counted. `Ok(None)` when the
+    /// substrate cannot answer from an index (this default, or a store whose
+    /// index is not built): the caller then folds the type itself.
+    fn tool_tallies(
+        &self,
+        _namespace: Option<&str>,
+        _opts: ReadOpts,
+    ) -> Result<Option<std::collections::BTreeMap<String, ToolTally>>> {
+        Ok(None)
+    }
+
+    /// The error Tool grains (`is_error`) `grains_of_type` would return with
+    /// these `opts` — the error rows without the successful calls beside
+    /// them (#433). `Ok(None)` exactly when [`tool_tallies`](Self::tool_tallies)
+    /// would be, so a caller pairs the two.
+    fn tool_errors(&self, _namespace: Option<&str>, _opts: ReadOpts) -> Result<Option<Vec<GrainRecord>>> {
+        Ok(None)
+    }
+
+    /// Distinct non-empty `session_id`s among the Event grains created at or
+    /// after `since_ms`, counted from an index (#433). `Ok(None)` when the
+    /// substrate has none; the caller folds the Events.
+    fn event_sessions_since(&self, _since_ms: Option<i64>) -> Result<Option<u64>> {
+        Ok(None)
+    }
+
+    /// Live Tool **Definitions** (`kind = "definition"`) — never the call
+    /// grains beside them (#432). The evalset pin (Rule E1) and the
+    /// `cold_grains` in-use set read only Definitions, and a memory's Tool
+    /// grains are overwhelmingly calls; a substrate that can tell the two
+    /// apart without reading the calls overrides this. The default filters
+    /// the whole-type read.
+    fn tool_definitions(&self, namespace: Option<&str>) -> Result<Vec<GrainRecord>> {
+        Ok(self
+            .grains_of_type(crate::model::grain_type::TOOL, namespace, ReadOpts::default())?
+            .into_iter()
+            .filter(|g| g.str_field("kind") == Some("definition"))
+            .collect())
+    }
 
     /// Fetch one grain by content address.
     fn grain(&self, hash: &str) -> Result<Option<GrainRecord>>;

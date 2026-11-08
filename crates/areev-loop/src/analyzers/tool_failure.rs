@@ -36,7 +36,8 @@ use crate::error::Result;
 use crate::manifest::*;
 use crate::model::{ActionKind, GrainRecord, Severity};
 use crate::recommendation::{MetricSnapshot, Proposal, RecDraft, Summary};
-use std::collections::BTreeMap;
+use crate::substrate::ReadOpts;
+use std::collections::{BTreeMap, HashMap};
 
 use serde_json::{json, Map};
 
@@ -115,28 +116,33 @@ impl Analyzer for ToolFailureClustering {
         let window_ms = ctx.params().get_int("window_days") * 86_400_000;
         let since = Some(ctx.now_ms() - window_ms);
 
-        let tools = ctx.tools_since(since)?;
-
         // Per-tool total calls, and per (tool, signature) error clusters —
         // each member carries its namespace so the lesson can land where the
         // evidence lives.
-        let mut tool_totals: BTreeMap<String, usize> = BTreeMap::new();
-        let mut tool_errors: BTreeMap<String, usize> = BTreeMap::new();
-        let mut clusters: BTreeMap<(String, String), Vec<Member>> = BTreeMap::new();
-        for e in &tools {
-            let Some(tool) = e.tool_name() else {
-                continue;
+        //
+        // The window is rolling, not watermark-bounded, so on a memory younger
+        // than `window_days` it is the whole memory (#433). A substrate with a
+        // Tool index answers the counts without reading a call and hands back
+        // only the error grains; otherwise the window is folded one grain at a
+        // time. Either way no pass holds the window's bodies.
+        let opts = ReadOpts { live_only: true, since_ms: since };
+        let (tool_totals, tool_errors, clusters) =
+            match (ctx.tool_tallies(opts)?, ctx.tool_errors(opts)?) {
+                (Some(tallies), Some(errors)) => {
+                    let mut totals = BTreeMap::new();
+                    let mut errs = BTreeMap::new();
+                    for (tool, t) in tallies {
+                        totals.insert(tool.clone(), t.calls as usize);
+                        errs.insert(tool, t.errors as usize);
+                    }
+                    let mut clusters: Clusters = BTreeMap::new();
+                    for e in &errors {
+                        add_member(&mut clusters, e);
+                    }
+                    (totals, errs, clusters)
+                }
+                _ => fold_window(ctx, opts)?,
             };
-            *tool_totals.entry(tool.to_string()).or_default() += 1;
-            if e.is_error() {
-                *tool_errors.entry(tool.to_string()).or_default() += 1;
-                let sig = normalize_signature(e.tool_content().unwrap_or(""));
-                clusters
-                    .entry((tool.to_string(), sig))
-                    .or_default()
-                    .push((e.hash.clone(), e.namespace.clone(), cause_signal(e)));
-            }
-        }
 
         // First pass: which clusters fire (only their causes are worth a
         // classification call).
@@ -293,6 +299,78 @@ impl Analyzer for ToolFailureClustering {
         }
         drafts.sort_by(|a, b| a.target_ref.cmp(&b.target_ref));
         Ok(drafts)
+    }
+}
+
+type Clusters = BTreeMap<(String, String), Vec<Member>>;
+/// Per-tool counts, keyed by tool name.
+type Counts = BTreeMap<String, usize>;
+
+/// File an error grain under its (tool, signature) cluster; a grain with no
+/// tool name has no cluster.
+fn add_member(clusters: &mut Clusters, e: &GrainRecord) -> Option<(String, String)> {
+    let tool = e.tool_name()?;
+    let key = (tool.to_string(), normalize_signature(e.tool_content().unwrap_or("")));
+    clusters
+        .entry(key.clone())
+        .or_default()
+        .push((e.hash.clone(), e.namespace.clone(), cause_signal(e)));
+    Some(key)
+}
+
+/// The window folded one grain at a time, for a substrate without a Tool
+/// index (#433). What it keeps is the totals, the error members, and — so a
+/// call a later grain supersedes can be taken back out — each successful
+/// call's hash and tool. Bodies are dropped as soon as they are read.
+fn fold_window(
+    ctx: &AnalyzeCtx,
+    opts: ReadOpts,
+) -> Result<(Counts, Counts, Clusters)> {
+    let mut tool_totals: BTreeMap<String, usize> = BTreeMap::new();
+    let mut tool_errors: BTreeMap<String, usize> = BTreeMap::new();
+    let mut clusters: Clusters = BTreeMap::new();
+    let mut ok_calls: HashMap<String, String> = HashMap::new();
+    let mut err_calls: HashMap<String, (String, String)> = HashMap::new();
+    let retired = ctx.visit_grains_of_type(crate::model::grain_type::TOOL, opts, &mut |e: GrainRecord| {
+        let Some(tool) = e.tool_name() else {
+            return Ok(());
+        };
+        *tool_totals.entry(tool.to_string()).or_default() += 1;
+        if e.is_error() {
+            *tool_errors.entry(tool.to_string()).or_default() += 1;
+            if let Some(key) = add_member(&mut clusters, &e) {
+                err_calls.insert(e.hash.clone(), key);
+            }
+        } else {
+            ok_calls.insert(e.hash.clone(), tool.to_string());
+        }
+        Ok(())
+    })?;
+    // Take back out what a later grain retired — the live view the
+    // materialised read used to filter before counting.
+    for h in &retired {
+        if let Some(tool) = ok_calls.remove(h) {
+            decrement(&mut tool_totals, &tool);
+        } else if let Some(key) = err_calls.remove(h) {
+            decrement(&mut tool_totals, &key.0);
+            decrement(&mut tool_errors, &key.0);
+            if let Some(members) = clusters.get_mut(&key) {
+                members.retain(|(mh, _, _)| mh != h);
+                if members.is_empty() {
+                    clusters.remove(&key);
+                }
+            }
+        }
+    }
+    Ok((tool_totals, tool_errors, clusters))
+}
+
+fn decrement(map: &mut BTreeMap<String, usize>, key: &str) {
+    if let Some(n) = map.get_mut(key) {
+        *n = n.saturating_sub(1);
+        if *n == 0 {
+            map.remove(key);
+        }
     }
 }
 

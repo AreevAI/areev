@@ -172,6 +172,12 @@ pub(crate) const PG_SCHEMA: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS run_idx(ns bigint, run bigint, seq bigint)",
     "CREATE INDEX IF NOT EXISTS idx_run ON run_idx(ns, run, seq)",
     "CREATE TABLE IF NOT EXISTS corpus_idx(seq bigint PRIMARY KEY)",
+    // Tool grains (#432, #433) — see the embedded SCHEMA's tool_idx comment.
+    "CREATE TABLE IF NOT EXISTS tool_idx(seq bigint PRIMARY KEY, ns bigint, created_at bigint, \
+     tool text, err bigint NOT NULL, def bigint NOT NULL, parent bytea)",
+    "CREATE INDEX IF NOT EXISTS idx_tool_created ON tool_idx(created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_tool_parent ON tool_idx(parent)",
+    "CREATE INDEX IF NOT EXISTS idx_thread_seq ON thread_idx(seq)",
     // Namespace registry (prefix scoping) — see the embedded SCHEMA's ns_reg
     // comment. Same count-maintained contract; the serialized write txns
     // (reserve_write's row lock) make the read-modify-write bumps safe here.
@@ -276,7 +282,7 @@ pub(crate) const PG_SEED: &[&str] = &[
 /// anywhere. `pg_schema_version_tracks_the_schema` (below) hashes both arrays
 /// and fails the build if the digest moves without this constant moving, so
 /// forgetting is a red test rather than a silent data bug.
-pub(crate) const PG_SCHEMA_VERSION: &str = "3";
+pub(crate) const PG_SCHEMA_VERSION: &str = "4";
 
 /// The oldest stamped schema version whose writers keep working during AND
 /// after this build's bootstrap — the machine-readable half of
@@ -287,7 +293,14 @@ pub(crate) const PG_SCHEMA_VERSION: &str = "3";
 /// writer inserts without it and keeps working; a new-build reader treats
 /// NULL as unattributable. So version 1 writers survive the migration, and
 /// this is a rolling-safe change. Version 3 (#430) adds one index and nothing
-/// a writer must know about, so it is rolling-safe from 1 as well.
+/// a writer must know about, so it is rolling-safe from 1 as well. Version 4
+/// (#432, #433) adds the `tool_idx` table: an older writer keeps working (it
+/// never touches the table), but a Tool grain it writes during the
+/// mixed-version window is not indexed until `areev reindex` — the Loop then
+/// under-counts that window's calls and misses its Definitions (a
+/// `code_revision` stays advisory, the safe direction). Writers survive, so
+/// still rolling-safe from 1; drain old writers, or reindex after, for exact
+/// Loop counts.
 ///
 /// `pg_schema_version_tracks_the_schema` hashes the schema arrays, so a
 /// version bump forces this constant to be reconsidered in the same commit.
@@ -2382,7 +2395,7 @@ pub const PG_TABLES: &[&str] = &[
     "blobs", "corpus_idx", "counters", "embeddings", "entity_latest", "fts_doc", "fts_post",
     "fts_vocab", "grains", "heads", "meta", "ns_reg", "oplog", "osp", "prov_idx", "run_idx",
     "telem_budget_stat", "telem_grain_access", "telem_meta", "telem_query_stat",
-    "telem_recall_log", "terms", "thread_idx", "triples",
+    "telem_recall_log", "terms", "thread_idx", "tool_idx", "triples",
 ];
 
 /// Schema-qualify every table reference in `sql` (#181): `FROM grains g` →
@@ -2809,6 +2822,12 @@ pub fn check_provision(
             "meta",
             crate::NS_REGISTRY_KEY,
             crate::NS_REGISTRY_VERSION,
+        ),
+        (
+            "tool_index",
+            "meta",
+            crate::TOOL_INDEX_KEY,
+            crate::TOOL_INDEX_VERSION,
         ),
     ];
     if !matches!(telemetry, crate::TelemetryMode::Off) {
@@ -3306,7 +3325,7 @@ mod schema_version_tests {
     /// #160 shape (a dictionary keyed on a column that was never added, so
     /// every recall answers empty). A stale stamp is worse than a missing one.
     const EXPECTED_DIGEST: &str =
-        "a8d6eb4e16217373ff13a7e527a5bff04eddd750a8be32dd0f1f12f741be1395";
+        "b42a1fd52a94237f6d88b79b6c65d81b8aff5b28bf2624ab25d606fce344c85f";
 
     fn digest() -> String {
         use sha2::{Digest, Sha256};

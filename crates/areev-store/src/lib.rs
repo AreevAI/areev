@@ -1780,6 +1780,22 @@ const LINK_INDEX_KEY: &str = "link_index";
 /// closes that on an existing file, so it must run rather than be opt-in.
 const LINK_INDEX_VERSION: &str = "3";
 
+/// `meta` stamp for the Tool index (`tool_idx`, #432/#433) — same
+/// stamp-not-emptiness reasoning as [`LINK_INDEX_KEY`]: a memory can hold no
+/// Tool grains, so only the stamp says the index is maintained. Its own stamp
+/// rather than a [`LINK_INDEX_VERSION`] bump because its backfill pages
+/// through the Tool grains alone, where the link rebuild reads every blob in
+/// the memory — the cost these issues exist to take off a large memory, paid
+/// once at upgrade. While it is absent (a read-only open of a file written
+/// before the index) the readers that need it fall back: `tool_definitions`
+/// to the paged type scan, `tool_counts`/`tool_errors` to `None` so the
+/// caller folds the type itself — the answer is complete either way and only
+/// its cost differs.
+pub(crate) const TOOL_INDEX_KEY: &str = "tool_index";
+
+/// Bumped when what `tool_idx` holds changes.
+pub(crate) const TOOL_INDEX_VERSION: &str = "1";
+
 /// `meta` stamp for the namespace registry (`ns_reg`) — same
 /// stamp-not-emptiness reasoning as [`LINK_INDEX_KEY`]: a file can
 /// legitimately be empty, so only the stamp says "maintained" vs "predates
@@ -1977,6 +1993,19 @@ const SCHEMA: &[&str] = &[
     // that namespace becomes unbounded. The grain remains the source of truth;
     // this table is rebuilt from its canonical body on bundle import.
     "CREATE TABLE IF NOT EXISTS corpus_idx(seq INTEGER PRIMARY KEY)",
+    // Tool grains (#432, #433): one narrow row per Tool grain carrying what
+    // the Loop asks of every call — its tool name, error flag, whether it is a
+    // Definition, and its `derived_from` parent (the liveness edge) — so the
+    // per-tool counts, the error rows and the Definitions are index reads, and
+    // the call bodies are never decoded to answer them. Stamp-gated backfill
+    // on open — see `TOOL_INDEX_KEY`.
+    "CREATE TABLE IF NOT EXISTS tool_idx(seq INTEGER PRIMARY KEY, ns INTEGER, created_at INTEGER, \
+     tool TEXT, err INTEGER NOT NULL, def INTEGER NOT NULL, parent BLOB)",
+    "CREATE INDEX IF NOT EXISTS idx_tool_created ON tool_idx(created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_tool_parent ON tool_idx(parent)",
+    // `thread_idx` by seq (#433): the gate's distinct-sessions count joins
+    // the new Events to their session rows, and `idx_thread` leads with ns.
+    "CREATE INDEX IF NOT EXISTS idx_thread_seq ON thread_idx(seq)",
     // Namespace registry: one row per namespace with at least one grains row,
     // `n` = that row count. What makes prefix scoping (`"org.*"`) resolvable
     // without scanning grains, and what lets the fail-closed authz check see
@@ -2320,6 +2349,8 @@ struct GrainPrep {
     /// Raw 32-byte `derived_from` parent address, for reverse provenance.
     parent: Option<Vec<u8>>,
     corpus_export: bool,
+    /// A Tool grain's `tool_idx` row (#432, #433); `None` for other types.
+    tool: Option<ToolRow>,
 }
 
 /// Extracted index-relevant fields of a grain about to be stored.
@@ -2340,6 +2371,69 @@ struct GrainView {
     /// `derived_from` — this grain's provenance parent, if any.
     parent: Option<String>,
     corpus_export: bool,
+    tool: Option<ToolRow>,
+}
+
+/// What `tool_idx` records of one Tool grain (#432, #433).
+#[derive(Clone)]
+struct ToolRow {
+    /// `tool_name`, else `name` — the key the Loop groups calls by.
+    name: Option<String>,
+    err: bool,
+    def: bool,
+}
+
+fn tool_row(view: &DeserializedGrain) -> Option<ToolRow> {
+    if view.grain_type != areev_core::types::GrainType::Tool {
+        return None;
+    }
+    Some(ToolRow {
+        name: view.get_str("tool_name").or_else(|| view.get_str("name")).map(str::to_string),
+        err: view.fields.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false),
+        def: view.get_str("kind") == Some("definition"),
+    })
+}
+
+/// A Tool grain whose `kind` is `"definition"`.
+fn is_tool_definition(view: &DeserializedGrain) -> bool {
+    tool_row(view).is_some_and(|t| t.def)
+}
+
+/// Insert one `tool_idx` row.
+fn insert_tool_row(
+    db: &dyn Db,
+    hot: bool,
+    seq: i64,
+    ns: i64,
+    created: i64,
+    t: &ToolRow,
+    parent: Option<&Vec<u8>>,
+) -> Result<()> {
+    let sql = "INSERT INTO tool_idx(seq,ns,created_at,tool,err,def,parent) VALUES (?1,?2,?3,?4,?5,?6,?7)";
+    let params = vec![
+        pi(seq),
+        pi(ns),
+        pi(created),
+        t.name.as_deref().map_or(Value::Null, pt),
+        pi(i64::from(t.err)),
+        pi(i64::from(t.def)),
+        parent.map_or(Value::Null, |p| pb(p.clone())),
+    ];
+    if hot {
+        db.execute_hot(sql, params)?;
+    } else {
+        db.execute(sql, params)?;
+    }
+    Ok(())
+}
+
+/// Per `(namespace, tool)` counts over a window of Tool grains (#433).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolCount {
+    pub namespace: String,
+    pub tool: String,
+    pub calls: u64,
+    pub errors: u64,
 }
 
 fn extract_view(view: &DeserializedGrain) -> GrainView {
@@ -2362,6 +2456,7 @@ fn extract_view(view: &DeserializedGrain) -> GrainView {
                 .and_then(|value| value.get("corpus_export"))
                 .and_then(|value| value.as_bool())
                 == Some(true),
+        tool: tool_row(view),
         links: view
             .fields
             .get("related_to")
@@ -2691,6 +2786,9 @@ pub struct Areev {
     /// plural type scans. A diagnostic, read by [`blobs_decoded`](Self::blobs_decoded)
     /// (#430).
     blobs_decoded: u64,
+    /// `tool_idx` is built and stamped (#432); until it is, its readers fall
+    /// back (see [`TOOL_INDEX_KEY`]).
+    tool_index_current: bool,
 }
 
 impl Areev {
@@ -3247,6 +3345,7 @@ impl Areev {
             trusted: None,
             attesting: false,
             blobs_decoded: 0,
+            tool_index_current: false,
         };
 
         // Load the file's anonymization policies (+ seed known-identity
@@ -3363,6 +3462,16 @@ impl Areev {
                 // that has since been written to does not re-scan it.
                 store.meta_put(LINK_INDEX_KEY, LINK_INDEX_VERSION)?;
             }
+        }
+
+        // Tool index (`tool_idx`, #432/#433): its own stamp-gated backfill,
+        // paged over the Tool grains only. A read-only open skips it and the
+        // readers fall back, so nothing answers short — no warning, since no
+        // read is wrong, only slower.
+        if meta.get(TOOL_INDEX_KEY).map(String::as_str) == Some(TOOL_INDEX_VERSION) {
+            store.tool_index_current = true;
+        } else if !store.read_only {
+            store.rebuild_tool_index()?;
         }
 
         // Namespace registry (`ns_reg`): same stamp-gated heal. A file written
@@ -5305,6 +5414,7 @@ impl Areev {
             run,
             parent,
             corpus_export: gv.corpus_export,
+            tool: gv.tool,
         })
     }
 
@@ -6335,6 +6445,273 @@ impl Areev {
         Ok(TypeSincePage { grains, next })
     }
 
+    /// How many grains of `gtype` were created at or after `since_ms`, per
+    /// namespace (#433) — the count [`grains_of_type_since`](Self::grains_of_type_since)
+    /// would page through, answered from `idx_grains_gtype_created` without
+    /// fetching or decoding a blob.
+    ///
+    /// Grouped by namespace NAME because the caller's visibility rules are
+    /// per namespace (the Loop adapter skips its own and the governance
+    /// namespaces, and any its session may not read), and a total would hide
+    /// which rows those are. `since_ms = None` counts every grain of the type.
+    /// Superseded grains count; nothing here is a liveness question.
+    pub fn count_of_type_since(
+        &mut self,
+        gtype: areev_core::types::GrainType,
+        since_ms: Option<i64>,
+    ) -> Result<Vec<(String, u64)>> {
+        let rows = self.db.query(
+            "SELECT t.term, COUNT(*) FROM grains g JOIN terms t ON t.id = g.ns \
+             WHERE g.gtype = ?1 AND g.created_at >= ?2 GROUP BY t.term ORDER BY t.term",
+            vec![pi(gtype as u8 as i64), pi(since_ms.unwrap_or(i64::MIN))],
+        )?;
+        Ok(rows
+            .iter()
+            .filter_map(|r| Some((r.text(0)?.to_string(), r.i64(1)?.max(0) as u64)))
+            .collect())
+    }
+
+    /// Every Tool **Definition** (`kind = "definition"`), superseded versions
+    /// included, in `(created_at, seq)` order — never the call grains (#432).
+    ///
+    /// Served by `tool_idx`, so the blobs decoded are the Definitions' alone
+    /// however many calls the memory holds. On a handle whose index is not
+    /// yet built (a read-only open of a memory written before it) this pages
+    /// through the whole Tool type instead: the same answer, at the cost the
+    /// index exists to avoid. `ns` takes a scope or `None` (every namespace —
+    /// the caller filters per grain), like
+    /// [`grains_of_type_since`](Self::grains_of_type_since).
+    pub fn tool_definitions(&mut self, ns: Option<&str>) -> Result<Vec<DeserializedGrain>> {
+        if !self.tool_index_current {
+            let mut out = Vec::new();
+            let mut cursor = None;
+            loop {
+                let page = self.grains_of_type_since(
+                    areev_core::types::GrainType::Tool,
+                    ns,
+                    None,
+                    cursor,
+                    256,
+                    false,
+                )?;
+                out.extend(page.grains.into_iter().filter(is_tool_definition));
+                match page.next {
+                    Some(n) => cursor = Some(n),
+                    None => return Ok(out),
+                }
+            }
+        }
+        let Some(ns_sql) = self.tool_ns_sql(ns)? else {
+            return Ok(Vec::new());
+        };
+        let rows = self.db.query(
+            &format!(
+                "SELECT g.blob FROM tool_idx t JOIN grains g ON g.seq = t.seq \
+                 WHERE t.def = 1{ns_sql} ORDER BY g.created_at, g.seq"
+            ),
+            vec![],
+        )?;
+        self.decode_rows(ns, &rows)
+    }
+
+    /// Per `(namespace, tool)` call and error counts over the Tool grains
+    /// created at or after `since_ms`, from `tool_idx` alone — no blob is
+    /// read (#433). Grains without a tool name are not counted.
+    ///
+    /// With `live_only`, a grain is excluded when another Tool grain in the
+    /// same window names it in `derived_from` — the Loop's liveness rule
+    /// (a supersession retires its target), answered by the index's parent
+    /// column rather than by reading the window. Definitions count like any
+    /// other Tool grain with a name, as they always did in the Loop's fold.
+    ///
+    /// `None` when the answer cannot be given from the index exactly: the
+    /// index is not built yet, or an anonymization policy is live (tool names
+    /// leave the store through egress, and a count keyed by a stored name
+    /// would not match the error grains a caller reads back). The caller then
+    /// folds the type itself.
+    pub fn tool_counts(
+        &mut self,
+        ns: Option<&str>,
+        since_ms: Option<i64>,
+        live_only: bool,
+    ) -> Result<Option<Vec<ToolCount>>> {
+        if !self.tool_index_current || !self.anon.is_idle() {
+            return Ok(None);
+        }
+        let Some(ns_sql) = self.tool_ns_sql(ns)? else {
+            return Ok(Some(Vec::new()));
+        };
+        let since = since_ms.unwrap_or(i64::MIN);
+        let rows = self.db.query(
+            &format!(
+                "SELECT n.term, t.tool, COUNT(*), COUNT(CASE WHEN t.err = 1 THEN 1 END) FROM tool_idx t \
+                 JOIN terms n ON n.id = t.ns{} \
+                 WHERE t.created_at >= ?1 AND t.tool IS NOT NULL{ns_sql}{} \
+                 GROUP BY n.term, t.tool ORDER BY n.term, t.tool",
+                if live_only { " JOIN grains g ON g.seq = t.seq" } else { "" },
+                if live_only { Self::TOOL_LIVE_SQL } else { "" },
+            ),
+            vec![pi(since)],
+        )?;
+        Ok(Some(
+            rows.iter()
+                .filter_map(|r| {
+                    Some(ToolCount {
+                        namespace: r.text(0)?.to_string(),
+                        tool: r.text(1)?.to_string(),
+                        calls: r.i64(2)?.max(0) as u64,
+                        errors: r.i64(3).unwrap_or(0).max(0) as u64,
+                    })
+                })
+                .collect(),
+        ))
+    }
+
+    /// The error Tool grains (`is_error`) created at or after `since_ms`,
+    /// decoded — and only they: the successful calls beside them are counted
+    /// by [`tool_counts`](Self::tool_counts), never read (#433). Liveness as
+    /// there. `None` under the same conditions as `tool_counts`.
+    pub fn tool_errors(
+        &mut self,
+        ns: Option<&str>,
+        since_ms: Option<i64>,
+        live_only: bool,
+    ) -> Result<Option<Vec<DeserializedGrain>>> {
+        if !self.tool_index_current || !self.anon.is_idle() {
+            return Ok(None);
+        }
+        let Some(ns_sql) = self.tool_ns_sql(ns)? else {
+            return Ok(Some(Vec::new()));
+        };
+        let rows = self.db.query(
+            &format!(
+                "SELECT g.blob FROM tool_idx t JOIN grains g ON g.seq = t.seq \
+                 WHERE t.created_at >= ?1 AND t.err = 1{ns_sql}{} ORDER BY g.created_at, g.seq",
+                if live_only { Self::TOOL_LIVE_SQL } else { "" },
+            ),
+            vec![pi(since_ms.unwrap_or(i64::MIN))],
+        )?;
+        self.decode_rows(ns, &rows).map(Some)
+    }
+
+    /// The distinct `(namespace, session_id)` pairs among grains of `gtype`
+    /// created at or after `since_ms` — the gate's "new sessions" (#433),
+    /// from `thread_idx` and the dictionary, no blob read. An empty
+    /// `session_id` is not a session. Session ids are returned as their
+    /// dictionary ids: the caller counts distinct ones, it never needs the
+    /// text.
+    pub fn sessions_of_type_since(
+        &mut self,
+        gtype: areev_core::types::GrainType,
+        since_ms: Option<i64>,
+    ) -> Result<Vec<(String, i64)>> {
+        let rows = self.db.query(
+            "SELECT DISTINCT n.term, t.session FROM grains g \
+             JOIN thread_idx t ON t.seq = g.seq \
+             JOIN terms n ON n.id = g.ns \
+             JOIN terms s ON s.id = t.session \
+             WHERE g.gtype = ?1 AND g.created_at >= ?2 AND s.term <> ''",
+            vec![pi(gtype as u8 as i64), pi(since_ms.unwrap_or(i64::MIN))],
+        )?;
+        Ok(rows
+            .iter()
+            .filter_map(|r| Some((r.text(0)?.to_string(), r.i64(1)?)))
+            .collect())
+    }
+
+    /// The liveness clause over `tool_idx t` joined to `grains g`, `?1` being
+    /// the window's start: no Tool grain in the window derives from this one.
+    const TOOL_LIVE_SQL: &'static str = " AND NOT EXISTS (SELECT 1 FROM tool_idx c \
+         WHERE c.parent = g.hash AND c.created_at >= ?1)";
+
+    /// ` AND t.ns IN (…)` for a namespace scope, `""` for every namespace,
+    /// `None` when the scope names no namespace this memory has.
+    fn tool_ns_sql(&mut self, ns: Option<&str>) -> Result<Option<String>> {
+        let Some(n) = ns else { return Ok(Some(String::new())) };
+        let ids = self.ns_param_ids(n)?;
+        if ids.is_empty() {
+            return Ok(None);
+        }
+        // Dictionary integers, never caller text.
+        Ok(Some(format!(
+            " AND t.ns IN ({})",
+            ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
+        )))
+    }
+
+    /// Decode `blob` column 0 of each row, count it, and run the egress exit.
+    fn decode_rows(&mut self, ns: Option<&str>, rows: &[crate::db::Row]) -> Result<Vec<DeserializedGrain>> {
+        let mut out: Vec<DeserializedGrain> = rows
+            .iter()
+            .filter_map(|r| r.blob(0))
+            .map(|b| deserialize_blob(&b))
+            .collect::<Result<_>>()?;
+        self.blobs_decoded += out.len() as u64;
+        let hint = ns.filter(|n| !NsScope::is_pattern(n));
+        self.egress_exit(hint, &mut out)?;
+        Ok(out)
+    }
+
+    /// Rebuild `tool_idx` from the Tool grains and stamp it current (#432,
+    /// #433). Pages through the Tool type — a page of blobs held at a time,
+    /// never the memory — inside one transaction serialized against
+    /// concurrent writers like the other rebuilds. Idempotent. Run on open
+    /// when the stamp is missing, and by `areev reindex`. Returns the rows
+    /// written (one per Tool grain).
+    pub fn rebuild_tool_index(&mut self) -> Result<usize> {
+        self.check_writable("rebuild the tool index")?;
+        self.db.begin()?;
+        let r = (|| -> Result<usize> {
+            self.db.reserve_write(0, 0, 0, now_ms() << 16, 0)?;
+            self.db.execute("DELETE FROM tool_idx", vec![])?;
+            let gt = pi(areev_core::types::GrainType::Tool as u8 as i64);
+            let (mut c_at, mut c_seq) = (i64::MIN, i64::MIN);
+            let mut n = 0usize;
+            loop {
+                let rows = self.db.query(
+                    "SELECT created_at, seq, ns, blob FROM grains WHERE gtype = ?1 \
+                     AND (created_at > ?2 OR (created_at = ?2 AND seq > ?3)) \
+                     ORDER BY created_at, seq LIMIT 256",
+                    vec![gt.clone(), pi(c_at), pi(c_seq)],
+                )?;
+                for row in &rows {
+                    let (Some(at), Some(seq), Some(ns), Some(b)) =
+                        (row.i64(0), row.i64(1), row.i64(2), row.blob(3))
+                    else {
+                        continue;
+                    };
+                    (c_at, c_seq) = (at, seq);
+                    let view = deserialize_blob(&b)?;
+                    if let Some(t) = tool_row(&view) {
+                        let parent = view
+                            .get_str("derived_from")
+                            .and_then(|p| Hash::from_hex(p).ok())
+                            .map(|h| h.as_bytes().to_vec());
+                        insert_tool_row(self.db.as_ref(), false, seq, ns, at, &t, parent.as_ref())?;
+                        n += 1;
+                    }
+                }
+                if rows.len() < 256 {
+                    break;
+                }
+            }
+            Ok(n)
+        })();
+        let written = match r {
+            Ok(n) => {
+                self.db.commit()?;
+                n
+            }
+            Err(e) => {
+                let _ = self.db.rollback();
+                return Err(e);
+            }
+        };
+        self.meta_put(TOOL_INDEX_KEY, TOOL_INDEX_VERSION)?;
+        self.tool_index_current = true;
+        Ok(written)
+    }
+
     /// Grain blobs this handle has fetched and decoded through [`get`](Self::get),
     /// the `recent*` scans and [`grains_of_type_since`](Self::grains_of_type_since).
     /// A diagnostic for bounded-read guarantees (#430): a caller asserting
@@ -7119,6 +7496,7 @@ impl Areev {
             dbr.execute("DELETE FROM prov_idx WHERE seq=?1", vec![pi(seq)])?;
             dbr.execute("DELETE FROM run_idx WHERE seq=?1", vec![pi(seq)])?;
             dbr.execute("DELETE FROM corpus_idx WHERE seq=?1", vec![pi(seq)])?;
+            dbr.execute("DELETE FROM tool_idx WHERE seq=?1", vec![pi(seq)])?;
             // Postings too, or a forgotten grain's words keep answering
             // free-text recall — a tombstone that leaves the text findable
             // is not a tombstone.
@@ -7829,6 +8207,7 @@ impl Areev {
                     "prov_idx",
                     "run_idx",
                     "corpus_idx",
+                    "tool_idx",
                     "fts_post",
                     "fts_doc",
                 ]
@@ -11627,6 +12006,9 @@ impl Areev {
             if pr.corpus_export {
                 dbr.execute("INSERT INTO corpus_idx(seq) VALUES (?1)", vec![pi(seq)])?;
             }
+            if let Some(t) = &pr.tool {
+                insert_tool_row(dbr, false, seq, pr.ns_id, pr.created, t, pr.parent.as_ref())?;
+            }
             if let Some(ref parent) = pr.parent {
                 dbr.execute(
                     "INSERT INTO prov_idx(ns,parent,seq) VALUES (?1,?2,?3)",
@@ -12170,6 +12552,9 @@ fn insert_prepped(
         }
         if pr.corpus_export {
             db.execute_hot("INSERT INTO corpus_idx(seq) VALUES (?1)", vec![pi(seq)])?;
+        }
+        if let Some(t) = &pr.tool {
+            insert_tool_row(db, true, seq, pr.ns_id, pr.created, t, pr.parent.as_ref())?;
         }
         if let Some(ref parent) = pr.parent {
             db.execute_hot(

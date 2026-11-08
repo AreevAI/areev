@@ -19,6 +19,7 @@ mod recall_purity;
 mod run_journal;
 mod run_recall;
 mod supersede_forget;
+mod tool_index;
 mod type_since;
 
 pub use add_recall::*;
@@ -38,4 +39,5 @@ pub use recall_purity::*;
 pub use run_journal::*;
 pub use run_recall::*;
 pub use supersede_forget::*;
+pub use tool_index::*;
 pub use type_since::*;

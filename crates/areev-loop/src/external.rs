@@ -106,11 +106,22 @@ impl Analyzer for CommandAnalyzer {
             if grains.len() >= MAX_GRAINS {
                 break;
             }
-            if let Ok(mut g) = ctx.grains_of_type(gt, ReadOpts::default()) {
-                grains.append(&mut g);
+            // Folded (#433): keep only what fits under the cap rather than
+            // reading the whole type and truncating it, then drop any kept
+            // grain a later one retired.
+            let room = MAX_GRAINS - grains.len();
+            let mut kept: Vec<GrainRecord> = Vec::new();
+            let read = ctx.visit_grains_of_type(gt, ReadOpts::default(), &mut |g| {
+                if kept.len() < room {
+                    kept.push(g);
+                }
+                Ok(())
+            });
+            if let Ok(retired) = read {
+                kept.retain(|g| !retired.contains(&g.hash));
+                grains.append(&mut kept);
             }
         }
-        grains.truncate(MAX_GRAINS);
 
         let req = AnalyzeRequest {
             loop_analyzer: 1,

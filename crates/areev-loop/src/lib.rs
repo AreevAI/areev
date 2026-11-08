@@ -72,5 +72,5 @@ pub use recommendation::{
 pub use reference::ReferenceSubstrate;
 pub use substrate::{
     BudgetUsage, Capabilities, GrainAccess, GrainSpec, HeadGroup, OmsSubstrate, QueryUsage,
-    ReadOpts, SubstrateRead, TelemetryView,
+    ReadOpts, SubstrateRead, TelemetryView, ToolTally,
 };
