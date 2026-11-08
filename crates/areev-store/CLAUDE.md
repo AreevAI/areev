@@ -246,6 +246,35 @@ Pg-only multi-writer race cases); extend it whenever store semantics change.
   is new, not what is old" tests measure (`areev-loop-adapter/tests/
   bounded_reads.rs`). Postgres: `PG_SCHEMA_VERSION` 3, rolling-safe from 1.
   Conformance: `type_since_reads_only_what_is_new_and_pages_completely`.
+- `tool_idx(seq PK, ns, created_at, tool, err, def, parent)` (#432/#433) —
+  one narrow row per **Tool** grain: `tool_name` (else `name`), the
+  `is_error` flag, whether it is a Definition (`kind = "definition"`), and
+  the raw `derived_from` parent; `idx_tool_created`, `idx_tool_parent`. It
+  serves the Loop's Tool questions without decoding a call:
+  `tool_counts(ns, since, live_only)` (per `(namespace, tool)` calls/errors,
+  no blob read), `tool_errors(ns, since, live_only)` (decodes the error grains
+  only), `tool_definitions(ns)` (decodes the Definitions only). `live_only`
+  is the Loop's liveness rule — a grain retired when another Tool grain in
+  the window names it in `derived_from` — via the parent column, deliberately
+  NOT `superseded_by` (a forgotten superseding grain leaves that set; see the
+  adapter's `read_user_type`). Written on both insert paths, deleted by
+  `forget` and `erase_where` like every index. Its own stamp
+  (`tool_index`), NOT a `link_index` bump: `rebuild_tool_index` pages over
+  the Tool grains alone, where the link rebuild reads every blob at once —
+  the wrong cost to put on the large memory these issues were filed for.
+  Until the stamp is current on a handle (a read-only open of an older file
+  never builds it) `tool_counts`/`tool_errors` return `None` — the caller
+  folds — and `tool_definitions` falls back to the paged type scan. They
+  also return `None` while an anonymization policy is live: tool names leave
+  through egress, and counts keyed by stored names would not match the error
+  grains read back. Two count reads ride beside it with no new table:
+  `count_of_type_since(gtype, since)` (per-namespace COUNT over
+  `idx_grains_gtype_created`) and `sessions_of_type_since(gtype, since)`
+  (distinct `(ns, session)` pairs through `thread_idx`, new index
+  `idx_thread_seq`). `PG_SCHEMA_VERSION` 4, rolling-safe from 1 (an old
+  writer's Tool grains are unindexed until `areev reindex` —
+  `docs/deployment-profile.md`). Conformance:
+  `tool_index_answers_counts_errors_and_definitions_without_reading_calls`.
 - BM25 leg: `fts_vocab(id, term)` + `fts_post(term, seq, ns, tf)` +
   `fts_doc(seq, len)` — our own inverted index. Written on add, dropped on
   `forget`, rebuilt by `rebuild_text_index`. **Meant to be deleted** if

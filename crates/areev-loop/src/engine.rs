@@ -825,26 +825,45 @@ impl Engine {
         // lesson path exists for.
         let mut tool_seeded = 0usize;
         let seed_successes = self.policy.skills.enabled || self.policy.plans.enabled;
+        //
+        // The candidates are folded out of the read rather than held (#433):
+        // per namespace, the first few errors and successes in read order,
+        // enough to fill the share even after the cited grains already in the
+        // bundle are skipped. A grain a later one retired is dropped here, the
+        // live filter the materialised read applied before seeding.
+        const TOOL_SEED_KEEP: usize = TOOL_SEED_CAP + CITED_SEED_CAP;
+        let mut seeds: Vec<(Vec<GrainRecord>, Vec<GrainRecord>)> = Vec::new();
+        for ns in &scan_ns {
+            let (mut errs, mut oks) = (Vec::new(), Vec::new());
+            let Ok(retired) = sub.visit_grains_of_type(crate::model::grain_type::TOOL, *ns, opts, &mut |g| {
+                let keep = if g.is_error() { &mut errs } else { &mut oks };
+                if keep.len() < TOOL_SEED_KEEP && (g.is_error() || seed_successes) {
+                    keep.push(g);
+                }
+                Ok(())
+            }) else {
+                continue;
+            };
+            errs.retain(|g| !retired.contains(&g.hash));
+            oks.retain(|g| !retired.contains(&g.hash));
+            seeds.push((errs, oks));
+        }
         'tools: for want_error in [true, false] {
             if !want_error && !seed_successes {
                 break;
             }
-            for ns in &scan_ns {
-                if let Ok(recent) = sub.grains_of_type(crate::model::grain_type::TOOL, *ns, opts) {
-                    for g in recent {
-                        if tool_seeded >= TOOL_SEED_CAP
-                            || evidence.len() >= EVIDENCE_CAP - LENS_RESERVE
-                        {
-                            break 'tools;
-                        }
-                        if g.is_error() != want_error {
-                            continue;
-                        }
-                        let before = evidence.len();
-                        push_evidence(&mut evidence, &mut bundle, &mut ns_by_hash, &g, attribution);
-                        if evidence.len() > before {
-                            tool_seeded += 1;
-                        }
+            for (errs, oks) in &seeds {
+                let recent = if want_error { errs } else { oks };
+                for g in recent {
+                    if tool_seeded >= TOOL_SEED_CAP
+                        || evidence.len() >= EVIDENCE_CAP - LENS_RESERVE
+                    {
+                        break 'tools;
+                    }
+                    let before = evidence.len();
+                    push_evidence(&mut evidence, &mut bundle, &mut ns_by_hash, g, attribution);
+                    if evidence.len() > before {
+                        tool_seeded += 1;
                     }
                 }
             }
@@ -2569,25 +2588,31 @@ pub(crate) fn measure_metric<S: SubstrateRead>(
         // regression of this specific lesson.
         "tool_error_recurrence" => {
             let Some(tool) = &metric.subject else { return Ok(None) };
-            let tools = sub.grains_of_type(
-                crate::model::grain_type::TOOL,
-                None,
-                ReadOpts { live_only: true, since_ms: Some(since_ms) },
-            )?;
-            let n = tools
-                .iter()
-                .filter(|t| t.tool_name() == Some(tool.as_str()) && t.is_error())
-                .filter(|t| {
+            let recurs = |t: &GrainRecord| {
+                t.tool_name() == Some(tool.as_str())
+                    && t.is_error()
                     // No stored signature (legacy metric) → fall back to the
                     // whole-tool count so old recommendations still measure.
-                    metric.relation.as_deref().is_none_or(|sig| {
+                    && metric.relation.as_deref().is_none_or(|sig| {
                         crate::analyzers::tool_failure::normalize_signature(
                             t.tool_content().unwrap_or(""),
                         ) == sig
                     })
-                })
-                .count();
-            Ok(Some(n as f64))
+            };
+            let opts = ReadOpts { live_only: true, since_ms: Some(since_ms) };
+            // The error grains alone when the substrate indexes Tool calls;
+            // otherwise folded, keeping only the recurrences' hashes (#433).
+            if let Some(errors) = sub.tool_errors(None, opts)? {
+                return Ok(Some(errors.iter().filter(|t| recurs(t)).count() as f64));
+            }
+            let mut hits: BTreeSet<String> = BTreeSet::new();
+            let retired = sub.visit_grains_of_type(crate::model::grain_type::TOOL, None, opts, &mut |t| {
+                if recurs(&t) {
+                    hits.insert(t.hash);
+                }
+                Ok(())
+            })?;
+            Ok(Some(hits.difference(&retired).count() as f64))
         }
         // After a resolve-to-latest, does the subject again hold more than one
         // live value under the functional relation? Live-state read (no since
@@ -4652,36 +4677,55 @@ pub(crate) struct NewSince {
 }
 
 fn count_new<S: SubstrateRead>(sub: &S, watermark: Option<i64>) -> Result<NewSince> {
-    let opts = ReadOpts {
-        live_only: false,
-        since_ms: watermark.map(|w| w + 1),
-    };
+    // #433: counted, never materialised. Every count is a substrate
+    // aggregate where the substrate has one — grains per type, the Tool
+    // errors, the distinct Event sessions — so the gate reads no grain at
+    // all. A substrate without the Tool or session index has the Tools or
+    // Events folded one at a time for what a count cannot see (a call's
+    // error flag, an Event's `session_id`): the gate then holds a page and
+    // the distinct session ids, never every body since the watermark.
+    let since_ms = watermark.map(|w| w + 1);
+    let opts = ReadOpts { live_only: false, since_ms };
     let mut n = NewSince::default();
-    let mut sessions: BTreeSet<&str> = BTreeSet::new();
-    let mut events_held: Vec<GrainRecord> = Vec::new();
-    for t in [
-        crate::model::grain_type::FACT,
-        crate::model::grain_type::EVENT,
-        crate::model::grain_type::TOOL,
-        crate::model::grain_type::OBSERVATION,
-    ] {
-        let g = sub.grains_of_type(t, None, opts)?;
-        n.grains += g.len() as u64;
-        // The error gate (--min-new-errors) watches captured tool failures.
-        if t == crate::model::grain_type::TOOL {
-            n.error_events += g.iter().filter(|e| e.is_error()).count() as u64;
+    for t in [crate::model::grain_type::FACT, crate::model::grain_type::OBSERVATION] {
+        n.grains += sub.count_of_type(t, None, since_ms)?;
+    }
+    match sub.tool_tallies(None, opts)? {
+        Some(tallies) => {
+            n.grains += sub.count_of_type(crate::model::grain_type::TOOL, None, since_ms)?;
+            n.error_events = tallies.values().map(|t| t.errors).sum();
         }
-        if t == crate::model::grain_type::EVENT {
-            n.events = g.len() as u64;
-            events_held = g;
+        None => {
+            let (mut tools, mut errors) = (0u64, 0u64);
+            sub.visit_grains_of_type(crate::model::grain_type::TOOL, None, opts, &mut |g| {
+                tools += 1;
+                errors += u64::from(g.is_error());
+                Ok(())
+            })?;
+            n.grains += tools;
+            n.error_events = errors;
         }
     }
-    for e in &events_held {
-        if let Some(sid) = e.str_field("session_id").filter(|s| !s.is_empty()) {
-            sessions.insert(sid);
+    match sub.event_sessions_since(since_ms)? {
+        Some(sessions) => {
+            n.events = sub.count_of_type(crate::model::grain_type::EVENT, None, since_ms)?;
+            n.sessions = sessions;
+        }
+        None => {
+            let mut sessions: BTreeSet<String> = BTreeSet::new();
+            sub.visit_grains_of_type(crate::model::grain_type::EVENT, None, opts, &mut |g| {
+                n.events += 1;
+                if let Some(sid) = g.str_field("session_id").filter(|s| !s.is_empty()) {
+                    if !sessions.contains(sid) {
+                        sessions.insert(sid.to_string());
+                    }
+                }
+                Ok(())
+            })?;
+            n.sessions = sessions.len() as u64;
         }
     }
-    n.sessions = sessions.len() as u64;
+    n.grains += n.events;
     Ok(n)
 }
 

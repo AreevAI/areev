@@ -158,8 +158,84 @@ impl<'a> AnalyzeCtx<'a> {
         self.grains_of_type(crate::model::grain_type::GOAL, ReadOpts::default())
     }
 
+    /// [`grains_of_type`](Self::grains_of_type) one record at a time, across
+    /// the configured namespaces — see
+    /// [`SubstrateRead::visit_grains_of_type`] for the liveness contract: the
+    /// returned set names the visited hashes a live fold must discount.
+    pub fn visit_grains_of_type(
+        &self,
+        grain_type: &str,
+        opts: ReadOpts,
+        visit: &mut dyn FnMut(GrainRecord) -> Result<()>,
+    ) -> Result<std::collections::BTreeSet<String>> {
+        if self.namespaces.is_empty() {
+            return self.reader.visit_grains_of_type(grain_type, None, opts, visit);
+        }
+        let mut retired = std::collections::BTreeSet::new();
+        for ns in self.namespaces {
+            retired.extend(self.reader.visit_grains_of_type(grain_type, Some(ns), opts, visit)?);
+        }
+        Ok(retired)
+    }
+
+    /// Per-tool call/error counts across the configured namespaces, from the
+    /// substrate's index (#433) — `None` when any namespace cannot be
+    /// answered that way, so the caller folds instead.
+    pub fn tool_tallies(
+        &self,
+        opts: ReadOpts,
+    ) -> Result<Option<std::collections::BTreeMap<String, crate::substrate::ToolTally>>> {
+        if self.namespaces.is_empty() {
+            return self.reader.tool_tallies(None, opts);
+        }
+        let mut out: std::collections::BTreeMap<String, crate::substrate::ToolTally> = Default::default();
+        for ns in self.namespaces {
+            let Some(t) = self.reader.tool_tallies(Some(ns), opts)? else {
+                return Ok(None);
+            };
+            for (tool, n) in t {
+                let e = out.entry(tool).or_default();
+                e.calls += n.calls;
+                e.errors += n.errors;
+            }
+        }
+        Ok(Some(out))
+    }
+
+    /// The error Tool grains across the configured namespaces, without the
+    /// successful calls (#433) — `None` exactly when
+    /// [`tool_tallies`](Self::tool_tallies) is.
+    pub fn tool_errors(&self, opts: ReadOpts) -> Result<Option<Vec<GrainRecord>>> {
+        if self.namespaces.is_empty() {
+            return self.reader.tool_errors(None, opts);
+        }
+        let mut out = Vec::new();
+        for ns in self.namespaces {
+            let Some(e) = self.reader.tool_errors(Some(ns), opts)? else {
+                return Ok(None);
+            };
+            out.extend(e);
+        }
+        Ok(Some(out))
+    }
+
+    /// Live Tool Definitions across the configured namespaces, without the
+    /// call grains (#432).
+    pub fn tool_definitions(&self) -> Result<Vec<GrainRecord>> {
+        if self.namespaces.is_empty() {
+            return self.reader.tool_definitions(None);
+        }
+        let mut out = Vec::new();
+        for ns in self.namespaces {
+            out.extend(self.reader.tool_definitions(Some(ns))?);
+        }
+        Ok(out)
+    }
+
     /// Tool grains (captured tool calls), optionally windowed by a `since`
-    /// watermark, live only. The flagship analyzer's input.
+    /// watermark, live only, as one materialised set. Holds every body in the
+    /// window: the built-ins fold the same read through
+    /// [`visit_grains_of_type`](Self::visit_grains_of_type) instead (#433).
     pub fn tools_since(&self, since_ms: Option<i64>) -> Result<Vec<GrainRecord>> {
         self.grains_of_type(
             crate::model::grain_type::TOOL,

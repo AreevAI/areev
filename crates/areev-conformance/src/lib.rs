@@ -346,6 +346,8 @@ macro_rules! for_each_conformance_case {
         $per_case!(run_recall_is_bounded_and_refused_past_its_ceiling);
         // #430: the bounded, paged type-since read the Loop's gate stands on
         $per_case!(type_since_reads_only_what_is_new_and_pages_completely);
+        // #432/#433: the Tool index — counts, errors, Definitions, sessions without reading calls
+        $per_case!(tool_index_answers_counts_errors_and_definitions_without_reading_calls);
         // #368 aggregates + dotted paths + read-only max_limit; #369 mounts by
         // locator; #370 the pinned `op: query` run read; #373 RUN applies the
         // saved body's stages

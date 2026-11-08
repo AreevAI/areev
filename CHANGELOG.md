@@ -6,6 +6,58 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Loop: the Tool grains are counted, not read — a pass's memory no longer
+  grows with them (#433).** 1.14.1 bounded the watermark reads, but two
+  readers never used the watermark. `tool_failure` reads a rolling
+  `window_days` window (30 days by default), which is the whole memory while
+  the memory is younger than that, and held it as one set of records with
+  every body decoded and cloned. The gate's `count_new` built a record for
+  every grain since the watermark just to count it. On a 20,145-grain
+  Postgres memory (11,286 Tool grains, 237 MB of bodies) a pass with nothing
+  new peaked at 2.7 GiB RSS and aborted under a 2.5 GiB cap; the gate alone
+  cost 1 GiB. The store now keeps `tool_idx`, one narrow row per Tool grain
+  (tool name, error flag, Definition flag, `derived_from` parent), and the
+  Loop asks it questions instead. `tool_failure` takes its per-tool counts
+  from the index and decodes only the error grains it clusters. The gate
+  counts grains per type, Tool errors and distinct Event sessions from
+  indexes, so a skipped pass decodes only the Loop's own state. `tool_error_recurrence`
+  re-measurement reads the errors since the apply. Liveness is unchanged:
+  a call superseded inside the window is still not counted, now answered by
+  the index's parent column. Measured with 20 KB Tool grains on a file
+  memory, a pass with nothing new went from 8,148 decoded blobs and 218 MB
+  peak RSS (8,000 grains; 93 MB at 2,000) to the window's failures plus
+  bounded evidence, at a flat ~33 MB. New store reads:
+  `tool_counts`, `tool_errors`, `count_of_type_since`,
+  `sessions_of_type_since`, `rebuild_tool_index`. Where the index cannot
+  answer (a read-only open of a pre-1.14.2 memory, which never builds it, or
+  a live anonymization policy) the same reads fold the grains a page at a
+  time (`SubstrateRead::visit_grains_of_type`): the same answer, holding one
+  page and the running counts. Pinned by the extended
+  `bounded_reads.rs` (a full pass's decode count independent of the window,
+  and the index path and the fold proposing identical drafts).
+- **Loop: the evalset pin and `cold_grains` read Tool Definitions, not every
+  Tool grain (#432).** `cold_grains`' in-use set and `tool_evalset` (Rule
+  E1's pin) read the whole Tool type to find the handful of Definitions.
+  They now read `Areev::tool_definitions`, served by the same index, so the
+  blobs decoded are the Definitions' alone. A handle without the index falls
+  back to a paged scan.
+- **Loop: the remaining whole-type Tool reads are folded.** The LLM
+  verifier's evidence seeding and the opt-in command analyzer's snapshot keep
+  only what fits their caps instead of reading the type and truncating it.
+- **`areev reindex` also rebuilds the Tool index.** The first read-write
+  open after upgrading builds it with one paged pass over the Tool grains
+  (its own `tool_index` stamp, deliberately not a `link_index` bump, whose
+  rebuild reads every blob at once).
+- **Postgres schema version 4**: `tool_idx` and an index on `thread_idx(seq)`.
+  Rolling-deploy safe from version 1. An older writer's Tool grains written
+  during the mixed-version window are unindexed until `areev reindex`, so
+  drain old writers or reindex once afterwards for exact Loop counts
+  (`docs/deployment-profile.md`). Conformance:
+  `tool_index_answers_counts_errors_and_definitions_without_reading_calls`,
+  both backends.
+
 ## [1.14.1] — 2026-11-07
 
 ### Fixed
