@@ -2397,13 +2397,17 @@ Nothing was written — apply the snippet yourself (or rerun with your own paths
     // Optional host-supplied embedder: --embed-cmd 'CMD' spawns CMD per embed
     // (text on stdin, JSON array of numbers on stdout). Enables the vector
     // recall leg and embeds newly written grains; the file records the model
-    // as embedding provenance.
+    // as embedding provenance. An embedder that cannot be installed (#436 —
+    // e.g. a postgres role that may not create the vector column) refuses
+    // the command: the operator asked for vectors, and running BM25-only
+    // behind a stderr line is the silent degradation that issue was.
     if let Some(cmd_line) = flag(&flags, "embed-cmd") {
         let model = flag(&flags, "embed-model");
         let seen = m.open_warnings().len();
         let ce = areev_store::CommandEmbed::new(&cmd_line, model.as_deref())
             .map_err(|e| e.to_string())?;
-        m.set_embedder(Box::new(ce));
+        m.set_embedder(Box::new(ce))
+            .map_err(|e| format!("--embed-cmd: embedder not installed: {e}"))?;
         for w in &m.open_warnings()[seen..] {
             eprintln!("areev: warning: {w}");
         }

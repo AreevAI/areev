@@ -244,7 +244,7 @@ impl EmbedBackend for BucketEmbed {
 fn vector_leg_stays_inside_the_scope() {
     let d = TempDir::new().unwrap();
     let mut m = open(&d);
-    m.set_embedder(Box::new(BucketEmbed));
+    m.set_embedder(Box::new(BucketEmbed)).unwrap();
     m.add(&fact("org.sales", "doc1", "says", "alpha beta gamma")).unwrap();
     m.add(&fact("personal", "doc2", "says", "alpha beta gamma")).unwrap();
 

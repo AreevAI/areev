@@ -1331,7 +1331,9 @@ impl Areev {
     /// numbers. Probed once here to learn the dimension. Enables the vector
     /// recall leg; grains added afterwards are embedded. (For an
     /// in-process callback embedder, see `setEmbedder`; the command
-    /// embedder remains the zero-dependency path.)
+    /// embedder remains the zero-dependency path.) Rejects when the
+    /// embedder cannot be installed (#436) — e.g. a Postgres role that may
+    /// not create the vector column, or a dimension mismatch.
     #[napi(ts_return_type = "Promise<void>")]
     pub fn set_embedder_command(
         &self,
@@ -1350,6 +1352,7 @@ impl Areev {
             let ce = CommandEmbed::new(&cmd, model.as_deref()).map_err(err)?;
             facade
                 .store_as(areev_core::authz::Verb::Admin, "*", |m| m.set_embedder(Box::new(ce)))
+                .and_then(|r| r)
                 .map_err(err)?;
             Ok(())
         })
@@ -1486,7 +1489,8 @@ impl Areev {
     /// the JS mirror of Python's `set_embedder`. Probed once here (on the
     /// JS thread) to learn the dimension, recorded as the file's embedding
     /// provenance; store-side embeds run on worker threads and call back
-    /// through a threadsafe function.
+    /// through a threadsafe function. Throws when the embedder cannot be
+    /// installed (#436), as `setEmbedderCommand` rejects.
     #[napi]
     pub fn set_embedder(
         &self,
@@ -1507,6 +1511,7 @@ impl Areev {
         let facade = take_facade(&self.facade)?;
         facade
                 .store_as(areev_core::authz::Verb::Admin, "*", |m| m.set_embedder(Box::new(backend)))
+                .and_then(|r| r)
                 .map_err(err)?;
         Ok(())
     }

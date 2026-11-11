@@ -165,10 +165,10 @@ fn eval_conv(
     // index_text=false: skip the FTS write tax; the vector leg carries recall.
     let mut m = Areev::open_with(db.to_str().unwrap(), AreevOptions { index_text: false, ..Default::default() }).unwrap();
     match embed_cache {
-        Some(map) => m.set_embedder(Box::new(CachedEmbed { map: map.clone(), dim: embed_dim })),
+        Some(map) => m.set_embedder(Box::new(CachedEmbed { map: map.clone(), dim: embed_dim })).unwrap(),
         None => {
             let corpus: Vec<String> = conv.turns.iter().map(|t| t.text.clone()).collect();
-            m.set_embedder(Box::new(TfidfEmbed::build(2048, &corpus)));
+            m.set_embedder(Box::new(TfidfEmbed::build(2048, &corpus))).unwrap();
         }
     }
     let gold_slot = Arc::new(Mutex::new(Vec::<String>::new()));

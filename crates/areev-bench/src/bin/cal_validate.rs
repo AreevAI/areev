@@ -191,7 +191,7 @@ fn main() {
         let db = dir.path().join(format!("c{ci}.db"));
         let mut m = Areev::open_with(db.to_str().unwrap(), AreevOptions { index_text: false, ..Default::default() }).unwrap();
         let corpus: Vec<String> = conv.turns.iter().map(|t| t.text.clone()).collect();
-        m.set_embedder(Box::new(TfidfEmbed::build(2048, &corpus)));
+        m.set_embedder(Box::new(TfidfEmbed::build(2048, &corpus))).unwrap();
         let ns = format!("c{ci}");
         let dia2text: HashMap<&str, &str> = conv.turns.iter().map(|t| (t.dia_id.as_str(), t.text.as_str())).collect();
         for (ti, t) in conv.turns.iter().enumerate() {

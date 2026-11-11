@@ -165,7 +165,7 @@ fn novelty_needs_an_embedder_and_ranks_with_one() {
         }
     }
     f.with_store(|m| {
-        m.set_embedder(Box::new(ByteEmbed));
+        m.set_embedder(Box::new(ByteEmbed)).unwrap();
         m.add(&Fact::new("john", "prefers", "window seat").namespace("caller").created_at(1_000))
             .unwrap();
     });

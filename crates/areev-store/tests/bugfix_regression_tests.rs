@@ -222,11 +222,11 @@ fn vector_dim_mismatch_fails_open() {
     let p = p.to_str().unwrap();
     {
         let mut m = Areev::open(p).unwrap();
-        m.set_embedder(Box::new(Embed64));
+        m.set_embedder(Box::new(Embed64)).unwrap();
         m.add(&fact("caller", "john", "allergic_to", "peanuts")).unwrap();
     }
     let mut m = Areev::open(p).unwrap();
-    m.set_embedder(Box::new(Embed128));
+    m.set_embedder(Box::new(Embed128)).unwrap();
     let r = m.recall_hybrid("caller", None, None, Some("peanuts"), 10, None);
     assert!(r.is_ok(), "dim mismatch must fail open: {:?}", r.err());
     // structural leg still answers

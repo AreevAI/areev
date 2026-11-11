@@ -77,7 +77,17 @@ transports implement it:
   `memories_in_one_process_share_nothing` case. The whole Pg suite also
   passes with `AREEV_PG_POOL_IDLE_SECS=1`, re-dialling throughout. The `vector(dim)` column is
   added at the first `set_embedder` (dim mismatch = hard refusal), CAS blobs
-  live in an in-schema table, and `prefers_batched_reads = true`. Page
+  live in an in-schema table, and `prefers_batched_reads = true`.
+  `ensure_embeddings` reads the column's `atttypmod` BEFORE any DDL (#436):
+  a column already at the embedder's dim installs with no `ALTER`, because
+  Postgres checks table ownership before `IF NOT EXISTS` and a DML-only
+  role would otherwise `42501` against a column the owner already made.
+  `set_embedder` returns `Result` — no column and no right to create it,
+  a dim mismatch, or a read-only handle over a memory with no declared
+  provenance is an ERROR (plus the `open_warnings()` note), and the bindings'
+  `set_embedder*`/`setEmbedder*` raise/reject; the CLI's `--embed-cmd`
+  refuses the command. Conformance (Pg-only, a privilege semantic):
+  `a_dml_only_role_installs_an_embedder_against_the_owners_column`. Page
   cipher and the telemetry sidecar are file-backend-only and rejected at
   open.
   **Every session opens through `pgtls::connect`** (src/pgtls.rs) — the one
@@ -954,7 +964,8 @@ is what lets an embedded reader hold the SELECT-only role too.
   (CAS — `get_blob` is a read and stays open); and `set_embedder`'s call
   into `ensure_embeddings` (postgres's lazy `vector(dim)` column DDL — the
   embedder still installs when the memory already declares matching
-  provenance, since that path touches no database).
+  provenance, since that path touches no database; without one it returns
+  `STO-E004`, #436).
 - Reads are untouched: `recall`/`recall_hybrid*`/`search_*`/CAL `SELECT`
   never call `check_writable`.
 

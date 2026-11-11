@@ -906,7 +906,7 @@ fn add_batch_embeds_once_for_the_whole_batch_as_documents() {
     let calls = Arc::new(Mutex::new(Calls::default()));
     let dir = TempDir::new().unwrap();
     let mut m = Areev::open(dir.path().join("e.db").to_str().unwrap()).unwrap();
-    m.set_embedder(Box::new(Recorder(calls.clone())));
+    m.set_embedder(Box::new(Recorder(calls.clone()))).unwrap();
 
     let grains: Vec<Fact> = (0..50)
         .map(|i| fact("ns", &format!("s{i}"), "rel", &format!("o{i}")))
@@ -944,7 +944,7 @@ fn a_recall_query_is_embedded_as_a_query() {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let dir = TempDir::new().unwrap();
     let mut m = Areev::open(dir.path().join("q.db").to_str().unwrap()).unwrap();
-    m.set_embedder(Box::new(Sided(seen.clone())));
+    m.set_embedder(Box::new(Sided(seen.clone()))).unwrap();
     m.add(&fact("ns", "alice", "prefers", "tea")).unwrap();
     seen.lock().unwrap().clear();
     let _ = m.recall_hybrid("ns", None, None, Some("tea"), 5, None).unwrap();
@@ -972,7 +972,7 @@ fn a_backend_with_only_dim_and_embed_still_works() {
     }
     let dir = TempDir::new().unwrap();
     let mut m = Areev::open(dir.path().join("min.db").to_str().unwrap()).unwrap();
-    m.set_embedder(Box::new(Minimal));
+    m.set_embedder(Box::new(Minimal)).unwrap();
     m.add(&fact("ns", "a", "b", "c")).unwrap();
     assert_eq!(m.recall("ns", "a", None, 5).unwrap().len(), 1);
 }
@@ -999,7 +999,7 @@ fn a_wrong_dimension_from_the_batch_writes_nothing() {
     }
     let dir = TempDir::new().unwrap();
     let mut m = Areev::open(dir.path().join("bad.db").to_str().unwrap()).unwrap();
-    m.set_embedder(Box::new(Bad));
+    m.set_embedder(Box::new(Bad)).unwrap();
     let err = m.add(&fact("ns", "a", "b", "c")).unwrap_err();
     assert!(err.to_string().contains("dims"), "got {err}");
     assert_eq!(m.recall("ns", "a", None, 5).unwrap().len(), 0, "nothing written");

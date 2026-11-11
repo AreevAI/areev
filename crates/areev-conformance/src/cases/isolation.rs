@@ -31,8 +31,8 @@ impl EmbedBackend for Hist {
 pub fn memories_in_one_process_share_nothing(b: &dyn Backend) {
     let mut a = b.open_named("iso_a");
     let mut z = b.open_named("iso_z");
-    a.set_embedder(Box::new(Hist));
-    z.set_embedder(Box::new(Hist));
+    a.set_embedder(Box::new(Hist)).unwrap();
+    z.set_embedder(Box::new(Hist)).unwrap();
 
     let h = a.add(&fact("caller", "john", "prefers", "tea")).unwrap();
     let uri = a.put_blob(b"iso attachment").unwrap();

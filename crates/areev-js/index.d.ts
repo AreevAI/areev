@@ -62,7 +62,9 @@ export declare class Areev {
    * numbers. Probed once here to learn the dimension. Enables the vector
    * recall leg; grains added afterwards are embedded. (For an
    * in-process callback embedder, see `setEmbedder`; the command
-   * embedder remains the zero-dependency path.)
+   * embedder remains the zero-dependency path.) Rejects when the
+   * embedder cannot be installed (#436) — e.g. a Postgres role that may
+   * not create the vector column, or a dimension mismatch.
    */
   setEmbedderCommand(cmd: string, model?: string | undefined | null): Promise<void>
   /**
@@ -132,7 +134,8 @@ export declare class Areev {
    * the JS mirror of Python's `set_embedder`. Probed once here (on the
    * JS thread) to learn the dimension, recorded as the file's embedding
    * provenance; store-side embeds run on worker threads and call back
-   * through a threadsafe function.
+   * through a threadsafe function. Throws when the embedder cannot be
+   * installed (#436), as `setEmbedderCommand` rejects.
    */
   setEmbedder(embed: (arg: string) => Array<number>, model?: string | undefined | null): void
   /**

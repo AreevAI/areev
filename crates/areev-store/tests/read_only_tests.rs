@@ -178,3 +178,36 @@ fn read_only_open_of_an_existing_file_with_no_sidecars_still_succeeds() {
     let m = Areev::open_with(path_str, ro_opts()).unwrap();
     assert!(m.open_warnings().is_empty(), "{:?}", m.open_warnings());
 }
+
+/// #436: a read-only handle over a memory with no declared embedding
+/// provenance cannot create the vector storage, so the install is an
+/// ERROR (`STO-E004`) — plus the `open_warnings()` note — and once the
+/// memory declares one, the same read-only install succeeds.
+#[test]
+fn read_only_embedder_install_errors_without_provenance() {
+    struct E;
+    impl areev_store::EmbedBackend for E {
+        fn dim(&self) -> usize {
+            4
+        }
+        fn embed(&self, _t: &str) -> areev_core::error::Result<Vec<f32>> {
+            Ok(vec![0.5; 4])
+        }
+        fn model(&self) -> &str {
+            "e"
+        }
+    }
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("m.db");
+    let path = path.to_str().unwrap();
+    drop(Areev::open(path).unwrap());
+    {
+        let mut m = Areev::open_with(path, ro_opts()).unwrap();
+        let err = m.set_embedder(Box::new(E)).unwrap_err();
+        assert_eq!(err.code(), "STO-E004", "{err}");
+        assert!(m.open_warnings().iter().any(|w| w.contains("vector recall disabled")));
+    }
+    Areev::open(path).unwrap().set_embedder(Box::new(E)).unwrap();
+    let mut m = Areev::open_with(path, ro_opts()).unwrap();
+    m.set_embedder(Box::new(E)).expect("declared provenance installs without a write");
+}
