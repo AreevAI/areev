@@ -6,6 +6,37 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.14.3] — 2026-11-11
+
+### Fixed
+
+- **A Postgres role that does not own the tables can install an embedder,
+  and a failed install is an error rather than a warning (#436).** Installing
+  an embedder ran `ALTER TABLE … ADD COLUMN IF NOT EXISTS vec vector(dim)`
+  every time, and PostgreSQL checks table ownership before `IF NOT EXISTS` —
+  so a least-privilege read-write role (DML only, `?provision=never`) failed
+  even when the owner had already created the column. The failure only
+  reached `open_warnings()`: `setEmbedderCommand` / `set_embedder_command`
+  resolved, every grain was stored without a vector, and hybrid recall fell
+  back to its BM25 leg (measured: 57/62 instead of 61/62 on a 62-question
+  evaluation). The install now reads the column's dimension before any DDL:
+  a column that already matches installs with no `ALTER`, a different
+  dimension is refused, and only an absent column is created. Install the
+  embedder once through the owning role; after that a DML-only role embeds
+  every grain it writes (`docs/deployment-profile.md`).
+
+### Changed
+
+- **`Areev::set_embedder` returns `Result<()>`.** It is an error when the
+  embedder cannot be installed: no `vec` column and no right to create it, a
+  dimension mismatch on Postgres, or a read-only handle over a memory with no
+  declared embedding provenance (`STO-E004`). The `open_warnings()` note is
+  still recorded. Python `set_embedder` / `set_embedder_command` raise
+  `ValueError`; Node `setEmbedder` throws and `setEmbedderCommand` rejects;
+  the CLI's `--embed-cmd` fails the command instead of continuing without
+  vector recall. Rust callers that ignored the return now get an
+  unused-`Result` warning.
+
 ## [1.14.2] — 2026-11-08
 
 ### Fixed
@@ -5209,7 +5240,8 @@ ecosystem adapters, and the enterprise plane.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.14.2...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.14.3...HEAD
+[1.14.3]: https://github.com/AreevAI/areev/compare/v1.14.2...v1.14.3
 [1.14.2]: https://github.com/AreevAI/areev/compare/v1.14.1...v1.14.2
 [1.14.1]: https://github.com/AreevAI/areev/compare/v1.14.0...v1.14.1
 [1.14.0]: https://github.com/AreevAI/areev/compare/v1.13.2...v1.14.0
