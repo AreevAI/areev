@@ -3588,7 +3588,18 @@ impl Areev {
     /// as embedding provenance (model + dim). A later open that injects a
     /// different-dim backend gets a reconciliation warning instead of
     /// silently mixing vector spaces.
-    pub fn set_embedder(&mut self, e: Box<dyn EmbedBackend>) {
+    ///
+    /// # Errors
+    ///
+    /// When the embedder cannot be installed (#436) — the backend cannot make
+    /// its vector storage usable (postgres: no `vec` column and no right to
+    /// create it, or a column of another dimension), or a read-only handle
+    /// over a memory that declares no embedding provenance yet. The embedder
+    /// is then NOT installed and adds stay unembedded; the same text is also
+    /// pushed to `open_warnings()`. An error rather than a warning alone
+    /// because a host that asked for vectors and silently got BM25-only
+    /// recall has no way to notice short of polling the warnings.
+    pub fn set_embedder(&mut self, e: Box<dyn EmbedBackend>) -> Result<()> {
         let (model, dim) = (e.model().to_string(), e.dim());
         // Read-only handles never reach `ensure_embeddings`: on postgres
         // that call ALTERs the table (`vec vector(dim)`) and a least-
@@ -3599,26 +3610,29 @@ impl Areev {
         // database), so vector recall keeps working against an
         // already-provisioned memory.
         if self.read_only && self.meta_embed.is_none() {
+            let err = AreevError::ReadOnly(
+                "this memory has no declared embedding provenance yet, and a read-only \
+                 handle cannot create the vector column"
+                    .into(),
+            );
             self.warnings.push(format!(
-                "vector recall disabled — embedder {model}@{dim} not installed: {}",
-                AreevError::ReadOnly(
-                    "this memory has no declared embedding provenance yet, and a read-only \
-                     handle cannot create the vector column"
-                        .into()
-                )
+                "vector recall disabled — embedder {model}@{dim} not installed: {err}"
             ));
-            return;
+            return Err(err);
         }
         // Make the vector storage usable FIRST (the postgres backend creates
         // its vector(dim) table here and hard-refuses a dim mismatch). On
         // failure the embedder is NOT installed — recall fails soft to the
-        // structural/BM25 legs instead of every add failing mid-transaction.
+        // structural/BM25 legs instead of every add failing mid-transaction,
+        // and the caller is TOLD (#436). On postgres a column that already
+        // has this dimension is accepted without DDL, which is what lets a
+        // DML-only role that does not own the tables install.
         if !self.read_only {
             if let Err(err) = self.db.ensure_embeddings(dim) {
                 self.warnings.push(format!(
                     "vector recall disabled — embedder {model}@{dim} not installed: {err}"
                 ));
-                return;
+                return Err(err);
             }
         }
         match &self.meta_embed {
@@ -3653,6 +3667,7 @@ impl Areev {
             }
         }
         self.embedder = Some(e);
+        Ok(())
     }
 
     /// Set the host's ambient trajectory identifier for subsequent recalls.

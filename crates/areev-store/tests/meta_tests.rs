@@ -85,7 +85,7 @@ fn embedding_provenance_recorded_and_mismatch_warns() {
     // first backend stamps provenance
     {
         let mut m = Areev::open(path).unwrap();
-        m.set_embedder(Box::new(FakeEmbed { name: "fake-a", dim: 4 }));
+        m.set_embedder(Box::new(FakeEmbed { name: "fake-a", dim: 4 })).unwrap();
         assert_eq!(m.declared_embedding(), Some(("fake-a", 4)));
         m.add(&Fact::new("john", "prefers", "tea")).unwrap();
     }
@@ -94,7 +94,7 @@ fn embedding_provenance_recorded_and_mismatch_warns() {
     {
         let mut m = Areev::open(path).unwrap();
         assert_eq!(m.declared_embedding(), Some(("fake-a", 4)));
-        m.set_embedder(Box::new(FakeEmbed { name: "fake-b", dim: 8 }));
+        m.set_embedder(Box::new(FakeEmbed { name: "fake-b", dim: 8 })).unwrap();
         assert!(
             m.open_warnings().iter().any(|w| w.contains("mismatch")),
             "{:?}",

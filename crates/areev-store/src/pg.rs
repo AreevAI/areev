@@ -357,6 +357,24 @@ impl ProvisionMode {
     }
 }
 
+/// `embeddings.vec`'s typmod — for `vector(dim)` that IS the dimension —
+/// or `None` when the column does not exist yet. SELECT-only on the
+/// catalog, so any role that can connect may ask (#436).
+async fn embeddings_vec_typmod(client: &tokio_postgres::Client, schema: &str) -> Result<Option<i32>> {
+    client
+        .query_opt(
+            "SELECT a.atttypmod FROM pg_attribute a
+              JOIN pg_class c ON a.attrelid = c.oid
+              JOIN pg_namespace n ON c.relnamespace = n.oid
+             WHERE n.nspname = $1 AND c.relname = 'embeddings'
+               AND a.attname = 'vec' AND NOT a.attisdropped",
+            &[&schema],
+        )
+        .await
+        .map(|r| r.map(|r| r.get::<_, i32>(0)))
+        .map_err(pg_err)
+}
+
 /// Read `?provision=` off a DSN. The parameter is ours, not the driver's;
 /// `pgtls::SslRequest::split` is what removes it before the DSN
 /// reaches `tokio_postgres`, exactly as it does for `sslmode`/`sslrootcert`,
@@ -2088,6 +2106,25 @@ impl Db for PgDb {
         self.with_conn(|pool, conn| {
             pool.block_on(async {
                 let client = &conn.client;
+                let mismatch = |existing: i32| {
+                    AreevError::Validation(format!(
+                        "embeddings column holds vector({existing}) but the embedder produces dim {dim} \
+                         — refusing to mix vector spaces (this is a hard error on the postgres backend)"
+                    ))
+                };
+                // Probe BEFORE any DDL (#436). PostgreSQL checks table
+                // OWNERSHIP before `IF NOT EXISTS`, so even an idempotent
+                // `ADD COLUMN IF NOT EXISTS` fails `42501` for a DML-only
+                // role over a column the owner already created. A column
+                // that is already right needs nothing — that is the
+                // least-privilege read-write role's whole install path.
+                match embeddings_vec_typmod(client, &schema).await? {
+                    Some(existing) if existing > 0 && existing as usize != dim => {
+                        return Err(mismatch(existing))
+                    }
+                    Some(_) => return Ok(()),
+                    None => {}
+                }
                 // Best-effort: only required if the extension is not installed
                 // yet, and refused on unprivileged roles where an admin already
                 // installed it — the ALTER below gives the real error.
@@ -2105,30 +2142,18 @@ impl Db for PgDb {
                     .await
                     .map_err(|e| {
                         AreevError::Storage(format!(
-                            "cannot add vector({dim}) column (is the pgvector extension available?): {e}"
+                            "cannot add vector({dim}) column — it does not exist yet and this role \
+                             cannot create it (it needs the pgvector extension and ownership of \
+                             the memory's tables: install an embedder once through the owning \
+                             role, then a DML-only role installs against that column): {e}"
                         ))
                     })?;
-                // A pre-existing column with a different dim would make every add
-                // fail mid-transaction — refuse the embedder up front instead.
-                let row = client
-                    .query_one(
-                        "SELECT a.atttypmod FROM pg_attribute a
-                          JOIN pg_class c ON a.attrelid = c.oid
-                          JOIN pg_namespace n ON c.relnamespace = n.oid
-                         WHERE n.nspname = $1 AND c.relname = 'embeddings'
-                           AND a.attname = 'vec'",
-                        &[&schema],
-                    )
-                    .await
-                    .map_err(pg_err)?;
-                let existing = row.get::<_, i32>(0);
-                if existing > 0 && existing as usize != dim {
-                    return Err(AreevError::Validation(format!(
-                        "embeddings column holds vector({existing}) but the embedder produces dim {dim} \
-                         — refusing to mix vector spaces (this is a hard error on the postgres backend)"
-                    )));
+                // A concurrent owner may have created it with another dim
+                // between the probe and the ALTER (`IF NOT EXISTS` then no-ops).
+                match embeddings_vec_typmod(client, &schema).await? {
+                    Some(existing) if existing > 0 && existing as usize != dim => Err(mismatch(existing)),
+                    _ => Ok(()),
                 }
-                Ok(())
             })
         })
     }

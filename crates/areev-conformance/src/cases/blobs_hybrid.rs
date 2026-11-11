@@ -106,7 +106,7 @@ impl EmbedBackend for HistEmbed {
 
 pub fn vector_leg_roundtrip(b: &dyn Backend) {
     let mut m = b.open();
-    m.set_embedder(Box::new(HistEmbed));
+    m.set_embedder(Box::new(HistEmbed)).unwrap();
     assert!(
         !m.open_warnings().iter().any(|w| w.contains("vector recall disabled")),
         "embedder must install: {:?}",
@@ -134,7 +134,7 @@ pub fn vector_leg_roundtrip(b: &dyn Backend) {
     // vectors survive reopen (stored, not recomputed)
     drop(m);
     let mut m = b.open();
-    m.set_embedder(Box::new(HistEmbed));
+    m.set_embedder(Box::new(HistEmbed)).unwrap();
     let near = m
         .nearest_semantic("caller", None, None, "john eats toast with jam", 1)
         .unwrap();
@@ -149,7 +149,7 @@ pub fn vector_leg_roundtrip(b: &dyn Backend) {
 pub fn scored_recall_matches_unscored_order(b: &dyn Backend) {
     use areev_store::RecallTuning;
     let mut m = b.open();
-    m.set_embedder(Box::new(HistEmbed));
+    m.set_embedder(Box::new(HistEmbed)).unwrap();
     let t0 = 1_700_000_000_000;
     m.add(&fact_at("org.a", "john", "drinks", "espresso every morning", t0)).unwrap();
     m.add(&fact_at("org.a", "john", "eats", "toast with jam and espresso", t0 + 1)).unwrap();

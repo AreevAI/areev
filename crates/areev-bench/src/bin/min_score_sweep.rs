@@ -75,11 +75,11 @@ fn eval(ci: usize, conv: &Conv, dir: &std::path::Path, hybrid: bool, cache: &Opt
         match cache {
             Some(map) => {
                 let dim = map.values().next().map(Vec::len).unwrap_or(0);
-                m.set_embedder(Box::new(CachedEmbed { map: map.clone(), dim }));
+                m.set_embedder(Box::new(CachedEmbed { map: map.clone(), dim })).unwrap();
             }
             None => {
                 let corpus: Vec<String> = conv.turns.iter().map(|t| t.text.clone()).collect();
-                m.set_embedder(Box::new(TfidfEmbed::build(2048, &corpus)));
+                m.set_embedder(Box::new(TfidfEmbed::build(2048, &corpus))).unwrap();
             }
         }
     }

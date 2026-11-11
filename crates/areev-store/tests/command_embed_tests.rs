@@ -42,7 +42,7 @@ fn command_embed_probes_dim_and_powers_vector_recall() {
     let ce = CommandEmbed::new(&cmd, Some("sha-toy")).unwrap();
     let db = dir.path().join("v.db");
     let mut m = Areev::open_with(db.to_str().unwrap(), AreevOptions::default()).unwrap();
-    m.set_embedder(Box::new(ce));
+    m.set_embedder(Box::new(ce)).unwrap();
     assert_eq!(m.embedder_dim(), Some(8), "dim learned from the probe call");
     assert_eq!(m.declared_embedding(), Some(("sha-toy", 8)), "provenance stamped");
 

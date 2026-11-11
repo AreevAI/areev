@@ -361,7 +361,7 @@ fn main() {
     a.dim = qembed.dim();
 
     let (mut m, where_) = open_store(&a);
-    m.set_embedder(mk(&a));
+    m.set_embedder(mk(&a)).unwrap();
     if a.ollama.is_some() {
         println!(
             "NOTE: the recall_hybrid row embeds its query INSIDE the store, so under --ollama \

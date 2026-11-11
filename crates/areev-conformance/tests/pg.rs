@@ -820,6 +820,109 @@ fn a_least_privilege_role_opens_a_current_schema_read_write() {
     let _ = areev_store::pg::execute_raw(&url, &cleanup);
 }
 
+/// A deterministic 16-dim embedder for the #436 role case.
+struct RoleEmbed(usize);
+impl areev_store::EmbedBackend for RoleEmbed {
+    fn dim(&self) -> usize {
+        self.0
+    }
+    fn embed(&self, text: &str) -> areev_core::error::Result<Vec<f32>> {
+        let mut v = vec![0f32; self.0];
+        for (i, b) in text.bytes().enumerate() {
+            v[(b as usize + i) % self.0] += 1.0;
+        }
+        let n = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-9);
+        Ok(v.into_iter().map(|x| x / n).collect())
+    }
+    fn model(&self) -> &str {
+        "role-embed"
+    }
+}
+
+/// #436: a DML-only role that does not own the tables installs an embedder
+/// against the `vec` column the owner created — no ALTER, so no `42501` — and
+/// the grains it writes are embedded. Where the install genuinely cannot
+/// proceed (no column and no right to create it; a dimension mismatch) the
+/// install is an ERROR, not a warning the caller has to go looking for.
+#[test]
+fn a_dml_only_role_installs_an_embedder_against_the_owners_column() {
+    let Some(b) = backend() else { return };
+    let url = pg_url().unwrap();
+    let (with_col, without_col) = (b.schema_for("emb_role"), b.schema_for("emb_role_nocol"));
+    // The owner provisions both; only `with_col` gets an embedder (and so
+    // the `vec vector(16)` column + declared provenance).
+    {
+        let mut m = b.open_named("emb_role");
+        m.set_embedder(Box::new(RoleEmbed(16))).expect("the owner may create the column");
+        m.add(&areev_conformance::fact("ns", "ana", "prefers", "quiet rooms")).unwrap();
+    }
+    drop(b.open_named("emb_role_nocol"));
+
+    let role = format!("areev_emb_{}", std::process::id());
+    let cleanup = format!("DROP OWNED BY {role}; DROP ROLE IF EXISTS {role};");
+    let _ = areev_store::pg::execute_raw(&url, &cleanup);
+    if areev_store::pg::execute_raw(&url, &format!("CREATE ROLE {role} LOGIN PASSWORD 'lowpriv'")).is_err() {
+        eprintln!(
+            "skipping a_dml_only_role_installs_an_embedder_against_the_owners_column: \
+             this DSN's role may not CREATE ROLE"
+        );
+        return;
+    }
+    let x = |sql: String| areev_store::pg::execute_raw(&url, &sql).unwrap();
+    for s in [&with_col, &without_col] {
+        x(format!("GRANT USAGE ON SCHEMA \"{s}\" TO {role}"));
+        x(format!("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA \"{s}\" TO {role}"));
+        x(format!("GRANT USAGE ON ALL SEQUENCES IN SCHEMA \"{s}\" TO {role}"));
+    }
+    let Some(low) = as_role(&url, &role, "lowpriv") else {
+        eprintln!("skipping: DATABASE_URL carries no userinfo to rewrite");
+        let _ = areev_store::pg::execute_raw(&url, &cleanup);
+        return;
+    };
+    let low = format!("{low}{}provision=never", if low.contains('?') { '&' } else { '?' });
+    let rows = |s: &str| {
+        areev_store::pg::query_raw_i64(&url, &format!("SELECT count(*) FROM \"{s}\".embeddings")).unwrap()
+    };
+
+    // THE acceptance: the column exists with this dim → install, no DDL.
+    {
+        let mut m = areev_store::Areev::open_postgres(&low, &with_col).unwrap();
+        m.set_embedder(Box::new(RoleEmbed(16)))
+            .expect("a DML-only role installs against an existing, matching column");
+        assert!(
+            !m.open_warnings().iter().any(|w| w.contains("vector recall disabled")),
+            "{:?}",
+            m.open_warnings()
+        );
+        let before = rows(&with_col);
+        m.add(&areev_conformance::fact("ns", "ben", "drinks", "espresso every morning")).unwrap();
+        m.add(&areev_conformance::fact("ns", "cy", "eats", "toast with jam")).unwrap();
+        assert_eq!(rows(&with_col), before + 2, "every grain the writer adds is embedded");
+        let near = m.nearest_semantic("ns", None, None, "ben drinks espresso every morning", 1).unwrap();
+        assert_eq!(m.get(&near[0].0).unwrap().get_str("object"), Some("espresso every morning"));
+
+        // A different dimension is refused — an error, not just a warning.
+        let err = m.set_embedder(Box::new(RoleEmbed(8))).unwrap_err();
+        assert!(err.to_string().contains("vector(16)"), "{err}");
+    }
+
+    // No column, and no right to create one → the install is an error.
+    {
+        let mut m = areev_store::Areev::open_postgres(&low, &without_col).unwrap();
+        let err = m.set_embedder(Box::new(RoleEmbed(16))).unwrap_err();
+        assert!(err.to_string().contains("STO-E001"), "{err}");
+        assert!(
+            m.open_warnings().iter().any(|w| w.contains("vector recall disabled")),
+            "the warning stays for open_warnings() readers: {:?}",
+            m.open_warnings()
+        );
+        m.add(&areev_conformance::fact("ns", "dee", "likes", "tea")).unwrap();
+        assert_eq!(rows(&without_col), 0);
+    }
+
+    let _ = areev_store::pg::execute_raw(&url, &cleanup);
+}
+
 /// #141: the recall check grades a REAL HNSW index against the exact scan
 /// (needs pgvector on the server). With no index it reports 1.0 and runs
 /// nothing; with one it runs every query, names the index, and the bypass it

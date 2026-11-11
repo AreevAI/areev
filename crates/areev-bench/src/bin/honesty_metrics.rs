@@ -347,7 +347,7 @@ fn main() {
         AreevOptions { index_text: true, ..Default::default() },
     )
     .unwrap();
-    m.set_embedder(Box::new(HashEmbed));
+    m.set_embedder(Box::new(HashEmbed)).unwrap();
 
     let t0 = Instant::now();
     m.add(&mk("main", "svc:api", "runs", "windowed aggregation", BASE_TS)).unwrap();
@@ -368,7 +368,7 @@ fn main() {
         AreevOptions { index_text: true, ..Default::default() },
     )
     .unwrap();
-    r.set_embedder(Box::new(HashEmbed));
+    r.set_embedder(Box::new(HashEmbed)).unwrap();
     let t1 = Instant::now();
     let applied = r.import_bundle(bundle.to_str().unwrap()).unwrap().applied;
     let import_us = t1.elapsed().as_micros();

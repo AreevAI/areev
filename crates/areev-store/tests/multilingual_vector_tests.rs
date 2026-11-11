@@ -63,7 +63,7 @@ fn structural_recall_is_script_agnostic() {
 fn vector_leg_serves_each_language() {
     let d = TempDir::new().unwrap();
     let mut m = Areev::open(d.path().join("m.db").to_str().unwrap()).unwrap();
-    m.set_embedder(Box::new(TrigramEmbed));
+    m.set_embedder(Box::new(TrigramEmbed)).unwrap();
     seed(&mut m);
 
     // Mandarin query → Mandarin event is the top hit (no whitespace
@@ -87,7 +87,7 @@ fn vector_leg_serves_each_language() {
 fn forget_removes_embedding_row() {
     let d = TempDir::new().unwrap();
     let mut m = Areev::open(d.path().join("m.db").to_str().unwrap()).unwrap();
-    m.set_embedder(Box::new(TrigramEmbed));
+    m.set_embedder(Box::new(TrigramEmbed)).unwrap();
     let h = m.add(&fact("caller", "john", "prefers", "unique-zanzibar-token")).unwrap();
     assert!(!m.search_vector("caller", "unique-zanzibar-token", 4).unwrap().is_empty());
     m.forget(&h).unwrap();
@@ -99,7 +99,7 @@ fn forget_removes_embedding_row() {
 fn nearest_semantic_ranks_paraphrase_and_needs_embedder() {
     let d = TempDir::new().unwrap();
     let mut m = Areev::open(d.path().join("m.db").to_str().unwrap()).unwrap();
-    m.set_embedder(Box::new(TrigramEmbed));
+    m.set_embedder(Box::new(TrigramEmbed)).unwrap();
     // Two lessons under the same (subject, relation); only the first is about
     // tempdir isolation.
     m.add(&fact("agent", "flaky", "lesson", "isolate the shared tempdir per test"))
@@ -145,7 +145,7 @@ fn nearest_semantic_ranks_paraphrase_and_needs_embedder() {
 fn nearest_semantic_relation_only_scope_is_applied() {
     let d = TempDir::new().unwrap();
     let mut m = Areev::open(d.path().join("m.db").to_str().unwrap()).unwrap();
-    m.set_embedder(Box::new(TrigramEmbed));
+    m.set_embedder(Box::new(TrigramEmbed)).unwrap();
     m.add(&fact("agent", "a", "lesson", "tempdir isolation matters")).unwrap();
     m.add(&fact("agent", "b", "lesson", "tempdir cleanup matters")).unwrap();
     m.add(&fact("agent", "c", "note", "tempdir trivia unrelated")).unwrap();

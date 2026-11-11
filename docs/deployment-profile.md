@@ -308,6 +308,15 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA "<schema>"
 ALTER DEFAULT PRIVILEGES IN SCHEMA "<schema>" GRANT USAGE ON SEQUENCES TO areev_rw;
 ```
 
+**Embedders under that role.** The `embeddings.vec vector(dim)` column is
+created lazily, by the first embedder install — which is DDL, so do it once
+through the owning role (an `--embed-cmd` open, or `setEmbedderCommand` /
+`set_embedder_command`). After that this role installs the same embedder with
+no DDL at all and every grain it writes is embedded. If the column is absent,
+or holds a different dimension, the install is refused with an error (the
+bindings reject, `--embed-cmd` fails the command) rather than quietly falling
+back to BM25-only recall.
+
 This role cannot bootstrap or migrate — that is the point. Provision with an
 owning role (`areev provision`), then hand the application this one. Add
 `?provision=never` to its DSN to make the guarantee enforceable: an absent or

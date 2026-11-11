@@ -931,7 +931,10 @@ impl Areev {
     /// Probed once here to learn the dimension (recorded as the file's
     /// embedding provenance). Enables the vector recall leg; grains added
     /// afterwards are embedded — run `reindex_text()`-style backfills via
-    /// `migrate`/re-adds, embeddings are not retro-computed.
+    /// `migrate`/re-adds, embeddings are not retro-computed. Raises
+    /// `ValueError` when the embedder cannot be installed (#436) — e.g. a
+    /// Postgres role that may not create the vector column, or a
+    /// dimension mismatch.
     #[pyo3(signature = (embed, model = None))]
     fn set_embedder(&self, py: Python<'_>, embed: Py<PyAny>, model: Option<String>) -> PyResult<()> {
         // The probe calls back into Python, so it stays attached; only the
@@ -950,12 +953,14 @@ impl Areev {
             model: model.unwrap_or_else(|| "python".to_string()),
         };
         py.detach(|| self.facade.store_as(areev_core::authz::Verb::Admin, "*", |m| m.set_embedder(Box::new(backend))))
+            .and_then(|r| r)
             .map_err(err)?;
         Ok(())
     }
 
     /// Install a command embedder (same contract as the CLI's --embed-cmd):
     /// the command gets the text on stdin and prints a JSON array of numbers.
+    /// Raises `ValueError` when the embedder cannot be installed (#436).
     #[pyo3(signature = (cmd, model = None))]
     fn set_embedder_command(&self, py: Python<'_>, cmd: String, model: Option<String>) -> PyResult<()> {
         py.detach(|| -> Result<(), AreevError> {
@@ -967,7 +972,7 @@ impl Areev {
                 .check(areev_core::authz::Verb::Admin, "*")?;
             let ce = CommandEmbed::new(&cmd, model.as_deref())?;
             self.facade
-                .store_as(areev_core::authz::Verb::Admin, "*", |m| m.set_embedder(Box::new(ce)))?;
+                .store_as(areev_core::authz::Verb::Admin, "*", |m| m.set_embedder(Box::new(ce)))??;
             Ok(())
         })
         .map_err(err)

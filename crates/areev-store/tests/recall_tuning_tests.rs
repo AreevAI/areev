@@ -147,7 +147,7 @@ fn mmr_promotes_a_diverse_result_over_a_near_duplicate() {
         AreevOptions { index_text: false, ..AreevOptions::default() },
     )
     .unwrap();
-    m.set_embedder(Box::new(KeyedEmbed));
+    m.set_embedder(Box::new(KeyedEmbed)).unwrap();
     m.add(&fact("caller", "alice", "likes", "coffee")).unwrap();
     m.add(&fact("caller", "alice", "likes", "espresso drinks")).unwrap();
     m.add(&fact("caller", "alice", "likes", "green tea")).unwrap();
