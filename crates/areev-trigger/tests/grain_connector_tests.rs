@@ -405,3 +405,121 @@ fn a_trigger_that_names_no_connector_grain_still_uses_the_host_command() {
     assert_eq!(report.items, 1, "the host command's item: {report:?}");
     assert_eq!(report.runs_started, 1);
 }
+
+/// A polling trigger naming `reference` as its connector grain, verbatim.
+fn declare_tool_ref(rig: &Rig, reference: &str) -> String {
+    let plan = rig.plan();
+    let t = Trigger::new(TriggerKind::Polling, &plan.to_hex())
+        .connector("mailbox")
+        .interval_secs(60)
+        .dedup_key("/id")
+        .created_at(T0)
+        .namespace(NS)
+        .connector_tool(reference);
+    rig.facade.with_store(|m| m.add(&t)).unwrap().to_hex()
+}
+
+#[test]
+fn a_connector_reference_that_is_not_an_address_is_refused() {
+    let rig = Rig::new();
+    declare_tool_ref(&rig, "mailbox-latest");
+    let report = rig.evaluator(Some(rig.code(&["d".repeat(64).as_str()]))).run(&opts()).unwrap();
+    assert_eq!(report.runs_started, 0);
+    assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+    assert!(report.errors[0].starts_with("TRG-E012"), "{:?}", report.errors);
+    assert!(report.errors[0].contains("is not a content address"), "{:?}", report.errors);
+}
+
+#[test]
+fn a_connector_reference_to_a_grain_that_is_not_a_tool_is_refused() {
+    // The address resolves — to the plan, not to a Definition. Running it
+    // would mean treating arbitrary stored content as code.
+    let rig = Rig::new();
+    let plan = rig.plan();
+    declare_tool_ref(&rig, &plan.to_hex());
+    let report = rig.evaluator(Some(rig.code(&["d".repeat(64).as_str()]))).run(&opts()).unwrap();
+    assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+    assert!(report.errors[0].starts_with("TRG-E012"), "{:?}", report.errors);
+    assert!(report.errors[0].contains("not a Tool Definition"), "{:?}", report.errors);
+}
+
+#[test]
+fn a_blob_reading_connector_needs_a_memory_locator() {
+    // A declared `{"blob": {"read": true}}` can only be served by a broker
+    // that knows where the memory is. Without one the poll refuses before the
+    // module runs, naming why — not a module that fails every read later.
+    let rig = Rig::new();
+    let uri = rig.put_blob(b"#!/bin/sh\necho '{}'\n");
+    let addr = uri.strip_prefix("cas://sha256:").unwrap().to_string();
+    let def = Tool::new("mailbox.poll")
+        .kind(ToolKind::Definition)
+        .tool_description("read the mailbox")
+        .created_at(T0 - 2000)
+        .namespace(NS)
+        .executor_uri(&uri)
+        .runtime("wasm32-areev-io")
+        .capabilities(json!([{ "blob": { "read": true } }]));
+    let def = rig.facade.with_store(|m| m.add(&def)).unwrap();
+    rig.declare(Some(&def));
+
+    // A sandbox IS configured, so the refusal below is the locator's alone.
+    // It is never spawned: the poll refuses before dispatch.
+    let code = ConnectorCode {
+        sandbox_cmd: Some("/nonexistent/areev-sandbox".into()),
+        ..rig.code(&[&addr])
+    };
+    let report = rig.evaluator(Some(code)).run(&opts()).unwrap();
+    assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+    assert!(report.errors[0].starts_with("TRG-E012"), "{:?}", report.errors);
+    assert!(report.errors[0].contains("no memory locator"), "{:?}", report.errors);
+    assert!(rig.started.0.lock().unwrap().is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_definitions_config_reaches_the_connector_when_the_trigger_has_none() {
+    let rig = Rig::new();
+    let uri = rig.put_blob(ECHO_REQUEST.as_bytes());
+    let addr = uri.strip_prefix("cas://sha256:").unwrap().to_string();
+    let def = rig.connector_def_with_config(&uri, json!({ "items": "/messages" }));
+    rig.declare(Some(&def));
+
+    let ev = rig.evaluator(Some(rig.code(&[&addr])));
+    ev.run(&opts()).unwrap(); // seeds
+    rig.clock.advance(120_000);
+    let report = ev.run(&opts()).unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+
+    let events = rig
+        .facade
+        .with_store(|m| m.recent(NS, Some(areev_core::types::GrainType::Event), 20))
+        .unwrap();
+    let body: String = events.iter().filter_map(|g| g.get_str("content")).collect();
+    let seen: Value = serde_json::from_str(&body).expect("the Event carries the item payload");
+    assert_eq!(seen["request"]["config"], json!({ "items": "/messages" }));
+}
+
+#[cfg(unix)]
+#[test]
+fn the_hosts_executor_timeout_bounds_a_connector_grain() {
+    // `--executor-timeout` is host config; a connector that hangs must fail
+    // the poll (and back off) rather than hold the heartbeat forever.
+    let rig = Rig::new();
+    let uri = rig.put_blob(b"#!/bin/sh\nexec sleep 30\n");
+    let addr = uri.strip_prefix("cas://sha256:").unwrap().to_string();
+    let def = rig.connector_def(Some(&uri), None);
+    let h = rig.declare(Some(&def));
+
+    let code = ConnectorCode {
+        timeout: Some(Some(std::time::Duration::from_millis(300))),
+        env: Some(areev_core::proc::EnvPolicy::InheritExcept { deny: Vec::new() }),
+        ..rig.code(&[&addr])
+    };
+    let started = std::time::Instant::now();
+    let report = rig.evaluator(Some(code)).run(&opts()).unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(20), "the timeout was not applied");
+    assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+    assert!(report.errors[0].starts_with("TRG-E004"), "{:?}", report.errors);
+    let st = rig.facade.with_store(|m| m.trigger_state(&h)).unwrap().unwrap().0;
+    assert_eq!(st.consecutive_failures, 1, "a hung connector counts toward backoff");
+}

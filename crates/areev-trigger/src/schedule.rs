@@ -512,6 +512,49 @@ mod tests {
     }
 
     #[test]
+    fn is_clocked_names_exactly_the_kinds_with_a_next_instant() {
+        for kind in
+            [TriggerKind::Interval, TriggerKind::Polling, TriggerKind::Schedule, TriggerKind::Once]
+        {
+            assert!(is_clocked(&Trigger::new(kind, WF)), "{kind:?} fires on a clock");
+        }
+        for kind in [
+            TriggerKind::Memory,
+            TriggerKind::Webhook,
+            TriggerKind::Manual,
+            TriggerKind::Composite,
+        ] {
+            assert!(!is_clocked(&Trigger::new(kind, WF)), "{kind:?} fires when something arrives");
+        }
+    }
+
+    #[test]
+    fn a_clocked_kind_missing_its_cadence_is_refused_not_defaulted() {
+        // `validate` catches these at authoring time; this is the backstop for
+        // a declaration that reached the evaluator without passing through it.
+        let once = Trigger::new(TriggerKind::Once, WF);
+        let e = next_due_after(&once, T0).unwrap_err();
+        assert_eq!(e.code(), "TRG-E001");
+        assert!(e.to_string().contains("needs at_ms"), "{e}");
+
+        for kind in [TriggerKind::Interval, TriggerKind::Polling] {
+            let e = next_due_after(&Trigger::new(kind, WF), T0).unwrap_err();
+            assert_eq!(e.code(), "TRG-E001");
+            assert!(
+                e.to_string().contains(&format!("a {} trigger needs interval_secs", kind.as_str())),
+                "{e}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unrepresentable_instant_is_refused_for_a_cron() {
+        let e = next_due_after(&schedule("*/5 * * * *"), i64::MAX).unwrap_err();
+        assert_eq!(e.code(), "TRG-E006");
+        assert!(e.to_string().contains("is not a representable instant"), "{e}");
+    }
+
+    #[test]
     fn catchup_last_collapses_a_weekend_of_missed_occurrences() {
         // Fired Friday, evaluated Monday: a 5-minute schedule missed ~800
         // occurrences. Exactly one firing is owed, not eight hundred.

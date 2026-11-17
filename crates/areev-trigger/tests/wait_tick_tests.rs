@@ -56,6 +56,38 @@ fn an_acting_pass_ticks_the_waits_once_and_reports_them() {
     assert!(report.errors.iter().any(|e| e == "wait tick: chg-43: lease held"), "{report:?}");
 }
 
+/// A runtime whose tick itself fails — the run index unreadable, say.
+struct BrokenTick;
+
+impl RunStarter for BrokenTick {
+    fn start(&self, _workflow: &str, _run_id: &str, _input: Value) -> StartResult {
+        StartResult::Started
+    }
+
+    fn tick(&self) -> Result<areev_run::TickReport, String> {
+        Err("run index unreadable".into())
+    }
+}
+
+#[test]
+fn a_failed_tick_is_reported_and_does_not_fail_the_pass() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let m = Areev::open(dir.path().join("m.db").to_str().unwrap()).unwrap();
+    let ev = Evaluator {
+        facade: Arc::new(AreevFacade::new(m)),
+        clock: Arc::new(FixedClock::new(1_767_225_600_000)),
+        connector: None,
+        connector_code: None,
+        starter: Some(Arc::new(BrokenTick) as Arc<dyn RunStarter>),
+        credentials: Default::default(),
+        ns: "ops".into(),
+        principal: "user:local".into(),
+    };
+    let report = ev.run(&EvalOptions::default()).expect("the triggers' own work still stands");
+    assert!(report.waits_resumed.is_empty());
+    assert_eq!(report.errors, vec!["wait tick: run index unreadable".to_string()]);
+}
+
 #[test]
 fn a_dry_run_or_a_single_trigger_pass_does_not_tick() {
     let starter = Arc::new(TickingStarter::default());
