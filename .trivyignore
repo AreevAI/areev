@@ -1,0 +1,18 @@
+# Accepted findings for the container image scan (.github/workflows/docker.yml,
+# Trivy: HIGH/CRITICAL with a fix available fail the build).
+#
+# Every entry needs a reason, written on the line(s) above it:
+#   - why the finding does not apply to this image (the vulnerable code path is
+#     unreachable, the package is present but never executed, …) or why it is
+#     accepted for now;
+#   - who accepted it and when, plus the issue tracking its removal;
+#   - an expiry where Trivy supports one (`exp:YYYY-MM-DD` after the ID), so an
+#     acceptance is re-reviewed rather than becoming permanent.
+#
+# Example:
+#   # libfoo in the Debian base; the image never invokes it (no shell
+#   # pipeline reaches it). Accepted 2026-11-17, tracked in #NNN.
+#   CVE-2026-00000 exp:2027-02-17
+#
+# An entry with no reason is a finding hidden, not accepted — reviewers should
+# refuse it. Prefer fixing (rebuild on a patched base) over listing here.

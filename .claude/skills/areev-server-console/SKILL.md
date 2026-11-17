@@ -68,6 +68,9 @@ service". Replication is `areev stream`/`follow` over a directory.
 - **Body cap 1 MiB** — reject larger bodies before buffering.
 - **Origin check** — cross-origin **POSTs** are rejected (drive-by protection);
   a browser on another site must not be able to mutate a loopback console.
+- **`GET /healthz` is the only pre-auth route** — constant body, no store, no
+  principal; it must not count toward or reset the auth-failure streak. Do not
+  grow it into a status endpoint: anything it reports is reported to anyone.
 - **Read-only `GET /api/config`** reports effective config + file-vs-host
   reconciliation warnings — keep it read-only.
 - One request per connection; parse defensively (this is an untrusted-input

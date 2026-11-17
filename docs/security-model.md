@@ -26,7 +26,7 @@ top of that.
 | Library (`areev-*` crates) | in-process | the host program | n/a |
 | CLI (`areev`) | local process | the invoking user | filesystem perms |
 | MCP server (`serve --mcp`) | stdio | the parent process that spawned it | inherited |
-| Web console (`areev ui`) | HTTP/1.1 | **loopback only by default** | none, or `--token-env` (Basic/Bearer on every request) |
+| Web console (`areev ui`) | HTTP/1.1 | **loopback only by default** | none, or `--token-env` (Basic/Bearer on every request except the content-free `GET /healthz` probe) |
 
 ## Data at rest
 
@@ -289,6 +289,18 @@ top of that.
   proxy's job, the same division of labour as TLS termination and the IdP
   handshake. Direct connections — every connection on a console with no proxy
   — still brake.
+- **`GET /healthz` is the one route outside auth, in every mode** (#445). It
+  exists for container and orchestrator probes (the image's `HEALTHCHECK`, a
+  Kubernetes liveness probe), which hold no console token — and a probe that
+  needed one would put the secret on a command line or in a pod spec. It is
+  safe to leave open because it discloses nothing: the body is the constant
+  `{"ok":true}`, it touches no store, resolves no principal, and a 200 proves
+  only that the serial accept loop is answering. Only `GET` is open; any other
+  method on the path is guarded like every other request. Because its 200
+  proves no credential, a probe carrying a wrong token neither counts toward
+  the guessing brake nor **resets** it — otherwise one probe per nine guesses
+  would make the lockout unreachable. The DNS-rebinding `Host` check still
+  applies (probes from inside the container send a loopback `Host`).
 - **Trusted-header SSO** (`areev ui --sso-header NAME --sso-secret-env VAR`):
   an authenticating proxy does the OIDC/SAML handshake and forwards the
   identity in `NAME`; Areev honours that header **only** when the same request
