@@ -1,6 +1,8 @@
 # Grants, not gates — RBAC for Areev
 
-**Status:** superseded 2026-08-09 by
+> **Status:** Not built as written. It was superseded by [`cal-all-you-need-proposal.md`](cal-all-you-need-proposal.md). Its mechanism (principals, verbs, one enforcement chokepoint) shipped in 1.0.0 as CAL 1.3 authorization, with grants stored in the memory as `mg:permits` Facts rather than in a host file.
+
+**Original status:** superseded 2026-08-09 by
 [`cal-all-you-need-proposal.md`](cal-all-you-need-proposal.md)
 ("CAL is all you need"), same day it was written. The mechanism here
 (principals, verbs, enforcement chokepoint, phasing skeleton) survives inside

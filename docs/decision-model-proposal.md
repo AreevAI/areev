@@ -1,6 +1,8 @@
 # Decision backends — typed, calibrated judgments as an optional seam
 
-**Status:** proposal accepted 2026-09-25, implementation in progress on
+> **Status:** Partly built. Phases 0–4 shipped in 1.10.0: A1 (decision rerank), A2/A3/A5 (decision-guided assembly and the recall hook), A6 (MCP scores), and C1–C3 and D1 (tool-offer narrowing, the decision-guided fold, decision nodes, polling-trigger docs). E1–E3 from phase 5 shipped in the same release (the loop's GROUND/VERIFY, duplicate and contradiction sweeps, tool-failure cause). Not found in the code: C4 (decision-graded evalsets), B1–B4 (capture salience, `remember()` grounding, importer typing, anonymization refinement), F1 (the LoCoMo judge) and phase 7 (A4).
+
+**Original status:** proposal accepted 2026-09-25, implementation in progress on
 `feat/decision-backend`. This document is the contract every phase
 implements against; names, signatures, flags and env vars below are
 binding until a phase changes them here first.

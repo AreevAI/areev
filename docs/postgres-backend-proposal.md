@@ -1,6 +1,8 @@
 # Postgres Storage Backend — Proposal
 
-**Status: proposal (2026-08-07) — DECIDED AND BUILT.** The backend shipped as
+> **Status:** Built in 1.0.0 as `feature = "postgres"`, one memory = one schema. The single-writer framing below was superseded before that release: 1.0.0 already admitted concurrent writers (see [`postgres-backend-plan.md`](postgres-backend-plan.md), stage 2).
+
+**Original status: proposal (2026-08-07) — DECIDED AND BUILT.** The backend shipped as
 `crates/areev-store/src/pg.rs` behind `feature = "postgres"`, one memory = one
 schema, exercised on both backends by `areev-conformance`. Note the decision
 recorded here was later revised: this document's single-writer framing was

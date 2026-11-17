@@ -1,6 +1,8 @@
 # Areev for application builders — earning "Hermes for enterprise"
 
-**Status:** proposal. Written 2026-08-08. Companion to
+> **Status:** Partly built. E1 (RBAC) shipped in 1.0.0 as CAL 1.3 grants, in the form revised by [`cal-all-you-need-proposal.md`](cal-all-you-need-proposal.md). E2 (TLS) shipped for the console in 1.0.0 (`--tls-cert`/`--tls-key`), for the hub in 1.4.0 (the hub was later removed) and for Postgres in 1.6.3 (`postgres-tls`). E3 (SSO) shipped as trusted-header SSO in 1.0.0 and as native OIDC in 1.7.0 (see [`auth-proposal.md`](auth-proposal.md)). `changes_since` reached both bindings. Not built: E0's read-only `GET /api/graph/*` routes. The console server has no such route.
+
+**Original status:** proposal. Written 2026-08-08. Companion to
 [`areev-run-proposal.md`](areev-run-proposal.md) (the runtime); this document is
 the adoption plan and enterprise-capability roadmap that sits around it.
 Nothing here touches `areev-core`, the `.mg` format, or the CAL grammar.

@@ -1,6 +1,8 @@
 # Agent integration boundaries — code, models, and credentials
 
-**Status:** proposal. Written 2026-08-19, from a design review that modelled
+> **Status:** Built in 1.3.0. All three boundaries shipped: the host-side `executor_uri` pin (§1), anonymization at the model boundary (§2) and the per-tool egress broker (§3). Later releases extended them; for example, 1.5.0 added sandbox dispatch for code-carrying tools and gave them brokered credentials.
+
+**Original status:** proposal. Written 2026-08-19, from a design review that modelled
 three real workloads onto the existing primitives: invoice intake from an
 Outlook mailbox into Zoho Books, NDA review conducted over email, and
 contact-form lead enrichment into a CRM.

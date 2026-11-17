@@ -1,6 +1,8 @@
 # `areev run` — an agent runtime whose execution history is memory
 
-**Status:** proposal, **partially superseded — and now BUILT**. Written
+> **Status:** Built in 1.0.0: `areev-run-core` (the pure scheduler), `areev-run` (the driver), the `areev run` verbs, the MCP `areev_run_*` tools and the console Runs tab. [`run.md`](run.md) is the reference.
+
+**Original status:** proposal, **partially superseded — and now BUILT**. Written
 2026-08-07, after the graph-engineering audit (PR #56) landed the substrate this
 would sit on. **2026-08-19:** the runtime shipped — `areev-run-core` (the pure
 scheduler) and `areev-run` (the driver) are in the workspace, with the CLI

@@ -1,6 +1,8 @@
 # Per-subject crypto-erasure — proposal
 
-**Status:** proposal, written 2026-08-11. Deliberately design-first: this is
+> **Status:** Not built. This is a design only, and no per-subject keys exist in the code. The crypto-erasure that exists today covers a whole memory (its encryption key) and the anonymization vault (rotating `anon_key`). [`gdpr.md`](gdpr.md) lists per-subject crypto-erasure as design-stage.
+
+**Original status:** proposal, written 2026-08-11. Deliberately design-first: this is
 a key-management design, and key management is where storage systems lose
 data. No code until the open questions in §6 have answers.
 
