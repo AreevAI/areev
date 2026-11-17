@@ -3946,7 +3946,6 @@ impl Areev {
     /// The acting evaluator. Mirrors the CLI's construction, including the two
     /// deliberate `None`s documented on [`Areev::trigger_run`].
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     fn evaluator(
         &self,
         connector_cmd: Option<String>,
