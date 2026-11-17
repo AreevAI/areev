@@ -39,7 +39,10 @@ it goes out under npm's `preview` dist-tag and as a PyPI pre-release, so
   holds it; when no compatible fix exists, `deny.toml` takes a documented
   ignore with a tracking issue, never a bare ID.
 - Fuzz smoke: `cargo +nightly fuzz build`.
-- Confirm `THIRD-PARTY-NOTICES.md` is current (regenerate with `cargo about` if deps changed).
+- Confirm `THIRD-PARTY-NOTICES.md` is current: `python3 scripts/third_party_notices.py
+  --check` (CI's `notices` job asserts the same); if it fails, run it without
+  `--check` and commit. It is generated from the three shipped lockfiles, so
+  run it AFTER any lockfile bump in this release.
 
 ## 2. Version + changelog
 

@@ -56,6 +56,8 @@ cargo test --manifest-path areev-sandbox/Cargo.toml   # incl. the blessed-blob t
 python3 scripts/check_versions.py   # all five version sites agree
 python3 scripts/repo_stats.py       # regenerate the README quality metrics
 python3 scripts/repo_stats.py --check   # what CI asserts (2% drift tolerance)
+python3 scripts/third_party_notices.py         # regenerate THIRD-PARTY-NOTICES.md from the lockfiles
+python3 scripts/third_party_notices.py --check # what CI asserts (exact match; versions not rendered)
 cargo llvm-cov --workspace --lcov --output-path lcov.info   # then:
 python3 scripts/coverage.py --lcov lcov.info             # regenerate docs/coverage.json
 python3 scripts/coverage.py --lcov lcov.info --check      # what CI asserts (2-point tolerance)
@@ -76,7 +78,8 @@ docker build -t areev .             # the container image (postgres+tls features
 - CI (`.github/workflows/ci.yml`): test on ubuntu/macos/windows, clippy
   (`-D warnings`), MSRV build, `cargo doc`, coverage, Python (maturin + pytest),
   and Node (napi build + `node --test`), plus `versions` (every version site
-  agrees) and `stats` (the README quality figures still match the tree).
+  agrees), `stats` (the README quality figures still match the tree) and
+  `notices` (`THIRD-PARTY-NOTICES.md` still matches the shipped lockfiles).
   `security.yml` runs `cargo deny`. Still run tests locally before pushing.
 - **The README quotes generated numbers.** `scripts/repo_stats.py` emits
   `docs/repo-stats.{json,md,html}` and four SVGs the README embeds (the

@@ -532,7 +532,6 @@ impl Engine {
     /// and the live recommendation queue are honored in both modes; only the
     /// production caller proceeds into the mutating Phase 3 below.
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     fn analysis_pass<S: OmsSubstrate>(
         &self,
         sub: &S,
