@@ -1,6 +1,8 @@
 # CAL 1.3 — "CAL is all you need"
 
-**Status:** proposal, synthesized 2026-08-09 from a four-track deep review
+> **Status:** Built in 1.0.0 as CAL 1.3. That release had DCL (`GRANT`/`REVOKE`/`SHOW GRANTS`/`DESCRIBE PRINCIPAL`), the loop lifecycle statements, `FORGET SUBJECT` and `PURGE` (mandatory `BECAUSE`, with a Tier-2 audit Observation), `REMEMBER`, and the Wave 2–3 statements (`ENTITY … AT`, the run↔memory join, `MERGE`, `DESCRIBE STATS/INTEGRITY`). Not built: `DEFINE ROLE`, which §10 left conditional on its D9 design note. The "nothing built" line below predates 1.0.0.
+
+**Original status:** proposal, synthesized 2026-08-09 from a four-track deep review
 (coverage audit, DCL design, governance design, positioning/spec strategy);
 same-day consistency + adoption re-review applied (REMEMBER pulled to
 Wave 1, Tier-2 audit trail added, surface-consolidation policy added).

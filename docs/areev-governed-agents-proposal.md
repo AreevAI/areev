@@ -1,6 +1,8 @@
 # Areev governed agents — the parity program
 
-**Status:** proposal, design of record for the runtime + interop program.
+> **Status:** Partly built. The program shipped from 1.0.0 onward. 1.0.0 had the runtime, the replay contract, HITL, budgets and the ecosystem adapters. The host-side executor pin for code-carrying tools followed in 1.3.0, and later releases extended the rest. Spot-checking the waves against the code found two items not built: SCIM (Wave 6), and the `areev init --template run-demo` "10-minute proof" (Wave 1; `init` offers `blank|demo|coding-agent`). Wave 3's adapters have since moved to `AreevAI/areev-adapters`.
+
+**Original status:** proposal, design of record for the runtime + interop program.
 Written 2026-08-14 from a five-track research pass (substrate audit against
 `main` e0617cc; LangGraph 1.2.11 and CrewAI 1.15.16 verified against live
 docs/source; an August-2026 competitive map; a 10-framework

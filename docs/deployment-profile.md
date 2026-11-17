@@ -513,6 +513,81 @@ re-grant the runtime role on the new schema. The reverse migration is the
 same statements the other way. Opt-in throughout: a DSN without the
 parameter is the single-schema layout, byte for byte what it was.
 
+## Rolling back a minor release after a schema migration
+
+**Downgrading a migrated Postgres schema is not supported.** No build ships
+a down-migration, and no test runs an older binary against a schema a newer
+one stamped. Schema version steps can arrive in patch releases as well as
+minors (3 in 1.14.1, 4 in 1.14.2), so treat "this release moves
+`PG_SCHEMA_VERSION`" as the trigger, not the version number. `areev provision
+--check` before the upgrade reports a stamp in `pending` exactly when the new
+build will migrate. Plan the way back **before** the upgrade, because the only
+supported route is a restore.
+
+What an older binary does with a newer schema follows from how the stamp
+works (`crates/areev-store/src/pg.rs`). The open compares `meta.pg_schema`
+for **equality** with its own `PG_SCHEMA_VERSION`. It has no "newer than me"
+case, so a schema stamped 4 is just "not 2" to a 1.13 build:
+
+- **Read-write open, default `provision=auto`:** the older build reruns its
+  own bootstrap. Every statement is `IF NOT EXISTS` or idempotent, so the
+  bootstrap succeeds, leaves the newer tables and indexes in place, and
+  **rewrites the stamp down to its own version**. The open works. The newer
+  tables then go stale: a pre-1.14.2 build never writes or deletes
+  `tool_idx` rows, so Tool grains it writes are missing from the index, and
+  rows for grains it forgets stay behind. The file-level `tool_index` stamp
+  still reads current, so nothing heals that on its own.
+- **Read-write open with `?provision=never`:** refused with `STO-E008`
+  ("not stamped at schema version N"), with no DDL. The fix that message
+  points to, `areev provision` with the older binary, is the same
+  stamp-rewriting bootstrap as above.
+- **`--read-only` open:** works. It checks that the tables a read needs are
+  present and never consults the stamp.
+- **Grains the newer build wrote:** an older build reads only the grain
+  types it knows. `deserialize_blob` refuses an unknown type byte, and a
+  memory that holds one carries a `min_reader_version` stamp. A release that
+  adds a grain type cannot be rolled back over data that uses it.
+
+A rollback of the 1.14 steps (3 → 2, 4 → 3) therefore *runs*, but it is not
+supported. Every 1.14 step is additive (one index, one table). If you take
+that path anyway, keep it short. When you upgrade again, the newer build
+re-bootstraps and re-stamps, and then you **must run `areev reindex` once**
+to rebuild `tool_idx` from the grains. Until then the Loop's Tool counts and
+evalset pins are wrong for the rolled-back window.
+
+The supported path is a restore. Pick the backup before the upgrade:
+
+1. **`pg_dump` the memory before the first new-build open** (and the
+   metadata schema too, under the paired layout: `pg_dump -n <memory> -n
+   <metadata>`). To roll back, drop the migrated schema(s), restore the
+   dump, and point the older binary at it. Writes made after the upgrade
+   are lost unless you also do step 3. This is the only path that keeps
+   everything: telemetry, trigger state, audit-chain heads and other
+   host-local `meta` rows that never travel in a bundle.
+2. **Postgres point-in-time recovery** (your provider's PITR, or WAL
+   archiving) to a moment before the upgrade. It is the same as a dump
+   restore, at whatever granularity your provider offers. It also loses
+   later writes.
+3. **Carry the post-upgrade writes across as a bundle.** Note the op cursor
+   before upgrading (`areev bundle --db <dsn> --out pre.mgb` prints `next
+   --since <N>`). To roll back, export what the newer build wrote with
+   `areev bundle --db <dsn> --out delta.mgb --since <N>`, restore the
+   backup from step 1 or 2, then `areev import --db <restored-dsn> --bundle
+   delta.mgb` **with the older binary**. A bundle is grains plus the
+   replicable registry rows (saved queries, templates, retention, anon,
+   holds), not tables, so it does not depend on the schema version. The
+   older binary refuses a grain type it does not know rather than skipping
+   it, so this works only when the newer release added no grain types.
+   With no step-1 backup at all, a full `areev bundle` (no `--since`)
+   imported into a fresh schema by the older binary rebuilds the memory
+   from its grains. That loses everything outside the bundle listed in
+   step 1.
+
+On the embedded backend the same rule applies, with a file instead of a
+schema: copy the `.db` file and its `.blobs` directory before the upgrade
+(after a checkpoint, with no writer open), and roll back by restoring the
+copy.
+
 ## Async hosts
 
 `Areev` is **blocking and drives its own Tokio runtime** — a current-thread

@@ -1,6 +1,8 @@
 # Areev Loop — self-improving agents with governance and guardrails, on Areev
 
-**Status**: proposal — for team review. **Date**: 2026-07-17. *(Historical:
+> **Status:** Built in 1.0.0: the Areev Loop engine (`areev-loop` + `areev-loop-adapter`), its four gates, the recommendation lifecycle, the LLM verifier, outcome measurement, and §5.7's read-only token-less console. Items the proposal itself marks deferred are not built, such as the dead-query analyzer and the SYNTHESIZE stage. [`loop.md`](loop.md) is the reference.
+
+**Original status**: proposal — for team review. **Date**: 2026-07-17. *(Historical:
 written under the engine's original name; the text was updated when the
 engine was renamed Areev Loop in v1.1.1.)*
 **Product**: Areev Loop — the self-improvement layer of the Areev

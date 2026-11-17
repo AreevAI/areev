@@ -214,10 +214,14 @@ mirrors are honest about loss: `best-effort` mode counts every dropped event,
 `guaranteed` mode backpressures and never drops (the only mode a compliance
 story may cite).
 
-Both adapters live outside this repo and are **not under active
-development** — 1.0.0 is on PyPI and works against current Areev, but new
-releases wait on demand. If you want either moved forward, say so in an
-[issue](https://github.com/AreevAI/areev/issues) and we will un-park them.
+Both adapters moved out of this repo on 2026-08-23 to
+`AreevAI/areev-adapters`. They depend only on the published `areev`
+package, so they version against LangGraph and CrewAI rather than against
+the core. That repo is currently **private and parked**. Version 1.0.0 of
+both adapters stays on PyPI and still works with the published `areev`,
+but no new releases are planned until they are un-parked. If you want
+either moved forward, say so in an
+[issue](https://github.com/AreevAI/areev/issues).
 
 ## Rust
 
