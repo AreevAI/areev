@@ -1111,7 +1111,6 @@ impl Engine {
     /// **and** clears the confidence floor. Any failed call drops the whole LLM
     /// contribution for the run (safe default), never the run.
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     fn verify_drafts<S: SubstrateRead>(
         &self,
         sub: &S,
