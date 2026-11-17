@@ -33,7 +33,8 @@ files, the trigger heartbeat, and the AWS/GCP/Azure/Kubernetes mappings — is
 
 1. **Token auth on every shared surface.** `areev ui --token-env VAR`
    requires the token on every request (browser Basic prompt or
-   `Authorization: Bearer`).
+   `Authorization: Bearer`) — except `GET /healthz`, a content-free liveness
+   probe for orchestrators ([security-model.md](security-model.md)).
    Tokens come from the environment — never the command line, never a
    file in the repo.
 2. **TLS at a terminating proxy, or native TLS where there's nowhere to put

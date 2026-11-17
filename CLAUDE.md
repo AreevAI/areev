@@ -334,7 +334,8 @@ grain selection, dynamic planning, do/don't) is
 - **areev-server**: hand-rolled std-only HTTP/1.1, one request per
   connection. `ui` console binds loopback and is **unauthenticated by
   default**; `with_auth(token)` (CLI `areev ui --token-env VAR`) requires the
-  token on **every** request — browsers via the native HTTP Basic prompt (any
+  token on **every** request (sole exception: the content-free `GET /healthz`
+  container probe) — browsers via the native HTTP Basic prompt (any
   username, password = token), scripts via `Authorization: Bearer` — and a 401
   carries `WWW-Authenticate: Basic` so browsers prompt. Without `auth_all`
   the token guards mutating requests only; reads stay open. Per-principal

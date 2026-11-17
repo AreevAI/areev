@@ -6,7 +6,8 @@ Web console server for Areev.
 inspection console (`areev ui`) — a JSON API plus a single embedded HTML page
 for browsing memories, exploring the graph, and running queries — built on a
 deliberately minimal std-only HTTP/1.1 server that binds loopback with no auth.
-`areev ui --token-env VAR` requires a shared token on every request, and
+`areev ui --token-env VAR` requires a shared token on every request (except
+`GET /healthz`, a content-free liveness probe), and
 `--auth FILE` binds a per-principal credential instead. It is an inspection
 surface, not part of the recall hot path.
 

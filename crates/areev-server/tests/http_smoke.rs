@@ -217,6 +217,41 @@ fn console_auth_guards_every_request() {
     assert!(g("Authorization: Bearer nope\r\n").contains("401"), "wrong bearer → 401");
 }
 
+/// `GET /healthz` is the container liveness probe (#445): it answers 200 with a
+/// constant body even on a console-auth (`auth_all`) server, so a Docker
+/// HEALTHCHECK or k8s probe needs no token — and it carries nothing a token
+/// would protect. Only GET is open; the rest of the surface stays guarded.
+#[test]
+fn healthz_answers_without_credentials_and_says_nothing() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("health.db");
+    let m = Areev::open(db.to_str().unwrap()).unwrap();
+    let facade = AreevFacade::with_session(m, Some("caller".into()), None);
+    let server = UiServer::new(facade, "health.db".into()).with_auth("opensesame".into());
+    let listener = UiServer::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    std::thread::spawn(move || server.serve(listener));
+
+    let raw = |r: &str| {
+        let mut s = TcpStream::connect(&addr).unwrap();
+        s.write_all(r.as_bytes()).unwrap();
+        let mut out = String::new();
+        s.read_to_string(&mut out).unwrap();
+        out
+    };
+    let ok = raw("GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    assert!(ok.starts_with("HTTP/1.1 200"), "{ok}");
+    assert!(ok.ends_with(r#"{"ok":true}"#), "constant body, nothing else: {ok}");
+    // A bare HTTP/1.0 probe (no Host) — what a minimal shell probe sends.
+    let bare = raw("GET /healthz HTTP/1.0\r\n\r\n");
+    assert!(bare.starts_with("HTTP/1.1 200"), "{bare}");
+    // Only the GET is open: everything else still needs the token.
+    let post = raw("POST /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    assert!(post.starts_with("HTTP/1.1 401"), "{post}");
+    let stats = raw("GET /api/stats HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    assert!(stats.starts_with("HTTP/1.1 401"), "{stats}");
+}
+
 /// DNS-rebinding defense: the default (loopback) console rejects any request
 /// whose `Host` header is not loopback — this is what stops a drive-by web
 /// page (which rebinds its own domain to 127.0.0.1) from reading memory over
