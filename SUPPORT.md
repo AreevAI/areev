@@ -3,7 +3,8 @@
 Thanks for using **Areev** — an embedded memory engine for AI agents, and the
 reference implementation of the Open Memory Spec (OMS).
 
-Areev is at **`1.0.0`** and under active development. The `.mg` format, CAL
+Support covers the latest `1.x` release (the current version is in
+[`CHANGELOG.md`](CHANGELOG.md)), which is under active development. The `.mg` format, CAL
 syntax, and error codes are stable contracts (breaking changes would be a major
 version bump). If something is unclear or broken, please reach out — feedback is
 especially valuable.

@@ -1,6 +1,8 @@
 # Identity for the one networked surface — an auth proposal
 
-**Status:** **implemented** 2026-08-27 (A0–A3, same day it was written).
+> **Status:** Built in 1.7.0. All four phases shipped: A0 (the approval trust floor, `--sso-approvals`), A1 (the token model, `areev auth mint|list|revoke`), A2 (SSO hardening, including `--sso-groups-header`) and A3 (native OIDC behind the non-default `oidc` feature).
+
+**Original status:** **implemented** 2026-08-27 (A0–A3, same day it was written).
 Supersedes
 [`areev-enterprise-proposal.md`](areev-enterprise-proposal.md) §3.3 (E3, "SSO
 — trusted-header first, OIDC second"), whose v0 has since shipped and whose

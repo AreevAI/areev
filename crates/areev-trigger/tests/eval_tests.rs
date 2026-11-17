@@ -1933,3 +1933,443 @@ fn a_composite_whose_run_refuses_keeps_its_settled_correlation_key() {
         st.partials
     );
 }
+
+// ---- refusal and edge paths ----------------------------------------------
+
+/// An evaluator over `rig` with a chosen connector and starter — the shape
+/// most of the edge cases below need, without restating eight fields.
+fn evaluator_with(
+    rig: &Rig,
+    connector: Option<Arc<dyn HostToolExecutor>>,
+    starter: Option<Arc<dyn RunStarter>>,
+) -> Evaluator {
+    Evaluator {
+        facade: Arc::clone(&rig.facade),
+        clock: Arc::clone(&rig.clock) as Arc<dyn Clock>,
+        connector,
+        connector_code: None,
+        starter,
+        credentials: Default::default(),
+        ns: NS.into(),
+        principal: "user:test".into(),
+    }
+}
+
+/// Pull the operator's brake (`paused`) on a trigger, or release it, through
+/// the same compare-and-swap row the evaluator itself writes.
+fn set_paused(rig: &Rig, hash: &str, paused: bool) {
+    rig.facade
+        .with_store(|m| {
+            let (mut st, raw) = match m.trigger_state(hash)? {
+                Some((st, raw)) => (st, Some(raw)),
+                None => (areev_store::TriggerState::default(), None),
+            };
+            st.paused = paused;
+            assert!(m.put_trigger_state(hash, raw.as_deref(), &st)?, "the CAS must win");
+            Ok::<(), areev_core::error::AreevError>(())
+        })
+        .unwrap();
+}
+
+/// A starter that refuses every run, as a runtime that is down would.
+struct RefuseAll;
+impl RunStarter for RefuseAll {
+    fn start(&self, _workflow: &str, run_id: &str, _input: Value) -> StartResult {
+        StartResult::Failed(format!("refused {run_id}"))
+    }
+}
+
+/// A starter whose runtime already has every run — another node won the race.
+struct AlreadyRunning;
+impl RunStarter for AlreadyRunning {
+    fn start(&self, _workflow: &str, _run_id: &str, _input: Value) -> StartResult {
+        StartResult::Duplicate
+    }
+}
+
+#[test]
+fn a_delivery_naming_no_trigger_is_refused() {
+    let rig = Rig::new();
+    let err = rig.evaluator(None).deliver("ffff0000", json!({ "id": "x" })).unwrap_err();
+    assert_eq!(err.code(), "TRG-E001");
+    assert!(err.to_string().contains("no trigger matching 'ffff0000'"), "{err}");
+}
+
+#[test]
+fn only_push_triggers_accept_a_delivery() {
+    // A clocked or polling trigger fires from `trigger run`; accepting a
+    // delivery for one would start a run outside its own cadence.
+    let rig = Rig::new();
+    let h = rig.declare(Trigger::new(TriggerKind::Interval, WF).interval_secs(60));
+    let err = rig.evaluator(None).deliver(&h, json!({ "id": "x" })).unwrap_err();
+    assert_eq!(err.code(), "TRG-E001");
+    let msg = err.to_string();
+    assert!(msg.contains("is a interval trigger"), "{msg}");
+    assert!(msg.contains("only webhook and manual"), "{msg}");
+    assert!(rig.starter.started.lock().unwrap().is_empty(), "nothing may start");
+}
+
+#[test]
+fn a_disabled_or_paused_push_trigger_refuses_a_delivery() {
+    let rig = Rig::new();
+    let disabled =
+        rig.declare(Trigger::new(TriggerKind::Webhook, WF).dedup_key("/id").enabled(false));
+    let err = rig.evaluator(None).deliver(&disabled, json!({ "id": "x" })).unwrap_err();
+    assert_eq!(err.code(), "TRG-E001");
+    assert!(err.to_string().contains("is disabled"), "{err}");
+
+    // `paused` is the operator's brake, distinct from the author's `enabled`.
+    let paused = rig.declare(Trigger::new(TriggerKind::Manual, WF2).dedup_key("/id"));
+    set_paused(&rig, &paused, true);
+    let ev = rig.evaluator(None);
+    let err = ev.deliver(&paused, json!({ "id": "x" })).unwrap_err();
+    assert_eq!(err.code(), "TRG-E001");
+    assert!(err.to_string().contains("is paused"), "{err}");
+    assert!(rig.starter.started.lock().unwrap().is_empty(), "nothing may start");
+
+    // Released, the same delivery goes through.
+    set_paused(&rig, &paused, false);
+    let report = ev.deliver(&paused, json!({ "id": "x" })).unwrap();
+    assert_eq!(report.runs_started, 1, "{:?}", report.errors);
+}
+
+#[test]
+fn a_delivery_without_a_runtime_is_ingested_not_reported_as_a_run() {
+    let rig = Rig::new();
+    let h = rig.declare(Trigger::new(TriggerKind::Webhook, WF).dedup_key("/id"));
+    let ev = evaluator_with(&rig, None, None);
+    let report = ev.deliver(&h, json!({ "id": "inv-1" })).unwrap();
+    assert_eq!(report.ingested, 1);
+    assert_eq!(report.runs_started, 0, "no runtime, so no run may be claimed");
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+}
+
+#[test]
+fn a_delivery_whose_run_refuses_reports_the_refusal() {
+    let rig = Rig::new();
+    let h = rig.declare(Trigger::new(TriggerKind::Webhook, WF).dedup_key("/id"));
+    let ev = evaluator_with(&rig, None, Some(Arc::new(RefuseAll)));
+    let report = ev.deliver(&h, json!({ "id": "inv-1" })).unwrap();
+    assert_eq!(report.runs_started, 0);
+    assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+    assert!(report.errors[0].starts_with("refused "), "{:?}", report.errors);
+}
+
+#[test]
+fn a_single_trigger_pass_leaves_the_others_alone() {
+    let rig = Rig::new();
+    let target = rig.declare(Trigger::new(TriggerKind::Interval, WF).interval_secs(60));
+    let other = rig.declare(Trigger::new(TriggerKind::Interval, WF2).interval_secs(60));
+    let only = EvalOptions { only: Some(target.clone()), ..opts() };
+    let r = rig.evaluator(None).run(&only).unwrap();
+    assert_eq!(r.claimed, 1);
+    assert_eq!(r.skipped_not_due, 0, "the other trigger is not considered at all");
+    assert_eq!(rig.state(&target).last_fired_at, Some(T0));
+    assert_eq!(rig.state(&other).last_fired_at, None, "--only must not fire the others");
+}
+
+#[test]
+fn a_paused_trigger_is_counted_apart_and_does_not_fire() {
+    let rig = Rig::new();
+    let h = rig.declare(Trigger::new(TriggerKind::Interval, WF).interval_secs(60));
+    set_paused(&rig, &h, true);
+    let ev = rig.evaluator(None);
+    let r = ev.run(&opts()).unwrap();
+    assert_eq!(r.skipped_paused, 1);
+    assert_eq!(r.claimed, 0);
+    assert_eq!(r.skipped_not_due, 0, "paused is not the same as waiting its turn");
+    assert_eq!(rig.state(&h).last_fired_at, None);
+
+    set_paused(&rig, &h, false);
+    assert_eq!(ev.run(&opts()).unwrap().claimed, 1, "released, it is due at once");
+}
+
+#[test]
+fn a_run_the_runtime_already_has_is_a_duplicate_not_a_new_run() {
+    let rig = Rig::new();
+    rig.declare(Trigger::new(TriggerKind::Interval, WF).interval_secs(60));
+    let ev = evaluator_with(&rig, None, Some(Arc::new(AlreadyRunning)));
+    let r = ev.run(&opts()).unwrap();
+    assert_eq!(r.duplicates, 1);
+    assert_eq!(r.runs_started, 0);
+    assert!(r.errors.is_empty(), "a duplicate is the idempotency guarantee, not an error");
+    assert!(r.cursor_held.is_empty());
+}
+
+#[test]
+fn several_refused_items_are_summarized_in_one_last_error() {
+    let rig = Rig::new();
+    let h = rig.declare(
+        Trigger::new(TriggerKind::Polling, WF).connector("src").interval_secs(60).dedup_key("/id"),
+    );
+    let conn = FakeConnector::new(vec![
+        ok(json!([]), Some("c1"), false),
+        ok(
+            json!([
+                { "id": "1", "payload": { "id": "1" } },
+                { "id": "2", "payload": { "id": "2" } }
+            ]),
+            Some("c2"),
+            false,
+        ),
+    ]);
+    let ev =
+        evaluator_with(&rig, Some(conn as Arc<dyn HostToolExecutor>), Some(Arc::new(RefuseAll)));
+    ev.run(&opts()).unwrap(); // seed
+    rig.clock.advance(60_000);
+    let r = ev.run(&opts()).unwrap();
+    assert_eq!(r.errors.len(), 2, "{:?}", r.errors);
+    let st = rig.state(&h);
+    let last = st.last_error.as_deref().unwrap();
+    assert!(last.starts_with("2 item(s) failed to start: "), "{last}");
+    assert_eq!(last.matches("refused ").count(), 2, "both reasons kept: {last}");
+    assert_eq!(st.cursor.as_deref(), Some("c1"), "the cursor is held");
+}
+
+#[test]
+fn a_response_that_is_not_a_poll_response_fails_the_poll() {
+    let rig = Rig::new();
+    let h = rig.declare(
+        Trigger::new(TriggerKind::Polling, WF).connector("src").interval_secs(60).dedup_key("/id"),
+    );
+    let conn = FakeConnector::new(vec![ExecResult::Ok(json!({ "items": "not a list" }))]);
+    let r = rig.evaluator(Some(conn as Arc<dyn HostToolExecutor>)).run(&opts()).unwrap();
+    assert_eq!(r.errors.len(), 1, "{:?}", r.errors);
+    assert!(r.errors[0].starts_with("TRG-E004"), "{:?}", r.errors);
+    assert!(r.errors[0].contains("not a poll response"), "{:?}", r.errors);
+    let st = rig.state(&h);
+    assert_eq!(st.consecutive_failures, 1, "counted for backoff");
+    assert!(st.cursor.is_none(), "a garbled page must not seed a cursor");
+}
+
+#[test]
+fn a_malformed_egress_allowlist_fails_the_poll_before_the_connector_runs() {
+    let rig = Rig::new();
+    rig.declare(
+        Trigger::new(TriggerKind::Polling, WF)
+            .connector("src")
+            .interval_secs(60)
+            .dedup_key("/id")
+            .config(json!({ "int:allowed_outbound_hosts": "https://api.example.com" })),
+    );
+    let conn = FakeConnector::new(vec![]);
+    let ev = rig.evaluator(Some(Arc::clone(&conn) as Arc<dyn HostToolExecutor>));
+    let r = ev.run(&opts()).unwrap();
+    assert_eq!(r.errors.len(), 1, "{:?}", r.errors);
+    assert!(r.errors[0].starts_with("TRG-E001"), "{:?}", r.errors);
+    assert!(r.errors[0].contains("must be an array"), "{:?}", r.errors);
+    assert!(conn.requests.lock().unwrap().is_empty(), "no broker, no connector call");
+}
+
+#[test]
+fn the_per_response_blob_budget_is_enforced_across_items() {
+    // Each item is within its own budget; together they overrun the
+    // response's. The whole poll refuses rather than keeping the first item.
+    let rig = Rig::new();
+    let h = rig.declare(
+        Trigger::new(TriggerKind::Polling, WF).connector("gmail").interval_secs(60).dedup_key("/id"),
+    );
+    let item = |id: &str| {
+        // "Zm9vYmFy" is six bytes decoded.
+        json!({ "id": id, "payload": { "id": id, "a": { "blob": "@0" } },
+                "blobs": [{ "b64": "Zm9vYmFy" }] })
+    };
+    let conn = FakeConnector::new(vec![
+        ok(json!([]), Some("c1"), false),
+        ok(json!([item("m-1"), item("m-2")]), Some("c2"), false),
+    ]);
+    let ev = rig_polling_evaluator(&rig, conn);
+    ev.run(&opts()).unwrap();
+    rig.clock.advance(60_000);
+    let budget =
+        EvalOptions { max_blob_bytes_per_item: 10, max_blob_bytes_per_response: 8, ..opts() };
+    let r = ev.run(&budget).unwrap();
+    assert_eq!(r.ingested, 0);
+    assert!(
+        r.errors.iter().any(|e| e.contains("TRG-E011") && e.contains("per-response budget")),
+        "{:?}",
+        r.errors
+    );
+    assert_eq!(rig.state(&h).cursor.as_deref(), Some("c1"));
+}
+
+#[test]
+fn numeric_and_boolean_context_bindings_reach_the_query() {
+    // A JSON number binds as a CAL number and a JSON boolean as a CAL
+    // boolean — not as their string spellings, which a numeric comparison
+    // would refuse (CAL-E020).
+    let rig = Rig::new();
+    rig.facade
+        .with_store(|m| {
+            m.add(
+                &areev_core::types::Fact::new("sure", "mg:kind", "invoice-hi")
+                    .confidence(0.9)
+                    .namespace(NS)
+                    .created_at(T0),
+            )?;
+            m.add(
+                &areev_core::types::Fact::new("unsure", "mg:kind", "invoice-lo")
+                    .confidence(0.2)
+                    .namespace(NS)
+                    .created_at(T0),
+            )
+        })
+        .unwrap();
+    let ex = areev_cal::CalExecutor::new(areev_cal::CalExecutorConfig::default());
+    for def in [
+        r#"DEFINE QUERY "confident"($min) AS { RECALL facts WHERE confidence >= $min AND namespace = "ops" }"#,
+        r#"DEFINE QUERY "with_contested"($flag) AS { RECALL facts WHERE contradicted = $flag AND namespace = "ops" }"#,
+    ] {
+        ex.execute(def, rig.facade.as_ref()).unwrap();
+    }
+
+    let deliver = |spec: &str, payload: Value| -> Value {
+        let h = rig.declare(Trigger::new(TriggerKind::Webhook, WF).dedup_key("/id").context_query(spec));
+        let starter = Arc::new(CapturingStarter::default());
+        let ev = evaluator_with(&rig, None, Some(Arc::clone(&starter) as Arc<dyn RunStarter>));
+        let report = ev.deliver(&h, payload).unwrap();
+        assert_eq!(report.runs_started, 1, "{spec}: {:?}", report.errors);
+        let input = starter.inputs.lock().unwrap()[0].clone();
+        input["context"].clone()
+    };
+
+    let ctx = deliver("confident($min = /min)", json!({ "id": "a", "min": 0.5 })).to_string();
+    assert!(ctx.contains("invoice-hi"), "the confident fact is selected: {ctx}");
+    assert!(!ctx.contains("invoice-lo"), "the number filtered: {ctx}");
+
+    let ctx = deliver("with_contested($flag = /flag)", json!({ "id": "b", "flag": true })).to_string();
+    assert!(ctx.contains("invoice-hi") && ctx.contains("invoice-lo"), "{ctx}");
+}
+
+#[test]
+fn a_null_context_binding_refuses_the_firing_and_names_it() {
+    let rig = Rig::new();
+    let ex = areev_cal::CalExecutor::new(areev_cal::CalExecutorConfig::default());
+    ex.execute(
+        r#"DEFINE QUERY "by_subject"($session) AS { RECALL facts WHERE subject = $session AND namespace = "ops" }"#,
+        rig.facade.as_ref(),
+    )
+    .unwrap();
+    let h = rig.declare(
+        Trigger::new(TriggerKind::Webhook, WF)
+            .dedup_key("/id")
+            .context_query("by_subject($session = /session)"),
+    );
+    let starter = Arc::new(CapturingStarter::default());
+    let ev = evaluator_with(&rig, None, Some(Arc::clone(&starter) as Arc<dyn RunStarter>));
+    let report = ev.deliver(&h, json!({ "id": "m-1", "session": null })).unwrap();
+    assert_eq!(report.runs_started, 0);
+    assert!(
+        report.errors.iter().any(|e| e.contains("must land on a scalar, found null")),
+        "{:?}",
+        report.errors
+    );
+    assert!(starter.inputs.lock().unwrap().is_empty(), "no run without its context");
+}
+
+#[test]
+fn a_grain_forgotten_before_the_pass_does_not_fire_a_memory_trigger() {
+    let rig = Rig::new();
+    rig.declare(memory_trigger(r#"object = "invoice""#));
+    let ev = rig.evaluator(None);
+    ev.run(&opts()).unwrap(); // seed at the head
+
+    let gone =
+        areev_core::types::Fact::new("gone", "mg:kind", "invoice").namespace(NS).created_at(T0);
+    let kept =
+        areev_core::types::Fact::new("kept", "mg:kind", "invoice").namespace(NS).created_at(T0);
+    rig.facade
+        .with_store(|m| {
+            let g = m.add(&gone)?;
+            m.add(&kept)?;
+            m.forget(&g)
+        })
+        .unwrap();
+
+    let r = ev.run(&opts()).unwrap();
+    assert!(r.errors.is_empty(), "a vanished grain is not an error: {:?}", r.errors);
+    assert_eq!(r.items, 1, "only the surviving grain is an item");
+    assert_eq!(r.runs_started, 1);
+}
+
+#[test]
+fn a_member_item_without_the_correlation_field_cannot_join_the_gate() {
+    // A numeric correlation value is a key like any other; an item that
+    // carries no value at all is dropped rather than pooled under an
+    // arbitrary key, where it would pair with unrelated work.
+    let rig = Rig::new();
+    let src = rig.declare(
+        Trigger::new(TriggerKind::Polling, WF).connector("src").interval_secs(60).dedup_key("/id"),
+    );
+    let tick = rig.declare(Trigger::new(TriggerKind::Interval, WF).interval_secs(60));
+    let cond = areev_trigger::predicate::parse_predicate("src = true AND tick = true").unwrap();
+    let composite = rig.declare(
+        Trigger::new(TriggerKind::Composite, WF2)
+            .member("src", &src)
+            .member("tick", &tick)
+            .predicate(areev_trigger::predicate::to_value(&cond).unwrap())
+            .correlate("/thread"),
+    );
+    let conn = FakeConnector::new(vec![
+        ok(json!([]), Some("c1"), false),
+        ok(json!([{ "id": "1", "payload": { "id": "1", "thread": 7 } }]), Some("c2"), false),
+    ]);
+    let ev = rig.evaluator(Some(conn as Arc<dyn HostToolExecutor>));
+    ev.run(&opts()).unwrap(); // seed src; tick's `{at_ms}` item has no /thread
+    rig.clock.advance(60_000);
+    let r = ev.run(&opts()).unwrap();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+
+    let st = rig.state(&composite);
+    let keys: Vec<&String> = st.partials.keys().collect();
+    assert_eq!(keys, vec!["7"], "the number is the key; the uncorrelated item is dropped");
+    assert_eq!(st.partials["7"].members.keys().collect::<Vec<_>>(), vec!["src"]);
+    assert!(
+        !rig.starter.workflows.lock().unwrap().iter().any(|w| w == WF2),
+        "tick never correlated, so the AND gate must not fire"
+    );
+}
+
+/// A composite whose members fired while it was paused, resumed `delay_ms`
+/// later with a one-second window. Returns how many runs its OWN plan got.
+fn composite_resumed_after(delay_ms: i64) -> usize {
+    let rig = Rig::new();
+    // Two distinct members (different intervals, so different addresses),
+    // both due on the first pass.
+    let a = rig.declare(Trigger::new(TriggerKind::Interval, WF).interval_secs(3600));
+    let b = rig.declare(Trigger::new(TriggerKind::Interval, WF).interval_secs(7200));
+    let cond = areev_trigger::predicate::parse_predicate("a = true OR b = true").unwrap();
+    // Correlated on the occurrence instant both members carry, so the gate's
+    // item has an identity of its own to mint a run id from.
+    let composite = rig.declare(
+        Trigger::new(TriggerKind::Composite, WF2)
+            .member("a", &a)
+            .member("b", &b)
+            .predicate(areev_trigger::predicate::to_value(&cond).unwrap())
+            .correlate("/at_ms")
+            .window_ms(1_000),
+    );
+    set_paused(&rig, &composite, true);
+    let ev = rig.evaluator(None);
+    let r = ev.run(&opts()).unwrap();
+    assert_eq!(r.skipped_paused, 1, "{r:?}");
+    assert!(
+        rig.state(&composite).partials.contains_key(&T0.to_string()),
+        "members still record against a paused gate"
+    );
+
+    rig.clock.advance(delay_ms);
+    set_paused(&rig, &composite, false);
+    let r = ev.run(&opts()).unwrap();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    let runs = rig.starter.workflows.lock().unwrap().iter().filter(|w| *w == WF2).count();
+    runs
+}
+
+#[test]
+fn a_partial_match_past_its_window_does_not_fire_on_resume() {
+    // Positive control first: resumed inside the window, the gate fires — so
+    // the zero below is the window at work, not a gate that never could.
+    assert_eq!(composite_resumed_after(500), 1, "inside the window the gate fires");
+    assert_eq!(composite_resumed_after(2_000), 0, "a stale partial must not satisfy the gate");
+}

@@ -1,6 +1,8 @@
 # Areev for adaptive agents — the runtime, the governance plane, and the distillation path
 
-**Status:** proposal, 2026-08-11. **Partially built:** the runtime and the
+> **Status:** Built. The runtime, the governance plane, replay (`areev run shadow`, `areev eval`) and the governed corpus (`areev corpus`) shipped in 1.0.0. The Phase E tuning seam (`areev tune`, the `adapter_intake` analyzer, gated adapter promotion) shipped in 1.5.0. Areev itself still never trains, by design: the trainer is a host-supplied command. The original status below predates 1.5.0, and its claim that the distillation path is unbuilt is no longer true.
+
+**Original status:** proposal, 2026-08-11. **Partially built:** the runtime and the
 governance plane shipped (`areev-run-core`/`areev-run`, the loop's gates and
 recommendation lifecycle). The distillation / small-language-model path in §5
 onward remains unbuilt. Supersedes and absorbs

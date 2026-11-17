@@ -81,6 +81,55 @@ Tool and connector scripts run via `/bin/sh` *inside* the container — mount
 them (read-only) and point `$AREEV_RUN_TOOL_CMD` / `$AREEV_RUN_CONNECTOR_CMD`
 at the mounted path, not at a path on the host that rendered the config.
 
+## Health checks
+
+The image declares a `HEALTHCHECK` ([`docker/healthcheck.sh`](../docker/healthcheck.sh),
+every 30 s, 5 s timeout, 3 retries) whose behaviour follows the role:
+
+- **`ui`** — probes `GET /healthz` on the port the container's own `--addr`
+  names (default `7437`). The route is answered **before auth in every mode**,
+  `--token-env` and `--auth` included, so the probe needs no secret; it is
+  safe to leave open because the body is the constant `{"ok":true}` — no store
+  read, no principal, nothing a token would protect
+  ([security-model.md](security-model.md)). A 200 means the console's accept
+  loop is answering. Under `--tls-cert` the probe can only check that the port
+  accepts connections (it does not speak TLS).
+- **every other role** (`heartbeat`, a one-shot verb, the default `--help`)
+  has no endpoint and reports **healthy** — the check is a no-op there, never
+  a false "unhealthy". A heartbeat's liveness is its process; give it a
+  restart policy.
+
+The probe client is bash's built-in `/dev/tcp`: `debian:bookworm-slim` ships
+neither curl nor wget, and the image adds no package for a health check. On
+platforms with their own probes, point them at the same route — a Kubernetes
+`httpGet` liveness probe on `/healthz`, an ECS/Container Apps health check
+via `CMD areev-healthcheck`. Probes from outside the container send a
+non-loopback `Host`, which the console accepts only under `--allow-remote` —
+already required for any container bind.
+
+## Image scanning
+
+CI ([`.github/workflows/docker.yml`](../.github/workflows/docker.yml)) builds
+the image and scans it with [Trivy](https://trivy.dev) on every change to the
+packaging and weekly on a schedule (a new Debian advisory changes the result
+without any commit). The build **fails on any HIGH or CRITICAL finding that
+has a fix available** — `ignore-unfixed`, because an advisory Debian has not
+patched yet cannot be fixed by rebuilding. Accepted findings live in
+[`.trivyignore`](../.trivyignore), one ID per entry, each with a written reason
+and preferably an `exp:` date so the acceptance is re-reviewed; an entry
+without a reason is a hidden finding, not an accepted one.
+
+The scan covers the OS packages of the runtime image. The Rust dependency
+tree is checked separately and more precisely by `cargo deny` in
+`security.yml` (the release binaries carry no embedded dependency manifest
+for an image scanner to read). To reproduce locally:
+
+```bash
+docker build -t areev .
+trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
+  --ignorefile .trivyignore areev
+```
+
 ## One memory, one writer — what it means in containers
 
 The embedded backend takes an **exclusive OS file lock** (inside the pinned

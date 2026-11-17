@@ -143,6 +143,7 @@ mod tests {
             TriggerError::EgressRefused { trigger: "t".into(), host: "h".into() },
             TriggerError::Storage { detail: "d".into() },
             TriggerError::BlobContract { trigger: "t".into(), detail: "d".into() },
+            TriggerError::ConnectorCode { trigger: "t".into(), detail: "d".into() },
         ]
     }
 

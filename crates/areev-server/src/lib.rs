@@ -1223,7 +1223,12 @@ impl UiServer {
         // `note_auth_failure` for why an artificial delay would itself be the
         // more dangerous bug on this server. The cheap rejection above is the
         // lockout; this is the counter that feeds it.
-        if auth_configured && credential_presented {
+        //
+        // `/healthz` is answered before auth (see `route_full`), so its 200
+        // proves no credential: it must neither count nor RESET the streak,
+        // or interleaving one probe per nine guesses would void the lockout.
+        let health_probe = path.split_once('?').map_or(path.as_str(), |(p, _)| p) == "/healthz";
+        if auth_configured && credential_presented && !health_probe {
             if let Ok(peer) = raw.peer_addr() {
                 let ip = peer.ip();
                 if status.starts_with("401") {
@@ -1337,6 +1342,15 @@ impl UiServer {
         sso_groups: Option<&str>,
         oidc_principal: Option<&str>,
     ) -> (&'static str, &'static str, Vec<u8>) {
+        // Liveness probe (#445): answered BEFORE auth, in every mode —
+        // `auth_all` included, because a container HEALTHCHECK or a k8s probe
+        // holds no console token, and a probe that needs the secret puts the
+        // secret on a command line. It is safe to leave open because it says
+        // nothing: a constant body, no store access, no principal resolved.
+        // A 200 proves only that the serial accept loop is answering.
+        if method == "GET" && path.split_once('?').map_or(path, |(p, _)| p) == "/healthz" {
+            return ("200 OK", "application/json", br#"{"ok":true}"#.to_vec());
+        }
         // Auth: console-auth mode (`auth_all`) guards every request;
         // otherwise the token guards only mutating endpoints. The credential
         // arrives as a Bearer token or an HTTP Basic password (see
@@ -4406,6 +4420,11 @@ mod auth_failure_tracking_tests {
     /// `GET /` with arbitrary extra headers, over a real socket (the counter
     /// hooks `handle_request`, not `route`).
     fn get_root_with(server: &UiServer, extra_headers: &str) -> String {
+        get_path_with(server, "/", extra_headers)
+    }
+
+    /// `GET <path>` with arbitrary extra headers, over a real socket.
+    fn get_path_with(server: &UiServer, path: &str, extra_headers: &str) -> String {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::scope(|scope| {
@@ -4415,7 +4434,7 @@ mod auth_failure_tracking_tests {
                 }
             });
             let mut c = std::net::TcpStream::connect(addr).unwrap();
-            let req = format!("GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n{extra_headers}Connection: close\r\n\r\n");
+            let req = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{extra_headers}Connection: close\r\n\r\n");
             c.write_all(req.as_bytes()).unwrap();
             let mut out = String::new();
             let _ = c.read_to_string(&mut out);
@@ -4467,6 +4486,24 @@ mod auth_failure_tracking_tests {
         let r = get_root(&s, Some("guess"));
         assert!(r.contains("HTTP/1.1 401"), "{r}");
         assert_eq!(s.auth_failure_count_for_test(LOCALHOST), 1);
+    }
+
+    /// `/healthz` answers before auth, so its 200 proves no credential. A
+    /// wrong token riding a probe must not reset the streak — otherwise one
+    /// probe per nine guesses would make the lockout unreachable (#445).
+    #[test]
+    fn a_health_probe_neither_counts_nor_resets_the_streak() {
+        let s = server();
+        for _ in 0..3 {
+            let r = get_root(&s, Some("guess"));
+            assert!(r.contains("HTTP/1.1 401"), "{r}");
+        }
+        let probe = get_path_with(&s, "/healthz", "Authorization: Bearer guess\r\n");
+        assert!(probe.contains("HTTP/1.1 200"), "{probe}");
+        assert_eq!(s.auth_failure_count_for_test(LOCALHOST), 3, "a probe is not a success");
+        let bare = get_path_with(&s, "/healthz", "");
+        assert!(bare.contains("HTTP/1.1 200") && bare.ends_with(r#"{"ok":true}"#), "{bare}");
+        assert_eq!(s.auth_failure_count_for_test(LOCALHOST), 3, "nor a failure");
     }
 
     /// [A1] Behind a trusted proxy every request shares ONE source address,

@@ -1,6 +1,8 @@
 # Postgres Backend — Implementation Plan (Option B)
 
-**Status: stage 1 BUILT (2026-08-07). Companion to [`postgres-backend-proposal.md`](postgres-backend-proposal.md), which holds the why; this holds the how.**
+> **Status:** Built in 1.0.0: stages 1 and 2 (the `Db` seam, `PgDb`, multi-writer `reserve_write`, conformance on both backends). The record's "remaining open" items have since landed: subject-scoped erasure on both backends, DSN opens from the bindings, telemetry on Postgres, and Postgres numbers in `RESULTS.md`. Not built: Phase 1 (facade trait promotion), deferred because the `Db` seam made every surface work unchanged.
+
+**Original status: stage 1 BUILT (2026-08-07). Companion to [`postgres-backend-proposal.md`](postgres-backend-proposal.md), which holds the why; this holds the how.**
 
 > **Implementation record.** Phases 0.1–0.4, 2 (stage 1) and 3 landed on main
 > 2026-08-07 (commits `c72b076`…): the `Db` seam + `TursoDb`, the

@@ -3,7 +3,8 @@
 Areev stores memory for AI agents — often personal, long-lived, and sensitive
 data. We take security seriously and appreciate responsible disclosure.
 
-> **Status:** Areev is `1.0.0`. The security model below is honest
+> **Status:** this policy covers the latest `1.x` release (see
+> [`CHANGELOG.md`](CHANGELOG.md) for the current version). The security model below is honest
 > about what is and is not protected today. Please read [Security model](#security-model)
 > before deploying it anywhere beyond a local, trusted machine.
 
@@ -36,12 +37,58 @@ and ask for a reasonable window to ship a fix before public details are shared.
 
 ## Supported versions
 
-The latest `1.x` release line receives security fixes.
+Security fixes ship in the latest `1.x` release. The previous minor gets a
+limited, time-boxed window so operators have room to upgrade.
 
 | Version | Supported |
 |---|---|
-| `1.x` (latest) | ✅ |
-| older | ❌ |
+| Latest minor (`1.N.x`) | ✅ All security fixes, released as a new patch. |
+| Previous minor (`1.(N-1).x`) | ⚠️ Fixes for **critical and high** severity issues only, for **90 days** after the next minor ships, on a best-effort basis. |
+| Older minors | ❌ Upgrade to the latest `1.x` release. |
+
+Within `1.x`, the `.mg` format, CAL syntax and error codes are stable
+contracts, so upgrading to the latest minor is the supported fix path. A
+minor that migrates the Postgres schema cannot be rolled back in place; take
+a backup before upgrading
+([`docs/deployment-profile.md`](docs/deployment-profile.md#rolling-back-a-minor-release-after-a-schema-migration)).
+
+## Known advisories
+
+[`deny.toml`](deny.toml) fails the build on any RUSTSEC advisory in the
+dependency graph. Each ignore must have a written justification and a
+tracking issue. Four advisories are ignored today: two security advisories
+that reach the tree only through `jsonwebtoken` under `areev-server`'s
+**non-default `oidc`** feature (a default build does not contain the affected
+crates), and two *unmaintained* notices for `chrono` / `chrono-tz`, listed
+separately below.
+
+The reasoning is the same for both security advisories. Each advisory is a timing leak over
+**secret** key material, and Areev's `jsonwebtoken` use is verification
+only. The console is an OIDC *client*: it checks an id_token's signature
+against the issuer's published **public** key. Every value in that
+computation (public key, signature, message) is already public. The tree
+contains no `EncodingKey`, no `encode` call and no private key material.
+Areev never issues or signs tokens, which is an explicit non-goal
+([`docs/auth-proposal.md`](docs/auth-proposal.md) §8).
+
+| Advisory | Affected crate and path | Feature | Why it is not reachable | Remove the ignore when | Tracking |
+|---|---|---|---|---|---|
+| [RUSTSEC-2023-0071](https://rustsec.org/advisories/RUSTSEC-2023-0071) (Marvin attack) | `rsa`, via `jsonwebtoken`'s `rust_crypto` backend | `oidc` (non-default) | A **private-key** recovery attack. Areev holds no RSA private key and only verifies RS256 id_tokens with the issuer's public key. | `rsa` ships a constant-time release; or `jsonwebtoken` moves to a backend without `rsa` (for example `aws_lc_rs`, if the C-free/ARM build constraint stops mattering); or anything in the tree starts doing RSA private-key operations (signing, decryption), which would make the ignore invalid. | [#140](https://github.com/AreevAI/areev/issues/140) |
+| [RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387) | `crypto-bigint` 0.5.5 (fixed in ≥ 0.7.6), via `jsonwebtoken` 11.1.0 → `p256`/`p384` → `elliptic-curve` 0.13 | `oidc` (non-default) | Non-constant-time arithmetic over **secret** integers. The ES256/ES384 path only verifies, with public inputs, and Areev holds no EC private key. No semver-compatible update reaches `crypto-bigint` 0.7. | `jsonwebtoken` releases on `elliptic-curve` ≥ 0.14 / `crypto-bigint` ≥ 0.7.6; or anything in the tree starts doing EC private-key operations. | [#427](https://github.com/AreevAI/areev/issues/427) |
+
+The ignores are workspace-wide, so they would also hide a real finding if a
+future dependency reached either crate through a signing path. Both are
+re-checked on every `jsonwebtoken` bump. #427 stays open until its removal
+condition is met. #140 is closed, but its ignore and its conditions still
+apply.
+
+The two unmaintained notices are informational: neither names a vulnerability,
+and neither crate has a successor release to upgrade to.
+
+| Advisory | Crate and path | Why it is ignored | Remove the ignore when | Tracking |
+|---|---|---|---|---|
+| [RUSTSEC-2026-0543](https://rustsec.org/advisories/RUSTSEC-2026-0543) | `chrono`, a direct dependency across the workspace and the `areev-js` lock | Unmaintained notice, no vulnerability, no safe upgrade. | The workspace migrates to `jiff` or `time`, or a vulnerability advisory lands against `chrono` (then it is a priority fix, not tracking). | [#446](https://github.com/AreevAI/areev/issues/446) |
+| [RUSTSEC-2026-0555](https://rustsec.org/advisories/RUSTSEC-2026-0555) | `chrono-tz`, via `areev-trigger` (cron schedule time zones) | Same. | Same; `jiff`'s time-zone support covers `areev-trigger`'s use. | [#446](https://github.com/AreevAI/areev/issues/446) |
 
 ## Security model
 

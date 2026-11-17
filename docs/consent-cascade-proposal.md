@@ -1,6 +1,8 @@
 # Consent-cascade erasure — proposal
 
-**Status:** proposal, written 2026-08-11. Design-first: no code until the
+> **Status:** Not built. This is a design only. The proposal holds code until the OMS 1.6 amendment lands, no consent cascade exists in the code, and [`gdpr.md`](gdpr.md) lists it as design-stage.
+
+**Original status:** proposal, written 2026-08-11. Design-first: no code until the
 OMS 1.6 amendment lands (see [`oms-1.6-amendments.md`](oms-1.6-amendments.md)).
 Companion to [`gdpr.md`](gdpr.md) §6 and [`erasure.md`](erasure.md).
 

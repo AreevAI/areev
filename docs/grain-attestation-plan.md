@@ -1,6 +1,8 @@
 # Grain Attestation — Implementation Plan
 
-**Status: Phases 0–5 BUILT (2026-09-15) on `feat/grain-attestation`; Phase 6
+> **Status:** Partly built. Phases 0–5 shipped in 1.8.3: attestation grains, signing and trusted-author keys on the handle, the two-pass import check, `verify_attestations` and `areev attest`. Not built: phase 6, the latency measurement for `crates/areev-bench/RESULTS.md`. The 1.8.3 changelog does not mention the feature; the version is the first release tag containing `crates/areev-store/src/attest.rs`.
+
+**Original status: Phases 0–5 BUILT (2026-09-15) on `feat/grain-attestation`; Phase 6
 (measurement) pending. The decision for
 [#77](https://github.com/AreevAI/areev/issues/77): option 1 designed in full,
 then built as the phases below. This document is the "how"; the

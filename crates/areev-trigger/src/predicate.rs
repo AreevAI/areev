@@ -234,6 +234,15 @@ mod tests {
     }
 
     #[test]
+    fn a_stored_predicate_that_is_not_a_condition_is_refused_with_its_code() {
+        // A declaration can arrive by bundle import from an implementation
+        // that stored something else under `predicate`.
+        let e = from_value(&serde_json::json!({ "op": "sometimes" })).unwrap_err();
+        assert_eq!(e.code(), "TRG-E001");
+        assert!(e.to_string().contains("stored predicate is unreadable"), "{e}");
+    }
+
+    #[test]
     fn an_empty_predicate_is_refused() {
         // A gate that matches everything is a trigger that fires constantly.
         assert!(parse_predicate("").is_err());

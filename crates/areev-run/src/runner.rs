@@ -2455,7 +2455,6 @@ impl Runner {
     /// The shared drive loop. One clock reading per iteration; journal hits
     /// replay without executing; everything else goes to the pool.
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     fn drive(
         &self,
         plan: &PlanGraph,

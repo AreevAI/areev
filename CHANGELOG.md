@@ -6,6 +6,71 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.14.4] — 2026-11-17
+
+Pre-launch hygiene: dependency updates, a container health check and image
+scan, regenerated and CI-checked license notices, and documentation that no
+longer names stale versions or unmarked proposals.
+
+### Added
+
+- **`GET /healthz` and a container `HEALTHCHECK` (#445).** The console
+  answers `GET /healthz` with `{"ok":true}` before any auth check, in every
+  auth mode, so a probe never needs the token. It reads no store and
+  identifies no caller. Only `GET` is open; other methods on the path still
+  need the token. `/healthz` requests neither count toward nor reset the
+  failed-login lockout, so a probe cannot be used to clear an attacker's
+  failure count. The image's `HEALTHCHECK` (`areev-healthcheck`, bash
+  `/dev/tcp`, no curl added) probes it when the container runs `areev ui`
+  and reports healthy for every other role (`docs/docker.md`).
+- **Image scan in CI (#445).** `docker.yml` scans the built image with Trivy
+  and fails on fixable HIGH/CRITICAL findings; accepted ones go in
+  `.trivyignore` with a reason. A weekly run catches new base-image
+  advisories between commits.
+- **`THIRD-PARTY-NOTICES.md` is generated and checked (#443).**
+  `scripts/third_party_notices.py` builds it from the three shipping
+  lockfiles (root, `crates/areev-js`, `areev-sandbox`) with only the Python
+  standard library and `cargo metadata`; the new `notices` CI job fails when
+  the committed file drifts. It lists crates and licenses, not versions, so a
+  patch bump that changes no license does not trip it.
+
+### Changed
+
+- **Dependencies (#444).** Folded in the open Dependabot updates: sha2
+  0.11.1, serde_json 1.0.154, unicode-normalization 0.1.26, thiserror 2.0.21,
+  ureq 3.5.1, rustls-pki-types 1.16.0, webpki-roots 1.0.12, zeroize 1.9.1
+  (and dev-only proptest 1.12.0, insta 1.49.0); in `areev-js`, napi 3.16.2
+  with napi-derive 3.7.0 and napi-build 2.6.0, and `@napi-rs/cli` 3.10.12
+  (regenerated `index.js`). `areev-js` now requires `napi >= 3.16.2`:
+  napi-derive 3.7 generates calls that first shipped there, which is why
+  the Dependabot PR pairing it with 3.16.1 failed to compile.
+- **`deny.toml` ignores RUSTSEC-2026-0543 / -0555** (`chrono` and `chrono-tz`
+  unmaintained; informational, no vulnerability, no safe upgrade). The
+  migration is tracked in #446.
+
+### Fixed
+
+- **Builds clean under clippy 1.100.** Four duplicated
+  `#[allow(clippy::too_many_arguments)]` attributes (`areev-loop`,
+  `areev-run`, `areev-py`) tripped the new `duplicated_attributes` lint and
+  failed every `-D warnings` job.
+
+### Documentation
+
+- `SECURITY.md` and `SUPPORT.md` no longer name a fixed version (#440).
+  The supported-versions table covers the previous minor: critical/high fixes
+  for 90 days after the next minor ships, best-effort.
+- `SECURITY.md` gains a **Known advisories** section explaining every
+  ignored RUSTSEC id: why it is unreachable, its feature, and the removal
+  condition (#442, #427, #140, #446).
+- Every `docs/*-proposal.md` / `docs/*-plan.md` opens with a status line:
+  built (with version), partly built, or not built (#445).
+- `docs/deployment-profile.md`: rolling back a release after it migrated the
+  Postgres schema. Downgrade is not supported; restore from a pre-upgrade
+  backup or PITR (#445).
+- `docs/quickstart.md`: the framework adapters' current home and status
+  (#445). README: product availability links to areev.ai/store (#441).
+
 ## [1.14.3] — 2026-11-11
 
 ### Fixed
@@ -5240,7 +5305,8 @@ ecosystem adapters, and the enterprise plane.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.14.3...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.14.4...HEAD
+[1.14.4]: https://github.com/AreevAI/areev/compare/v1.14.3...v1.14.4
 [1.14.3]: https://github.com/AreevAI/areev/compare/v1.14.2...v1.14.3
 [1.14.2]: https://github.com/AreevAI/areev/compare/v1.14.1...v1.14.2
 [1.14.1]: https://github.com/AreevAI/areev/compare/v1.14.0...v1.14.1

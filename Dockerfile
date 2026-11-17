@@ -35,6 +35,7 @@ COPY --from=build /usr/local/bin/areev /usr/local/bin/areev
 COPY --from=build /usr/local/bin/areev-sandbox /usr/local/bin/areev-sandbox
 COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 COPY --chmod=755 docker/heartbeat.sh  /usr/local/bin/areev-heartbeat
+COPY --chmod=755 docker/healthcheck.sh /usr/local/bin/areev-healthcheck
 
 RUN useradd --uid 10001 --create-home areev \
     && mkdir -p /data && chown areev:areev /data
@@ -47,6 +48,13 @@ VOLUME /data
 ENV AREEV_DB=/data/areev.db
 
 EXPOSE 7437
+
+# A container running `ui` is probed at GET /healthz on its own --addr port
+# (answered before auth, so no token is needed); every other role has no
+# endpoint and reports healthy. bash's /dev/tcp is the client — the slim base
+# has no curl/wget and this adds none. See docker/healthcheck.sh.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["areev-healthcheck"]
 
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["--help"]

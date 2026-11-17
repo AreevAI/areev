@@ -532,7 +532,6 @@ impl Engine {
     /// and the live recommendation queue are honored in both modes; only the
     /// production caller proceeds into the mutating Phase 3 below.
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     fn analysis_pass<S: OmsSubstrate>(
         &self,
         sub: &S,
@@ -1110,7 +1109,6 @@ impl Engine {
     /// confidence. A draft reaches the queue only if it is grounded **and** kept
     /// **and** clears the confidence floor. Any failed call drops the whole LLM
     /// contribution for the run (safe default), never the run.
-    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     fn verify_drafts<S: SubstrateRead>(
         &self,
