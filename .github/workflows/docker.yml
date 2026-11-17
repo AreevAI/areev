@@ -141,9 +141,17 @@ jobs:
           sleep 4
           docker logs hb 2>&1 | grep -q "areev heartbeat: evaluating every 1s"
           # No HTTP endpoint in this role: the HEALTHCHECK must be a no-op
-          # that reports healthy, not a probe that marks it unhealthy.
-          [ "$(docker inspect -f '{{.State.Health.Status}}' hb)" = healthy ] \
-            || { docker inspect -f '{{json .State.Health}}' hb; exit 1; }
+          # that reports healthy, not a probe that marks it unhealthy. Poll:
+          # `--health-start-period 0s` reads as "unset", so the image's 10s
+          # start period applies and the first probe lands only after the
+          # default 5s start interval. A single read at 4s sees "starting".
+          health=""
+          for i in $(seq 1 20); do
+            health=$(docker inspect -f '{{.State.Health.Status}}' hb)
+            [ "$health" = healthy ] && break
+            sleep 1
+          done
+          [ "$health" = healthy ] || { docker inspect -f '{{json .State.Health}}' hb; exit 1; }
           docker rm -f hb
 
       - name: the compose files parse
