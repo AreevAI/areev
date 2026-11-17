@@ -675,3 +675,18 @@ jobs:
             docs/repo-stats.html
             docs/repo-stats.json
             docs/assets/repo-stats-*.svg
+
+  # THIRD-PARTY-NOTICES.md is the attribution binary distributions rely on, and
+  # it is a pure function of the three shipped lockfiles (workspace, areev-js,
+  # areev-sandbox). Regenerate and diff, so a new or dropped crate, or a license
+  # change in a bumped one, cannot ship unattributed (#443: 1.14.x did).
+  # Versions are not rendered, so a patch bump alone never trips this.
+  # `cargo metadata` downloads manifests only; nothing is compiled.
+  notices:
+    name: third-party notices current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Verify THIRD-PARTY-NOTICES.md matches the lockfiles
+        run: python3 scripts/third_party_notices.py --check
