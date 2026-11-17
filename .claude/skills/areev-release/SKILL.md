@@ -257,10 +257,28 @@ EOF
   `curl -o /dev/null -w '%{http_code}' https://pypi.org/pypi/areev/<ver>/json`
   (200 = published) before chasing a phantom failure.
 - `cargo search areev`
+- **npm: prove an install, not a version string.** Right after publish the
+  registry can list `@areev/areev-<platform>@X.Y.Z` while its tarball still
+  404s for several minutes (1.14.4: ~5 min for the two darwin packages), and
+  npm treats a failed OPTIONAL dependency as skippable, so the install
+  "succeeds" and `require()` dies with "Cannot find native binding". Wait for
+  every `https://registry.npmjs.org/@areev/<pkg>/-/<pkg>-X.Y.Z.tgz` to return
+  200, then install into an empty dir with a fresh `--cache` and `require` it.
 - A green workflow is not proof the version changed.
 
 ## Notes
 
+- **npm authenticates by trusted publishing (OIDC), not a token.** There is
+  no `NPM_TOKEN`: each `@areev/*` package on npmjs.com trusts
+  `AreevAI/areev` → `release-npm.yml` with direct `npm publish` allowed.
+  A publish that 404s on the PUT of an EXISTING package is an auth failure
+  (missing/mismatched publisher), not a registry problem. 1.14.4 hit the
+  token version of this: a 90-day token expired between releases. A
+  brand-new package name (a new platform) cannot be pre-configured: publish
+  it once interactively with 2FA, then add its trusted publisher
+  (`npm trust github <pkg> --file release-npm.yml --repo AreevAI/areev
+  --allow-publish`, npm >= 11.15, 2FA login — bypass-2FA tokens are
+  refused). Re-running an OLD tag's run uses that tag's workflow file.
 - Registry names: `areev` on crates.io and PyPI. On npm, the *unscoped*
   `areev` name is still blocked by npm's similarity filter (403 against
   `argv`) — a support ticket is open, but as of the 1.6.0 release npm still
