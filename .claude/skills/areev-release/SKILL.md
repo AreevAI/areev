@@ -257,6 +257,13 @@ EOF
   `curl -o /dev/null -w '%{http_code}' https://pypi.org/pypi/areev/<ver>/json`
   (200 = published) before chasing a phantom failure.
 - `cargo search areev`
+- **npm: prove an install, not a version string.** Right after publish the
+  registry can list `@areev/areev-<platform>@X.Y.Z` while its tarball still
+  404s for several minutes (1.14.4: ~5 min for the two darwin packages), and
+  npm treats a failed OPTIONAL dependency as skippable, so the install
+  "succeeds" and `require()` dies with "Cannot find native binding". Wait for
+  every `https://registry.npmjs.org/@areev/<pkg>/-/<pkg>-X.Y.Z.tgz` to return
+  200, then install into an empty dir with a fresh `--cache` and `require` it.
 - A green workflow is not proof the version changed.
 
 ## Notes
