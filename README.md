@@ -22,8 +22,8 @@ The engine is MIT/Apache-2.0 licensed and runs locally without an Areev account.
 
 The store shows what we build with Areev Core. Its catalogue includes
 **Bank Statement to Ledger**, **GST Reconciliation**, and **Invoice to Ledger**.
-Each listing describes its scope and current availability; some are by invitation
-and others are coming soon.
+Each listing describes its scope; see [areev.ai/store](https://areev.ai/store)
+for current availability.
 
 This repository gives you the engine and runnable reference agents to build
 your own products. Your application supplies its domain logic, user interface,
