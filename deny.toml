@@ -49,6 +49,14 @@ ignore = [
     # signature and message are all public; Areev holds no EC private key and
     # never signs. Same invalidating conditions as #140. Tracking issue: #427.
     { id = "RUSTSEC-2026-0387", reason = "crypto-bigint timing over secret integers; Areev only verifies ECDSA id_tokens with public keys, under the non-default `oidc` feature — see #427" },
+    # RUSTSEC-2026-0543 / RUSTSEC-2026-0555 — `chrono` and `chrono-tz` are
+    # UNMAINTAINED (informational notices, not vulnerabilities; no safe upgrade
+    # exists). chrono is a direct dependency across the workspace and the
+    # areev-js lock; chrono-tz arrives via areev-trigger's cron time zones.
+    # Remove when the workspace migrates to jiff/time, or immediately if a
+    # vulnerability advisory lands against either. Tracking issue: #446.
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained (no vulnerability, no safe upgrade); migration tracked in #446" },
+    { id = "RUSTSEC-2026-0555", reason = "chrono-tz unmaintained (no vulnerability, no safe upgrade); migration tracked in #446" },
 ]
 
 [licenses]

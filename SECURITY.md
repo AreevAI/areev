@@ -56,11 +56,13 @@ a backup before upgrading
 
 [`deny.toml`](deny.toml) fails the build on any RUSTSEC advisory in the
 dependency graph. Each ignore must have a written justification and a
-tracking issue. Two advisories are ignored today. Both reach the tree only
-through `jsonwebtoken` under `areev-server`'s **non-default `oidc`**
-feature. A default build does not contain the affected crates.
+tracking issue. Four advisories are ignored today: two security advisories
+that reach the tree only through `jsonwebtoken` under `areev-server`'s
+**non-default `oidc`** feature (a default build does not contain the affected
+crates), and two *unmaintained* notices for `chrono` / `chrono-tz`, listed
+separately below.
 
-The reasoning is the same for both. Each advisory is a timing leak over
+The reasoning is the same for both security advisories. Each advisory is a timing leak over
 **secret** key material, and Areev's `jsonwebtoken` use is verification
 only. The console is an OIDC *client*: it checks an id_token's signature
 against the issuer's published **public** key. Every value in that
@@ -79,6 +81,14 @@ future dependency reached either crate through a signing path. Both are
 re-checked on every `jsonwebtoken` bump. #427 stays open until its removal
 condition is met. #140 is closed, but its ignore and its conditions still
 apply.
+
+The two unmaintained notices are informational: neither names a vulnerability,
+and neither crate has a successor release to upgrade to.
+
+| Advisory | Crate and path | Why it is ignored | Remove the ignore when | Tracking |
+|---|---|---|---|---|
+| [RUSTSEC-2026-0543](https://rustsec.org/advisories/RUSTSEC-2026-0543) | `chrono`, a direct dependency across the workspace and the `areev-js` lock | Unmaintained notice, no vulnerability, no safe upgrade. | The workspace migrates to `jiff` or `time`, or a vulnerability advisory lands against `chrono` (then it is a priority fix, not tracking). | [#446](https://github.com/AreevAI/areev/issues/446) |
+| [RUSTSEC-2026-0555](https://rustsec.org/advisories/RUSTSEC-2026-0555) | `chrono-tz`, via `areev-trigger` (cron schedule time zones) | Same. | Same; `jiff`'s time-zone support covers `areev-trigger`'s use. | [#446](https://github.com/AreevAI/areev/issues/446) |
 
 ## Security model
 
