@@ -261,6 +261,17 @@ EOF
 
 ## Notes
 
+- **npm authenticates by trusted publishing (OIDC), not a token.** There is
+  no `NPM_TOKEN`: each `@areev/*` package on npmjs.com trusts
+  `AreevAI/areev` → `release-npm.yml` with direct `npm publish` allowed.
+  A publish that 404s on the PUT of an EXISTING package is an auth failure
+  (missing/mismatched publisher), not a registry problem. 1.14.4 hit the
+  token version of this: a 90-day token expired between releases. A
+  brand-new package name (a new platform) cannot be pre-configured: publish
+  it once interactively with 2FA, then add its trusted publisher
+  (`npm trust github <pkg> --file release-npm.yml --repo AreevAI/areev
+  --allow-publish`, npm >= 11.15, 2FA login — bypass-2FA tokens are
+  refused). Re-running an OLD tag's run uses that tag's workflow file.
 - Registry names: `areev` on crates.io and PyPI. On npm, the *unscoped*
   `areev` name is still blocked by npm's similarity filter (403 against
   `argv`) — a support ticket is open, but as of the 1.6.0 release npm still
