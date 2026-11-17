@@ -39,8 +39,13 @@ areev-trigger = { path = "../areev-trigger", features = ["tz"] }
 # extern name says what it is used for.
 areev-pack = { package = "areev", path = "../areev-cli" }
 serde_json = "1"
-napi = { version = "3", features = ["napi9"] }
-napi-derive = "3"
+# napi-derive 3.7's generated code calls
+# `napi::__private::get_class_constructor_in_env`, which first shipped in napi
+# 3.16.2, but napi-derive does not declare that floor, so a lockfile can pair
+# the two skewed (#389 did: napi 3.16.1 + napi-derive 3.7.0, E0425 at every
+# `#[napi]` struct). Pin the pair here instead of trusting the resolver.
+napi = { version = "3.16.2", features = ["napi9"] }
+napi-derive = "3.7"
 
 [build-dependencies]
 napi-build = "2"
