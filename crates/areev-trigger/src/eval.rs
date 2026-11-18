@@ -1005,15 +1005,39 @@ impl Evaluator {
                 found
             }
             TriggerKind::Composite => {
-                let keys = self.satisfied_keys(hash, chain, trigger, now)?;
-                outcome.settled_keys = keys.clone();
-                keys.into_iter()
-                    .map(|k| PollItem {
-                        // The correlation value IS the identity: one firing per
-                        // correlated set, however many members contributed.
-                        id: k.clone(),
-                        payload: serde_json::json!({ "correlation": k }),
-                        blobs: Vec::new(),
+                let satisfied = self.satisfied_keys(hash, chain, trigger, now)?;
+                outcome.settled_keys = satisfied.iter().map(|(k, _)| k.clone()).collect();
+                satisfied
+                    .into_iter()
+                    .map(|(k, started_ms)| {
+                        if k.is_empty() {
+                            // No `correlate`: one global gate, so the key is
+                            // always "" — no identity at all (`dedup_value`
+                            // refuses a blank id, and the firing used to be
+                            // dropped as unidentifiable), and a constant would
+                            // fire once then dedup forever. The gate INSTANCE
+                            // is the identity: its partial's start instant is
+                            // stable across a refused run's retries and new
+                            // for each satisfaction after the last one settled.
+                            let id = format!("uncorrelated@{started_ms}");
+                            PollItem {
+                                id,
+                                payload: serde_json::json!({
+                                    "correlation": k,
+                                    "gate_started_ms": started_ms,
+                                }),
+                                blobs: Vec::new(),
+                            }
+                        } else {
+                            PollItem {
+                                // The correlation value IS the identity: one
+                                // firing per correlated set, however many
+                                // members contributed.
+                                id: k.clone(),
+                                payload: serde_json::json!({ "correlation": k }),
+                                blobs: Vec::new(),
+                            }
+                        }
                     })
                     .collect()
             }
@@ -1120,14 +1144,15 @@ impl Evaluator {
         Ok(())
     }
 
-    /// Which correlation keys currently satisfy this composite's gate.
+    /// Which correlation keys currently satisfy this composite's gate, each
+    /// with the instant its partial match started.
     fn satisfied_keys(
         &self,
         hash: &str,
         chain: &Chain,
         trigger: &Trigger,
         now: i64,
-    ) -> Result<Vec<String>> {
+    ) -> Result<Vec<(String, i64)>> {
         let predicate = trigger
             .predicate
             .as_ref()
@@ -1166,7 +1191,7 @@ impl Evaluator {
             }
             let fired: Vec<String> = partial.members.keys().cloned().collect();
             if crate::predicate::gate_satisfied(&predicate, &fired) {
-                out.push(key.clone());
+                out.push((key.clone(), partial.started_ms));
             }
         }
         Ok(out)

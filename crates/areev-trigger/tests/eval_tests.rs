@@ -2373,3 +2373,41 @@ fn a_partial_match_past_its_window_does_not_fire_on_resume() {
     assert_eq!(composite_resumed_after(500), 1, "inside the window the gate fires");
     assert_eq!(composite_resumed_after(2_000), 0, "a stale partial must not satisfy the gate");
 }
+
+#[test]
+fn an_uncorrelated_composite_starts_a_run_each_time_its_gate_is_satisfied() {
+    // `correlate` is optional: without it every member firing counts toward one
+    // global gate. That gate's firing still needs an identity to mint a run id
+    // from — the empty correlation key is not one (`dedup_value` refuses a blank
+    // id), and a constant would let the gate fire once and then come back
+    // `Duplicate` forever. Each satisfied gate INSTANCE is a distinct firing.
+    let rig = Rig::new();
+    let a = rig.declare(Trigger::new(TriggerKind::Interval, WF).interval_secs(3600));
+    let b = rig.declare(Trigger::new(TriggerKind::Interval, WF).interval_secs(7200));
+    let cond = areev_trigger::predicate::parse_predicate("a = true OR b = true").unwrap();
+    let composite = rig.declare(
+        Trigger::new(TriggerKind::Composite, WF2)
+            .member("a", &a)
+            .member("b", &b)
+            .predicate(areev_trigger::predicate::to_value(&cond).unwrap()),
+    );
+    let ev = rig.evaluator(None);
+    let wf2_runs = || rig.starter.workflows.lock().unwrap().iter().filter(|w| *w == WF2).count();
+
+    // Members fire at T0; the gate fires on this pass or the next.
+    for _ in 0..2 {
+        let r = ev.run(&opts()).unwrap();
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        assert_eq!(r.unidentifiable, 0, "an uncorrelated gate must have an identity: {r:?}");
+    }
+    assert_eq!(wf2_runs(), 1, "a satisfied uncorrelated gate must start its run");
+    assert!(rig.state(&composite).partials.is_empty(), "the firing consumes the gate");
+
+    // An hour later `a` fires again: a NEW gate instance, so a NEW run.
+    rig.clock.advance(3_600_000);
+    for _ in 0..2 {
+        let r = ev.run(&opts()).unwrap();
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+    }
+    assert_eq!(wf2_runs(), 2, "the second satisfaction is a second firing, not a duplicate");
+}
