@@ -1206,8 +1206,12 @@ reproduce the boundary instead of guessing at it.
   identity being judged, not the session: through 1.13.2 an unbound handle
   skipped the check and accepted any responder string. A memory with no grants
   at all is the single-user posture and accepts any responder (still never the
-  principal or initiator of an approval). Grants are ordinary `mg:permits`
-  Facts — they live in the file, sync with it, and are granted in CAL:
+  principal or initiator of an approval). When the file IS governed but grants
+  `run.respond` to exactly one principal, that sole holder may answer their own
+  ask — the four-eyes gate has no second party and is vacuous — and the accepted
+  record carries `self_approval: sole_run_respond_holder`. Grants are ordinary
+  `mg:permits` Facts — they live in the file, sync with it, and are granted in
+  CAL:
 
   ```
   GRANT run.respond ON ops TO "user:officer" WITH because("refund approvals")
