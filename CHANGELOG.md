@@ -6,6 +6,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **A sole `run.respond` holder may answer their own approval ask.**
+  Separation of duties refuses an `approval` ask answered by the run's
+  triggering principal or `initiator` (#292, #293), and that still holds
+  wherever a second approver exists. But when the responder is the only
+  principal holding `run.respond` on the ask's namespace, the four-eyes gate
+  has no second party to route to and is vacuous, so the sole holder may now
+  answer their own ask. Eligibility is read from the file's own `mg:permits`
+  grants, as `file_is_governed` is, never asserted by the host; the accepted
+  record carries `self_approval: sole_run_respond_holder`. The single-user
+  posture (a file with no grants) is unchanged, and the distinct-approver and
+  N-of-M quorum checks (#424), which require two or more approvers, are
+  untouched (`docs/run.md`).
+
 ## [1.14.4] — 2026-11-17
 
 Pre-launch hygiene: dependency updates, a container health check and image

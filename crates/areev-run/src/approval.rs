@@ -129,7 +129,7 @@ pub fn row(g: &DeserializedGrain) -> Option<Value> {
     }
     for k in [
         "outcome", "refusal", "ask", "node", "responder", "principal", "initiator", "reason",
-        "quorum", "due_at_ms",
+        "quorum", "due_at_ms", "self_approval",
     ] {
         if let Some(v) = ctx.get(k) {
             o.insert(k.into(), v.clone());
