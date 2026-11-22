@@ -50,4 +50,4 @@ areev-trigger = { path = "../areev-trigger", features = ["tz"] }
 # this cdylib's own lib is also called `areev`.
 areev-pack = { package = "areev", path = "../areev-cli" }
 serde_json = "1"
-pyo3 = { version = "0.29", features = ["extension-module", "abi3-py39"] }
+pyo3 = { version = "0.30", features = ["extension-module", "abi3-py39"] }
