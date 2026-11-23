@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.14.5] — 2026-11-23
+
 ### Changed
 
 - **A sole `run.respond` holder may answer their own approval ask.**
