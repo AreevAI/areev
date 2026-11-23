@@ -718,6 +718,36 @@ impl Runner {
             .map_err(err_run)
     }
 
+    /// Whether `responder` is the only principal holding `run.respond` on this
+    /// namespace (#423): the separation-of-duties gate then has no second party
+    /// to route to and is vacuous, so the sole holder may answer their own ask.
+    /// Read from the file's grants, as `file_is_governed` is; never host-asserted.
+    fn sole_responder(&self, responder: &str) -> Result<bool, RunError> {
+        let holders: std::collections::BTreeSet<String> = self
+            .facade
+            .with_store(|m| {
+                m.recent_live(
+                    areev_core::authz::AUTHZ_NS,
+                    Some(areev_core::types::GrainType::Fact),
+                    usize::MAX / 2,
+                )
+            })
+            .map(|rows| {
+                rows.iter()
+                    .filter(|g| g.get_str("relation") == Some(areev_core::authz::REL_PERMITS))
+                    .filter_map(|g| {
+                        let subject = g.get_str("subject")?;
+                        let grant = areev_core::authz::Grant::from_object_string(g.get_str("object")?).ok()?;
+                        grant
+                            .covers(areev_core::authz::Verb::RunRespond, &self.ns)
+                            .then(|| subject.to_string())
+                    })
+                    .collect()
+            })
+            .map_err(err_run)?;
+        Ok(holders.len() == 1 && holders.contains(responder))
+    }
+
     /// A declared memory read (#255) needs `read` on its namespace. Checked
     /// before the run exists, so a plan asking for a namespace the session
     /// cannot see refuses at start instead of failing a node mid-run — and
@@ -1821,21 +1851,27 @@ impl Runner {
         // simply never matches a responder. A veto (#416) is an approval ask
         // too: the person who asked for a change cannot cancel the cooling-off
         // around it, nor waive it.
+        // A sole `run.respond` holder has no second approver, so may answer their own ask (#423).
+        let mut sole_self_approval = false;
         if pending.ask.approval {
             let self_approval = responder == manifest.principal;
             let initiator_approval = manifest.initiator.as_deref() == Some(responder);
             if self_approval || initiator_approval {
-                let who = if self_approval { "principal" } else { "initiator" };
-                journal_rejection(
-                    "separation_of_duties",
-                    &format!("approval by the triggering {who} '{responder}'"),
-                );
-                return Err(RunError::Unauthorized {
-                    what: format!(
-                        "approval ask {tool_call_id} requires a responder other than \
-                         the triggering {who} '{responder}'"
-                    ),
-                });
+                if self.sole_responder(responder)? {
+                    sole_self_approval = true;
+                } else {
+                    let who = if self_approval { "principal" } else { "initiator" };
+                    journal_rejection(
+                        "separation_of_duties",
+                        &format!("approval by the triggering {who} '{responder}'"),
+                    );
+                    return Err(RunError::Unauthorized {
+                        what: format!(
+                            "approval ask {tool_call_id} requires a responder other than \
+                             the triggering {who} '{responder}'"
+                        ),
+                    });
+                }
             }
         }
         // A bubbled ask settles in the child, but it is judged HERE first:
@@ -2001,7 +2037,14 @@ impl Runner {
         } else {
             (crate::approval::OUTCOME_ACCEPTED, String::new())
         };
-        let _ = record(label, None, &reason, quorum_extra);
+        let mut extra = quorum_extra;
+        if sole_self_approval {
+            let obj = extra.get_or_insert_with(|| json!({}));
+            if let Some(o) = obj.as_object_mut() {
+                o.insert("self_approval".into(), json!("sole_run_respond_holder"));
+            }
+        }
+        let _ = record(label, None, &reason, extra);
         Ok(())
     }
 
@@ -3993,7 +4036,7 @@ impl Runner {
             human_gates: json!({
                 "client_gated_nodes": gated,
                 "every_client_ask_is_an_approval": true,
-                "separation_of_duties": "responder != triggering principal, refused structurally",
+                "separation_of_duties": "responder != triggering principal, refused structurally, except a sole run.respond holder may answer their own ask (the gate is then vacuous)",
                 // #424: across gates — within a group, one responder answers
                 // at most one gate — and N-of-M on one ask (per gated node's
                 // `quorum`). #416: a wait node's veto window (`wait`).
