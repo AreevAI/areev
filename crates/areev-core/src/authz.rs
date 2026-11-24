@@ -58,7 +58,9 @@ pub enum Verb {
     /// D5: answer a `requires_action` Client ask. This IS the approval
     /// boundary — Control-tier, and the driver additionally refuses
     /// responder == triggering principal on approval asks (separation of
-    /// duties, mirroring the loop's self-approval block).
+    /// duties, mirroring the loop's self-approval block), unless that
+    /// principal is the only holder of this verb on the namespace, where the
+    /// gate has no second party and is vacuous.
     RunRespond,
     /// D5: cancel a run. Deliberately LOW-tier and broadly grantable — the
     /// brake must never be blocked by missing privilege (the kill-switch

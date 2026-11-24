@@ -8,9 +8,20 @@
 # runtime via optionalDependencies (the layout the review flagged as missing).
 #
 # Trigger: on a published GitHub Release (tag `vX.Y.Z`) or manual dispatch.
-# Prerequisite secret: `NPM_TOKEN` (an npm automation token for the account
-# that owns the `areev` packages — it must have publish rights on whichever
-# names package.json currently declares, scoped or not).
+#
+# Authentication is npm TRUSTED PUBLISHING (OIDC), not a token. There is no
+# npm secret: the publish job's `id-token: write` lets npm verify that the
+# upload came from THIS workflow file in THIS repository. Prerequisite, once
+# per package on npmjs.com: a GitHub Actions trusted publisher with
+# owner `AreevAI`, repository `areev`, workflow `release-npm.yml`, no
+# environment, and DIRECT `npm publish` allowed (configs created after
+# 2026-09-03 default to staged publish only, which would park every upload
+# behind a human 2FA approval). Each package's `repository.url` must match
+# this repo exactly — napi copies it into the platform packages. A package
+# NAME that has never been published cannot be configured beforehand; its
+# first publish needs an interactive (2FA) login, then add the publisher.
+# Why: npm is retiring bypass-2FA tokens for direct publishing (~January
+# 2027), and the token this replaced silently expired mid-release on 1.14.4.
 #
 # NOTE: native cross-platform CI is finicky — watch the first release run and
 # adjust the target matrix / napi flags to your installed @napi-rs/cli (v3) if a
@@ -166,7 +177,8 @@ jobs:
     if: github.event_name == 'release' || inputs.preview
     runs-on: ubuntu-latest
     permissions:
-      # Build provenance + the SBOM asset (#81).
+      # The npm trusted-publishing identity (no token), build provenance
+      # and the SBOM asset (#81).
       id-token: write
       attestations: write
       contents: write
@@ -177,8 +189,15 @@ jobs:
           preview: ${{ inputs.preview }}
       - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          # Trusted publishing needs Node >= 22.14.0 and npm >= 11.5.1.
+          node-version: 24
           registry-url: https://registry.npmjs.org
+      # Pin npm 11, not `latest`: npm 12 turns dependency install scripts,
+      # git and remote deps off by default, which is a separate migration.
+      - name: npm 11 (trusted publishing needs >= 11.5.1)
+        run: |
+          npm install -g npm@11
+          node -e 'const [a,b,c]=process.argv[1].split(".").map(Number); if (a<11||(a===11&&(b<5||(b===5&&c<1)))) { console.error("npm "+process.argv[1]+" < 11.5.1: trusted publishing would fall back to no auth"); process.exit(1) }' "$(npm --version)"
       - run: npm ci
       - uses: actions/download-artifact@v8
         with:
@@ -212,7 +231,10 @@ jobs:
         # names as of 1.6.0 — unscoped `areev` still 403s npm's similarity
         # filter; see CLAUDE.md's Status section for where that stands). Any
         # OTHER 403 here is a real failure (auth/2FA/ownership); do NOT warn
-        # past it — a manifest that promises a package npm refused breaks
+        # past it. A 404 on the PUT of a package that exists means npm found
+        # no credentials: the package's trusted publisher is missing or does
+        # not match this workflow (owner/repo/filename are case-sensitive), so
+        # don't chase the registry for it — a manifest that promises a package npm refused breaks
         # `require()` on that platform (the pre-1.2.3 Windows incident).
         run: |
           set -euo pipefail
@@ -227,7 +249,9 @@ jobs:
             else
               echo "Publishing $1@$2"
               # --provenance (#81): npm's own registry-visible attestation,
-              # generated from this workflow's OIDC identity. It is separate
+              # generated from this workflow's OIDC identity. Trusted
+              # publishing would attach it anyway; the flag keeps that
+              # explicit and fails loudly if it ever cannot. It is separate
               # from the GitHub attestation above and worth having both — this
               # is the one a consumer sees on the package page, and the one
               # `npm audit signatures` checks.
@@ -243,9 +267,9 @@ jobs:
           main_name=$(node -p "require('./package.json').name")
           main_ver=$(node -p "require('./package.json').version")
           publish_if_absent "$main_name" "$main_ver" "."
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # No NODE_AUTH_TOKEN on purpose: npm uses the OIDC identity first and
+        # only falls back to a token, and a stale one would mask a broken
+        # trusted-publisher config behind a confusing auth error.
 
       # Two SBOMs, because the package has two dependency graphs and only one
       # of them is visible to npm: `npm sbom` describes the JS tree, while

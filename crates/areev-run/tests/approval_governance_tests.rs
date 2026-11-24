@@ -212,6 +212,51 @@ fn a_file_with_no_grants_keeps_the_single_user_path() {
     assert_eq!(trail[0]["responder"], "volunteer:99999");
 }
 
+#[test]
+fn the_sole_run_respond_holder_may_answer_their_own_ask() {
+    // A governed file with exactly one run.respond holder, who is also the
+    // run's initiator: the four-eyes gate has no second eye, so the answer
+    // lands and the accepted record marks it a self-approval.
+    let rig = Rig::new();
+    rig.grant("owner:solo", "read,run.respond ON ops");
+    let plan = rig.plan(&["a", "approve"], &[("approve", client())], None);
+    let runner = rig.runner("service:desk");
+    let env = parked(runner.start(&plan, "r1", json!({}), &opts_for("owner:solo")).unwrap());
+
+    runner.respond("r1", &ask_of(&env), json!({"approved": true}), false, "owner:solo").unwrap();
+    assert_eq!(finished(runner.resume("r1", &opts()).unwrap()), RunOutcome::Completed);
+    assert!(runner.verify("r1").unwrap().verified);
+
+    let trail = rig.trail("r1");
+    let accepted = trail.iter().find(|r| r["outcome"] == "accepted").unwrap();
+    assert_eq!(accepted["responder"], "owner:solo");
+    assert_eq!(accepted["self_approval"], "sole_run_respond_holder");
+}
+
+#[test]
+fn a_second_run_respond_holder_restores_the_self_approval_refusal() {
+    // The moment a second principal can answer, the relax is gone: the
+    // initiator is refused and a distinct person must approve.
+    let rig = Rig::new();
+    rig.grant("owner:solo", "read,run.respond ON ops");
+    rig.grant("staff:other", "read,run.respond ON ops");
+    let plan = rig.plan(&["a", "approve"], &[("approve", client())], None);
+    let runner = rig.runner("service:desk");
+    let env = parked(runner.start(&plan, "r2", json!({}), &opts_for("owner:solo")).unwrap());
+    let ask = ask_of(&env);
+
+    let err = runner
+        .respond("r2", &ask, json!({"approved": true}), false, "owner:solo")
+        .unwrap_err();
+    assert_eq!(err.code(), "RUN-E012", "{err}");
+    assert!(err.to_string().contains("other than"), "{err}");
+    let refusal = rig.trail("r2").into_iter().find(|r| r["outcome"] == "refused").unwrap();
+    assert_eq!(refusal["refusal"], "separation_of_duties");
+
+    runner.respond("r2", &ask, json!({"approved": true}), false, "staff:other").unwrap();
+    assert_eq!(finished(runner.resume("r2", &opts()).unwrap()), RunOutcome::Completed);
+}
+
 // ---------------------------------------------------------------------------
 // #424 — distinct approvers across gates
 // ---------------------------------------------------------------------------
