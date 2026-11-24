@@ -1183,7 +1183,7 @@ impl PgDb {
             return Err(Self::not_provisioned(client, pool, layout, stamp));
         }
         match Self::bootstrap_once(pool, client, layout, bootstrap, stamp) {
-            Ok(()) => Ok(false),
+            Ok(already_current) => Ok(already_current),
             // A concurrent opener won the race and created the schema first.
             // The advisory lock makes this rare, not impossible: the pool
             // shares one runtime, so two openers' `CREATE SCHEMA` can
@@ -1205,7 +1205,7 @@ impl PgDb {
                 if current {
                     Ok(true)
                 } else {
-                    Self::bootstrap_once(pool, client, layout, bootstrap, stamp).map(|()| false)
+                    Self::bootstrap_once(pool, client, layout, bootstrap, stamp)
                 }
             }
             Err(e) => Err(e),
@@ -1238,7 +1238,7 @@ impl PgDb {
         layout: &PgLayout,
         bootstrap: &[&str],
         stamp: Option<PgStamp>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let schema = layout.schema();
         pool.block_on(async {
             // ONE transaction around the whole bootstrap. Postgres DDL
@@ -1256,6 +1256,21 @@ impl PgDb {
                     )
                     .await
                     .map_err(pg_err)?;
+                // Double-checked locking. `open_on` read the stamp BEFORE this
+                // lock; an opener that queued behind the winner arrives here
+                // with a schema that is already current. Re-running the DDL and
+                // seed then does no good — and harm: its `counters` upserts
+                // race the winner's first writes (`finish_open`), taking rows
+                // in the seed's order against `reserve_write`'s key order, and
+                // Postgres picks a loser with 40P01 (seen as a flaky
+                // `concurrent_first_open_bootstraps_once`).
+                if let Some(st) = stamp {
+                    if Self::schema_stamp(client, layout, st).await?.as_deref()
+                        == Some(st.version)
+                    {
+                        return Ok::<_, AreevError>(true);
+                    }
+                }
                 for s in layout.schemas() {
                     client
                         .batch_execute(&format!("CREATE SCHEMA IF NOT EXISTS \"{s}\""))
@@ -1271,6 +1286,21 @@ impl PgDb {
                     ))
                     .await
                     .map_err(pg_err)?;
+                // A migration (a stamp bump) runs against a live memory whose
+                // writers lock `counters` in KEY order (`reserve_write`). The
+                // seed upserts those rows in its own order, so take whatever
+                // exists in key order first: one global order, no cycle. A
+                // brand-new schema has no table yet and nobody to race.
+                let counters = layout.qualified("counters");
+                if Self::relation_present(client, &counters).await? {
+                    client
+                        .query(
+                            &format!("SELECT name FROM {counters} ORDER BY name FOR UPDATE"),
+                            &[],
+                        )
+                        .await
+                        .map_err(pg_err)?;
+                }
                 for sql in bootstrap {
                     let routed = qualify_tables(sql, layout);
                     client.batch_execute(&routed).await.map_err(|e| {
@@ -1295,11 +1325,15 @@ impl PgDb {
                         .await
                         .map_err(pg_err)?;
                 }
-                Ok::<_, AreevError>(())
+                Ok::<_, AreevError>(false)
             }
             .await;
             match boot {
-                Ok(()) => client.batch_execute("COMMIT").await.map_err(pg_err),
+                Ok(already_current) => client
+                    .batch_execute("COMMIT")
+                    .await
+                    .map_err(pg_err)
+                    .map(|()| already_current),
                 Err(e) => {
                     let _ = client.batch_execute("ROLLBACK").await;
                     Err(e)

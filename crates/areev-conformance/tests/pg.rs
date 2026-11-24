@@ -159,6 +159,45 @@ fn concurrent_first_open_bootstraps_once() {
     drop(b.open_named("boot")); // register the schema for cleanup
 }
 
+/// Several openers racing a BRAND-NEW memory, each writing the moment it is
+/// open, over many fresh schemas. The bootstrap is serialized by an advisory
+/// lock, but an opener that queued behind the winner used to re-run the whole
+/// DDL + seed anyway; its `counters` upserts (seq, op, hlc) then raced the
+/// winner's first writes, which lock the same rows in key order (hlc, op,
+/// seq) — a lock cycle Postgres broke with `40P01`. One opener pair per
+/// schema hit it roughly once in a few hundred opens (a flaky
+/// `concurrent_first_open_bootstraps_once` in CI); this shape makes it likely.
+#[test]
+fn first_openers_that_write_at_once_never_deadlock() {
+    let Some(b) = backend() else { return };
+    let url = pg_url().unwrap();
+    let mut failures = Vec::new();
+    for round in 0..40 {
+        let schema = b.schema_for(&format!("boot_w{round}"));
+        let openers: Vec<_> = (0..6)
+            .map(|w| {
+                let (url, schema) = (url.clone(), schema.clone());
+                std::thread::spawn(move || -> Result<(), String> {
+                    let mut m = areev_store::Areev::open_postgres(&url, &schema)
+                        .map_err(|e| format!("open: {e}"))?;
+                    for i in 0..5 {
+                        let g = areev_conformance::fact("ns", &format!("s{w}"), "seen", &format!("{i}"));
+                        m.add(&g).map_err(|e| format!("write: {e}"))?;
+                    }
+                    Ok(())
+                })
+            })
+            .collect();
+        for t in openers {
+            if let Err(e) = t.join().unwrap() {
+                failures.push(format!("round {round}: {e}"));
+            }
+        }
+        drop(b.open_named(&format!("boot_w{round}"))); // register for cleanup
+    }
+    assert!(failures.is_empty(), "first-open + write must not fail: {failures:#?}");
+}
+
 /// Two instances racing to supersede the SAME head: exactly one winner and
 /// one clean SupersessionConflict — the single-writer contract, kept under
 /// concurrency by the in-transaction FOR UPDATE recheck.
