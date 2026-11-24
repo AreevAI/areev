@@ -8,6 +8,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A composite trigger without `--correlate` now starts its run** (#451).
+  The uncorrelated gate's firing had an empty identity, so it was counted
+  `unidentifiable` and the satisfied gate was consumed with no run and no
+  error. Each satisfaction is now its own firing, identified by the instant
+  its partial match started (`gate_started_ms` in the run input); a refused
+  run retries under the same id. Correlated composites are unchanged.
+
 - **Postgres: concurrent first opens of a new memory could deadlock** (`40P01`
   on an open, or on a write made right after one). The bootstrap serialized
   openers with an advisory lock but never re-checked the schema stamp once it

@@ -706,6 +706,12 @@ satisfied dependencies per *sensor*, so Monday's `dep-a` can pair with Tuesday's
 nothing if the process is down at the reset instant. Keying by correlation with
 a per-match expiry removes the need for a reset entirely.
 
+`--correlate` is optional. Without it every member firing counts toward one
+global gate, and each time that gate is satisfied is its own firing: the run
+id is minted from the instant the gate's partial match started (the run input
+carries it as `gate_started_ms`), so a satisfied gate starts one run, a refused
+run retries under the same id, and the next satisfaction starts the next run.
+
 A gate that names an undeclared member is refused with `TRG-E008` **when it is
 declared**, not when it first comes due: it could never be satisfied, so the
 trigger would be silently dead, and a declaration that sits in the memory
