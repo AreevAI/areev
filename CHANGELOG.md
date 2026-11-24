@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A composite trigger without `--correlate` now starts its run** (#451).
+  The uncorrelated gate's firing had an empty identity, so it was counted
+  `unidentifiable` and the satisfied gate was consumed with no run and no
+  error. Each satisfaction is now its own firing, identified by the instant
+  its partial match started (`gate_started_ms` in the run input); a refused
+  run retries under the same id. Correlated composites are unchanged.
+
 ## [1.14.5] — 2026-11-23
 
 ### Changed
