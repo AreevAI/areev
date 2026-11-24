@@ -872,6 +872,19 @@ is what lets an embedded reader hold the SELECT-only role too.
   needs, and that failure is silent — every recall returns empty, nothing
   errors (the #160 shape). A unit test digests both arrays and fails if either
   moves without a version bump; do not weaken it.
+  **The stamp is read TWICE** (double-checked locking): once before any
+  lock (the fast path), and again inside the bootstrap transaction right
+  after `pg_advisory_xact_lock`. An opener that queued behind the winner
+  arrives with a schema that is already current and must do nothing —
+  re-running the seed made its `counters` upserts (seq, op, hlc) race the
+  winner's first writes, which lock the same rows in KEY order (hlc, op, seq),
+  and Postgres broke the cycle with `40P01` on an open OR a write. A real
+  migration (a stamp bump) also takes `counters` `FOR UPDATE` in key order
+  before the seed, so it joins `reserve_write`'s one global order. Neither
+  moves `PG_SEED`, so neither bumps `PG_SCHEMA_VERSION`. Conformance:
+  `first_openers_that_write_at_once_never_deadlock` (Pg-only: 40 fresh
+  schemas × 6 openers, each writing at once; fails on every run without the
+  re-check).
   Two more consequences: the bootstrap now runs inside one transaction under
   `pg_advisory_xact_lock` (atomic, and the lock cannot leak on a failure
   path), and `Db::seeds_state_at_open()` returns `false` here so `finish_open`

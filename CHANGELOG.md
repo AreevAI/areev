@@ -15,6 +15,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   its partial match started (`gate_started_ms` in the run input); a refused
   run retries under the same id. Correlated composites are unchanged.
 
+- **Postgres: concurrent first opens of a new memory could deadlock** (`40P01`
+  on an open, or on a write made right after one). The bootstrap serialized
+  openers with an advisory lock but never re-checked the schema stamp once it
+  held it, so an opener that queued behind the winner re-ran the whole DDL and
+  seed; its `counters` upserts raced the winner's first writes, which lock the
+  same rows in a different order. The stamp is now re-read under the lock (a
+  current schema is left alone), and a migration locks `counters` in key
+  order first. No schema-version change.
+
 ## [1.14.5] — 2026-11-23
 
 ### Changed
