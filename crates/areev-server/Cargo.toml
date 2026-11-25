@@ -27,7 +27,7 @@ serde_json = "1"
 # key set is the one domain where "hand-rolled, no deps" flips from virtue to
 # negligence. `rust_crypto` (not aws_lc_rs) keeps the build C-free, which is
 # what the ubuntu/macos/windows CI matrix and the MSRV job depend on.
-jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"], optional = true }
+jsonwebtoken = { version = "12", default-features = false, features = ["rust_crypto"], optional = true }
 # The HTTP client for discovery / token exchange / JWKS. Already in the tree
 # via areev-llm, chosen there for the same reason: blocking, no tokio.
 ureq = { version = "3", optional = true }
