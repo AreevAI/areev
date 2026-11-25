@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.14.6] — 2026-11-25
+
+Two fixes — a trigger that silently did nothing, and a Postgres open/write
+deadlock — and a release-pipeline change: the npm packages are now published
+by npm trusted publishing (OIDC) instead of a long-lived token.
+
 ### Fixed
 
 - **A composite trigger without `--correlate` now starts its run** (#451).
@@ -23,6 +29,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   same rows in a different order. The stamp is now re-read under the lock (a
   current schema is left alone), and a migration locks `counters` in key
   order first. No schema-version change.
+
+### Changed
+
+- **npm releases publish through trusted publishing (OIDC)**, not an
+  `NPM_TOKEN` secret: each `@areev/*` package trusts `release-npm.yml` in this
+  repository, the token is revoked, and every release carries a provenance
+  attestation. Nothing changes for consumers except that
+  `npm audit signatures` now verifies the packages.
 
 ## [1.14.5] — 2026-11-23
 
@@ -5340,7 +5354,9 @@ ecosystem adapters, and the enterprise plane.
   `crates/areev-bench` (`RESULTS.md` has the numbers), with perf gates
   (`bench`, `voice_loop`) run as examples.
 
-[Unreleased]: https://github.com/AreevAI/areev/compare/v1.14.4...HEAD
+[Unreleased]: https://github.com/AreevAI/areev/compare/v1.14.6...HEAD
+[1.14.6]: https://github.com/AreevAI/areev/compare/v1.14.5...v1.14.6
+[1.14.5]: https://github.com/AreevAI/areev/compare/v1.14.4...v1.14.5
 [1.14.4]: https://github.com/AreevAI/areev/compare/v1.14.3...v1.14.4
 [1.14.3]: https://github.com/AreevAI/areev/compare/v1.14.2...v1.14.3
 [1.14.2]: https://github.com/AreevAI/areev/compare/v1.14.1...v1.14.2
