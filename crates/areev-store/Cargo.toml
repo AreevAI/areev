@@ -41,7 +41,7 @@ postgres-tls = [
 areev-core = { path = "../areev-core", version = "1.14.6" }
 # Pinned exactly: encryption-at-rest rides turso's experimental AES-256-GCM,
 # so the audited version is fixed until a deliberate, tested bump.
-turso = "=0.7.2"
+turso = "=0.8.4"
 tokio = { version = "1", features = ["rt", "sync"] }
 tokio-postgres = { version = "0.7", optional = true }
 # `postgres-tls` only. The canonical rustls integration for tokio-postgres —
